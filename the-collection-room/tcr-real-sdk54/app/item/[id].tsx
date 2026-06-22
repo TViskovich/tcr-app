@@ -158,7 +158,11 @@ export default function ItemDetailScreen() {
     try {
       let imageUrl = item.image_url;
       if (newImageUri) {
-        imageUrl = await uploadItemImage(newImageUri, session.user.id);
+        try {
+          imageUrl = await uploadItemImage(newImageUri, session.user.id);
+        } catch {
+          throw new Error('Image upload failed. Check your connection and try again.');
+        }
       }
 
       const { data: updated, error } = await supabase
@@ -180,7 +184,7 @@ export default function ItemDetailScreen() {
         .select()
         .single();
 
-      if (error) throw new Error(error.message);
+      if (error) throw new Error('Failed to save changes. Please try again.');
       if (updated) {
         setItem(updated);
         setForm(itemToForm(updated));
@@ -201,6 +205,10 @@ export default function ItemDetailScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
+          // Delete linked posts first — posts.item_id is ON DELETE SET NULL,
+          // so it must be removed before the item row is deleted.
+          await supabase.from('posts').delete().eq('item_id', id);
+
           const { error } = await supabase
             .from('collection_items')
             .delete()

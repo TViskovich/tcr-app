@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
@@ -20,19 +21,38 @@ type FeedPost = {
   created_at: string;
 };
 
+function formatAge(iso: string) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function queryPosts(): Promise<FeedPost[]> {
+  const { data } = await supabase
+    .from('posts')
+    .select('id, image_url, caption, created_at')
+    .not('item_id', 'is', null)   // exclude orphaned posts whose item was deleted before the cascade-delete fix
+    .order('created_at', { ascending: false })
+    .limit(50);
+  return (data as FeedPost[]) ?? [];
+}
+
 export default function HomeScreen() {
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('posts')
-      .select('id, image_url, caption, created_at')
-      .order('created_at', { ascending: false })
-      .limit(50);
-    setPosts((data as FeedPost[]) ?? []);
+    setPosts(await queryPosts());
     setLoading(false);
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setPosts(await queryPosts());
+    setRefreshing(false);
   }, []);
 
   useFocusEffect(
@@ -64,6 +84,9 @@ export default function HomeScreen() {
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => <PostCard post={item} />}
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+          }
         />
       )}
     </SafeAreaView>
@@ -71,6 +94,9 @@ export default function HomeScreen() {
 }
 
 function PostCard({ post }: { post: FeedPost }) {
+  const [imageError, setImageError] = useState(false);
+  if (imageError) return null;
+
   return (
     <View style={styles.card}>
       <View style={styles.cardImageWrap}>
@@ -78,13 +104,15 @@ function PostCard({ post }: { post: FeedPost }) {
           source={{ uri: post.image_url }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
+          onError={() => setImageError(true)}
         />
       </View>
-      {post.caption ? (
-        <View style={styles.cardBody}>
+      <View style={styles.cardBody}>
+        {post.caption ? (
           <Text style={styles.cardCaption}>{post.caption}</Text>
-        </View>
-      ) : null}
+        ) : null}
+        <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
+      </View>
     </View>
   );
 }
@@ -150,6 +178,12 @@ const styles = StyleSheet.create({
   },
   cardCaption: {
     fontSize: 14,
+    fontWeight: '500',
     color: '#11181C',
+  },
+  cardDate: {
+    fontSize: 12,
+    color: '#aaa',
+    marginTop: 2,
   },
 });

@@ -2,7 +2,6 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -15,6 +14,7 @@ import {
   View,
 } from 'react-native';
 
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
@@ -104,7 +104,12 @@ export default function AddItemScreen() {
 
     setLoading(true);
     try {
-      const imageUrl = await uploadItemImage(imageUri, session.user.id);
+      let imageUrl: string;
+      try {
+        imageUrl = await uploadItemImage(imageUri, session.user.id);
+      } catch {
+        throw new Error('Image upload failed. Check your connection and try again.');
+      }
 
       const { data: item, error: itemError } = await supabase
         .from('collection_items')
@@ -126,20 +131,23 @@ export default function AddItemScreen() {
         .select()
         .single();
 
-      if (itemError) throw new Error(itemError.message);
+      if (itemError) throw new Error('Failed to save item. Please try again.');
 
       if (shareToFeed && item) {
-        await supabase.from('posts').insert({
+        const { error: postError } = await supabase.from('posts').insert({
           user_id: session.user.id,
           item_id: item.id,
           image_url: imageUrl,
           caption: form.title.trim() || null,
         });
+        if (postError) {
+          Alert.alert('Heads up', 'Item saved, but could not share to feed.');
+        }
       }
 
       router.back();
     } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
+      Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -159,7 +167,7 @@ export default function AddItemScreen() {
           {/* Image picker */}
           <Pressable onPress={pickImage} style={styles.imagePicker}>
             {imageUri ? (
-              <Image source={{ uri: imageUri }} style={styles.imagePreview} resizeMode="cover" />
+              <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
             ) : (
               <View style={styles.imagePlaceholder}>
                 <Text style={styles.imagePlaceholderIcon}>📷</Text>
@@ -273,10 +281,6 @@ const styles = StyleSheet.create({
     width: '60%',
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
-  },
-  imagePreview: {
-    width: '100%',
-    height: '100%',
   },
   imagePlaceholder: {
     flex: 1,
