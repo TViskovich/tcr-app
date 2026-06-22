@@ -1,3 +1,5 @@
+import { File } from 'expo-file-system';
+
 import { supabase } from './supabase';
 
 const MIME: Record<string, string> = {
@@ -9,16 +11,17 @@ const MIME: Record<string, string> = {
 };
 
 export async function uploadItemImage(uri: string, userId: string): Promise<string> {
-  const response = await fetch(uri);
-  const blob = await response.blob();
-
   const ext = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
   const contentType = MIME[ext] ?? 'image/jpeg';
   const path = `${userId}/${Date.now()}.${ext}`;
 
+  // expo-file-system v19 File class reads the local file:// URI correctly.
+  // fetch(uri).blob() and the old readAsStringAsync are both broken in this version.
+  const buffer = await new File(uri).arrayBuffer();
+
   const { error } = await supabase.storage
     .from('item-images')
-    .upload(path, blob, { contentType });
+    .upload(path, buffer, { contentType });
 
   if (error) throw new Error(error.message);
 
