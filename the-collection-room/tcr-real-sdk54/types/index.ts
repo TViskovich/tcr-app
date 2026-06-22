@@ -1,0 +1,44 @@
+export type Folder = {
+  id: string;
+  user_id: string;
+  name: string;
+  cover_image_url: string | null;
+  is_public: boolean;
+  created_at: string;
+};
+
+export type CollectionItem = {
+  id: string;
+  folder_id: string;
+  user_id: string;
+  title: string | null;
+  year: number | null;
+  brand: string | null;
+  player: string | null;
+  team: string | null;
+  grade: string | null;
+  grading_company: string | null;
+  serial_number: string | null;
+  estimated_value: number | null;
+  image_url: string | null;
+  description: string | null;
+  created_at: string;
+};
+
+export type Profile = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  created_at: string;
+};
+
+export type Post = {
+  id: string;
+  user_id: string;
+  item_id: string | null;
+  image_url: string;
+  caption: string | null;
+  created_at: string;
+};

@@ -133,7 +133,67 @@ CREATE POLICY "likes_insert_own"        ON public.likes FOR INSERT WITH CHECK (a
 CREATE POLICY "likes_delete_own"        ON public.likes FOR DELETE USING (auth.uid() = user_id);
 
 -- STORAGE BUCKETS ----------------------------------------------
--- Create these in Supabase Dashboard → Storage → New bucket
+-- 1. Create these in Supabase Dashboard → Storage → New bucket:
+--      Name: avatars       | Public: true
+--      Name: item-images   | Public: true
 --
---   Name: avatars        | Public: true
---   Name: item-images    | Public: true
+-- 2. Then run the policies below in the SQL Editor.
+--    "Public" on a bucket only enables unauthenticated reads.
+--    Write access is controlled by these RLS policies on storage.objects.
+
+-- item-images: upload path is {userId}/{timestamp}.{ext}
+-- foldername(name)[1] extracts the first path segment (the userId folder)
+
+CREATE POLICY "item_images_insert_own"
+  ON storage.objects FOR INSERT
+  WITH CHECK (
+    bucket_id = 'item-images'
+    AND auth.role() = 'authenticated'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "item_images_select_public"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'item-images');
+
+CREATE POLICY "item_images_update_own"
+  ON storage.objects FOR UPDATE
+  USING (
+    bucket_id = 'item-images'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "item_images_delete_own"
+  ON storage.objects FOR DELETE
+  USING (
+    bucket_id = 'item-images'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- avatars: same pattern, used in Phase 3
+
+CREATE POLICY "avatars_insert_own"
+  ON storage.objects FOR INSERT
+  WITH CHECK (
+    bucket_id = 'avatars'
+    AND auth.role() = 'authenticated'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "avatars_select_public"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'avatars');
+
+CREATE POLICY "avatars_update_own"
+  ON storage.objects FOR UPDATE
+  USING (
+    bucket_id = 'avatars'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "avatars_delete_own"
+  ON storage.objects FOR DELETE
+  USING (
+    bucket_id = 'avatars'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
