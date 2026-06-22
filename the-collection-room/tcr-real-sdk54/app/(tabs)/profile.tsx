@@ -1,10 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-export default function HomeScreen() {
+export default function ProfileScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.heading}>Home</Text>
-      <Text style={styles.body}>Posts from people you follow will appear here.</Text>
+      <Text style={styles.heading}>Profile</Text>
+      <Text style={styles.body}>Your profile will appear here.</Text>
     </View>
   );
 }

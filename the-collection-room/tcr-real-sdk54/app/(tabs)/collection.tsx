@@ -1,10 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-export default function HomeScreen() {
+export default function CollectionScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.heading}>Home</Text>
-      <Text style={styles.body}>Posts from people you follow will appear here.</Text>
+      <Text style={styles.heading}>Collection</Text>
+      <Text style={styles.body}>Your folders will appear here.</Text>
     </View>
   );
 }
