@@ -254,13 +254,14 @@ export default function PostDetailScreen() {
 
   function handleLikeTap() {
     if (!currentUserId || !post) return;
+    const currentPost = post;
 
     Animated.sequence([
       Animated.timing(likeScaleAnim, { toValue: 1.4, duration: 80, useNativeDriver: true }),
       Animated.spring(likeScaleAnim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 10 }),
     ]).start();
 
-    const wasLiked = post.liked;
+    const wasLiked = currentPost.liked;
     setPost((prev) =>
       prev
         ? { ...prev, liked: !wasLiked, likeCount: wasLiked ? prev.likeCount - 1 : prev.likeCount + 1 }
@@ -268,11 +269,28 @@ export default function PostDetailScreen() {
     );
 
     const query = wasLiked
-      ? supabase.from('likes').delete().eq('user_id', currentUserId).eq('post_id', post.id)
-      : supabase.from('likes').insert({ user_id: currentUserId, post_id: post.id });
+      ? supabase.from('likes').delete().eq('user_id', currentUserId).eq('post_id', currentPost.id)
+      : supabase.from('likes').insert({ user_id: currentUserId, post_id: currentPost.id });
 
     query.then(({ error }: any) => {
-      if (error) console.error(wasLiked ? 'Unlike failed:' : 'Like failed:', error.message);
+      if (error) {
+        console.error(wasLiked ? 'Unlike failed:' : 'Like failed:', error.message);
+        return;
+      }
+      if (wasLiked) {
+        supabase.from('notifications').delete()
+          .eq('actor_id', currentUserId).eq('post_id', currentPost.id).eq('type', 'like')
+          .then(({ error: e }) => { if (e) console.error('Like notif delete failed:', e.message); });
+      } else if (currentPost.user_id !== currentUserId) {
+        supabase.from('notifications').insert({
+          user_id: currentPost.user_id,
+          actor_id: currentUserId,
+          type: 'like',
+          post_id: currentPost.id,
+        }).then(({ error: e }) => {
+          if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
+        });
+      }
     });
   }
 
@@ -282,15 +300,27 @@ export default function PostDetailScreen() {
     const body = newComment.trim();
     setNewComment('');
 
-    const { error } = await supabase
+    const { data: commentRow, error } = await supabase
       .from('comments')
-      .insert({ user_id: currentUserId, post_id: post.id, body });
+      .insert({ user_id: currentUserId, post_id: post.id, body })
+      .select('id')
+      .single();
 
     if (error) {
       console.error('Comment failed:', error.message);
       setNewComment(body);
       setSending(false);
       return;
+    }
+
+    if (post.user_id !== currentUserId) {
+      supabase.from('notifications').insert({
+        user_id: post.user_id,
+        actor_id: currentUserId,
+        type: 'comment',
+        post_id: post.id,
+        comment_id: commentRow?.id ?? null,
+      }).then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
     }
 
     const fresh = await fetchComments(post.id);

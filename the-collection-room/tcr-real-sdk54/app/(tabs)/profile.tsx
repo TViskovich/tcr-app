@@ -15,9 +15,10 @@ import {
 
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
 import { useAuth } from '@/lib/auth';
 import { uploadAvatar } from '@/lib/storage';
@@ -26,6 +27,7 @@ import { supabase } from '@/lib/supabase';
 export default function ProfileScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id;
+  const router = useRouter();
   const { profile, stats, loading, refresh } = useProfile(userId);
 
   const [editMode, setEditMode] = useState(false);
@@ -152,9 +154,13 @@ export default function ProfileScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerSide}>
-          {editMode && (
+          {editMode ? (
             <TouchableOpacity onPress={cancelEdit}>
               <Text style={styles.headerCancel}>Cancel</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={() => router.push('/settings')} hitSlop={8}>
+              <IconSymbol name="gearshape.fill" size={22} color="#687076" />
             </TouchableOpacity>
           )}
         </View>

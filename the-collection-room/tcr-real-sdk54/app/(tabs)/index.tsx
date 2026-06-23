@@ -144,10 +144,29 @@ export default function HomeScreen() {
     // Supabase JS v2 is lazy — query only executes when awaited or .then()'d
     if (wasLiked) {
       const { error } = await supabase.from('likes').delete().eq('user_id', currentUserId).eq('post_id', postId);
-      if (error) console.error('Unlike failed:', error.message);
+      if (error) {
+        console.error('Unlike failed:', error.message);
+      } else {
+        // Remove the like notification this user previously created
+        supabase.from('notifications').delete()
+          .eq('actor_id', currentUserId).eq('post_id', postId).eq('type', 'like')
+          .then(({ error: e }) => { if (e) console.error('Like notif delete failed:', e.message); });
+      }
     } else {
       const { error } = await supabase.from('likes').insert({ user_id: currentUserId, post_id: postId });
-      if (error) console.error('Like failed:', error.message);
+      if (error) {
+        console.error('Like failed:', error.message);
+      } else if (post.user_id !== currentUserId) {
+        // Notify post owner (unique index makes this idempotent)
+        supabase.from('notifications').insert({
+          user_id: post.user_id,
+          actor_id: currentUserId,
+          type: 'like',
+          post_id: postId,
+        }).then(({ error: e }) => {
+          if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
+        });
+      }
     }
   }
 

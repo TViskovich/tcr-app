@@ -19,6 +19,7 @@ const MAPPING = {
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
   'folder.fill': 'folder',
+  'bell.fill': 'notifications',
   'message.fill': 'chat',
   'person.fill': 'person',
   'gearshape.fill': 'settings',

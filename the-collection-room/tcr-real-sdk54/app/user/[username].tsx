@@ -153,6 +153,14 @@ export default function UserProfileScreen() {
         .from('follows')
         .insert({ follower_id: currentUserId, following_id: profile.id });
       setIsFollowing(true);
+      // Notify the followed user (unique index makes this idempotent on re-follow)
+      supabase.from('notifications').insert({
+        user_id: profile.id,
+        actor_id: currentUserId,
+        type: 'follow',
+      }).then(({ error }) => {
+        if (error && error.code !== '23505') console.error('Follow notif failed:', error.message);
+      });
     }
     await refreshFollowerCounts(profile.id);
     setFollowLoading(false);

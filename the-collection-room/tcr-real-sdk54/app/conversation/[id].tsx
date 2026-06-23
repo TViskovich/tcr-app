@@ -111,8 +111,6 @@ export default function ConversationScreen() {
       }
 
       const loadedMessages = (messagesRes.data ?? []) as Message[];
-      console.log('[Conversation] currentUserId:', currentUserId);
-      console.log('[Conversation] sender_ids:', loadedMessages.map((m) => m.sender_id));
       setMessages(loadedMessages);
       setLoading(false);
 
@@ -157,6 +155,17 @@ export default function ConversationScreen() {
       });
 
     setMessages((prev) => [...prev, msgData as Message]);
+
+    // Notify the other user of the new message (fire and forget)
+    if (otherUser) {
+      supabase.from('notifications').insert({
+        user_id: otherUser.id,
+        actor_id: currentUserId,
+        type: 'message',
+        conversation_id: convId,
+      }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
+    }
+
     setSending(false);
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }
