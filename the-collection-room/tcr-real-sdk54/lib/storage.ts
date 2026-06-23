@@ -28,3 +28,20 @@ export async function uploadItemImage(uri: string, userId: string): Promise<stri
   const { data } = supabase.storage.from('item-images').getPublicUrl(path);
   return data.publicUrl;
 }
+
+export async function uploadAvatar(uri: string, userId: string): Promise<string> {
+  const ext = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const contentType = MIME[ext] ?? 'image/jpeg';
+  const path = `${userId}/${Date.now()}.${ext}`;
+
+  const buffer = await new File(uri).arrayBuffer();
+
+  const { error } = await supabase.storage
+    .from('avatars')
+    .upload(path, buffer, { contentType });
+
+  if (error) throw new Error(error.message);
+
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  return data.publicUrl;
+}
