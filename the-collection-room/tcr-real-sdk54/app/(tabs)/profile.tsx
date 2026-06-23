@@ -256,6 +256,16 @@ export default function ProfileScreen() {
                   <Text style={styles.statNumber}>{stats.postCount}</Text>
                   <Text style={styles.statLabel}>Posts</Text>
                 </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statNumber}>{stats.followerCount}</Text>
+                  <Text style={styles.statLabel}>Followers</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statNumber}>{stats.followingCount}</Text>
+                  <Text style={styles.statLabel}>Following</Text>
+                </View>
               </View>
             </>
           )}

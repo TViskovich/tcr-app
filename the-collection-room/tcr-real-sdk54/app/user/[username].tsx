@@ -4,6 +4,7 @@ import {
   FlatList,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 
@@ -11,17 +12,31 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
+import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { Folder, Profile } from '@/types';
+
+type Counts = {
+  folders: number;
+  items: number;
+  posts: number;
+  followers: number;
+  following: number;
+};
 
 export default function UserProfileScreen() {
   const { username } = useLocalSearchParams<{ username: string }>();
   const router = useRouter();
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [counts, setCounts] = useState<Counts>({ folders: 0, items: 0, posts: 0, followers: 0, following: 0 });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followLoading, setFollowLoading] = useState(false);
 
   useEffect(() => {
     if (!username) return;
@@ -43,19 +58,82 @@ export default function UserProfileScreen() {
 
       setProfile(profileData as Profile);
 
-      const { data: foldersData } = await supabase
-        .from('folders')
-        .select('*')
-        .eq('user_id', profileData.id)
-        .eq('is_public', true)
-        .order('created_at', { ascending: false });
+      const uid = profileData.id;
+      const [
+        foldersRes,
+        folderCountRes,
+        itemCountRes,
+        postCountRes,
+        followerCountRes,
+        followingCountRes,
+      ] = await Promise.all([
+        supabase.from('folders').select('*').eq('user_id', uid).eq('is_public', true).order('created_at', { ascending: false }),
+        supabase.from('folders').select('*', { count: 'exact', head: true }).eq('user_id', uid),
+        supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', uid),
+        supabase.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', uid),
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', uid),
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', uid),
+      ]);
 
-      setFolders((foldersData as Folder[]) ?? []);
+      setFolders((foldersRes.data as Folder[]) ?? []);
+      setCounts({
+        folders: folderCountRes.count ?? 0,
+        items: itemCountRes.count ?? 0,
+        posts: postCountRes.count ?? 0,
+        followers: followerCountRes.count ?? 0,
+        following: followingCountRes.count ?? 0,
+      });
       setLoading(false);
     }
 
     load();
   }, [username]);
+
+  // Check follow state once profile + current user are both known
+  const profileId = profile?.id;
+  useEffect(() => {
+    if (!profileId || !currentUserId || profileId === currentUserId) return;
+
+    supabase
+      .from('follows')
+      .select('follower_id')
+      .eq('follower_id', currentUserId)
+      .eq('following_id', profileId)
+      .maybeSingle()
+      .then(({ data }) => setIsFollowing(!!data));
+  }, [profileId, currentUserId]);
+
+  async function refreshFollowerCounts(uid: string) {
+    const [followersRes, followingRes] = await Promise.all([
+      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', uid),
+      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', uid),
+    ]);
+    setCounts((prev) => ({
+      ...prev,
+      followers: followersRes.count ?? prev.followers,
+      following: followingRes.count ?? prev.following,
+    }));
+  }
+
+  async function toggleFollow() {
+    if (!currentUserId || !profile) return;
+    setFollowLoading(true);
+    if (isFollowing) {
+      await supabase
+        .from('follows')
+        .delete()
+        .eq('follower_id', currentUserId)
+        .eq('following_id', profile.id);
+      setIsFollowing(false);
+    } else {
+      await supabase
+        .from('follows')
+        .insert({ follower_id: currentUserId, following_id: profile.id });
+      setIsFollowing(true);
+    }
+    await refreshFollowerCounts(profile.id);
+    setFollowLoading(false);
+  }
 
   if (loading) {
     return (
@@ -81,6 +159,7 @@ export default function UserProfileScreen() {
 
   const displayName = profile.display_name || profile.username;
   const avatarUri = profile.avatar_url;
+  const isOwnProfile = currentUserId === profile.id;
 
   return (
     <>
@@ -119,11 +198,61 @@ export default function UserProfileScreen() {
                 </View>
               )}
             </View>
+
             <Text style={styles.displayName}>{displayName}</Text>
             <Text style={styles.usernameText}>@{profile.username}</Text>
             {profile.bio ? (
               <Text style={styles.bio}>{profile.bio}</Text>
             ) : null}
+
+            {/* Stats row */}
+            <View style={styles.statsRow}>
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{counts.folders}</Text>
+                <Text style={styles.statLabel}>Folders</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{counts.items}</Text>
+                <Text style={styles.statLabel}>Items</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{counts.posts}</Text>
+                <Text style={styles.statLabel}>Posts</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{counts.followers}</Text>
+                <Text style={styles.statLabel}>Followers</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{counts.following}</Text>
+                <Text style={styles.statLabel}>Following</Text>
+              </View>
+            </View>
+
+            {/* Follow / Unfollow — hidden on own profile or when not logged in */}
+            {!isOwnProfile && currentUserId ? (
+              <TouchableOpacity
+                style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
+                onPress={toggleFollow}
+                disabled={followLoading}
+                activeOpacity={0.75}>
+                {followLoading ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={isFollowing ? '#687076' : '#fff'}
+                  />
+                ) : (
+                  <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
+                    {isFollowing ? 'Following' : 'Follow'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
+
             {folders.length > 0 && (
               <Text style={styles.sectionTitle}>Collection</Text>
             )}
@@ -197,6 +326,58 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     marginTop: 8,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    paddingVertical: 14,
+    marginTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e0e0e0',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e0e0e0',
+  },
+  stat: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 2,
+  },
+  statNumber: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#11181C',
+  },
+  statLabel: {
+    fontSize: 10,
+    color: '#687076',
+  },
+  statDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    backgroundColor: '#e0e0e0',
+  },
+  followBtn: {
+    marginTop: 16,
+    paddingHorizontal: 32,
+    paddingVertical: 10,
+    backgroundColor: '#0a7ea4',
+    borderRadius: 20,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  followBtnFollowing: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#687076',
+  },
+  followBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  followBtnTextFollowing: {
+    color: '#687076',
   },
   sectionTitle: {
     fontSize: 16,
