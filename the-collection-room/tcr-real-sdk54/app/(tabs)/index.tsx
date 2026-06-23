@@ -30,6 +30,7 @@ type FeedPost = {
   avatar_url: string | null;
   likeCount: number;
   liked: boolean;
+  commentCount: number;
 };
 
 function formatAge(iso: string) {
@@ -55,21 +56,27 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
   const itemIds = (postRows as any[]).map((p) => p.item_id as string);
   const postIds = (postRows as any[]).map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     supabase.from('collection_items').select('id, name').in('id', itemIds),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
+    supabase.from('comments').select('post_id').in('post_id', postIds),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
   const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
 
-  // Compute like count and liked state per post from the single batch query
+  // Compute like count, liked state, and comment count per post
   const likeCountMap = new Map<string, number>();
   const likedSet = new Set<string>();
   for (const row of (likesRes.data ?? []) as any[]) {
     likeCountMap.set(row.post_id, (likeCountMap.get(row.post_id) ?? 0) + 1);
     if (row.user_id === currentUserId) likedSet.add(row.post_id);
+  }
+
+  const commentCountMap = new Map<string, number>();
+  for (const row of (commentsRes.data ?? []) as any[]) {
+    commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
   }
 
   return (postRows as any[]).map((post) => {
@@ -87,6 +94,7 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
       avatar_url: profile.avatar_url ?? null,
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
+      commentCount: commentCountMap.get(post.id) ?? 0,
     };
   });
 }
@@ -173,6 +181,12 @@ export default function HomeScreen() {
                   params: { username: item.username },
                 })
               }
+              onPostPress={() =>
+                router.push({
+                  pathname: '/post/[id]',
+                  params: { id: item.id },
+                })
+              }
               onLike={() => handleLike(item.id)}
             />
           )}
@@ -189,17 +203,18 @@ export default function HomeScreen() {
 function PostCard({
   post,
   onUserPress,
+  onPostPress,
   onLike,
 }: {
   post: FeedPost;
   onUserPress: () => void;
+  onPostPress: () => void;
   onLike: () => void;
 }) {
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
   function handleLikeTap() {
-    // Quick pop up, then spring back
     Animated.sequence([
       Animated.timing(scaleAnim, { toValue: 1.4, duration: 80, useNativeDriver: true }),
       Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 10 }),
@@ -239,17 +254,20 @@ function PostCard({
         <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
       </TouchableOpacity>
 
-      {/* Post image */}
-      <View style={styles.cardImageWrap}>
+      {/* Post image — tapping opens post detail */}
+      <TouchableOpacity
+        style={styles.cardImageWrap}
+        onPress={onPostPress}
+        activeOpacity={0.95}>
         <Image
           source={{ uri: post.image_url }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
           onError={() => setImageError(true)}
         />
-      </View>
+      </TouchableOpacity>
 
-      {/* Caption + like button */}
+      {/* Caption + actions */}
       <View style={styles.cardBody}>
         {(post.caption || post.item_name) ? (
           <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
@@ -263,6 +281,12 @@ function PostCard({
               {post.likeCount}
             </Text>
           </Pressable>
+
+          {/* Comment count — tapping also opens post detail */}
+          <TouchableOpacity onPress={onPostPress} hitSlop={8} style={styles.commentBtn}>
+            <Text style={styles.commentIcon}>💬</Text>
+            <Text style={styles.commentCount}>{post.commentCount}</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </View>
@@ -377,6 +401,7 @@ const styles = StyleSheet.create({
   cardActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 16,
   },
   likeBtn: {
     flexDirection: 'row',
@@ -398,5 +423,21 @@ const styles = StyleSheet.create({
   },
   likeCountActive: {
     color: '#E65100',
+  },
+  commentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 2,
+  },
+  commentIcon: {
+    fontSize: 18,
+    opacity: 0.45,
+  },
+  commentCount: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#687076',
+    minWidth: 16,
   },
 });
