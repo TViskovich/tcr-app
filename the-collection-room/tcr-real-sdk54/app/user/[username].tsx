@@ -37,6 +37,7 @@ export default function UserProfileScreen() {
   const [notFound, setNotFound] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
+  const [msgLoading, setMsgLoading] = useState(false);
 
   useEffect(() => {
     if (!username) return;
@@ -113,6 +114,28 @@ export default function UserProfileScreen() {
       followers: followersRes.count ?? prev.followers,
       following: followingRes.count ?? prev.following,
     }));
+  }
+
+  async function handleMessage() {
+    if (!currentUserId || !profile || currentUserId === profile.id) return;
+    setMsgLoading(true);
+    const { data, error } = await supabase.rpc('get_or_create_conversation', {
+      other_user_id: profile.id,
+    });
+    if (error || !data) {
+      console.error('DM failed:', error?.message);
+      setMsgLoading(false);
+      return;
+    }
+    setMsgLoading(false);
+    router.push({
+      pathname: '/conversation/[id]',
+      params: {
+        id: data as string,
+        otherUsername: profile.username,
+        otherDisplayName: profile.display_name ?? '',
+      },
+    });
   }
 
   async function toggleFollow() {
@@ -233,24 +256,34 @@ export default function UserProfileScreen() {
               </View>
             </View>
 
-            {/* Follow / Unfollow — hidden on own profile or when not logged in */}
+            {/* Message + Follow/Unfollow — hidden on own profile or when not logged in */}
             {!isOwnProfile && currentUserId ? (
-              <TouchableOpacity
-                style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
-                onPress={toggleFollow}
-                disabled={followLoading}
-                activeOpacity={0.75}>
-                {followLoading ? (
-                  <ActivityIndicator
-                    size="small"
-                    color={isFollowing ? '#687076' : '#fff'}
-                  />
-                ) : (
-                  <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
-                    {isFollowing ? 'Following' : 'Follow'}
-                  </Text>
-                )}
-              </TouchableOpacity>
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={styles.msgBtn}
+                  onPress={handleMessage}
+                  disabled={msgLoading}
+                  activeOpacity={0.75}>
+                  {msgLoading ? (
+                    <ActivityIndicator size="small" color="#0a7ea4" />
+                  ) : (
+                    <Text style={styles.msgBtnText}>Message</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
+                  onPress={toggleFollow}
+                  disabled={followLoading}
+                  activeOpacity={0.75}>
+                  {followLoading ? (
+                    <ActivityIndicator size="small" color={isFollowing ? '#687076' : '#fff'} />
+                  ) : (
+                    <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
+                      {isFollowing ? 'Following' : 'Follow'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
             ) : null}
 
             {folders.length > 0 && (
@@ -357,13 +390,31 @@ const styles = StyleSheet.create({
     height: 28,
     backgroundColor: '#e0e0e0',
   },
-  followBtn: {
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
     marginTop: 16,
-    paddingHorizontal: 32,
+    alignSelf: 'stretch',
+  },
+  msgBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#0a7ea4',
+    borderRadius: 20,
+    alignItems: 'center',
+  },
+  msgBtnText: {
+    color: '#0a7ea4',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  followBtn: {
+    flex: 1,
     paddingVertical: 10,
     backgroundColor: '#0a7ea4',
     borderRadius: 20,
-    minWidth: 120,
     alignItems: 'center',
   },
   followBtnFollowing: {
