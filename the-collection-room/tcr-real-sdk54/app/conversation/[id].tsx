@@ -16,6 +16,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth';
+import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
 
 type Message = {
@@ -60,6 +61,7 @@ export default function ConversationScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
+  const refreshMessageBadge = useMessageBadgeRefresh();
 
   const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -115,6 +117,17 @@ export default function ConversationScreen() {
       setLoading(false);
 
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
+
+      // Mark this conversation as read and update the tab badge
+      supabase
+        .from('conversation_participants')
+        .update({ last_read_at: new Date().toISOString() })
+        .eq('conversation_id', convId)
+        .eq('user_id', currentUserId)
+        .then(({ error: e }) => {
+          if (e) console.error('last_read_at stamp failed:', e.message);
+          else refreshMessageBadge();
+        });
     }
 
     load();
@@ -145,13 +158,25 @@ export default function ConversationScreen() {
       return;
     }
 
+    const now = new Date().toISOString();
+
     // Update last_message_at so inbox sorts correctly — fire and forget
     supabase
       .from('conversations')
-      .update({ last_message_at: new Date().toISOString() })
+      .update({ last_message_at: now })
       .eq('id', convId)
       .then(({ error: e }) => {
         if (e) console.error('last_message_at update failed:', e.message);
+      });
+
+    // Keep sender's last_read_at current so their own send doesn't show as unread
+    supabase
+      .from('conversation_participants')
+      .update({ last_read_at: now })
+      .eq('conversation_id', convId)
+      .eq('user_id', currentUserId)
+      .then(({ error: e }) => {
+        if (e) console.error('last_read_at send-stamp failed:', e.message);
       });
 
     setMessages((prev) => [...prev, msgData as Message]);

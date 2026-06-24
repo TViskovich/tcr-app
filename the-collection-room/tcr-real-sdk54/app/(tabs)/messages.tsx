@@ -14,6 +14,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth';
+import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
 
 type ConversationItem = {
@@ -116,6 +117,7 @@ export default function MessagesScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
+  const refreshMessageBadge = useMessageBadgeRefresh();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,8 +137,9 @@ export default function MessagesScreen() {
     if (!currentUserId) return;
     setRefreshing(true);
     setConversations(await loadInbox(currentUserId));
+    refreshMessageBadge();
     setRefreshing(false);
-  }, [currentUserId]);
+  }, [currentUserId, refreshMessageBadge]);
 
   useFocusEffect(
     useCallback(() => {
