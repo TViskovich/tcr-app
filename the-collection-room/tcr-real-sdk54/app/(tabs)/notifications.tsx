@@ -14,6 +14,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth';
+import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
 
 type NotificationItem = {
@@ -123,6 +124,7 @@ export default function NotificationsScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
+  const refreshBadge = useBadgeRefresh();
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -153,6 +155,7 @@ export default function NotificationsScreen() {
       .eq('read', false);
     if (!error) {
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      refreshBadge();
     }
   }
 
@@ -168,6 +171,7 @@ export default function NotificationsScreen() {
         .eq('id', notif.id)
         .then(({ error }) => {
           if (error) console.error('Mark read failed:', error.message);
+          else refreshBadge();
         });
     }
 
