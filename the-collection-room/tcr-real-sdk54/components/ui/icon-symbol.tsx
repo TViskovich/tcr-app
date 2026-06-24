@@ -23,6 +23,7 @@ const MAPPING = {
   'message.fill': 'chat',
   'person.fill': 'person',
   'gearshape.fill': 'settings',
+  'magnifyingglass': 'search',
 } as IconMapping;
 
 /**

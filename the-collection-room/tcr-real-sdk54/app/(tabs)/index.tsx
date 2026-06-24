@@ -16,7 +16,9 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth';
+import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 
 type FeedPost = {
   id: string;
@@ -103,6 +105,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
+  const { count: notifCount } = useBadgeRefresh();
 
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,6 +177,19 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Home</Text>
+        <TouchableOpacity
+          onPress={() => router.push('/(tabs)/notifications')}
+          style={styles.bellBtn}
+          hitSlop={8}>
+          <IconSymbol name="bell.fill" size={24} color="#11181C" />
+          {notifCount > 0 && (
+            <View style={styles.bellBadge}>
+              <Text style={styles.bellBadgeText}>
+                {notifCount > 99 ? '99+' : notifCount}
+              </Text>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
 
       {loading ? (
@@ -320,11 +336,34 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e0e0e0',
+  },
+  bellBtn: {
+    position: 'relative',
+    padding: 2,
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    backgroundColor: '#e53935',
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  bellBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
   },
   headerTitle: {
     fontSize: 20,

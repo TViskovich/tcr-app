@@ -124,7 +124,7 @@ export default function NotificationsScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
-  const refreshBadge = useBadgeRefresh();
+  const { refresh: refreshBadge } = useBadgeRefresh();
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);

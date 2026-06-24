@@ -18,16 +18,14 @@ export default function TabLayout() {
   const { unreadCount, refresh: refreshNotifBadge } = useUnreadCount(userId);
   const { unreadCount: unreadMessages, refresh: refreshMessageBadge } = useUnreadMessages(userId);
 
-  const notifBadge = unreadCount === 0 ? undefined : unreadCount > 99 ? '99+' : unreadCount;
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
 
   return (
-    <BadgeRefreshContext.Provider value={refreshNotifBadge}>
+    <BadgeRefreshContext.Provider value={{ count: unreadCount, refresh: refreshNotifBadge }}>
       <MessageBadgeRefreshContext.Provider value={refreshMessageBadge}>
         <Tabs
           screenListeners={({ route }) => ({
             focus: () => {
-              if (route.name === 'notifications') refreshNotifBadge();
               if (route.name === 'messages') refreshMessageBadge();
             },
           })}
@@ -51,6 +49,13 @@ export default function TabLayout() {
             }}
           />
           <Tabs.Screen
+            name="search"
+            options={{
+              title: 'Search',
+              tabBarIcon: ({ color }) => <IconSymbol size={28} name="magnifyingglass" color={color} />,
+            }}
+          />
+          <Tabs.Screen
             name="messages"
             options={{
               title: 'Messages',
@@ -60,11 +65,7 @@ export default function TabLayout() {
           />
           <Tabs.Screen
             name="notifications"
-            options={{
-              title: 'Notifications',
-              tabBarIcon: ({ color }) => <IconSymbol size={28} name="bell.fill" color={color} />,
-              tabBarBadge: notifBadge,
-            }}
+            options={{ href: null }}
           />
           <Tabs.Screen
             name="profile"
