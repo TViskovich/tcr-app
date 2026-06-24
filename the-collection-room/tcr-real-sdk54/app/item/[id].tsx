@@ -35,6 +35,12 @@ type EditForm = {
   description: string;
 };
 
+type OwnerProfile = {
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
 function itemToForm(item: CollectionItem): EditForm {
   return {
     title: item.title ?? '',
@@ -94,13 +100,17 @@ export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session } = useAuth();
   const router = useRouter();
+  const currentUserId = session?.user?.id;
 
   const [item, setItem] = useState<CollectionItem | null>(null);
+  const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [fetching, setFetching] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [newImageUri, setNewImageUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
   useEffect(() => {
     async function fetchItem() {
@@ -109,16 +119,27 @@ export default function ItemDetailScreen() {
         .select('*')
         .eq('id', id)
         .single();
+
       if (data) {
         setItem(data);
         setForm(itemToForm(data));
+
+        if (data.user_id !== currentUserId) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('username, display_name, avatar_url')
+            .eq('id', data.user_id)
+            .single();
+          if (profile) setOwnerProfile(profile as OwnerProfile);
+        }
       }
       setFetching(false);
     }
     fetchItem();
-  }, [id]);
+  }, [id, currentUserId]);
 
   function enterEdit() {
+    if (!isOwner) return;
     if (item) setForm(itemToForm(item));
     setNewImageUri(null);
     setEditMode(true);
@@ -153,13 +174,13 @@ export default function ItemDetailScreen() {
   }
 
   async function handleSave() {
-    if (!item || !form || !session?.user?.id) return;
+    if (!item || !form || !currentUserId) return;
     setSaving(true);
     try {
       let imageUrl = item.image_url;
       if (newImageUri) {
         try {
-          imageUrl = await uploadItemImage(newImageUri, session.user.id);
+          imageUrl = await uploadItemImage(newImageUri, currentUserId);
         } catch {
           throw new Error('Image upload failed. Check your connection and try again.');
         }
@@ -224,9 +245,7 @@ export default function ItemDetailScreen() {
   }
 
   const displayImage = newImageUri ?? item?.image_url ?? null;
-  const headerTitle = editMode
-    ? 'Edit Item'
-    : (item?.title ?? 'Item Detail');
+  const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 
   if (fetching) {
     return (
@@ -255,23 +274,25 @@ export default function ItemDetailScreen() {
       <Stack.Screen
         options={{
           title: headerTitle,
-          headerRight: () =>
-            editMode ? (
-              <TouchableOpacity
-                onPress={handleSave}
-                disabled={saving}
-                style={styles.headerBtn}>
-                {saving ? (
-                  <ActivityIndicator size="small" color="#0a7ea4" />
+          headerRight: isOwner
+            ? () =>
+                editMode ? (
+                  <TouchableOpacity
+                    onPress={handleSave}
+                    disabled={saving}
+                    style={styles.headerBtn}>
+                    {saving ? (
+                      <ActivityIndicator size="small" color="#0a7ea4" />
+                    ) : (
+                      <Text style={styles.headerBtnText}>Save</Text>
+                    )}
+                  </TouchableOpacity>
                 ) : (
-                  <Text style={styles.headerBtnText}>Save</Text>
-                )}
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity onPress={enterEdit} style={styles.headerBtn}>
-                <Text style={styles.headerBtnText}>Edit</Text>
-              </TouchableOpacity>
-            ),
+                  <TouchableOpacity onPress={enterEdit} style={styles.headerBtn}>
+                    <Text style={styles.headerBtnText}>Edit</Text>
+                  </TouchableOpacity>
+                )
+            : undefined,
           headerLeft: editMode
             ? () => (
                 <TouchableOpacity onPress={cancelEdit} style={styles.headerBtn}>
@@ -314,8 +335,44 @@ export default function ItemDetailScreen() {
             )}
           </Pressable>
 
+          {/* Owner row — only shown to non-owners */}
+          {!isOwner && ownerProfile && (
+            <TouchableOpacity
+              style={styles.ownerCard}
+              onPress={() =>
+                router.push({
+                  pathname: '/user/[username]',
+                  params: { username: ownerProfile.username },
+                })
+              }
+              activeOpacity={0.7}>
+              <View style={styles.ownerAvatar}>
+                {ownerProfile.avatar_url ? (
+                  <Image
+                    source={{ uri: ownerProfile.avatar_url }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                  />
+                ) : (
+                  <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
+                    <Text style={styles.ownerAvatarInitial}>
+                      {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.ownerInfo}>
+                <Text style={styles.ownerName}>
+                  {ownerProfile.display_name || ownerProfile.username}
+                </Text>
+                <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
+              </View>
+              <Text style={styles.ownerChevron}>›</Text>
+            </TouchableOpacity>
+          )}
+
           {editMode ? (
-            /* ── Edit Mode ─────────────────────────────── */
+            /* ── Edit Mode (owner only) ──────────────────── */
             <View style={styles.editSection}>
               <Text style={editStyles.sectionHeader}>Card Details</Text>
               <EditField label="Title" value={form.title} onChange={updateField('title')} />
@@ -348,7 +405,7 @@ export default function ItemDetailScreen() {
               </View>
             </View>
           ) : (
-            /* ── View Mode ─────────────────────────────── */
+            /* ── View Mode ───────────────────────────────── */
             <View style={styles.metaSection}>
               {item.title && <Text style={styles.itemTitle}>{item.title}</Text>}
               {item.player && <Text style={styles.itemPlayer}>{item.player}</Text>}
@@ -375,10 +432,14 @@ export default function ItemDetailScreen() {
                 </>
               ) : null}
 
-              <View style={styles.divider} />
-              <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-                <Text style={styles.deleteText}>Delete Item</Text>
-              </TouchableOpacity>
+              {isOwner && (
+                <>
+                  <View style={styles.divider} />
+                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+                    <Text style={styles.deleteText}>Delete Item</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           )}
 
@@ -480,6 +541,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  // Owner card (non-owner view)
+  ownerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    marginBottom: 4,
+    padding: 12,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e0e0e0',
+    gap: 12,
+  },
+  ownerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: '#E3F2FD',
+    flexShrink: 0,
+  },
+  ownerAvatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ownerAvatarInitial: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1565C0',
+  },
+  ownerInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  ownerName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#11181C',
+  },
+  ownerUsername: {
+    fontSize: 12,
+    color: '#687076',
+  },
+  ownerChevron: {
+    fontSize: 22,
+    color: '#ccc',
+    flexShrink: 0,
+  },
+  // Meta view
   metaSection: {
     paddingHorizontal: 20,
   },
