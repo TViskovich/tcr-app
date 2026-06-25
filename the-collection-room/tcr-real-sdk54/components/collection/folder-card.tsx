@@ -65,6 +65,7 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   initial: {
     fontSize: 40,

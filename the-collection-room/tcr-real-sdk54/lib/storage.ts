@@ -45,3 +45,22 @@ export async function uploadAvatar(uri: string, userId: string): Promise<string>
   const { data } = supabase.storage.from('avatars').getPublicUrl(path);
   return data.publicUrl;
 }
+
+// Reuses item-images bucket — same RLS policy (first path segment = userId).
+// Path: {userId}/covers/{timestamp}.{ext} keeps covers logically separate from card photos.
+export async function uploadFolderCover(uri: string, userId: string): Promise<string> {
+  const ext = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const contentType = MIME[ext] ?? 'image/jpeg';
+  const path = `${userId}/covers/${Date.now()}.${ext}`;
+
+  const buffer = await new File(uri).arrayBuffer();
+
+  const { error } = await supabase.storage
+    .from('item-images')
+    .upload(path, buffer, { contentType });
+
+  if (error) throw new Error(error.message);
+
+  const { data } = supabase.storage.from('item-images').getPublicUrl(path);
+  return data.publicUrl;
+}

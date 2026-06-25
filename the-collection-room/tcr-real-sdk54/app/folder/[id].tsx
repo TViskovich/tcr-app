@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   Share,
@@ -13,12 +14,14 @@ import {
 } from 'react-native';
 
 import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ItemCard } from '@/components/collection/item-card';
 import { useItems } from '@/hooks/use-collection';
 import { useAuth } from '@/lib/auth';
+import { uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
 
@@ -38,10 +41,12 @@ export default function FolderDetailScreen() {
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [folderLoading, setFolderLoading] = useState(true);
 
-  // Edit folder modal state
+  // Edit modal state
   const [editVisible, setEditVisible] = useState(false);
   const [editName, setEditName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(true);
+  const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
+  const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
   const { items, loading: itemsLoading, refresh: refreshItems } = useItems(id);
@@ -80,21 +85,75 @@ export default function FolderDetailScreen() {
     if (!folder) return;
     setEditName(folder.name);
     setEditIsPublic(folder.is_public);
+    setEditCoverUrl(folder.cover_image_url);
+    setNewCoverUri(null);
     setEditVisible(true);
+  }
+
+  async function launchCoverCamera() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow camera access in settings.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [3, 2],
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) setNewCoverUri(result.assets[0].uri);
+  }
+
+  async function launchCoverLibrary() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [3, 2],
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) setNewCoverUri(result.assets[0].uri);
+  }
+
+  function pickCover() {
+    Alert.alert('Cover Photo', undefined, [
+      { text: 'Take Photo', onPress: launchCoverCamera },
+      { text: 'Choose from Library', onPress: launchCoverLibrary },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  function removeCover() {
+    setNewCoverUri(null);
+    setEditCoverUrl(null);
   }
 
   async function saveEditFolder() {
     if (!folder || !editName.trim()) return;
     setEditSaving(true);
-    const { data, error } = await supabase
-      .from('folders')
-      .update({ name: editName.trim(), is_public: editIsPublic })
-      .eq('id', folder.id)
-      .select()
-      .single();
-    if (!error && data) setFolder(data as Folder);
-    setEditSaving(false);
-    setEditVisible(false);
+    try {
+      let coverUrl = editCoverUrl; // null = removed, string = unchanged or just-uploaded
+      if (newCoverUri && currentUserId) {
+        coverUrl = await uploadFolderCover(newCoverUri, currentUserId);
+      }
+      const { data, error } = await supabase
+        .from('folders')
+        .update({ name: editName.trim(), is_public: editIsPublic, cover_image_url: coverUrl })
+        .eq('id', folder.id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      if (data) setFolder(data as Folder);
+      setEditVisible(false);
+    } catch (e) {
+      Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setEditSaving(false);
+    }
   }
 
   async function handleShare() {
@@ -113,6 +172,8 @@ export default function FolderDetailScreen() {
   }
 
   const folderTitle = folder?.name ?? paramName ?? 'Collection';
+  const coverPreviewUri = newCoverUri ?? editCoverUrl;
+  const hasCover = !!coverPreviewUri;
 
   // ── Loading ──────────────────────────────────────────────────
   if (folderLoading) {
@@ -303,17 +364,42 @@ export default function FolderDetailScreen() {
           </View>
 
           <View style={styles.modalBody}>
-            {/* Name field */}
-            <Text style={styles.modalLabel}>Folder Name</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={editName}
-              onChangeText={setEditName}
-              placeholder="Folder name"
-              placeholderTextColor="#999"
-              autoFocus
-              maxLength={80}
-            />
+            {/* Cover photo */}
+            <View style={styles.coverSection}>
+              {hasCover && (
+                <Image
+                  source={{ uri: coverPreviewUri! }}
+                  style={styles.coverPreview}
+                  contentFit="cover"
+                />
+              )}
+              <View style={styles.coverActions}>
+                <TouchableOpacity style={styles.coverBtn} onPress={pickCover}>
+                  <Text style={styles.coverBtnText}>
+                    {hasCover ? 'Change Cover' : 'Add Cover'}
+                  </Text>
+                </TouchableOpacity>
+                {hasCover && (
+                  <TouchableOpacity style={styles.coverBtn} onPress={removeCover}>
+                    <Text style={[styles.coverBtnText, styles.coverBtnDestructive]}>Remove Cover</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {/* Folder name */}
+            <View>
+              <Text style={styles.modalLabel}>Folder Name</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editName}
+                onChangeText={setEditName}
+                placeholder="Folder name"
+                placeholderTextColor="#999"
+                autoFocus={!hasCover}
+                maxLength={80}
+              />
+            </View>
 
             {/* Public toggle */}
             <View style={styles.modalToggleRow}>
@@ -593,5 +679,36 @@ const styles = StyleSheet.create({
     color: '#687076',
     lineHeight: 18,
     marginTop: 4,
+  },
+  // Cover photo section (inside modal)
+  coverSection: {
+    gap: 10,
+  },
+  coverPreview: {
+    width: '100%',
+    aspectRatio: 3 / 2,
+    borderRadius: 10,
+    backgroundColor: '#e9ecef',
+  },
+  coverActions: {
+    flexDirection: 'row',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  coverBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    backgroundColor: '#fff',
+  },
+  coverBtnText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#11181C',
+  },
+  coverBtnDestructive: {
+    color: '#e53935',
   },
 });

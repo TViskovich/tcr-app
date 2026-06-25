@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
@@ -22,6 +22,8 @@ export default function CollectionScreen() {
   const { folders, loading, refresh } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
+
+  useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
