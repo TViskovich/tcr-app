@@ -1,4 +1,4 @@
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { GrailsSlot } from '@/components/profile/grails-slot';
@@ -11,15 +11,10 @@ type Props = {
 };
 
 const COLS = 3;
-const GAP = 2;
-const H_PADDING = 16;
 const MAX_SLOTS = 9;
 
 export function GrailsGrid({ grails, editable = false, onItemPress }: Props) {
-  const { width: screenWidth } = useWindowDimensions();
-
   // ── Zero state ────────────────────────────────────────────────
-  // Own profile: show a prompt. Visitor profile: hide entirely.
   if (grails.length === 0) {
     if (!editable) return null;
 
@@ -35,13 +30,9 @@ export function GrailsGrid({ grails, editable = false, onItemPress }: Props) {
   }
 
   // ── Grid ──────────────────────────────────────────────────────
-  const cellSize = Math.floor((screenWidth - H_PADDING * 2 - GAP * (COLS - 1)) / COLS);
-
-  // Only render filled slots — never show empty placeholders.
   const slots = grails.slice(0, MAX_SLOTS);
 
-  // Pad the row if the last row is incomplete, so cells don't stretch.
-  // We add invisible spacer Views for missing slots in the last row.
+  // Invisible spacers fill incomplete last row so space-between stays aligned.
   const remainder = slots.length % COLS;
   const spacers = remainder === 0 ? 0 : COLS - remainder;
 
@@ -53,15 +44,11 @@ export function GrailsGrid({ grails, editable = false, onItemPress }: Props) {
           <GrailsSlot
             key={item.id}
             item={item}
-            size={cellSize}
             onPress={() => onItemPress(item)}
           />
         ))}
         {Array.from({ length: spacers }).map((_, i) => (
-          <View
-            key={`spacer-${i}`}
-            style={{ width: cellSize, height: cellSize * (4 / 3) }}
-          />
+          <View key={`spacer-${i}`} style={styles.spacer} />
         ))}
       </View>
     </View>
@@ -82,7 +69,7 @@ function SectionHeader({ count, editable }: { count: number; editable: boolean }
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: H_PADDING,
+    paddingHorizontal: 16,
     paddingTop: 20,
     paddingBottom: 8,
   },
@@ -103,10 +90,16 @@ const styles = StyleSheet.create({
     color: '#687076',
     fontWeight: '500',
   },
+  // 3-column grid: space-between distributes the ~4% gap evenly between columns.
+  // spacer Views (same width as cells) keep alignment on incomplete last rows.
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: GAP,
+    justifyContent: 'space-between',
+    rowGap: 5,
+  },
+  spacer: {
+    width: '32%',
   },
   emptyState: {
     paddingVertical: 20,

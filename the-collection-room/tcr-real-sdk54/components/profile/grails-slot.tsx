@@ -5,31 +5,26 @@ import { Image } from 'expo-image';
 import type { ShowcaseItem } from '@/types';
 
 type Props = {
-  item?: ShowcaseItem;
-  size: number;
+  item: ShowcaseItem;
   onPress?: () => void;
 };
 
-export function GrailsSlot({ item, size, onPress }: Props) {
-  if (!item) return null;
-
+export function GrailsSlot({ item, onPress }: Props) {
   return (
     <Pressable
-      style={({ pressed }) => [
-        styles.cell,
-        { width: size, height: size * (4 / 3) },
-        pressed && styles.pressed,
-      ]}
+      style={({ pressed }) => [styles.cell, pressed && styles.pressed]}
       onPress={onPress}>
       {item.item.image_url ? (
         <Image
           source={{ uri: item.item.image_url }}
-          style={StyleSheet.absoluteFill}
+          style={styles.image}
           contentFit="cover"
         />
       ) : (
-        <View style={[StyleSheet.absoluteFill, styles.noImage]}>
-          <Text style={styles.noImageText}>{item.item.title ?? '—'}</Text>
+        <View style={styles.noImage}>
+          <Text style={styles.noImageText} numberOfLines={2}>
+            {item.item.title ?? '—'}
+          </Text>
         </View>
       )}
     </Pressable>
@@ -38,17 +33,25 @@ export function GrailsSlot({ item, size, onPress }: Props) {
 
 const styles = StyleSheet.create({
   cell: {
+    width: '32%',
+    aspectRatio: 3 / 4,
     borderRadius: 8,
     overflow: 'hidden',
     backgroundColor: '#e9ecef',
   },
   pressed: {
-    opacity: 0.80,
+    opacity: 0.78,
+  },
+  image: {
+    width: '100%',
+    height: '100%',
   },
   noImage: {
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 4,
+    padding: 6,
   },
   noImageText: {
     fontSize: 10,
