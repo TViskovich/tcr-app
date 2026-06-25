@@ -43,3 +43,14 @@ export type Post = {
   caption: string | null;
   created_at: string;
 };
+
+export type ShowcaseItem = {
+  id: string;
+  user_id: string;
+  item_id: string;
+  display_order: number;
+  note: string | null;
+  badge_type: string | null;
+  added_at: string;
+  item: CollectionItem;
+};

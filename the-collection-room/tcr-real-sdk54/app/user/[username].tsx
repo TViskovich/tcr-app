@@ -12,10 +12,12 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
+import { GrailsGrid } from '@/components/profile/grails-grid';
 import { resolveCovers } from '@/hooks/use-collection';
+import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import type { Folder, Profile } from '@/types';
+import type { Folder, Profile, ShowcaseItem } from '@/types';
 
 type Counts = {
   folders: number;
@@ -34,6 +36,8 @@ export default function UserProfileScreen() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>({});
+
+  const { grails } = useGrails(profile?.id);
   const [counts, setCounts] = useState<Counts>({ folders: 0, items: 0, posts: 0, followers: 0, following: 0 });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -312,6 +316,17 @@ export default function UserProfileScreen() {
                 </TouchableOpacity>
               </View>
             ) : null}
+
+            <GrailsGrid
+              grails={grails}
+              editable={false}
+              onItemPress={(g: ShowcaseItem) =>
+                router.push({
+                  pathname: '/item/[id]',
+                  params: { id: g.item_id },
+                })
+              }
+            />
 
             {folders.length > 0 && (
               <Text style={styles.sectionTitle}>Collection</Text>

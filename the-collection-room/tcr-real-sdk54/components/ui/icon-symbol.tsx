@@ -24,6 +24,7 @@ const MAPPING = {
   'person.fill': 'person',
   'gearshape.fill': 'settings',
   'magnifyingglass': 'search',
+  'crown.fill': 'emoji-events',
 } as IconMapping;
 
 /**

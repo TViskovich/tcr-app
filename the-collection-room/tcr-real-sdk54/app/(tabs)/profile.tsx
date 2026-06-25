@@ -18,9 +18,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { GrailsGrid } from '@/components/profile/grails-grid';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
+import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
+import type { ShowcaseItem } from '@/types';
 import { uploadAvatar } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 
@@ -29,6 +32,7 @@ export default function ProfileScreen() {
   const userId = session?.user?.id;
   const router = useRouter();
   const { profile, stats, loading, refresh } = useProfile(userId);
+  const { grails, refresh: refreshGrails } = useGrails(userId);
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ displayName: '', bio: '' });
@@ -38,7 +42,8 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       refresh();
-    }, [refresh]),
+      refreshGrails();
+    }, [refresh, refreshGrails]),
   );
 
   function enterEdit() {
@@ -273,6 +278,14 @@ export default function ProfileScreen() {
                   <Text style={styles.statLabel}>Following</Text>
                 </View>
               </View>
+
+              <GrailsGrid
+                grails={grails}
+                editable
+                onItemPress={(g: ShowcaseItem) =>
+                  router.push({ pathname: '/item/[id]', params: { id: g.item_id } })
+                }
+              />
             </>
           )}
 
@@ -327,7 +340,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scroll: {
-    paddingBottom: 48,
+    paddingBottom: 104,
   },
   avatarWrap: {
     width: 88,

@@ -18,6 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -113,6 +114,9 @@ export default function ItemDetailScreen() {
   const [pendingNewWidth, setPendingNewWidth] = useState(0);
   const [pendingNewHeight, setPendingNewHeight] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [grailsLoading, setGrailsLoading] = useState(false);
+
+  const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
@@ -249,6 +253,17 @@ export default function ItemDetailScreen() {
         },
       },
     ]);
+  }
+
+  async function handleGrailsToggle() {
+    if (!item) return;
+    setGrailsLoading(true);
+    if (isInGrails(item.id)) {
+      await removeFromGrails(item.id);
+    } else {
+      await addToGrails(item.id);
+    }
+    setGrailsLoading(false);
   }
 
   const displayImage = newImageUri ?? item?.image_url ?? null;
@@ -442,6 +457,38 @@ export default function ItemDetailScreen() {
               {isOwner && (
                 <>
                   <View style={styles.divider} />
+
+                  {/* Grails toggle */}
+                  {(() => {
+                    const inGrails = isInGrails(item.id);
+                    const disabled = !inGrails && isFull;
+                    return (
+                      <TouchableOpacity
+                        style={[
+                          styles.grailsButton,
+                          inGrails && styles.grailsButtonRemove,
+                          disabled && styles.grailsButtonDisabled,
+                        ]}
+                        onPress={handleGrailsToggle}
+                        disabled={grailsLoading || disabled}
+                        activeOpacity={0.8}>
+                        {grailsLoading ? (
+                          <ActivityIndicator color={inGrails ? '#C9952C' : '#fff'} />
+                        ) : (
+                          <Text
+                            style={[
+                              styles.grailsText,
+                              inGrails && styles.grailsTextRemove,
+                              disabled && styles.grailsTextDisabled,
+                            ]}>
+                            {inGrails ? 'Remove from Grails' : disabled ? 'Grails Full' : 'Add to Grails'}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })()}
+
+                  <View style={{ height: 12 }} />
                   <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
                     <Text style={styles.deleteText}>Delete Item</Text>
                   </TouchableOpacity>
@@ -664,6 +711,31 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#11181C',
     lineHeight: 22,
+  },
+  grailsButton: {
+    backgroundColor: '#0a7ea4',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  grailsButtonRemove: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#C9952C',
+  },
+  grailsButtonDisabled: {
+    backgroundColor: '#e0e0e0',
+  },
+  grailsText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  grailsTextRemove: {
+    color: '#C9952C',
+  },
+  grailsTextDisabled: {
+    color: '#999',
   },
   deleteButton: {
     borderWidth: 1,
