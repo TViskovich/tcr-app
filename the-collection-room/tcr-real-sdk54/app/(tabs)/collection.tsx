@@ -19,7 +19,7 @@ import { useFolders } from '@/hooks/use-collection';
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, refresh } = useFolders(userId);
+  const { folders, loading, refresh, itemCounts } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
 
@@ -59,6 +59,7 @@ export default function CollectionScreen() {
           renderItem={({ item }) => (
             <FolderCard
               folder={item}
+              itemCount={itemCounts[item.id] ?? 0}
               onPress={() =>
                 router.push({
                   pathname: '/folder/[id]',
@@ -94,22 +95,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 18,
     backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#11181C',
   },
   newButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
     backgroundColor: '#0a7ea4',
-    borderRadius: 8,
+    borderRadius: 20,
   },
   newButtonText: {
     color: '#fff',
@@ -152,6 +151,8 @@ const styles = StyleSheet.create({
   },
   grid: {
     padding: 10,
+    paddingTop: 14,
+    paddingBottom: 104,
   },
   row: {
     justifyContent: 'flex-start',

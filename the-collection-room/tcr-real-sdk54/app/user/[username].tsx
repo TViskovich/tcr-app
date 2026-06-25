@@ -12,6 +12,7 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
+import { resolveCovers } from '@/hooks/use-collection';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { Folder, Profile } from '@/types';
@@ -32,6 +33,7 @@ export default function UserProfileScreen() {
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>({});
   const [counts, setCounts] = useState<Counts>({ folders: 0, items: 0, posts: 0, followers: 0, following: 0 });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -76,7 +78,23 @@ export default function UserProfileScreen() {
         supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', uid),
       ]);
 
-      setFolders((foldersRes.data as Folder[]) ?? []);
+      const resolvedFolders = await resolveCovers((foldersRes.data as Folder[]) ?? []);
+      setFolders(resolvedFolders);
+
+      // Batch per-folder item counts
+      const folderIds = resolvedFolders.map(f => f.id);
+      if (folderIds.length) {
+        const { data: countRows } = await supabase
+          .from('collection_items')
+          .select('folder_id')
+          .in('folder_id', folderIds);
+        const perFolder: Record<string, number> = {};
+        for (const row of (countRows ?? []) as { folder_id: string }[]) {
+          perFolder[row.folder_id] = (perFolder[row.folder_id] ?? 0) + 1;
+        }
+        setFolderItemCounts(perFolder);
+      }
+
       setCounts({
         folders: folderCountRes.count ?? 0,
         items: itemCountRes.count ?? 0,
@@ -202,6 +220,7 @@ export default function UserProfileScreen() {
         renderItem={({ item }) => (
           <FolderCard
             folder={item}
+            itemCount={folderItemCounts[item.id] ?? 0}
             onPress={() =>
               router.push({
                 pathname: '/folder/[id]',

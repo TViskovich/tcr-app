@@ -17,6 +17,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
+import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -108,6 +109,9 @@ export default function ItemDetailScreen() {
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [newImageUri, setNewImageUri] = useState<string | null>(null);
+  const [pendingNewImageUri, setPendingNewImageUri] = useState<string | null>(null);
+  const [pendingNewWidth, setPendingNewWidth] = useState(0);
+  const [pendingNewHeight, setPendingNewHeight] = useState(0);
   const [saving, setSaving] = useState(false);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
@@ -148,6 +152,7 @@ export default function ItemDetailScreen() {
   function cancelEdit() {
     if (item) setForm(itemToForm(item));
     setNewImageUri(null);
+    setPendingNewImageUri(null);
     setEditMode(false);
   }
 
@@ -164,12 +169,14 @@ export default function ItemDetailScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [5, 7],
+      allowsEditing: false,
       quality: 0.85,
     });
     if (!result.canceled && result.assets[0]) {
-      setNewImageUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setPendingNewImageUri(asset.uri);
+      setPendingNewWidth(asset.width);
+      setPendingNewHeight(asset.height);
     }
   }
 
@@ -445,6 +452,19 @@ export default function ItemDetailScreen() {
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {pendingNewImageUri && (
+        <PhotoAdjuster
+          uri={pendingNewImageUri}
+          imageWidth={pendingNewWidth}
+          imageHeight={pendingNewHeight}
+          onUse={(uri) => {
+            setNewImageUri(uri);
+            setPendingNewImageUri(null);
+          }}
+          onCancel={() => setPendingNewImageUri(null)}
+        />
+      )}
     </>
   );
 }

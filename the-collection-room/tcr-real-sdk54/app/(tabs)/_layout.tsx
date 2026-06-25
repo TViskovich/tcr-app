@@ -2,16 +2,13 @@ import { Tabs } from 'expo-router';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
 import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BadgeRefreshContext } from '@/lib/badge-context';
 import { MessageBadgeRefreshContext } from '@/lib/message-badge-context';
 import { useAuth } from '@/lib/auth';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
   const { session } = useAuth();
   const userId = session?.user?.id;
 
@@ -30,9 +27,48 @@ export default function TabLayout() {
             },
           })}
           screenOptions={{
-            tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
             headerShown: false,
             tabBarButton: HapticTab,
+            tabBarActiveTintColor: '#ffffff',
+            tabBarInactiveTintColor: 'rgba(255,255,255,0.42)',
+            tabBarStyle: {
+              position: 'absolute',
+              // left/right state intent; start/end are the logical equivalents
+              // that actually override React Navigation's base start:0, end:0
+              left: 16,
+              right: 16,
+              start: 16,
+              end: 16,
+              bottom: 24,
+              height: 78,
+              borderRadius: 39,
+              backgroundColor: '#1c1c1e',
+              borderTopWidth: 0,
+              // Cancels the safe-area paddingBottom React Navigation injects
+              // (~34px on iPhone) which would otherwise crush the content area.
+              paddingBottom: 0,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 6 },
+              shadowOpacity: 0.25,
+              shadowRadius: 16,
+              elevation: 14,
+            },
+            tabBarItemStyle: {
+              flex: 1,
+              alignItems: 'center',
+              paddingTop: 9,
+              paddingBottom: 8,
+            },
+            tabBarIconStyle: {
+              marginBottom: 0,
+            },
+            tabBarLabelStyle: {
+              fontSize: 11,
+              fontWeight: '500',
+              lineHeight: 16,
+              marginTop: 3,
+              paddingBottom: 2,
+            },
           }}>
           <Tabs.Screen
             name="index"

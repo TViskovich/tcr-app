@@ -1,16 +1,17 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import type { Folder } from '@/types';
 
 const PLACEHOLDER_COLORS = [
-  '#E3F2FD',
-  '#F3E5F5',
-  '#E8F5E9',
-  '#FFF3E0',
-  '#FCE4EC',
-  '#E0F2F1',
+  '#C8DFF5',
+  '#DDD0F0',
+  '#C6E8D3',
+  '#F5E6C8',
+  '#F5CDD0',
+  '#C6E8E8',
 ];
 
 function placeholderColor(name: string) {
@@ -20,14 +21,19 @@ function placeholderColor(name: string) {
 type Props = {
   folder: Folder;
   onPress: () => void;
+  itemCount?: number;
 };
 
-export function FolderCard({ folder, onPress }: Props) {
+export function FolderCard({ folder, onPress, itemCount }: Props) {
   return (
     <Pressable
-      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.card,
+        pressed && styles.pressed,
+      ]}
       onPress={onPress}>
       <View style={[styles.cover, { backgroundColor: placeholderColor(folder.name) }]}>
+        {/* Cover image */}
         {folder.cover_image_url ? (
           <Image
             source={{ uri: folder.cover_image_url }}
@@ -35,12 +41,24 @@ export function FolderCard({ folder, onPress }: Props) {
             contentFit="cover"
           />
         ) : (
+          // Decorative initial — very subtle, image should dominate
           <Text style={styles.initial}>{folder.name.charAt(0).toUpperCase()}</Text>
         )}
+
+        {/* Gradient scrim + title anchored at bottom */}
+        <LinearGradient
+          colors={['transparent', 'rgba(0,0,0,0.72)']}
+          style={styles.gradient}>
+          <Text style={styles.overlayTitle} numberOfLines={2}>
+            {folder.name}
+          </Text>
+          {typeof itemCount === 'number' && (
+            <Text style={styles.overlaySubtitle}>
+              {itemCount === 1 ? '1 card' : `${itemCount} cards`}
+            </Text>
+          )}
+        </LinearGradient>
       </View>
-      <Text style={styles.name} numberOfLines={2}>
-        {folder.name}
-      </Text>
     </Pressable>
   );
 }
@@ -49,17 +67,18 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     margin: 6,
-    borderRadius: 12,
-    backgroundColor: '#fff',
+    borderRadius: 20,
+    backgroundColor: '#e0e0e0',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.20,
+    shadowRadius: 14,
+    elevation: 7,
     overflow: 'hidden',
   },
   pressed: {
-    opacity: 0.85,
+    opacity: 0.88,
+    transform: [{ scale: 0.97 }],
   },
   cover: {
     aspectRatio: 1,
@@ -68,15 +87,33 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   initial: {
-    fontSize: 40,
-    fontWeight: '700',
-    color: 'rgba(0,0,0,0.25)',
+    fontSize: 26,
+    fontWeight: '800',
+    color: 'rgba(0,0,0,0.07)',
   },
-  name: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#11181C',
+  // Gradient occupies the bottom ~30% of the card.
+  // The top of the gradient is fully transparent, so the image reads clearly
+  // through the top half; text sits in the darkened lower portion.
+  gradient: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '34%',
+    justifyContent: 'flex-end',
+    paddingBottom: 14,
+    paddingHorizontal: 14,
+  },
+  overlayTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.1,
+  },
+  overlaySubtitle: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 12,
+    fontWeight: '400',
+    marginTop: 2,
   },
 });

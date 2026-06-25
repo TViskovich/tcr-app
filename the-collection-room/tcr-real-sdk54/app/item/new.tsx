@@ -18,6 +18,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
+import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -70,6 +71,9 @@ export default function AddItemScreen() {
   const router = useRouter();
 
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [pendingUri, setPendingUri] = useState<string | null>(null);
+  const [pendingWidth, setPendingWidth] = useState(0);
+  const [pendingHeight, setPendingHeight] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [shareToFeed, setShareToFeed] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -86,12 +90,14 @@ export default function AddItemScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [5, 7],
+      allowsEditing: false,
       quality: 0.85,
     });
     if (!result.canceled && result.assets[0]) {
-      setImageUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setPendingUri(asset.uri);
+      setPendingWidth(asset.width);
+      setPendingHeight(asset.height);
     }
   }
 
@@ -238,6 +244,19 @@ export default function AddItemScreen() {
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {pendingUri && (
+        <PhotoAdjuster
+          uri={pendingUri}
+          imageWidth={pendingWidth}
+          imageHeight={pendingHeight}
+          onUse={(uri) => {
+            setImageUri(uri);
+            setPendingUri(null);
+          }}
+          onCancel={() => setPendingUri(null)}
+        />
+      )}
     </>
   );
 }

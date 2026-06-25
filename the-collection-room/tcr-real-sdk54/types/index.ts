@@ -3,6 +3,7 @@ export type Folder = {
   user_id: string;
   name: string;
   cover_image_url: string | null;
+  cover_source: string; // 'upload' | 'first_card'
   is_public: boolean;
   created_at: string;
 };

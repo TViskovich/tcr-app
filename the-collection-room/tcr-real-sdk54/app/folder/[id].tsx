@@ -45,6 +45,7 @@ export default function FolderDetailScreen() {
   const [editVisible, setEditVisible] = useState(false);
   const [editName, setEditName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(true);
+  const [editCoverSource, setEditCoverSource] = useState<string>('upload');
   const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
   const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
@@ -85,6 +86,7 @@ export default function FolderDetailScreen() {
     if (!folder) return;
     setEditName(folder.name);
     setEditIsPublic(folder.is_public);
+    setEditCoverSource(folder.cover_source ?? 'upload');
     setEditCoverUrl(folder.cover_image_url);
     setNewCoverUri(null);
     setEditVisible(true);
@@ -136,13 +138,21 @@ export default function FolderDetailScreen() {
     if (!folder || !editName.trim()) return;
     setEditSaving(true);
     try {
-      let coverUrl = editCoverUrl; // null = removed, string = unchanged or just-uploaded
-      if (newCoverUri && currentUserId) {
-        coverUrl = await uploadFolderCover(newCoverUri, currentUserId);
+      // Only modify cover_image_url when in upload mode; first_card leaves it untouched.
+      let coverUrl = folder.cover_image_url;
+      if (editCoverSource === 'upload') {
+        coverUrl = newCoverUri && currentUserId
+          ? await uploadFolderCover(newCoverUri, currentUserId)
+          : editCoverUrl;
       }
       const { data, error } = await supabase
         .from('folders')
-        .update({ name: editName.trim(), is_public: editIsPublic, cover_image_url: coverUrl })
+        .update({
+          name: editName.trim(),
+          is_public: editIsPublic,
+          cover_image_url: coverUrl,
+          cover_source: editCoverSource,
+        })
         .eq('id', folder.id)
         .select()
         .single();
@@ -212,14 +222,20 @@ export default function FolderDetailScreen() {
     );
   }
 
+  // ── Banner URL resolution ─────────────────────────────────────
+  // items is ordered newest-first (DESC); first element is the latest card.
+  const bannerUrl = folder.cover_source === 'first_card'
+    ? (items[0]?.image_url ?? null)
+    : folder.cover_image_url;
+
   // ── List header (shared between owner and non-owner) ─────────
   function ListHeader() {
     return (
       <View>
         {/* Cover image banner */}
-        {folder!.cover_image_url ? (
+        {bannerUrl ? (
           <Image
-            source={{ uri: folder!.cover_image_url }}
+            source={{ uri: bannerUrl }}
             style={styles.coverBanner}
             contentFit="cover"
           />
@@ -364,28 +380,54 @@ export default function FolderDetailScreen() {
           </View>
 
           <View style={styles.modalBody}>
-            {/* Cover photo */}
-            <View style={styles.coverSection}>
-              {hasCover && (
-                <Image
-                  source={{ uri: coverPreviewUri! }}
-                  style={styles.coverPreview}
-                  contentFit="cover"
-                />
-              )}
-              <View style={styles.coverActions}>
-                <TouchableOpacity style={styles.coverBtn} onPress={pickCover}>
-                  <Text style={styles.coverBtnText}>
-                    {hasCover ? 'Change Cover' : 'Add Cover'}
-                  </Text>
-                </TouchableOpacity>
-                {hasCover && (
-                  <TouchableOpacity style={styles.coverBtn} onPress={removeCover}>
-                    <Text style={[styles.coverBtnText, styles.coverBtnDestructive]}>Remove Cover</Text>
+            {/* Cover source toggle */}
+            <View>
+              <Text style={styles.modalLabel}>Cover</Text>
+              <View style={styles.coverSourceRow}>
+                {(['upload', 'first_card'] as const).map(src => (
+                  <TouchableOpacity
+                    key={src}
+                    style={[styles.coverSourceBtn, editCoverSource === src && styles.coverSourceBtnActive]}
+                    onPress={() => setEditCoverSource(src)}>
+                    <Text style={[styles.coverSourceText, editCoverSource === src && styles.coverSourceTextActive]}>
+                      {src === 'upload' ? 'Uploaded Image' : 'Latest Card'}
+                    </Text>
                   </TouchableOpacity>
-                )}
+                ))}
               </View>
             </View>
+
+            {/* Upload controls — only when upload mode */}
+            {editCoverSource === 'upload' && (
+              <View style={styles.coverSection}>
+                {hasCover && (
+                  <Image
+                    source={{ uri: coverPreviewUri! }}
+                    style={styles.coverPreview}
+                    contentFit="cover"
+                  />
+                )}
+                <View style={styles.coverActions}>
+                  <TouchableOpacity style={styles.coverBtn} onPress={pickCover}>
+                    <Text style={styles.coverBtnText}>
+                      {hasCover ? 'Change Cover' : 'Add Cover'}
+                    </Text>
+                  </TouchableOpacity>
+                  {hasCover && (
+                    <TouchableOpacity style={styles.coverBtn} onPress={removeCover}>
+                      <Text style={[styles.coverBtnText, styles.coverBtnDestructive]}>Remove Cover</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* First card hint */}
+            {editCoverSource === 'first_card' && (
+              <Text style={styles.modalHint}>
+                The latest card added to this folder will be used as the cover. If the folder is empty, the letter initial is shown instead.
+              </Text>
+            )}
 
             {/* Folder name */}
             <View>
@@ -679,6 +721,37 @@ const styles = StyleSheet.create({
     color: '#687076',
     lineHeight: 18,
     marginTop: 4,
+  },
+  // Cover source toggle (inside modal)
+  coverSourceRow: {
+    flexDirection: 'row',
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    padding: 3,
+  },
+  coverSourceBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  coverSourceBtnActive: {
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  coverSourceText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#687076',
+  },
+  coverSourceTextActive: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#11181C',
   },
   // Cover photo section (inside modal)
   coverSection: {
