@@ -67,12 +67,7 @@ function PostHeader({
   const displayName = post.display_name || post.username;
   return (
     <View>
-      {/* Image */}
-      <View style={styles.imageWrap}>
-        <Image source={{ uri: post.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
-      </View>
-
-      {/* User row */}
+      {/* Header bar — avatar + name above the photo */}
       <View style={styles.userRow}>
         <View style={styles.avatar}>
           {post.avatar_url ? (
@@ -88,6 +83,11 @@ function PostHeader({
           <Text style={styles.postUsername}>@{post.username}</Text>
         </View>
         <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
+      </View>
+
+      {/* Photo */}
+      <View style={styles.imageWrap}>
+        <Image source={{ uri: post.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
       </View>
 
       {/* Caption or item name */}
@@ -451,13 +451,15 @@ const styles = StyleSheet.create({
   },
   // Post header
   imageWrap: {
-    aspectRatio: 1,
+    aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
   },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#1A1A1A',
     gap: 10,
   },
   avatar: {
@@ -465,7 +467,7 @@ const styles = StyleSheet.create({
     height: 36,
     borderRadius: 18,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: '#333333',
     flexShrink: 0,
   },
   avatarPlaceholder: {
@@ -475,7 +477,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#1565C0',
+    color: '#FFFFFF',
   },
   userInfo: {
     flex: 1,
@@ -483,16 +485,16 @@ const styles = StyleSheet.create({
   },
   postDisplayName: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#11181C',
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   postUsername: {
     fontSize: 12,
-    color: '#687076',
+    color: 'rgba(255,255,255,0.55)',
   },
   postAge: {
     fontSize: 12,
-    color: '#aaa',
+    color: 'rgba(255,255,255,0.40)',
     flexShrink: 0,
   },
   caption: {

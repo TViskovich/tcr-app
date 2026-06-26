@@ -610,74 +610,43 @@ export default function ItemDetailScreen() {
               </View>
             </View>
           ) : (
-            /* ── View Mode ───────────────────────────────── */
-            <View style={styles.metaSection}>
-              {item.title && <Text style={styles.itemTitle}>{item.title}</Text>}
-              {item.player && <Text style={styles.itemPlayer}>{item.player}</Text>}
-
-              {(item.year || item.brand) && (
-                <Text style={styles.itemSub}>
-                  {[item.year, item.brand].filter(Boolean).join(' · ')}
-                </Text>
-              )}
-
-              <View style={styles.divider} />
-
-              <MetaRow label="Team" value={item.team} />
-              <MetaRow label="Grade" value={item.grade} />
-              <MetaRow label="Grading Company" value={item.grading_company} />
-              <MetaRow label="Serial Number" value={item.serial_number} />
-              <MetaRow label="Estimated Value" value={formatValue(item.estimated_value)} />
-
-              {item.description ? (
-                <>
-                  <View style={styles.divider} />
-                  <Text style={styles.descriptionLabel}>Description</Text>
-                  <Text style={styles.descriptionText}>{item.description}</Text>
-                </>
-              ) : null}
-
-              {isOwner && (
-                <>
-                  <View style={styles.divider} />
-
-                  {/* Grails toggle */}
-                  {(() => {
-                    const inGrails = isInGrails(item.id);
-                    const disabled = !inGrails && isFull;
-                    return (
-                      <TouchableOpacity
-                        style={[
-                          styles.grailsButton,
-                          inGrails && styles.grailsButtonRemove,
-                          disabled && styles.grailsButtonDisabled,
-                        ]}
-                        onPress={handleGrailsToggle}
-                        disabled={grailsLoading || disabled}
-                        activeOpacity={0.8}>
-                        {grailsLoading ? (
-                          <ActivityIndicator color={inGrails ? '#C9952C' : '#fff'} />
-                        ) : (
-                          <Text
-                            style={[
-                              styles.grailsText,
-                              inGrails && styles.grailsTextRemove,
-                              disabled && styles.grailsTextDisabled,
-                            ]}>
-                            {inGrails ? 'Remove from Grails' : disabled ? 'Grails Full' : 'Add to Grails'}
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })()}
-
-                  <View style={{ height: 12 }} />
-                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-                    <Text style={styles.deleteText}>Delete Item</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
+            /* ── View Mode — stats are on the card back; only show owner actions ── */
+            isOwner ? (
+              <View style={styles.metaSection}>
+                {(() => {
+                  const inGrails = isInGrails(item.id);
+                  const disabled = !inGrails && isFull;
+                  return (
+                    <TouchableOpacity
+                      style={[
+                        styles.grailsButton,
+                        inGrails && styles.grailsButtonRemove,
+                        disabled && styles.grailsButtonDisabled,
+                      ]}
+                      onPress={handleGrailsToggle}
+                      disabled={grailsLoading || disabled}
+                      activeOpacity={0.8}>
+                      {grailsLoading ? (
+                        <ActivityIndicator color={inGrails ? '#C9952C' : '#fff'} />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.grailsText,
+                            inGrails && styles.grailsTextRemove,
+                            disabled && styles.grailsTextDisabled,
+                          ]}>
+                          {inGrails ? 'Remove from Grails' : disabled ? 'Grails Full' : 'Add to Grails'}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })()}
+                <View style={{ height: 12 }} />
+                <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+                  <Text style={styles.deleteText}>Delete Item</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null
           )}
 
         </ScrollView>
@@ -774,7 +743,8 @@ const styles = StyleSheet.create({
   grailsShadowWrap: {
     width: '74%',
     alignSelf: 'center',
-    marginVertical: 20,
+    marginTop: 72,
+    marginBottom: 20,
     borderRadius: 16,
     shadowColor: '#FFD700',
     shadowOffset: { width: 0, height: 0 },
@@ -928,6 +898,7 @@ const styles = StyleSheet.create({
   // Meta view
   metaSection: {
     paddingHorizontal: 20,
+    paddingTop: 20,
   },
   itemTitle: {
     fontSize: 22,
