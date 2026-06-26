@@ -1,4 +1,10 @@
 import { useEffect, useState } from 'react';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import {
   ActivityIndicator,
   Alert,
@@ -98,8 +104,124 @@ function EditField({
   );
 }
 
+// ── Card back face ────────────────────────────────────────────────────────────
+
+function StatCell({ label, value, accent }: { label: string; value: string; accent: string }) {
+  return (
+    <View style={backStyles.statCell}>
+      <Text style={[backStyles.statLabel, { color: accent }]}>{label}</Text>
+      <Text style={backStyles.statValue} numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
+function CardBack({ item, isGrail }: { item: CollectionItem; isGrail: boolean }) {
+  const accent = isGrail ? '#D4A520' : '#5BA3C9';
+  const bg = isGrail ? '#0E0B07' : '#111318';
+  return (
+    <View style={[backStyles.container, { backgroundColor: bg }]}>
+      <View style={[backStyles.stripe, { backgroundColor: accent }]} />
+      {item.title ? <Text style={backStyles.title} numberOfLines={2}>{item.title}</Text> : null}
+      {item.player ? <Text style={[backStyles.player, { color: accent }]}>{item.player}</Text> : null}
+      {item.team ? <Text style={backStyles.team}>{item.team}</Text> : null}
+      <View style={[backStyles.rule, { borderColor: `${accent}44` }]} />
+      <View style={backStyles.grid}>
+        {item.year != null && <StatCell label="YEAR" value={String(item.year)} accent={accent} />}
+        {item.brand ? <StatCell label="BRAND" value={item.brand} accent={accent} /> : null}
+        {item.grade ? <StatCell label="GRADE" value={item.grade} accent={accent} /> : null}
+        {item.grading_company ? <StatCell label="GRADER" value={item.grading_company} accent={accent} /> : null}
+        {item.serial_number ? <StatCell label="SERIAL #" value={item.serial_number} accent={accent} /> : null}
+        {item.estimated_value != null ? (
+          <StatCell label="VALUE" value={`$${item.estimated_value.toFixed(0)}`} accent={accent} />
+        ) : null}
+      </View>
+      {item.description ? (
+        <Text style={backStyles.desc} numberOfLines={3}>{item.description}</Text>
+      ) : null}
+      <View style={[backStyles.stripe, { backgroundColor: accent }]} />
+    </View>
+  );
+}
+
+const backStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+    gap: 5,
+  },
+  stripe: {
+    width: 32,
+    height: 2,
+    borderRadius: 1,
+    opacity: 0.80,
+  },
+  title: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    lineHeight: 17,
+  },
+  player: {
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 0.4,
+  },
+  team: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.45)',
+    textAlign: 'center',
+  },
+  rule: {
+    width: '70%',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginVertical: 4,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
+    width: '100%',
+  },
+  statCell: {
+    alignItems: 'center',
+    width: '46%',
+    paddingVertical: 5,
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 6,
+  },
+  statLabel: {
+    fontSize: 7,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginBottom: 2,
+    textTransform: 'uppercase',
+  },
+  statValue: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  desc: {
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.38)',
+    textAlign: 'center',
+    lineHeight: 13,
+    paddingHorizontal: 4,
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function ItemDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, fromGrails } = useLocalSearchParams<{ id: string; fromGrails?: string }>();
   const { session } = useAuth();
   const router = useRouter();
   const currentUserId = session?.user?.id;
@@ -119,6 +241,25 @@ export default function ItemDetailScreen() {
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
+
+  // Card flip animation — shared value goes 0 (front) → 1 (back)
+  const flipAnim = useSharedValue(0);
+
+  const frontAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ perspective: 1200 }, { rotateY: `${flipAnim.value * 180}deg` }],
+  }));
+
+  const backAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ perspective: 1200 }, { rotateY: `${flipAnim.value * 180 + 180}deg` }],
+  }));
+
+  function handleFlip() {
+    const isFlipped = flipAnim.value > 0.5;
+    flipAnim.value = withTiming(isFlipped ? 0 : 1, {
+      duration: 480,
+      easing: Easing.out(Easing.cubic),
+    });
+  }
 
   useEffect(() => {
     async function fetchItem() {
@@ -268,6 +409,7 @@ export default function ItemDetailScreen() {
 
   const displayImage = newImageUri ?? item?.image_url ?? null;
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
+  const showGrailsStyle = !editMode && (isInGrails(item?.id ?? '') || fromGrails === '1');
 
   if (fetching) {
     return (
@@ -333,31 +475,75 @@ export default function ItemDetailScreen() {
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled">
 
-          {/* Image */}
-          <Pressable
-            onPress={editMode ? pickNewImage : undefined}
-            style={styles.imageWrap}>
-            {displayImage ? (
-              <Image
-                source={{ uri: displayImage }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-              />
-            ) : (
-              <View style={[styles.image, styles.imagePlaceholder]}>
-                <Text style={styles.imagePlaceholderText}>
-                  {editMode ? 'Tap to change image' : 'No image'}
-                </Text>
-              </View>
-            )}
-            {editMode && (
-              <View style={styles.imageEditOverlay}>
-                <Text style={styles.imageEditLabel}>Change Photo</Text>
-              </View>
-            )}
-          </Pressable>
+          {/* Card — tapping flips between image and stats */}
+          {showGrailsStyle ? (
+            // ── Grails frame ──────────────────────────────────────
+            <View style={styles.grailsShadowWrap}>
+              <View style={styles.grailsFrame}>
+                <View style={styles.grailsSpotWrap}>
+                  <View style={styles.grailsSpot} />
+                </View>
 
-          {/* Owner row — only shown to non-owners */}
+                {/* Flip container — sits where grailsImageInner was */}
+                <Pressable style={styles.flipContainer} onPress={editMode ? pickNewImage : handleFlip}>
+                  {/* Front: image */}
+                  <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
+                    {displayImage ? (
+                      <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" />
+                    ) : (
+                      <View style={styles.imagePlaceholder}>
+                        <Text style={styles.imagePlaceholderText}>
+                          {editMode ? 'Tap to change' : 'No image'}
+                        </Text>
+                      </View>
+                    )}
+                    {editMode && (
+                      <View style={styles.imageEditOverlay}>
+                        <Text style={styles.imageEditLabel}>Change Photo</Text>
+                      </View>
+                    )}
+                  </Animated.View>
+                  {/* Back: stats */}
+                  <Animated.View style={[styles.flipFaceBack, backAnimStyle]}>
+                    <CardBack item={item} isGrail />
+                  </Animated.View>
+                </Pressable>
+
+                <View style={styles.grailsBottomWrap}>
+                  <View style={styles.grailsBottom} />
+                </View>
+              </View>
+            </View>
+          ) : (
+            // ── Plain card ────────────────────────────────────────
+            <Pressable
+              style={styles.imageWrap}
+              onPress={editMode ? pickNewImage : handleFlip}>
+              {/* Front: image */}
+              <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
+                {displayImage ? (
+                  <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" />
+                ) : (
+                  <View style={[styles.image, styles.imagePlaceholder]}>
+                    <Text style={styles.imagePlaceholderText}>
+                      {editMode ? 'Tap to change image' : 'No image'}
+                    </Text>
+                  </View>
+                )}
+                {editMode && (
+                  <View style={styles.imageEditOverlay}>
+                    <Text style={styles.imageEditLabel}>Change Photo</Text>
+                  </View>
+                )}
+              </Animated.View>
+              {/* Back: stats */}
+              <Animated.View style={[styles.flipFaceBack, backAnimStyle]}>
+                <CardBack item={item} isGrail={false} />
+              </Animated.View>
+            </Pressable>
+          )}
+
+          {/* Owner card — centered column, only shown to non-owners */}
           {!isOwner && ownerProfile && (
             <TouchableOpacity
               style={styles.ownerCard}
@@ -383,13 +569,10 @@ export default function ItemDetailScreen() {
                   </View>
                 )}
               </View>
-              <View style={styles.ownerInfo}>
-                <Text style={styles.ownerName}>
-                  {ownerProfile.display_name || ownerProfile.username}
-                </Text>
-                <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
-              </View>
-              <Text style={styles.ownerChevron}>›</Text>
+              <Text style={styles.ownerName}>
+                {ownerProfile.display_name || ownerProfile.username}
+              </Text>
+              <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
             </TouchableOpacity>
           )}
 
@@ -520,7 +703,7 @@ const editStyles = StyleSheet.create({
   sectionHeader: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#687076',
+    color: 'rgba(255,255,255,0.40)',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginTop: 8,
@@ -532,7 +715,7 @@ const editStyles = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#687076',
+    color: 'rgba(255,255,255,0.50)',
     marginBottom: 4,
   },
   input: {
@@ -552,10 +735,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#0D0D0D',
   },
   errorText: {
     fontSize: 16,
-    color: '#687076',
+    color: 'rgba(255,255,255,0.50)',
   },
   headerBtn: {
     paddingHorizontal: 4,
@@ -570,7 +754,7 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#0D0D0D',
   },
   content: {
     paddingBottom: 48,
@@ -579,21 +763,104 @@ const styles = StyleSheet.create({
     width: '70%',
     alignSelf: 'center',
     aspectRatio: 5 / 7,
-    borderRadius: 12,
-    overflow: 'hidden',
     marginVertical: 20,
-    backgroundColor: '#e9ecef',
   },
   image: {
     width: '100%',
     height: '100%',
+  },
+  // ── Grails display-case frame ───────────────────────────────
+  // Same 3-layer pattern as GrailsSlot, scaled for the larger image.
+  grailsShadowWrap: {
+    width: '74%',
+    alignSelf: 'center',
+    marginVertical: 20,
+    borderRadius: 16,
+    shadowColor: '#FFD700',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.72,
+    shadowRadius: 24,
+    elevation: 22,
+  },
+  grailsFrame: {
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 208, 0, 0.80)',
+    backgroundColor: '#111111',
+    paddingHorizontal: 6,
+    paddingTop: 18,
+    paddingBottom: 10,
+  },
+  grailsSpotWrap: {
+    position: 'absolute',
+    top: 5,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 2,
+  },
+  grailsSpot: {
+    width: 36,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 246, 190, 0.90)',
+    shadowColor: '#FFE060',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 1.0,
+    shadowRadius: 16,
+    elevation: 14,
+  },
+  grailsImageInner: {
+    borderRadius: 10,
+    overflow: 'hidden',
+    aspectRatio: 5 / 7,
+    backgroundColor: '#0A0806',
+  },
+  // ── Card flip ────────────────────────────────────────────────
+  // flipContainer: replaces grailsImageInner — same dimensions, no overflow clip
+  // so the 3D rotation isn't clipped during the flip.
+  flipContainer: {
+    aspectRatio: 5 / 7,
+  },
+  // Both faces fill the container and are absolutely stacked.
+  // backfaceVisibility:'hidden' prevents the rear face showing through.
+  flipFaceFront: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backfaceVisibility: 'hidden',
+  },
+  flipFaceBack: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backfaceVisibility: 'hidden',
+  },
+  grailsBottomWrap: {
+    position: 'absolute',
+    bottom: 3,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 2,
+  },
+  grailsBottom: {
+    width: 24,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 215, 80, 0.28)',
+    shadowColor: '#FFE060',
+    shadowOffset: { width: 0, height: -5 },
+    shadowOpacity: 0.50,
+    shadowRadius: 8,
+    elevation: 4,
   },
   imagePlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   imagePlaceholderText: {
-    color: '#687076',
+    color: 'rgba(255,255,255,0.45)',
     fontSize: 14,
   },
   imageEditOverlay: {
@@ -608,53 +875,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  // Owner card (non-owner view)
+  // Owner profile — shrinks to content so only the avatar+name area is tappable
   ownerCard: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
-    marginHorizontal: 20,
-    marginBottom: 4,
-    padding: 12,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e0e0e0',
-    gap: 12,
+    alignSelf: 'center',
+    marginBottom: 12,
+    gap: 4,
   },
   ownerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
-    flexShrink: 0,
+    backgroundColor: '#2A2A2A',
+    marginBottom: 2,
   },
   ownerAvatarPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   ownerAvatarInitial: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '700',
-    color: '#1565C0',
+    color: '#FFFFFF',
   },
   ownerInfo: {
-    flex: 1,
     gap: 2,
   },
   ownerName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#11181C',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
   },
   ownerUsername: {
-    fontSize: 12,
-    color: '#687076',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.50)',
+    textAlign: 'center',
+  },
+  ownerChevronWrap: {
+    position: 'absolute',
+    right: 14,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
   },
   ownerChevron: {
     fontSize: 22,
-    color: '#ccc',
-    flexShrink: 0,
+    color: 'rgba(255,255,255,0.25)',
   },
   // Meta view
   metaSection: {
@@ -663,21 +932,21 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontSize: 22,
     fontWeight: '700',
-    color: '#11181C',
+    color: '#FFFFFF',
   },
   itemPlayer: {
     fontSize: 17,
-    color: '#687076',
+    color: 'rgba(255,255,255,0.60)',
     marginTop: 4,
   },
   itemSub: {
     fontSize: 14,
-    color: '#aaa',
+    color: 'rgba(255,255,255,0.35)',
     marginTop: 4,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: '#e0e0e0',
+    backgroundColor: 'rgba(255,255,255,0.10)',
     marginVertical: 16,
   },
   metaRow: {
@@ -685,31 +954,31 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: 'rgba(255,255,255,0.06)',
   },
   metaLabel: {
     fontSize: 14,
-    color: '#687076',
+    color: 'rgba(255,255,255,0.45)',
     flex: 1,
   },
   metaValue: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#11181C',
+    color: 'rgba(255,255,255,0.85)',
     flex: 2,
     textAlign: 'right',
   },
   descriptionLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#687076',
+    color: 'rgba(255,255,255,0.40)',
     marginBottom: 6,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   descriptionText: {
     fontSize: 15,
-    color: '#11181C',
+    color: 'rgba(255,255,255,0.78)',
     lineHeight: 22,
   },
   grailsButton: {
@@ -724,7 +993,7 @@ const styles = StyleSheet.create({
     borderColor: '#C9952C',
   },
   grailsButtonDisabled: {
-    backgroundColor: '#e0e0e0',
+    backgroundColor: 'rgba(255,255,255,0.10)',
   },
   grailsText: {
     color: '#fff',

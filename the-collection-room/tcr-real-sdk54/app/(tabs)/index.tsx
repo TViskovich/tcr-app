@@ -15,9 +15,12 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { withSpring } from 'react-native-reanimated';
+
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
+import { useTabVisibility } from '@/lib/tab-visibility-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 type FeedPost = {
@@ -107,6 +110,10 @@ export default function HomeScreen() {
   const currentUserId = session?.user?.id;
   const { count: notifCount } = useBadgeRefresh();
 
+  const { translateY } = useTabVisibility();
+  const lastScrollY = useRef(0);
+  const tabBarHidden = useRef(false);
+
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -176,7 +183,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Home</Text>
+        <Text style={styles.headerTitle}>The Collection Room</Text>
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
           style={styles.bellBtn}
@@ -226,6 +233,20 @@ export default function HomeScreen() {
             />
           )}
           contentContainerStyle={styles.list}
+          scrollEventThrottle={16}
+          onScroll={(e) => {
+            const y = e.nativeEvent.contentOffset.y;
+            const dy = y - lastScrollY.current;
+            // Hide on scroll down (past 80px), show on scroll up
+            if (dy > 6 && y > 80 && !tabBarHidden.current) {
+              tabBarHidden.current = true;
+              translateY.value = withSpring(102, { damping: 20, stiffness: 200 });
+            } else if (dy < -6 && tabBarHidden.current) {
+              tabBarHidden.current = false;
+              translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+            }
+            lastScrollY.current = y;
+          }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
           }
@@ -336,7 +357,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     paddingHorizontal: 16,
     paddingVertical: 12,
     backgroundColor: '#fff',
@@ -366,7 +387,11 @@ const styles = StyleSheet.create({
     lineHeight: 12,
   },
   headerTitle: {
-    fontSize: 20,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    fontSize: 17,
     fontWeight: '700',
     color: '#11181C',
   },
@@ -407,13 +432,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 12,
     gap: 10,
+    backgroundColor: '#1A1A1A',
   },
   cardAvatar: {
     width: 36,
     height: 36,
     borderRadius: 18,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: '#333333',
     flexShrink: 0,
   },
   cardAvatarPlaceholder: {
@@ -423,7 +449,7 @@ const styles = StyleSheet.create({
   cardAvatarInitial: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#1565C0',
+    color: '#FFFFFF',
   },
   cardUserInfo: {
     flex: 1,
@@ -431,30 +457,31 @@ const styles = StyleSheet.create({
   },
   cardDisplayName: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#11181C',
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   cardUsername: {
     fontSize: 12,
-    color: '#687076',
+    color: 'rgba(255,255,255,0.60)',
   },
   cardDate: {
     fontSize: 12,
-    color: '#aaa',
+    color: 'rgba(255,255,255,0.45)',
     flexShrink: 0,
   },
   cardImageWrap: {
-    aspectRatio: 1,
+    aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
   },
   cardBody: {
     padding: 12,
     gap: 8,
+    backgroundColor: '#1A1A1A',
   },
   cardCaption: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#11181C',
+    color: 'rgba(255,255,255,0.85)',
   },
   cardActions: {
     flexDirection: 'row',
@@ -476,11 +503,11 @@ const styles = StyleSheet.create({
   likeCount: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#687076',
+    color: 'rgba(255,255,255,0.50)',
     minWidth: 16,
   },
   likeCountActive: {
-    color: '#E65100',
+    color: '#FF7043',
   },
   commentBtn: {
     flexDirection: 'row',
@@ -490,12 +517,12 @@ const styles = StyleSheet.create({
   },
   commentIcon: {
     fontSize: 18,
-    opacity: 0.45,
+    opacity: 0.55,
   },
   commentCount: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#687076',
+    color: 'rgba(255,255,255,0.50)',
     minWidth: 16,
   },
 });

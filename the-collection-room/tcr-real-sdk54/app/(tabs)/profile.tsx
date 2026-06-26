@@ -283,7 +283,7 @@ export default function ProfileScreen() {
                 grails={grails}
                 editable
                 onItemPress={(g: ShowcaseItem) =>
-                  router.push({ pathname: '/item/[id]', params: { id: g.item_id } })
+                  router.push({ pathname: '/item/[id]', params: { id: g.item_id, fromGrails: '1' } })
                 }
               />
             </>

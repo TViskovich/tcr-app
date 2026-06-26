@@ -323,7 +323,7 @@ export default function UserProfileScreen() {
               onItemPress={(g: ShowcaseItem) =>
                 router.push({
                   pathname: '/item/[id]',
-                  params: { id: g.item_id },
+                  params: { id: g.item_id, fromGrails: '1' },
                 })
               }
             />
