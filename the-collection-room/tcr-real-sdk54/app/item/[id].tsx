@@ -382,10 +382,8 @@ export default function ItemDetailScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          // Delete linked posts first — posts.item_id is ON DELETE SET NULL,
-          // so it must be removed before the item row is deleted.
-          await supabase.from('posts').delete().eq('item_id', id);
-
+          // posts.item_id is ON DELETE SET NULL — Postgres nulls the FK
+          // automatically when the item is deleted; no manual pre-delete needed.
           const { error } = await supabase
             .from('collection_items')
             .delete()
@@ -502,7 +500,7 @@ export default function ItemDetailScreen() {
                   {/* Front: image */}
                   <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
                     {displayImage ? (
-                      <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" />
+                      <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" transition={200} />
                     ) : (
                       <View style={styles.imagePlaceholder}>
                         <Text style={styles.imagePlaceholderText}>
@@ -535,7 +533,7 @@ export default function ItemDetailScreen() {
               {/* Front: image */}
               <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
                 {displayImage ? (
-                  <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" />
+                  <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" transition={200} />
                 ) : (
                   <View style={[styles.image, styles.imagePlaceholder]}>
                     <Text style={styles.imagePlaceholderText}>
@@ -573,6 +571,7 @@ export default function ItemDetailScreen() {
                     source={{ uri: ownerProfile.avatar_url }}
                     style={StyleSheet.absoluteFill}
                     contentFit="cover"
+                    transition={200}
                   />
                 ) : (
                   <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>

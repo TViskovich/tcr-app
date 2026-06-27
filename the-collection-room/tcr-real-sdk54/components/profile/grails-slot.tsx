@@ -34,6 +34,7 @@ export function GrailsSlot({ item, onPress }: Props) {
               source={{ uri: item.item.image_url }}
               style={styles.image}
               contentFit="cover"
+              transition={200}
             />
           ) : (
             <View style={styles.noImage}>

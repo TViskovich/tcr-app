@@ -97,7 +97,7 @@ function UserRow({ profile, onPress }: { profile: SearchProfile; onPress: () => 
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.userAvatar}>
         {profile.avatar_url ? (
-          <Image source={{ uri: profile.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: profile.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
             <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
@@ -128,7 +128,7 @@ function CardRow({ card, onPress }: { card: CardResult; onPress: () => void }) {
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.cardThumb}>
         {card.image_url ? (
-          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.cardThumbPlaceholder]}>
             <Text style={styles.cardThumbEmoji}>🃏</Text>
@@ -227,6 +227,7 @@ export default function SearchScreen() {
           <TouchableOpacity
             style={[styles.toggleBtn, mode === 'users' && styles.toggleBtnActive]}
             onPress={() => switchMode('users')}
+            hitSlop={{ top: 9, bottom: 9 }}
             activeOpacity={0.8}>
             <Text style={[styles.toggleText, mode === 'users' && styles.toggleTextActive]}>
               Users
@@ -235,6 +236,7 @@ export default function SearchScreen() {
           <TouchableOpacity
             style={[styles.toggleBtn, mode === 'cards' && styles.toggleBtnActive]}
             onPress={() => switchMode('cards')}
+            hitSlop={{ top: 9, bottom: 9 }}
             activeOpacity={0.8}>
             <Text style={[styles.toggleText, mode === 'cards' && styles.toggleTextActive]}>
               Cards
@@ -419,9 +421,9 @@ const styles = StyleSheet.create({
   },
   // User avatar
   userAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     overflow: 'hidden',
     backgroundColor: '#E3F2FD',
     flexShrink: 0,

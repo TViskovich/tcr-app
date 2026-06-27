@@ -243,6 +243,7 @@ export default function FolderDetailScreen() {
             style={styles.coverBanner}
             contentFit="cover"
             contentPosition="top"
+            transition={200}
           />
         ) : null}
 
@@ -266,7 +267,7 @@ export default function FolderDetailScreen() {
           <TouchableOpacity
             style={styles.ownerCard}
             onPress={() =>
-              router.push({ pathname: '/user/[username]', params: { username: ownerProfile!.username } })
+              router.push({ pathname: '/user/[username]', params: { username: ownerProfile?.username ?? '' } })
             }
             activeOpacity={0.7}>
             <View style={styles.ownerAvatar}>
@@ -275,6 +276,7 @@ export default function FolderDetailScreen() {
                   source={{ uri: ownerProfile.avatar_url }}
                   style={StyleSheet.absoluteFill}
                   contentFit="cover"
+                  transition={200}
                 />
               ) : (
                 <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
@@ -421,6 +423,7 @@ export default function FolderDetailScreen() {
                     source={{ uri: coverPreviewUri! }}
                     style={styles.coverPreview}
                     contentFit="cover"
+                    transition={200}
                   />
                 )}
                 <View style={styles.coverActions}>

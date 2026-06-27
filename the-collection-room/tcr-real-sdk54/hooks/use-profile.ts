@@ -34,10 +34,10 @@ export function useProfile(userId: string | undefined) {
 
     if (profileRes.data) setProfile(profileRes.data as Profile);
     setStats({
-      folderCount: foldersRes.count ?? 0,
-      itemCount: itemsRes.count ?? 0,
-      postCount: postsRes.count ?? 0,
-      followerCount: followersRes.count ?? 0,
+      folderCount:    foldersRes.count   ?? 0,
+      itemCount:      itemsRes.count     ?? 0,
+      postCount:      postsRes.count     ?? 0,
+      followerCount:  followersRes.count ?? 0,
       followingCount: followingRes.count ?? 0,
     });
     setLoading(false);

@@ -71,7 +71,7 @@ function PostHeader({
       <View style={styles.userRow}>
         <View style={styles.avatar}>
           {post.avatar_url ? (
-            <Image source={{ uri: post.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+            <Image source={{ uri: post.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
           ) : (
             <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
               <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
@@ -87,7 +87,7 @@ function PostHeader({
 
       {/* Photo */}
       <View style={styles.imageWrap}>
-        <Image source={{ uri: post.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+        <Image source={{ uri: post.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
       </View>
 
       {/* Caption or item name */}
@@ -131,7 +131,7 @@ function CommentRow({
     <View style={styles.commentRow}>
       <View style={styles.commentAvatar}>
         {comment.avatar_url ? (
-          <Image source={{ uri: comment.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: comment.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.commentAvatarPlaceholder]}>
             <Text style={styles.commentAvatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
@@ -300,11 +300,9 @@ export default function PostDetailScreen() {
     const body = newComment.trim();
     setNewComment('');
 
-    const { data: commentRow, error } = await supabase
+    const { error } = await supabase
       .from('comments')
-      .insert({ user_id: currentUserId, post_id: post.id, body })
-      .select('id')
-      .single();
+      .insert({ user_id: currentUserId, post_id: post.id, body });
 
     if (error) {
       console.error('Comment failed:', error.message);
@@ -319,7 +317,6 @@ export default function PostDetailScreen() {
         actor_id: currentUserId,
         type: 'comment',
         post_id: post.id,
-        comment_id: commentRow?.id ?? null,
       }).then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
     }
 

@@ -14,7 +14,10 @@ export function BookmarkButton({ isSaved, onPress, disabled = false }: Props) {
       onPress={onPress}
       disabled={disabled}
       activeOpacity={0.55}
-      hitSlop={12}>
+      hitSlop={12}
+      accessibilityRole="button"
+      accessibilityLabel={isSaved ? 'Remove bookmark' : 'Bookmark'}
+      accessibilityState={{ selected: isSaved, disabled }}>
       <MaterialIcons
         name={isSaved ? 'bookmark' : 'bookmark-border'}
         size={32}

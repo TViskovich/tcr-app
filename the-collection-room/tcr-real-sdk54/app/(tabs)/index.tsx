@@ -56,10 +56,13 @@ function scorePost(post: FeedPost): number {
   return (engagement * hasImage * followBoost) / Math.pow(hoursOld + 2, 1.8);
 }
 
+const PAGE_SIZE = 20;
+
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
-async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
+async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const from = page * PAGE_SIZE;
 
   const { data: postRows } = await supabase
     .from('posts')
@@ -67,7 +70,7 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
     .not('item_id', 'is', null)
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
-    .limit(100);
+    .range(from, from + PAGE_SIZE - 1);
 
   if (!postRows?.length) return [];
 
@@ -127,7 +130,7 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
   return posts.sort((a, b) => scorePost(b) - scorePost(a));
 }
 
-async function queryFollowingFeed(currentUserId?: string): Promise<FeedPost[]> {
+async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
   if (!currentUserId) return [];
 
   const { data: followRows } = await supabase
@@ -138,13 +141,15 @@ async function queryFollowingFeed(currentUserId?: string): Promise<FeedPost[]> {
   const followedIds = ((followRows ?? []) as any[]).map((f) => f.following_id as string);
   if (!followedIds.length) return [];
 
+  const from = page * PAGE_SIZE;
+
   const { data: postRows } = await supabase
     .from('posts')
     .select('id, user_id, item_id, image_url, caption, created_at')
     .not('item_id', 'is', null)
     .in('user_id', followedIds)
     .order('created_at', { ascending: false })
-    .limit(100);
+    .range(from, from + PAGE_SIZE - 1);
 
   if (!postRows?.length) return [];
 
@@ -210,26 +215,49 @@ export default function HomeScreen() {
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
+    setPage(0);
+    setHasMore(true);
     const data =
       feedMode === 'for-you'
-        ? await queryFeed(currentUserId)
-        : await queryFollowingFeed(currentUserId);
+        ? await queryFeed(currentUserId, 0)
+        : await queryFollowingFeed(currentUserId, 0);
     setPosts(data);
+    setHasMore(data.length === PAGE_SIZE);
     setLoading(false);
   }, [currentUserId, feedMode]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    setPage(0);
+    setHasMore(true);
     const data =
       feedMode === 'for-you'
-        ? await queryFeed(currentUserId)
-        : await queryFollowingFeed(currentUserId);
+        ? await queryFeed(currentUserId, 0)
+        : await queryFollowingFeed(currentUserId, 0);
     setPosts(data);
+    setHasMore(data.length === PAGE_SIZE);
     setRefreshing(false);
   }, [currentUserId, feedMode]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || loading) return;
+    setLoadingMore(true);
+    const nextPage = page + 1;
+    const data =
+      feedMode === 'for-you'
+        ? await queryFeed(currentUserId, nextPage)
+        : await queryFollowingFeed(currentUserId, nextPage);
+    if (data.length > 0) setPosts((prev) => [...prev, ...data]);
+    setPage(nextPage);
+    setHasMore(data.length === PAGE_SIZE);
+    setLoadingMore(false);
+  }, [loadingMore, hasMore, loading, page, feedMode, currentUserId]);
 
   // useFocusEffect re-runs whenever loadFeed changes identity (i.e. when feedMode or
   // currentUserId changes) AND the screen is currently focused — so tab switches reload.
@@ -368,6 +396,15 @@ export default function HomeScreen() {
             }
             lastScrollY.current = y;
           }}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={
+            loadingMore ? (
+              <View style={styles.footer}>
+                <ActivityIndicator size="small" color="#0a7ea4" />
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
           }
@@ -413,6 +450,7 @@ function PostCard({
               source={{ uri: post.avatar_url }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
+              transition={200}
             />
           ) : (
             <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
@@ -440,6 +478,7 @@ function PostCard({
           source={{ uri: post.image_url }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
+          transition={200}
           onError={() => setImageError(true)}
         />
       </TouchableOpacity>
@@ -549,6 +588,10 @@ const styles = StyleSheet.create({
   list: {
     padding: 12,
     gap: 12,
+  },
+  footer: {
+    paddingVertical: 24,
+    alignItems: 'center',
   },
   card: {
     backgroundColor: '#fff',

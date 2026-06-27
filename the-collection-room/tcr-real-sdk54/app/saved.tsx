@@ -127,7 +127,7 @@ function FolderRow({ folder, onPress }: { folder: SavedFolderEntry; onPress: () 
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.thumb}>
         {folder.cover_image_url ? (
-          <Image source={{ uri: folder.cover_image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: folder.cover_image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbInitial}>{folder.name.charAt(0).toUpperCase()}</Text>
@@ -150,7 +150,7 @@ function CardRow({ card, onPress }: { card: SavedCardEntry; onPress: () => void 
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={[styles.thumb, styles.thumbCard]}>
         {card.image_url ? (
-          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbEmoji}>🃏</Text>
@@ -172,7 +172,7 @@ function GrailsRow({ entry, onPress }: { entry: SavedGrailsEntry; onPress: () =>
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={[styles.thumb, styles.thumbRound]}>
         {entry.avatarUrl ? (
-          <Image source={{ uri: entry.avatarUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: entry.avatarUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbInitial}>{name.charAt(0).toUpperCase()}</Text>
@@ -262,7 +262,9 @@ const styles = StyleSheet.create({
     height: 48,
   },
   thumbRound: {
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   thumbPlaceholder: {
     alignItems: 'center',

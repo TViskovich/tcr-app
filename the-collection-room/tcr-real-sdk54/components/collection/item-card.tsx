@@ -20,6 +20,7 @@ export function ItemCard({ item, onPress }: Props) {
             source={{ uri: item.image_url }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
+            transition={200}
           />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.noImage]}>

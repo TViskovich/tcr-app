@@ -208,6 +208,7 @@ function ConversationRow({
             source={{ uri: item.otherAvatarUrl }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
+            transition={200}
           />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
@@ -272,9 +273,9 @@ const styles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     overflow: 'hidden',
     backgroundColor: '#E3F2FD',
     flexShrink: 0,

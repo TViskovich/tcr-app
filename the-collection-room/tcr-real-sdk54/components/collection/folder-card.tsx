@@ -39,6 +39,7 @@ export function FolderCard({ folder, onPress, itemCount }: Props) {
             source={{ uri: folder.cover_image_url }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
+            transition={200}
           />
         ) : (
           // Decorative initial — very subtle, image should dominate

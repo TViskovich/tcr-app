@@ -243,6 +243,7 @@ export default function UserProfileScreen() {
                   source={{ uri: avatarUri }}
                   style={StyleSheet.absoluteFill}
                   contentFit="cover"
+                  transition={200}
                 />
               ) : (
                 <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>

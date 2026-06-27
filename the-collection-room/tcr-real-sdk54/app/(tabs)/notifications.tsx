@@ -102,6 +102,7 @@ function NotificationRow({
             source={{ uri: item.actorAvatarUrl }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
+            transition={200}
           />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
@@ -205,7 +206,7 @@ export default function NotificationsScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.headerSide}>
-          <TouchableOpacity onPress={() => router.navigate('/')} hitSlop={8}>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
             <View style={styles.backCircle}>
               <IconSymbol name="chevron.left" size={18} color="#fff" />
             </View>
