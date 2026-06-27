@@ -374,7 +374,8 @@ export default function PostDetailScreen() {
       <Stack.Screen options={{ title: `@${post.username}`, headerBackTitle: '' }} />
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}>
         <FlatList
           ref={flatListRef}
           data={comments}

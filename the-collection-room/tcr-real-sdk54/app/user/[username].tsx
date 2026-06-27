@@ -17,7 +17,7 @@ import { resolveCovers } from '@/hooks/use-collection';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import type { Folder, Profile, ShowcaseItem } from '@/types';
+import type { Folder, Profile } from '@/types';
 
 type Counts = {
   folders: number;
@@ -320,10 +320,14 @@ export default function UserProfileScreen() {
             <GrailsGrid
               grails={grails}
               editable={false}
-              onItemPress={(g: ShowcaseItem) =>
+              onCabinetPress={() =>
                 router.push({
-                  pathname: '/item/[id]',
-                  params: { id: g.item_id, fromGrails: '1' },
+                  pathname: '/grails/[userId]',
+                  params: {
+                    userId: profile.id,
+                    username: profile.username,
+                    displayName: profile.display_name ?? '',
+                  },
                 })
               }
             />

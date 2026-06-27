@@ -24,7 +24,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { BookmarkButton } from '@/components/ui/bookmark-button';
+import { ScreenHeader } from '@/components/ui/screen-header';
 import { useGrails } from '@/hooks/use-grails';
+import { useSavedCard } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -239,6 +242,7 @@ export default function ItemDetailScreen() {
   const [grailsLoading, setGrailsLoading] = useState(false);
 
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
+  const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
@@ -436,7 +440,15 @@ export default function ItemDetailScreen() {
   return (
     <>
       <Stack.Screen
-        options={{
+        options={!isOwner && !!currentUserId ? {
+          header: ({ navigation }) => (
+            <ScreenHeader
+              title={headerTitle}
+              onBack={() => navigation.goBack()}
+              rightContent={<BookmarkButton isSaved={cardSaved} onPress={toggleCardSave} disabled={savingCard} />}
+            />
+          ),
+        } : {
           title: headerTitle,
           headerRight: isOwner
             ? () =>
@@ -469,11 +481,12 @@ export default function ItemDetailScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled">
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
           {/* Card — tapping flips between image and stats */}
           {showGrailsStyle ? (

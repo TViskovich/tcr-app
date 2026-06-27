@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -23,7 +24,6 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
-import type { ShowcaseItem } from '@/types';
 import { uploadAvatar } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 
@@ -178,19 +178,25 @@ export default function ProfileScreen() {
                 : <Text style={styles.headerSave}>Save</Text>}
             </TouchableOpacity>
           ) : (
-            <TouchableOpacity onPress={enterEdit}>
-              <Text style={styles.headerEdit}>Edit</Text>
-            </TouchableOpacity>
+            <View style={styles.headerRightGroup}>
+              <TouchableOpacity onPress={() => router.push('/saved')} hitSlop={12} activeOpacity={0.55}>
+                <MaterialIcons name="bookmark-border" size={32} color="#687076" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={enterEdit}>
+                <Text style={styles.headerEdit}>Edit</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled">
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
           {/* Avatar */}
           <Pressable
@@ -282,8 +288,15 @@ export default function ProfileScreen() {
               <GrailsGrid
                 grails={grails}
                 editable
-                onItemPress={(g: ShowcaseItem) =>
-                  router.push({ pathname: '/item/[id]', params: { id: g.item_id, fromGrails: '1' } })
+                onCabinetPress={() =>
+                  router.push({
+                    pathname: '/grails/[userId]',
+                    params: {
+                      userId: userId ?? '',
+                      username: profile?.username ?? '',
+                      displayName: profile?.display_name ?? '',
+                    },
+                  })
                 }
               />
             </>
@@ -311,10 +324,15 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e0e0e0',
   },
   headerSide: {
-    width: 64,
+    flex: 1,
   },
   headerSideRight: {
     alignItems: 'flex-end',
+  },
+  headerRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
   },
   headerTitle: {
     fontSize: 17,

@@ -13,6 +13,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
@@ -203,12 +204,21 @@ export default function NotificationsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Notifications</Text>
-        {hasUnread && (
-          <TouchableOpacity onPress={handleMarkAllRead} hitSlop={8}>
-            <Text style={styles.markAllText}>Mark all read</Text>
+        <View style={styles.headerSide}>
+          <TouchableOpacity onPress={() => router.navigate('/')} hitSlop={8}>
+            <View style={styles.backCircle}>
+              <IconSymbol name="chevron.left" size={18} color="#fff" />
+            </View>
           </TouchableOpacity>
-        )}
+        </View>
+        <Text style={styles.headerTitle}>Notifications</Text>
+        <View style={[styles.headerSide, styles.headerSideRight]}>
+          {hasUnread && (
+            <TouchableOpacity onPress={handleMarkAllRead} hitSlop={8}>
+              <Text style={styles.markAllText}>Mark all read</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {loading ? (
@@ -251,6 +261,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e0e0e0',
+  },
+  headerSide: {
+    flex: 1,
+  },
+  headerSideRight: {
+    alignItems: 'flex-end',
+  },
+  backCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerTitle: {
     fontSize: 20,

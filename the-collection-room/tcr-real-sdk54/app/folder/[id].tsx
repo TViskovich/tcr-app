@@ -19,7 +19,10 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ItemCard } from '@/components/collection/item-card';
+import { BookmarkButton } from '@/components/ui/bookmark-button';
+import { ScreenHeader } from '@/components/ui/screen-header';
 import { useItems } from '@/hooks/use-collection';
+import { useSavedFolder } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
 import { uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -51,6 +54,7 @@ export default function FolderDetailScreen() {
   const [editSaving, setEditSaving] = useState(false);
 
   const { items, loading: itemsLoading, refresh: refreshItems } = useItems(id);
+  const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(id, currentUserId);
 
   const isOwner = !!currentUserId && folder?.user_id === currentUserId;
   const isPrivate = folder !== null && !folder.is_public && !isOwner;
@@ -238,6 +242,7 @@ export default function FolderDetailScreen() {
             source={{ uri: bannerUrl }}
             style={styles.coverBanner}
             contentFit="cover"
+            contentPosition="top"
           />
         ) : null}
 
@@ -304,11 +309,21 @@ export default function FolderDetailScreen() {
     );
   }
 
+  const showBookmarkHeader = !isOwner && folder !== null && folder.is_public && !!currentUserId;
+
   // ── Main render ───────────────────────────────────────────────
   return (
     <>
       <Stack.Screen
-        options={{
+        options={showBookmarkHeader ? {
+          header: ({ navigation }) => (
+            <ScreenHeader
+              title={folderTitle}
+              onBack={() => navigation.goBack()}
+              rightContent={<BookmarkButton isSaved={isSaved} onPress={toggleSave} disabled={savingBookmark} />}
+            />
+          ),
+        } : {
           title: folderTitle,
           headerRight: isOwner
             ? () => (
@@ -353,6 +368,7 @@ export default function FolderDetailScreen() {
               )}
             </View>
           }
+          style={styles.flatList}
           contentContainerStyle={styles.grid}
           columnWrapperStyle={styles.columnWrapper}
         />
@@ -624,13 +640,18 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginBottom: 2,
   },
-  // Grid
-  grid: {
-    paddingBottom: 24,
+  flatList: {
+    flex: 1,
     backgroundColor: '#f8f9fa',
   },
+  // Grid
+  grid: {
+    padding: 10,
+    paddingTop: 10,
+    paddingBottom: 24,
+  },
   columnWrapper: {
-    paddingHorizontal: 4,
+    justifyContent: 'flex-start',
   },
   // Empty states
   emptyContent: {

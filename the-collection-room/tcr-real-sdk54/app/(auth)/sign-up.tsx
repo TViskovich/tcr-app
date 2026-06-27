@@ -68,10 +68,11 @@ export default function SignUpScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      behavior={Platform.OS === 'ios' ? undefined : 'height'}>
       <ScrollView
         contentContainerStyle={styles.inner}
-        keyboardShouldPersistTaps="handled">
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Join The Collection Room</Text>
 

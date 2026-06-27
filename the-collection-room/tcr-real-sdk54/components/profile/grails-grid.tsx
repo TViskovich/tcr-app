@@ -1,4 +1,5 @@
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -8,7 +9,9 @@ import type { ShowcaseItem } from '@/types';
 type Props = {
   grails: ShowcaseItem[];
   editable?: boolean;
-  onItemPress: (item: ShowcaseItem) => void;
+  onItemPress?: (item: ShowcaseItem) => void;
+  onCabinetPress?: () => void;
+  vaultMargin?: number;
 };
 
 const COLS = 3;
@@ -17,11 +20,28 @@ const MAX_SLOTS = 9;
 // Warm near-black — aged wood / display case felt
 const VAULT_COLORS = ['#1A1510', '#0F0D09', '#080604'] as const;
 
-export function GrailsGrid({ grails, editable = false, onItemPress }: Props) {
-  // Explicit pixel width ensures identical screen-edge margins (14px) regardless
-  // of which profile screen renders this — each has different parent padding.
+export function GrailsGrid({ grails, editable = false, onItemPress, onCabinetPress, vaultMargin = 14 }: Props) {
+  // Explicit pixel width ensures identical screen-edge margins regardless of parent padding.
   const { width: screenWidth } = useWindowDimensions();
-  const vaultWidth = screenWidth - 28; // 14px margin each side
+  const vaultWidth = screenWidth - vaultMargin * 2;
+
+  // Press animation — declared before early return to satisfy Rules of Hooks.
+  const pressScale = useRef(new Animated.Value(1)).current;
+  const pressOpacity = useRef(new Animated.Value(1)).current;
+
+  function handlePressIn() {
+    Animated.parallel([
+      Animated.spring(pressScale, { toValue: 0.93, useNativeDriver: true, speed: 60, bounciness: 0 }),
+      Animated.timing(pressOpacity, { toValue: 0.65, duration: 100, useNativeDriver: true }),
+    ]).start();
+  }
+
+  function handlePressOut() {
+    Animated.parallel([
+      Animated.spring(pressScale, { toValue: 1, useNativeDriver: true, speed: 40, bounciness: 5 }),
+      Animated.timing(pressOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+    ]).start();
+  }
 
   // ── Zero state ────────────────────────────────────────────────
   if (grails.length === 0) {
@@ -42,31 +62,57 @@ export function GrailsGrid({ grails, editable = false, onItemPress }: Props) {
 
   // ── Filled grid ───────────────────────────────────────────────
   const slots = grails.slice(0, MAX_SLOTS);
-  const remainder = slots.length % COLS;
-  const spacers = remainder === 0 ? 0 : COLS - remainder;
 
-  return (
+  // Split into rows of 3 so each row can choose its own justifyContent.
+  const rows: ShowcaseItem[][] = [];
+  for (let i = 0; i < slots.length; i += COLS) {
+    rows.push(slots.slice(i, i + COLS));
+  }
+
+  // Gap between cards in a full row: cards are 32% wide, so 3 cards = 96%,
+  // leaving 4% split across 2 gaps = 2% each. Used as explicit gap on partial rows.
+  const gridWidth = vaultWidth - 20; // vault has paddingHorizontal: 10 each side
+  const cardGap = Math.round(gridWidth * 0.02);
+
+  const vault = (
     // Outer View: subtle shadow ring. No overflow:'hidden' — clips shadow.
     <View style={[styles.vaultShadow, { width: vaultWidth, alignSelf: 'center' }]}>
       {/* Inner gradient: overflow:'hidden' clips gradient to border radius. */}
       <LinearGradient colors={VAULT_COLORS} style={styles.vault} start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}>
         <VaultHeader />
         <View style={styles.grid}>
-          {slots.map((item) => (
-            <GrailsSlot
-              key={item.id}
-              item={item}
-              onPress={() => onItemPress(item)}
-            />
-          ))}
-          {/* Invisible spacers keep space-between aligned on partial last rows */}
-          {Array.from({ length: spacers }).map((_, i) => (
-            <View key={`spacer-${i}`} style={styles.spacer} />
+          {rows.map((row, rowIndex) => (
+            <View
+              key={rowIndex}
+              style={[
+                styles.row,
+                row.length === COLS ? styles.rowFull : { justifyContent: 'center', gap: cardGap },
+              ]}>
+              {row.map((item) => (
+                <GrailsSlot
+                  key={item.id}
+                  item={item}
+                  // When the whole cabinet is tappable, individual slots are passive.
+                  onPress={onCabinetPress ? undefined : () => onItemPress?.(item)}
+                />
+              ))}
+            </View>
           ))}
         </View>
       </LinearGradient>
     </View>
   );
+
+  return onCabinetPress ? (
+    <Pressable
+      onPress={onCabinetPress}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}>
+      <Animated.View style={{ transform: [{ scale: pressScale }], opacity: pressOpacity }}>
+        {vault}
+      </Animated.View>
+    </Pressable>
+  ) : vault;
 }
 
 function VaultHeader() {
@@ -141,19 +187,17 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ── 3-column grid ─────────────────────────────────────────────
-  // space-between distributes ~4% leftover (~7px) evenly as column gaps.
-  // rowGap lets the dark vault background show through between rows.
+  // ── Row-based grid ────────────────────────────────────────────
+  // Each row is its own View so partial rows can be centered independently.
   grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 8,
+    gap: 8, // vertical gap between rows
   },
-  // Invisible spacer — same width as a card slot.
-  // Keeps space-between alignment correct when last row is incomplete.
-  spacer: {
-    width: '32%',
+  row: {
+    flexDirection: 'row',
+  },
+  // Full 3-card rows use space-between so cards sit at the edges with even gaps.
+  rowFull: {
+    justifyContent: 'space-between',
   },
 
   // ── Empty state ───────────────────────────────────────────────

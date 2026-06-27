@@ -164,11 +164,12 @@ export default function AddItemScreen() {
       <Stack.Screen options={{ title: folderName ? `Add to ${folderName}` : 'Add Item' }} />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled">
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
           {/* Image picker */}
           <Pressable onPress={pickImage} style={styles.imagePicker}>

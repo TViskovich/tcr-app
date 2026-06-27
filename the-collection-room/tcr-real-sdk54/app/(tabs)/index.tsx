@@ -36,6 +36,7 @@ type FeedPost = {
   likeCount: number;
   liked: boolean;
   commentCount: number;
+  isFollowing: boolean;
 };
 
 function formatAge(iso: string) {
@@ -45,15 +46,105 @@ function formatAge(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Hacker News-style gravity decay with engagement and social signals.
+// hoursOld+2 prevents division by near-zero for brand-new posts.
+function scorePost(post: FeedPost): number {
+  const hoursOld = (Date.now() - new Date(post.created_at).getTime()) / 3_600_000;
+  const engagement = 1 + post.likeCount + post.commentCount * 2;
+  const followBoost = post.isFollowing ? 3 : 1;
+  const hasImage = post.image_url ? 1.5 : 1;
+  return (engagement * hasImage * followBoost) / Math.pow(hoursOld + 2, 1.8);
+}
+
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
 async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
   const { data: postRows } = await supabase
     .from('posts')
     .select('id, user_id, item_id, image_url, caption, created_at')
     .not('item_id', 'is', null)
+    .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
-    .limit(50);
+    .limit(100);
+
+  if (!postRows?.length) return [];
+
+  const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
+  const itemIds = (postRows as any[]).map((p) => p.item_id as string);
+  const postIds = (postRows as any[]).map((p) => p.id as string);
+
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes] = await Promise.all([
+    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
+    supabase.from('collection_items').select('id, name').in('id', itemIds),
+    supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
+    supabase.from('comments').select('post_id').in('post_id', postIds),
+    currentUserId
+      ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId)
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
+  const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
+
+  const likeCountMap = new Map<string, number>();
+  const likedSet = new Set<string>();
+  for (const row of (likesRes.data ?? []) as any[]) {
+    likeCountMap.set(row.post_id, (likeCountMap.get(row.post_id) ?? 0) + 1);
+    if (row.user_id === currentUserId) likedSet.add(row.post_id);
+  }
+
+  const commentCountMap = new Map<string, number>();
+  for (const row of (commentsRes.data ?? []) as any[]) {
+    commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
+  }
+
+  const followedSet = new Set<string>(
+    ((followsRes.data ?? []) as any[]).map((f) => f.following_id as string),
+  );
+
+  const posts = (postRows as any[]).map((post) => {
+    const profile = profileMap.get(post.user_id) ?? {};
+    const item = itemMap.get(post.item_id) ?? {};
+    return {
+      id: post.id,
+      user_id: post.user_id,
+      image_url: post.image_url,
+      caption: post.caption ?? null,
+      created_at: post.created_at,
+      item_name: item.name ?? null,
+      username: profile.username ?? 'user',
+      display_name: profile.display_name ?? null,
+      avatar_url: profile.avatar_url ?? null,
+      likeCount: likeCountMap.get(post.id) ?? 0,
+      liked: likedSet.has(post.id),
+      commentCount: commentCountMap.get(post.id) ?? 0,
+      isFollowing: followedSet.has(post.user_id),
+    };
+  });
+
+  return posts.sort((a, b) => scorePost(b) - scorePost(a));
+}
+
+async function queryFollowingFeed(currentUserId?: string): Promise<FeedPost[]> {
+  if (!currentUserId) return [];
+
+  const { data: followRows } = await supabase
+    .from('follows')
+    .select('following_id')
+    .eq('follower_id', currentUserId);
+
+  const followedIds = ((followRows ?? []) as any[]).map((f) => f.following_id as string);
+  if (!followedIds.length) return [];
+
+  const { data: postRows } = await supabase
+    .from('posts')
+    .select('id, user_id, item_id, image_url, caption, created_at')
+    .not('item_id', 'is', null)
+    .in('user_id', followedIds)
+    .order('created_at', { ascending: false })
+    .limit(100);
 
   if (!postRows?.length) return [];
 
@@ -71,7 +162,6 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
   const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
 
-  // Compute like count, liked state, and comment count per post
   const likeCountMap = new Map<string, number>();
   const likedSet = new Set<string>();
   for (const row of (likesRes.data ?? []) as any[]) {
@@ -84,6 +174,7 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
     commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
   }
 
+  // Already newest-first from .order('created_at', { ascending: false }) — no ranking applied
   return (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = itemMap.get(post.item_id) ?? {};
@@ -100,6 +191,7 @@ async function queryFeed(currentUserId?: string): Promise<FeedPost[]> {
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
       commentCount: commentCountMap.get(post.id) ?? 0,
+      isFollowing: true,
     };
   });
 }
@@ -114,22 +206,33 @@ export default function HomeScreen() {
   const lastScrollY = useRef(0);
   const tabBarHidden = useRef(false);
 
+  const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
-    setPosts(await queryFeed(currentUserId));
+    const data =
+      feedMode === 'for-you'
+        ? await queryFeed(currentUserId)
+        : await queryFollowingFeed(currentUserId);
+    setPosts(data);
     setLoading(false);
-  }, [currentUserId]);
+  }, [currentUserId, feedMode]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    setPosts(await queryFeed(currentUserId));
+    const data =
+      feedMode === 'for-you'
+        ? await queryFeed(currentUserId)
+        : await queryFollowingFeed(currentUserId);
+    setPosts(data);
     setRefreshing(false);
-  }, [currentUserId]);
+  }, [currentUserId, feedMode]);
 
+  // useFocusEffect re-runs whenever loadFeed changes identity (i.e. when feedMode or
+  // currentUserId changes) AND the screen is currently focused — so tab switches reload.
   useFocusEffect(
     useCallback(() => {
       loadFeed();
@@ -180,10 +283,30 @@ export default function HomeScreen() {
     }
   }
 
+  const emptyBody =
+    feedMode === 'for-you'
+      ? 'Add an item to your collection and enable "Share to feed" to post here.'
+      : 'Follow people to see their posts here.';
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>The Collection Room</Text>
+        <View style={styles.headerSegment}>
+          <TouchableOpacity
+            style={[styles.segmentBtn, feedMode === 'for-you' && styles.segmentBtnActive]}
+            onPress={() => setFeedMode('for-you')}>
+            <Text style={[styles.segmentText, feedMode === 'for-you' && styles.segmentTextActive]}>
+              For You
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.segmentBtn, feedMode === 'following' && styles.segmentBtnActive]}
+            onPress={() => setFeedMode('following')}>
+            <Text style={[styles.segmentText, feedMode === 'following' && styles.segmentTextActive]}>
+              Following
+            </Text>
+          </TouchableOpacity>
+        </View>
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
           style={styles.bellBtn}
@@ -206,9 +329,7 @@ export default function HomeScreen() {
       ) : posts.length === 0 ? (
         <View style={styles.center}>
           <Text style={styles.emptyTitle}>No posts yet</Text>
-          <Text style={styles.emptyBody}>
-            Add an item to your collection and enable "Share to feed" to post here.
-          </Text>
+          <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
       ) : (
         <FlatList
@@ -357,15 +478,36 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: '#fff',
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e0e0e0',
   },
+  headerSegment: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  segmentBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  segmentBtnActive: {
+    backgroundColor: '#11181C',
+  },
+  segmentText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#687076',
+  },
+  segmentTextActive: {
+    color: '#fff',
+  },
   bellBtn: {
-    position: 'relative',
+    position: 'absolute',
+    right: 16,
     padding: 2,
   },
   bellBadge: {
@@ -385,15 +527,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     lineHeight: 12,
-  },
-  headerTitle: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    textAlign: 'center',
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#11181C',
   },
   center: {
     flex: 1,
