@@ -498,7 +498,7 @@ export default function ItemDetailScreen() {
                 {/* Flip container — sits where grailsImageInner was */}
                 <Pressable style={styles.flipContainer} onPress={editMode ? pickNewImage : handleFlip}>
                   {/* Front: image */}
-                  <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
+                  <Animated.View style={[styles.flipFaceFront, frontAnimStyle]} pointerEvents="none">
                     {displayImage ? (
                       <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" transition={200} />
                     ) : (
@@ -515,7 +515,7 @@ export default function ItemDetailScreen() {
                     )}
                   </Animated.View>
                   {/* Back: stats */}
-                  <Animated.View style={[styles.flipFaceBack, backAnimStyle]}>
+                  <Animated.View style={[styles.flipFaceBack, backAnimStyle]} pointerEvents="none">
                     <CardBack item={item} isGrail />
                   </Animated.View>
                 </Pressable>
@@ -531,7 +531,7 @@ export default function ItemDetailScreen() {
               style={styles.imageWrap}
               onPress={editMode ? pickNewImage : handleFlip}>
               {/* Front: image */}
-              <Animated.View style={[styles.flipFaceFront, frontAnimStyle]}>
+              <Animated.View style={[styles.flipFaceFront, frontAnimStyle]} pointerEvents="none">
                 {displayImage ? (
                   <Image source={{ uri: displayImage }} style={styles.image} contentFit="cover" transition={200} />
                 ) : (
@@ -548,7 +548,7 @@ export default function ItemDetailScreen() {
                 )}
               </Animated.View>
               {/* Back: stats */}
-              <Animated.View style={[styles.flipFaceBack, backAnimStyle]}>
+              <Animated.View style={[styles.flipFaceBack, backAnimStyle]} pointerEvents="none">
                 <CardBack item={item} isGrail={false} />
               </Animated.View>
             </Pressable>
