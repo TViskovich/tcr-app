@@ -318,10 +318,10 @@ export default function FolderDetailScreen() {
     <>
       <Stack.Screen
         options={showBookmarkHeader ? {
-          header: ({ navigation }) => (
+          header: () => (
             <ScreenHeader
               title={folderTitle}
-              onBack={() => navigation.goBack()}
+              onBack={() => router.back()}
               rightContent={<BookmarkButton isSaved={isSaved} onPress={toggleSave} disabled={savingBookmark} />}
             />
           ),

@@ -4,7 +4,6 @@ import { Animated, ActivityIndicator, ScrollView, StyleSheet, Text, View } from 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { BookmarkButton } from '@/components/ui/bookmark-button';
-import { ScreenHeader } from '@/components/ui/screen-header';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { useGrails } from '@/hooks/use-grails';
 import { useSavedGrails } from '@/hooks/use-saved';
@@ -29,19 +28,12 @@ export default function GrailsShowcaseScreen() {
   );
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.88)).current;
   const hasAnimated = useRef(false);
 
-  // Run entrance animation when grails become available, not on mount.
-  // If useEffect ran on mount with [], it would fire during the loading spinner
-  // and fadeAnim would already be 1 by the time the vault mounts.
   useEffect(() => {
     if (!loading && grails.length > 0 && !hasAnimated.current) {
       hasAnimated.current = true;
-      Animated.parallel([
-        Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }),
-        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, damping: 18, stiffness: 150 }),
-      ]).start();
+      Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
     }
   }, [loading, grails.length]);
 
@@ -52,15 +44,13 @@ export default function GrailsShowcaseScreen() {
     <>
       <Stack.Screen
         options={{
-          header: ({ navigation }) => (
-            <ScreenHeader
-              title={title}
-              onBack={() => navigation.goBack()}
-              rightContent={!isOwnGrails && !!currentUserId
-                ? <BookmarkButton isSaved={isSaved} onPress={toggleGrailsSave} disabled={savingGrails} />
-                : undefined}
-            />
-          ),
+          title,
+          headerBackButtonDisplayMode: 'minimal',
+          headerRight: !isOwnGrails && !!currentUserId
+            ? () => (
+                <BookmarkButton isSaved={isSaved} onPress={toggleGrailsSave} disabled={savingGrails} />
+              )
+            : undefined,
         }}
       />
       <View style={styles.container}>
@@ -73,7 +63,9 @@ export default function GrailsShowcaseScreen() {
             <Text style={styles.emptyText}>No Grails yet.</Text>
           </View>
         ) : (
-          <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ scale: scaleAnim }] }}>
+          // pointerEvents="box-none": wrapper itself doesn't absorb taps;
+          // children (ScrollView, GrailsGrid cards) receive all touches normally.
+          <Animated.View style={{ flex: 1, opacity: fadeAnim }} pointerEvents="box-none">
             <ScrollView
               contentContainerStyle={styles.scroll}
               showsVerticalScrollIndicator={false}>

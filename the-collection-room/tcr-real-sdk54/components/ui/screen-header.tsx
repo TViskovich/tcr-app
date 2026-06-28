@@ -17,7 +17,7 @@ export function ScreenHeader({ title, onBack, rightContent }: Props) {
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.card, borderBottomColor: colors.border }]}>
       <View style={styles.row}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={8} activeOpacity={0.55}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={8} activeOpacity={0.55} accessibilityLabel="Back" accessibilityRole="button">
           <MaterialIcons name="chevron-left" size={32} color={colors.primary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>

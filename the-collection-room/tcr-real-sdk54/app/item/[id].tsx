@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -25,7 +25,6 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
-import { ScreenHeader } from '@/components/ui/screen-header';
 import { useGrails } from '@/hooks/use-grails';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
@@ -246,8 +245,10 @@ export default function ItemDetailScreen() {
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
-  // Card flip animation — shared value goes 0 (front) → 1 (back)
+  // Card flip animation — shared value goes 0 (front) → 1 (back).
+  // flipTargetRef tracks the JS-side target so we never read a stale animated value.
   const flipAnim = useSharedValue(0);
+  const flipTargetRef = useRef(false);
 
   const frontAnimStyle = useAnimatedStyle(() => ({
     transform: [{ perspective: 1200 }, { rotateY: `${flipAnim.value * 180}deg` }],
@@ -258,8 +259,9 @@ export default function ItemDetailScreen() {
   }));
 
   function handleFlip() {
-    const isFlipped = flipAnim.value > 0.5;
-    flipAnim.value = withTiming(isFlipped ? 0 : 1, {
+    const next = !flipTargetRef.current;
+    flipTargetRef.current = next;
+    flipAnim.value = withTiming(next ? 1 : 0, {
       duration: 480,
       easing: Easing.out(Easing.cubic),
     });
@@ -438,16 +440,9 @@ export default function ItemDetailScreen() {
   return (
     <>
       <Stack.Screen
-        options={!isOwner && !!currentUserId ? {
-          header: ({ navigation }) => (
-            <ScreenHeader
-              title={headerTitle}
-              onBack={() => navigation.goBack()}
-              rightContent={<BookmarkButton isSaved={cardSaved} onPress={toggleCardSave} disabled={savingCard} />}
-            />
-          ),
-        } : {
+        options={{
           title: headerTitle,
+          headerBackButtonDisplayMode: 'minimal',
           headerRight: isOwner
             ? () =>
                 editMode ? (
@@ -466,6 +461,10 @@ export default function ItemDetailScreen() {
                     <Text style={styles.headerBtnText}>Edit</Text>
                   </TouchableOpacity>
                 )
+            : !!currentUserId
+            ? () => (
+                <BookmarkButton isSaved={cardSaved} onPress={toggleCardSave} disabled={savingCard} />
+              )
             : undefined,
           headerLeft: editMode
             ? () => (
@@ -491,7 +490,7 @@ export default function ItemDetailScreen() {
             // ── Grails frame ──────────────────────────────────────
             <View style={styles.grailsShadowWrap}>
               <View style={styles.grailsFrame}>
-                <View style={styles.grailsSpotWrap}>
+                <View style={styles.grailsSpotWrap} pointerEvents="none">
                   <View style={styles.grailsSpot} />
                 </View>
 
@@ -520,7 +519,7 @@ export default function ItemDetailScreen() {
                   </Animated.View>
                 </Pressable>
 
-                <View style={styles.grailsBottomWrap}>
+                <View style={styles.grailsBottomWrap} pointerEvents="none">
                   <View style={styles.grailsBottom} />
                 </View>
               </View>
