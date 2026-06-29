@@ -33,14 +33,17 @@ export type Profile = {
   bio: string | null;
   avatar_url: string | null;
   hero_image_url: string | null;
+  showcase_badge_url: string | null;
   created_at: string;
 };
 
 export type Post = {
   id: string;
   user_id: string;
+  post_type: 'item' | 'text';
   item_id: string | null;
-  image_url: string;
+  image_url: string | null;
+  content: string | null;
   caption: string | null;
   created_at: string;
 };

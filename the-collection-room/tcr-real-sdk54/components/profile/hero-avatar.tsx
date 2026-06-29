@@ -1,21 +1,17 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
-import { AVATAR_SIZE, GLOW_SIZE, GLOW_OFFSET } from './hero-constants';
+import { AVATAR_SIZE } from './hero-constants';
 
 type Props = {
   avatarUri: string | null;
-  displayName: string; // used for the initials fallback
+  displayName: string;
   onPress?: () => void;
   editMode?: boolean;
 };
 
 export function HeroAvatar({ avatarUri, displayName, onPress, editMode = false }: Props) {
   return (
-    // Fixed-size container so the glow's negative offsets don't shift sibling layout
     <View style={styles.avatarAnchor}>
-      {/* Diffuse glow ring — very low opacity, centered behind the avatar */}
-      <View style={styles.avatarGlow} pointerEvents="none" />
-
       <Pressable
         style={styles.avatarWrap}
         onPress={onPress}
@@ -50,30 +46,19 @@ const styles = StyleSheet.create({
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
   },
-  avatarGlow: {
-    position: 'absolute',
-    width: GLOW_SIZE,
-    height: GLOW_SIZE,
-    borderRadius: GLOW_SIZE / 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    top: -GLOW_OFFSET,
-    left: -GLOW_OFFSET,
-  },
   avatarWrap: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
     overflow: 'hidden',
     backgroundColor: '#2A2A2A',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   avatarPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarInitial: {
-    fontSize: 44,
+    fontSize: 145,
     fontWeight: '700',
     color: '#FFFFFF',
   },
@@ -85,7 +70,7 @@ const styles = StyleSheet.create({
   },
   avatarOverlayText: {
     color: '#fff',
-    fontSize: 13,
+    fontSize: 17,
     fontWeight: '600',
   },
 });

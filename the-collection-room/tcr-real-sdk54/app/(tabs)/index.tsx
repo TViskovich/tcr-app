@@ -26,7 +26,9 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 type FeedPost = {
   id: string;
   user_id: string;
-  image_url: string;
+  post_type: 'item' | 'text';
+  image_url: string | null;
+  content: string | null;
   caption: string | null;
   created_at: string;
   item_name: string | null;
@@ -66,8 +68,8 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
 
   const { data: postRows } = await supabase
     .from('posts')
-    .select('id, user_id, item_id, image_url, caption, created_at')
-    .not('item_id', 'is', null)
+    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
+    .in('post_type', ['item', 'text'])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
@@ -75,12 +77,15 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   if (!postRows?.length) return [];
 
   const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  const itemIds = (postRows as any[]).map((p) => p.item_id as string);
+  // Text posts have no item_id — filter nulls before querying collection_items.
+  const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
   const postIds = (postRows as any[]).map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes, followsRes] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
-    supabase.from('collection_items').select('id, name').in('id', itemIds),
+    itemIds.length > 0
+      ? supabase.from('collection_items').select('id, name').in('id', itemIds)
+      : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
     supabase.from('comments').select('post_id').in('post_id', postIds),
     currentUserId
@@ -109,14 +114,16 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
 
   const posts = (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
-    const item = itemMap.get(post.item_id) ?? {};
+    const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
     return {
       id: post.id,
       user_id: post.user_id,
-      image_url: post.image_url,
+      post_type: (post.post_type ?? 'item') as 'item' | 'text',
+      image_url: post.image_url ?? null,
+      content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,
-      item_name: item.name ?? null,
+      item_name: (item as any).name ?? null,
       username: profile.username ?? 'user',
       display_name: profile.display_name ?? null,
       avatar_url: profile.avatar_url ?? null,
@@ -145,8 +152,8 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
 
   const { data: postRows } = await supabase
     .from('posts')
-    .select('id, user_id, item_id, image_url, caption, created_at')
-    .not('item_id', 'is', null)
+    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
+    .in('post_type', ['item', 'text'])
     .in('user_id', followedIds)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
@@ -154,12 +161,14 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   if (!postRows?.length) return [];
 
   const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  const itemIds = (postRows as any[]).map((p) => p.item_id as string);
+  const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
   const postIds = (postRows as any[]).map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
-    supabase.from('collection_items').select('id, name').in('id', itemIds),
+    itemIds.length > 0
+      ? supabase.from('collection_items').select('id, name').in('id', itemIds)
+      : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
     supabase.from('comments').select('post_id').in('post_id', postIds),
   ]);
@@ -182,14 +191,16 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   // Already newest-first from .order('created_at', { ascending: false }) — no ranking applied
   return (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
-    const item = itemMap.get(post.item_id) ?? {};
+    const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
     return {
       id: post.id,
       user_id: post.user_id,
-      image_url: post.image_url,
+      post_type: (post.post_type ?? 'item') as 'item' | 'text',
+      image_url: post.image_url ?? null,
+      content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,
-      item_name: item.name ?? null,
+      item_name: (item as any).name ?? null,
       username: profile.username ?? 'user',
       display_name: profile.display_name ?? null,
       avatar_url: profile.avatar_url ?? null,
@@ -319,6 +330,14 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
+        {/* Compose button — mirrors bell position on the left */}
+        <TouchableOpacity
+          onPress={() => router.push('/post/new')}
+          style={styles.composeBtn}
+          hitSlop={8}>
+          <IconSymbol name="square.and.pencil" size={24} color="#11181C" />
+        </TouchableOpacity>
+
         <View style={styles.headerSegment}>
           <TouchableOpacity
             style={[styles.segmentBtn, feedMode === 'for-you' && styles.segmentBtnActive]}
@@ -427,6 +446,7 @@ function PostCard({
 }) {
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
+  const isTextPost = post.post_type === 'text';
 
   function handleLikeTap() {
     Animated.sequence([
@@ -436,7 +456,8 @@ function PostCard({
     onLike();
   }
 
-  if (imageError) return null;
+  // Only hide on image error for item posts — text posts have no image to fail.
+  if (imageError && !isTextPost) return null;
 
   const displayName = post.display_name || post.username;
 
@@ -469,23 +490,26 @@ function PostCard({
         <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
       </TouchableOpacity>
 
-      {/* Post image — tapping opens post detail */}
-      <TouchableOpacity
-        style={styles.cardImageWrap}
-        onPress={onPostPress}
-        activeOpacity={0.95}>
-        <Image
-          source={{ uri: post.image_url }}
-          style={StyleSheet.absoluteFill}
-          contentFit="cover"
-          transition={200}
-          onError={() => setImageError(true)}
-        />
-      </TouchableOpacity>
+      {/* Post body — text block for text posts, image for item posts */}
+      {isTextPost ? (
+        <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
+          <Text style={styles.cardTextContent}>{post.content}</Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity style={styles.cardImageWrap} onPress={onPostPress} activeOpacity={0.95}>
+          <Image
+            source={{ uri: post.image_url! }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={200}
+            onError={() => setImageError(true)}
+          />
+        </TouchableOpacity>
+      )}
 
-      {/* Caption + actions */}
+      {/* Caption + actions — caption only shown for item posts */}
       <View style={styles.cardBody}>
-        {(post.caption || post.item_name) ? (
+        {!isTextPost && (post.caption || post.item_name) ? (
           <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
         ) : null}
         <View style={styles.cardActions}>
@@ -543,6 +567,11 @@ const styles = StyleSheet.create({
   },
   segmentTextActive: {
     color: '#fff',
+  },
+  composeBtn: {
+    position: 'absolute',
+    left: 16,
+    padding: 2,
   },
   bellBtn: {
     position: 'absolute',
@@ -648,6 +677,17 @@ const styles = StyleSheet.create({
   cardImageWrap: {
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
+  },
+  cardTextWrap: {
+    backgroundColor: '#1A1A1A',
+    paddingHorizontal: 16,
+    paddingVertical: 20,
+    minHeight: 80,
+  },
+  cardTextContent: {
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.90)',
+    lineHeight: 24,
   },
   cardBody: {
     padding: 12,

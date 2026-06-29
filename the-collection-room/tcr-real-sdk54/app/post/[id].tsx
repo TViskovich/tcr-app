@@ -24,7 +24,9 @@ import { supabase } from '@/lib/supabase';
 type PostDetail = {
   id: string;
   user_id: string;
-  image_url: string;
+  post_type: 'item' | 'text';
+  image_url: string | null;
+  content: string | null;
   caption: string | null;
   created_at: string;
   item_name: string | null;
@@ -85,13 +87,17 @@ function PostHeader({
         <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
       </View>
 
-      {/* Photo */}
-      <View style={styles.imageWrap}>
-        <Image source={{ uri: post.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
-      </View>
+      {/* Post body — text for text posts, image for item posts */}
+      {post.post_type === 'text' ? (
+        <Text style={styles.textContent}>{post.content}</Text>
+      ) : (
+        <View style={styles.imageWrap}>
+          <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+        </View>
+      )}
 
-      {/* Caption or item name */}
-      {(post.caption || post.item_name) ? (
+      {/* Caption only for item posts */}
+      {post.post_type !== 'text' && (post.caption || post.item_name) ? (
         <Text style={styles.caption}>{post.caption || post.item_name}</Text>
       ) : null}
 
@@ -208,7 +214,7 @@ export default function PostDetailScreen() {
 
       const { data: postRow } = await supabase
         .from('posts')
-        .select('id, user_id, item_id, image_url, caption, created_at')
+        .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
         .eq('id', postId)
         .single();
 
@@ -222,7 +228,10 @@ export default function PostDetailScreen() {
 
       const [profileRes, itemRes, likesRes, fetchedComments] = await Promise.all([
         supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).single(),
-        supabase.from('collection_items').select('name').eq('id', row.item_id).maybeSingle(),
+        // Text posts have no item_id — skip the items lookup to avoid a malformed query.
+        row.item_id
+          ? supabase.from('collection_items').select('name').eq('id', row.item_id).maybeSingle()
+          : Promise.resolve({ data: null }),
         supabase.from('likes').select('user_id').eq('post_id', postId),
         fetchComments(postId),
       ]);
@@ -234,7 +243,9 @@ export default function PostDetailScreen() {
       setPost({
         id: row.id,
         user_id: row.user_id,
-        image_url: row.image_url,
+        post_type: (row.post_type ?? 'item') as 'item' | 'text',
+        image_url: row.image_url ?? null,
+        content: row.content ?? null,
         caption: row.caption ?? null,
         created_at: row.created_at,
         item_name: item?.name ?? null,
@@ -242,7 +253,7 @@ export default function PostDetailScreen() {
         display_name: p?.display_name ?? null,
         avatar_url: p?.avatar_url ?? null,
         likeCount: likeRows.length,
-        liked: likeRows.some((l) => l.user_id === currentUserId),
+        liked: likeRows.some((l: any) => l.user_id === currentUserId),
       });
 
       setComments(fetchedComments);
@@ -494,6 +505,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255,255,255,0.40)',
     flexShrink: 0,
+  },
+  textContent: {
+    fontSize: 18,
+    color: '#11181C',
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    lineHeight: 26,
   },
   caption: {
     fontSize: 15,

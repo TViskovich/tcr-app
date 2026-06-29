@@ -32,25 +32,25 @@ const styles = StyleSheet.create({
   textGroup: {
     alignItems: 'center',
     gap: 2,
-    marginTop: 12,
-    paddingHorizontal: 24,
+    marginTop: 10,
+    paddingHorizontal: 20,
   },
   displayName: {
-    fontSize: 21,
+    fontSize: 24,
     fontWeight: '800',
     color: '#FFFFFF',
     textAlign: 'center',
+    letterSpacing: -0.4,
   },
   username: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.60)',
   },
   bio: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.45)',
+    color: 'rgba(255,255,255,0.48)',
     textAlign: 'center',
     lineHeight: 19,
-    marginTop: 2,
   },
   actionRowWrap: {
     marginTop: 14,

@@ -270,6 +270,7 @@ export default function UserProfileScreen() {
                   </TouchableOpacity>
                 </View>
               ) : undefined}
+              brandLabel="SHOWCASE"
             />
 
             {/* Stats row — light section directly below the dark hero */}
