@@ -4,7 +4,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,12 +13,13 @@ import {
 } from 'react-native';
 
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GrailsGrid } from '@/components/profile/grails-grid';
+import { HeroStats } from '@/components/profile/hero-stats';
+import { ProfileHero } from '@/components/profile/profile-hero';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
@@ -136,7 +136,6 @@ export default function ProfileScreen() {
     }
   }
 
-  const displayName = profile?.display_name || profile?.username || 'User';
   const avatarUri = newAvatarUri ?? profile?.avatar_url ?? null;
 
   if (loading && !profile) {
@@ -198,30 +197,14 @@ export default function ProfileScreen() {
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
-          {/* Avatar */}
-          <Pressable
-            onPress={editMode ? pickAvatar : undefined}
-            style={styles.avatarWrap}>
-            {avatarUri ? (
-              <Image
-                source={{ uri: avatarUri }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-                transition={200}
-              />
-            ) : (
-              <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
-                <Text style={styles.avatarInitial}>
-                  {displayName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-            {editMode && (
-              <View style={styles.avatarOverlay}>
-                <Text style={styles.avatarOverlayText}>Change</Text>
-              </View>
-            )}
-          </Pressable>
+          {profile && (
+            <ProfileHero
+              profile={profile}
+              avatarUri={avatarUri}
+              onAvatarPress={editMode ? pickAvatar : undefined}
+              editMode={editMode}
+            />
+          )}
 
           {editMode ? (
             /* ── Edit Mode ── */
@@ -251,40 +234,13 @@ export default function ProfileScreen() {
           ) : (
             /* ── View Mode ── */
             <>
-              <View style={styles.viewSection}>
-                <Text style={styles.displayName}>{displayName}</Text>
-                <Text style={styles.usernameText}>@{profile?.username}</Text>
-                {profile?.bio ? (
-                  <Text style={styles.bio}>{profile.bio}</Text>
-                ) : null}
-              </View>
-
-              <View style={styles.statsRow}>
-                <View style={styles.stat}>
-                  <Text style={styles.statNumber}>{stats.folderCount}</Text>
-                  <Text style={styles.statLabel}>Folders</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statNumber}>{stats.itemCount}</Text>
-                  <Text style={styles.statLabel}>Items</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statNumber}>{stats.postCount}</Text>
-                  <Text style={styles.statLabel}>Posts</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statNumber}>{stats.followerCount}</Text>
-                  <Text style={styles.statLabel}>Followers</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statNumber}>{stats.followingCount}</Text>
-                  <Text style={styles.statLabel}>Following</Text>
-                </View>
-              </View>
+              <HeroStats stats={{
+                folders:   stats.folderCount,
+                items:     stats.itemCount,
+                posts:     stats.postCount,
+                followers: stats.followerCount,
+                following: stats.followingCount,
+              }} />
 
               <GrailsGrid
                 grails={grails}
@@ -360,86 +316,6 @@ const styles = StyleSheet.create({
   },
   scroll: {
     paddingBottom: 104,
-  },
-  avatarWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    alignSelf: 'center',
-    marginTop: 28,
-    marginBottom: 16,
-    overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
-  },
-  avatarPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarInitial: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: '#1565C0',
-  },
-  avatarOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarOverlayText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  viewSection: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    gap: 4,
-  },
-  displayName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#11181C',
-  },
-  usernameText: {
-    fontSize: 14,
-    color: '#687076',
-  },
-  bio: {
-    fontSize: 14,
-    color: '#444',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 4,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 28,
-    paddingVertical: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
-  },
-  stat: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  statNumber: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#11181C',
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#687076',
-  },
-  statDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 32,
-    backgroundColor: '#e0e0e0',
   },
   editSection: {
     padding: 16,

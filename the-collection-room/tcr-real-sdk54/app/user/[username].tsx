@@ -8,11 +8,12 @@ import {
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
 import { GrailsGrid } from '@/components/profile/grails-grid';
+import { HeroStats } from '@/components/profile/hero-stats';
+import { ProfileHero } from '@/components/profile/profile-hero';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
@@ -210,7 +211,6 @@ export default function UserProfileScreen() {
     );
   }
 
-  const displayName = profile.display_name || profile.username;
   const avatarUri = profile.avatar_url;
   const isOwnProfile = currentUserId === profile.id;
 
@@ -236,87 +236,42 @@ export default function UserProfileScreen() {
         contentContainerStyle={styles.list}
         columnWrapperStyle={styles.row}
         ListHeaderComponent={
-          <View style={styles.profileHeader}>
-            <View style={styles.avatarWrap}>
-              {avatarUri ? (
-                <Image
-                  source={{ uri: avatarUri }}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="cover"
-                  transition={200}
-                />
-              ) : (
-                <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
-                  <Text style={styles.avatarInitial}>
-                    {displayName.charAt(0).toUpperCase()}
-                  </Text>
+          <View>
+            <ProfileHero
+              profile={profile}
+              avatarUri={avatarUri}
+              actionRow={!isOwnProfile && currentUserId ? (
+                <View style={styles.actionRow}>
+                  <TouchableOpacity
+                    style={styles.msgBtn}
+                    onPress={handleMessage}
+                    disabled={msgLoading}
+                    activeOpacity={0.75}>
+                    {msgLoading ? (
+                      <ActivityIndicator size="small" color="#0a7ea4" />
+                    ) : (
+                      <Text style={styles.msgBtnText}>Message</Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
+                    onPress={toggleFollow}
+                    disabled={followLoading}
+                    activeOpacity={0.75}>
+                    {followLoading ? (
+                      <ActivityIndicator size="small" color={isFollowing ? '#687076' : '#fff'} />
+                    ) : (
+                      <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
+                        {isFollowing ? 'Following' : 'Follow'}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
                 </View>
-              )}
-            </View>
+              ) : undefined}
+            />
 
-            <Text style={styles.displayName}>{displayName}</Text>
-            <Text style={styles.usernameText}>@{profile.username}</Text>
-            {profile.bio ? (
-              <Text style={styles.bio}>{profile.bio}</Text>
-            ) : null}
-
-            {/* Stats row */}
-            <View style={styles.statsRow}>
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{counts.folders}</Text>
-                <Text style={styles.statLabel}>Folders</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{counts.items}</Text>
-                <Text style={styles.statLabel}>Items</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{counts.posts}</Text>
-                <Text style={styles.statLabel}>Posts</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{counts.followers}</Text>
-                <Text style={styles.statLabel}>Followers</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{counts.following}</Text>
-                <Text style={styles.statLabel}>Following</Text>
-              </View>
-            </View>
-
-            {/* Message + Follow/Unfollow — hidden on own profile or when not logged in */}
-            {!isOwnProfile && currentUserId ? (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  style={styles.msgBtn}
-                  onPress={handleMessage}
-                  disabled={msgLoading}
-                  activeOpacity={0.75}>
-                  {msgLoading ? (
-                    <ActivityIndicator size="small" color="#0a7ea4" />
-                  ) : (
-                    <Text style={styles.msgBtnText}>Message</Text>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
-                  onPress={toggleFollow}
-                  disabled={followLoading}
-                  activeOpacity={0.75}>
-                  {followLoading ? (
-                    <ActivityIndicator size="small" color={isFollowing ? '#687076' : '#fff'} />
-                  ) : (
-                    <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
-                      {isFollowing ? 'Following' : 'Follow'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            ) : null}
+            {/* Stats row — light section directly below the dark hero */}
+            <HeroStats stats={counts} />
 
             <GrailsGrid
               grails={grails}
@@ -367,76 +322,6 @@ const styles = StyleSheet.create({
   row: {
     justifyContent: 'flex-start',
   },
-  profileHeader: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 8,
-  },
-  avatarWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    marginTop: 24,
-    marginBottom: 16,
-    overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
-  },
-  avatarPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarInitial: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: '#1565C0',
-  },
-  displayName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#11181C',
-  },
-  usernameText: {
-    fontSize: 14,
-    color: '#687076',
-    marginTop: 4,
-  },
-  bio: {
-    fontSize: 14,
-    color: '#444',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 8,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    paddingVertical: 14,
-    marginTop: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
-  },
-  stat: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 2,
-  },
-  statNumber: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#11181C',
-  },
-  statLabel: {
-    fontSize: 10,
-    color: '#687076',
-  },
-  statDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 28,
-    backgroundColor: '#e0e0e0',
-  },
   actionRow: {
     flexDirection: 'row',
     gap: 10,
@@ -484,6 +369,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginTop: 28,
     marginBottom: 4,
+    paddingHorizontal: 16,
   },
   emptyWrap: {
     alignItems: 'center',
