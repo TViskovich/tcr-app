@@ -21,6 +21,7 @@ import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
 import { useTabVisibility } from '@/lib/tab-visibility-context';
+import { CreateMenu } from '@/components/create/create-menu';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 type FeedPost = {
@@ -222,6 +223,7 @@ export default function HomeScreen() {
   const lastScrollY = useRef(0);
   const tabBarHidden = useRef(false);
 
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -330,12 +332,12 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        {/* Compose button — mirrors bell position on the left */}
+        {/* Create button — opens the Create menu */}
         <TouchableOpacity
-          onPress={() => router.push('/post/new')}
+          onPress={() => setCreateMenuOpen(true)}
           style={styles.composeBtn}
           hitSlop={8}>
-          <IconSymbol name="square.and.pencil" size={24} color="#11181C" />
+          <IconSymbol name="plus" size={26} color="#11181C" weight="semibold" />
         </TouchableOpacity>
 
         <View style={styles.headerSegment}>
@@ -429,6 +431,11 @@ export default function HomeScreen() {
           }
         />
       )}
+
+      <CreateMenu
+        visible={createMenuOpen}
+        onClose={() => setCreateMenuOpen(false)}
+      />
     </SafeAreaView>
   );
 }

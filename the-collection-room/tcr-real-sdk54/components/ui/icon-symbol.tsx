@@ -28,6 +28,12 @@ const MAPPING = {
   'gearshape.fill': 'settings',
   'magnifyingglass': 'search',
   'crown.fill': 'emoji-events',
+  // Create menu icons
+  'plus': 'add',
+  'square.and.pencil': 'edit',
+  'camera.fill': 'camera-alt',
+  'rectangle.stack.fill': 'layers',
+  'sparkles': 'auto-awesome',
 } as IconMapping;
 
 /**

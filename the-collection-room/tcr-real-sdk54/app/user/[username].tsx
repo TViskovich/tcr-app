@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   ActivityIndicator,
-  FlatList,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,7 +12,6 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
 import { GrailsGrid } from '@/components/profile/grails-grid';
-import { HeroStats } from '@/components/profile/hero-stats';
 import { ProfileHero } from '@/components/profile/profile-hero';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useGrails } from '@/hooks/use-grails';
@@ -20,26 +19,19 @@ import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { Folder, Profile } from '@/types';
 
-type Counts = {
-  folders: number;
-  items: number;
-  posts: number;
-  followers: number;
-  following: number;
-};
-
 export default function UserProfileScreen() {
   const { username } = useLocalSearchParams<{ username: string }>();
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
 
+  const scrollY = useRef(new Animated.Value(0)).current;
+
   const [profile, setProfile] = useState<Profile | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>({});
 
   const { grails } = useGrails(profile?.id);
-  const [counts, setCounts] = useState<Counts>({ folders: 0, items: 0, posts: 0, followers: 0, following: 0 });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
@@ -67,21 +59,12 @@ export default function UserProfileScreen() {
       setProfile(profileData as Profile);
 
       const uid = profileData.id;
-      const [
-        foldersRes,
-        folderCountRes,
-        itemCountRes,
-        postCountRes,
-        followerCountRes,
-        followingCountRes,
-      ] = await Promise.all([
-        supabase.from('folders').select('*').eq('user_id', uid).eq('is_public', true).order('created_at', { ascending: false }),
-        supabase.from('folders').select('*', { count: 'exact', head: true }).eq('user_id', uid),
-        supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', uid),
-        supabase.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', uid),
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', uid),
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', uid),
-      ]);
+      const foldersRes = await supabase
+        .from('folders')
+        .select('*')
+        .eq('user_id', uid)
+        .eq('is_public', true)
+        .order('created_at', { ascending: false });
 
       const resolvedFolders = await resolveCovers((foldersRes.data as Folder[]) ?? []);
       setFolders(resolvedFolders);
@@ -100,13 +83,6 @@ export default function UserProfileScreen() {
         setFolderItemCounts(perFolder);
       }
 
-      setCounts({
-        folders: folderCountRes.count ?? 0,
-        items: itemCountRes.count ?? 0,
-        posts: postCountRes.count ?? 0,
-        followers: followerCountRes.count ?? 0,
-        following: followingCountRes.count ?? 0,
-      });
       setLoading(false);
     }
 
@@ -126,18 +102,6 @@ export default function UserProfileScreen() {
       .maybeSingle()
       .then(({ data }) => setIsFollowing(!!data));
   }, [profileId, currentUserId]);
-
-  async function refreshFollowerCounts(uid: string) {
-    const [followersRes, followingRes] = await Promise.all([
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', uid),
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', uid),
-    ]);
-    setCounts((prev) => ({
-      ...prev,
-      followers: followersRes.count ?? prev.followers,
-      following: followingRes.count ?? prev.following,
-    }));
-  }
 
   async function handleMessage() {
     if (!currentUserId || !profile || currentUserId === profile.id) return;
@@ -185,7 +149,6 @@ export default function UserProfileScreen() {
         if (error && error.code !== '23505') console.error('Follow notif failed:', error.message);
       });
     }
-    await refreshFollowerCounts(profile.id);
     setFollowLoading(false);
   }
 
@@ -218,10 +181,15 @@ export default function UserProfileScreen() {
   return (
     <>
       <Stack.Screen options={{ title: `@${profile.username}` }} />
-      <FlatList
+      <Animated.FlatList
         data={folders}
         numColumns={2}
         keyExtractor={(item) => item.id}
+        scrollEventThrottle={16}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true },
+        )}
         renderItem={({ item }) => (
           <FolderCard
             folder={item}
@@ -242,6 +210,7 @@ export default function UserProfileScreen() {
               profile={profile}
               avatarUri={avatarUri}
               heroImageUri={heroUri}
+              scrollY={scrollY}
               actionRow={!isOwnProfile && currentUserId ? (
                 <View style={styles.actionRow}>
                   <TouchableOpacity
@@ -273,9 +242,6 @@ export default function UserProfileScreen() {
               brandLabel="SHOWCASE"
             />
 
-            {/* Stats row — light section directly below the dark hero */}
-            <HeroStats stats={counts} />
-
             <GrailsGrid
               grails={grails}
               editable={false}
@@ -292,13 +258,26 @@ export default function UserProfileScreen() {
             />
 
             {folders.length > 0 && (
-              <Text style={styles.sectionTitle}>Collection</Text>
+              <Text style={styles.foldersLabel}>Folders</Text>
             )}
           </View>
         }
         ListEmptyComponent={
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyText}>No public folders yet.</Text>
+          </View>
+        }
+        ListFooterComponent={
+          <View>
+            {/* Activity — future section */}
+            <View style={styles.placeholderSection}>
+              <Text style={styles.placeholderLabel}>Activity</Text>
+            </View>
+            {/* Collection — future destination */}
+            <View style={styles.placeholderSection}>
+              <Text style={styles.placeholderLabel}>Collection</Text>
+            </View>
+            <View style={styles.bottomSpacer} />
           </View>
         }
       />
@@ -365,14 +344,31 @@ const styles = StyleSheet.create({
   followBtnTextFollowing: {
     color: '#687076',
   },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#11181C',
+  foldersLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#adb5bd',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
     alignSelf: 'flex-start',
-    marginTop: 28,
+    marginTop: 24,
     marginBottom: 4,
     paddingHorizontal: 16,
+  },
+  placeholderSection: {
+    paddingHorizontal: 16,
+    paddingTop: 24,
+    paddingBottom: 8,
+  },
+  placeholderLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#adb5bd',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  bottomSpacer: {
+    height: 48,
   },
   emptyWrap: {
     alignItems: 'center',

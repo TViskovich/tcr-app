@@ -1,6 +1,7 @@
+import { useRef } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 
 type Props = {
   avatarUri: string | null;
@@ -12,8 +13,12 @@ type Props = {
 };
 
 const CHIPS = ['followers', 'basketball', 'pokemon', 'baseball'];
-const PILL_COLORS: [string, string] = ['rgba(22, 28, 56, 0.92)', 'rgba(6, 10, 26, 0.86)'];
-const BADGE_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.09)', 'rgba(255,255,255,0)'];
+// Deeper navy for richer collector-card feel
+const PILL_COLORS: [string, string] = ['rgba(14, 22, 58, 0.96)', 'rgba(4, 8, 22, 0.92)'];
+// Pill top-gloss — fades from 10% white to transparent at 45% height
+const PILL_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.10)', 'transparent'];
+// Badge top-edge highlight
+const BADGE_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.15)', 'rgba(255,255,255,0)'];
 
 const PILL_W = 104;
 const PILL_H = 72;
@@ -53,6 +58,26 @@ export function HeroShowcaseRail({
   const right = CHIPS.slice(2);    // [inner, outermost]
   const initial = displayName.charAt(0).toUpperCase();
 
+  const badgeScale = useRef(new Animated.Value(1)).current;
+
+  function handleBadgePressIn() {
+    Animated.timing(badgeScale, {
+      toValue: 1.03,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function handleBadgePressOut() {
+    Animated.timing(badgeScale, {
+      toValue: 1.0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }
+
   // Resolution order: custom badge → avatar → null (initials)
   const badgeImageUri = showcaseBadgeUri ?? avatarUri;
 
@@ -65,16 +90,24 @@ export function HeroShowcaseRail({
         const marginTop = CENTER_OFFSET + slot * DROP_PX;
         return (
           <LinearGradient key={label} colors={PILL_COLORS} style={[styles.pill, { marginTop }]}>
+            {/* Top gloss — premium bevel feel */}
+            <LinearGradient
+              colors={PILL_HIGHLIGHT}
+              locations={[0, 0.45]}
+              style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+              pointerEvents="none"
+            />
             <Text style={styles.pillText}>{label}</Text>
           </LinearGradient>
         );
       })}
 
-      {/* Collector badge — apex of arc. Pressable is active only in editMode. */}
-      <View style={styles.badgeShadow}>
+      {/* Collector badge — apex of arc. Scale animates on any press; action only in editMode. */}
+      <Animated.View style={[styles.badgeShadow, { transform: [{ scale: badgeScale }] }]}>
         <Pressable
           onPress={editMode ? onBadgePress : undefined}
-          disabled={!editMode}
+          onPressIn={handleBadgePressIn}
+          onPressOut={handleBadgePressOut}
           style={styles.badge}
         >
           {badgeImageUri ? (
@@ -100,13 +133,19 @@ export function HeroShowcaseRail({
             </View>
           )}
         </Pressable>
-      </View>
+      </Animated.View>
 
       {right.map((label, i) => {
         const slot = i + 1; // right[0]=inner→1, right[1]=outermost→2
         const marginTop = CENTER_OFFSET + slot * DROP_PX;
         return (
           <LinearGradient key={label} colors={PILL_COLORS} style={[styles.pill, { marginTop }]}>
+            <LinearGradient
+              colors={PILL_HIGHLIGHT}
+              locations={[0, 0.45]}
+              style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+              pointerEvents="none"
+            />
             <Text style={styles.pillText}>{label}</Text>
           </LinearGradient>
         );
@@ -121,7 +160,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: GAP,
-    marginTop: 18,
+    marginTop: 10,
     marginBottom: 6,
   },
   pill: {
@@ -129,7 +168,7 @@ const styles = StyleSheet.create({
     height: PILL_H,
     borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
@@ -159,8 +198,8 @@ const styles = StyleSheet.create({
     height: BADGE_H,
     borderRadius: BADGE_RADIUS,
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.13)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.24)',
     backgroundColor: '#2A2A2A',
     justifyContent: 'center',
     alignItems: 'center',

@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { Fonts } from '@/constants/theme';
 
 type Props = {
   displayName: string;
@@ -11,7 +12,7 @@ type Props = {
 export function HeroInfo({ displayName, username, bio, actionRow }: Props) {
   return (
     <>
-      {/* Tight text cluster — name / @handle / bio */}
+      {/* Identity block — name + handle as one unit, bio below */}
       <View style={styles.textGroup}>
         <Text style={styles.displayName} numberOfLines={1}>{displayName}</Text>
         <Text style={styles.username}>@{username}</Text>
@@ -31,20 +32,26 @@ export function HeroInfo({ displayName, username, bio, actionRow }: Props) {
 const styles = StyleSheet.create({
   textGroup: {
     alignItems: 'center',
-    gap: 2,
     marginTop: 10,
     paddingHorizontal: 20,
   },
   displayName: {
+    fontFamily: Fonts?.brand,
     fontSize: 24,
-    fontWeight: '800',
     color: '#FFFFFF',
     textAlign: 'center',
-    letterSpacing: -0.4,
+    letterSpacing: 0.5,
+    marginBottom: 6,
+    textShadowColor: 'rgba(0,0,0,0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   username: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.60)',
+    fontSize: 18,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+    color: 'rgba(255,255,255,0.82)',
+    marginBottom: 11,
   },
   bio: {
     fontSize: 13,

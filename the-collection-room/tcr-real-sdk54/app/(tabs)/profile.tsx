@@ -1,11 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
+  Animated,
   ActivityIndicator,
   Alert,
   type AlertButton,
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,7 +19,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GrailsGrid } from '@/components/profile/grails-grid';
-import { HeroStats } from '@/components/profile/hero-stats';
 import { ProfileHero } from '@/components/profile/profile-hero';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
@@ -32,11 +31,13 @@ export default function ProfileScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id;
   const router = useRouter();
-  const { profile, stats, loading, refresh } = useProfile(userId);
+  const { profile, loading, refresh } = useProfile(userId);
   const { grails, refresh: refreshGrails } = useGrails(userId);
 
+  const scrollY = useRef(new Animated.Value(0)).current;
+
   const [editMode, setEditMode] = useState(false);
-  const [editForm, setEditForm] = useState({ displayName: '', bio: '' });
+  const [editForm, setEditForm] = useState({ heroName: '', displayName: '', bio: '' });
   const [newAvatarUri, setNewAvatarUri] = useState<string | null>(null);
   const [newHeroUri, setNewHeroUri] = useState<string | null>(null);
   const [removeHero, setRemoveHero] = useState(false);
@@ -53,6 +54,7 @@ export default function ProfileScreen() {
 
   function enterEdit() {
     setEditForm({
+      heroName: profile?.hero_display_name ?? '',
       displayName: profile?.display_name ?? '',
       bio: profile?.bio ?? '',
     });
@@ -269,6 +271,7 @@ export default function ProfileScreen() {
       const { error } = await supabase
         .from('profiles')
         .update({
+          hero_display_name: editForm.heroName.trim() || null,
           display_name: editForm.displayName.trim() || null,
           bio: editForm.bio.trim() || null,
           avatar_url: avatarUrl,
@@ -351,10 +354,15 @@ export default function ProfileScreen() {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? undefined : 'height'}>
-        <ScrollView
+        <Animated.ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          scrollEventThrottle={16}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: true },
+          )}>
 
           {profile && (
             <ProfileHero
@@ -367,12 +375,25 @@ export default function ProfileScreen() {
               onBadgePress={editMode ? pickBadge : undefined}
               editMode={editMode}
               brandLabel="SHOWCASE"
+              scrollY={scrollY}
             />
           )}
 
           {editMode ? (
             /* ── Edit Mode ── */
             <View style={styles.editSection}>
+              <Text style={styles.fieldLabel}>Hero Name</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={editForm.heroName}
+                onChangeText={(v) => setEditForm((p) => ({ ...p, heroName: v }))}
+                placeholder="Knicks Vault, Griffey Guy, The Ruler…"
+                placeholderTextColor="#999"
+                maxLength={40}
+              />
+              <Text style={styles.fieldHint}>
+                Shown large in your profile hero. Leave blank to use your display name.
+              </Text>
               <Text style={styles.fieldLabel}>Display Name</Text>
               <TextInput
                 style={styles.fieldInput}
@@ -398,14 +419,6 @@ export default function ProfileScreen() {
           ) : (
             /* ── View Mode ── */
             <>
-              <HeroStats stats={{
-                folders:   stats.folderCount,
-                items:     stats.itemCount,
-                posts:     stats.postCount,
-                followers: stats.followerCount,
-                following: stats.followingCount,
-              }} />
-
               <GrailsGrid
                 grails={grails}
                 editable
@@ -420,10 +433,20 @@ export default function ProfileScreen() {
                   })
                 }
               />
+
+              {/* Activity — future section */}
+              <View style={styles.placeholderSection}>
+                <Text style={styles.placeholderLabel}>Activity</Text>
+              </View>
+
+              {/* Collection — future destination */}
+              <View style={styles.placeholderSection}>
+                <Text style={styles.placeholderLabel}>Collection</Text>
+              </View>
             </>
           )}
 
-        </ScrollView>
+        </Animated.ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -490,6 +513,23 @@ const styles = StyleSheet.create({
     color: '#687076',
     marginTop: 16,
     marginBottom: 6,
+  },
+  fieldHint: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 5,
+  },
+  placeholderSection: {
+    paddingHorizontal: 16,
+    paddingTop: 24,
+    paddingBottom: 8,
+  },
+  placeholderLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#adb5bd',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
   fieldInput: {
     borderWidth: 1,

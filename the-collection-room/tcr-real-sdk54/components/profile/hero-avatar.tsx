@@ -45,6 +45,13 @@ const styles = StyleSheet.create({
   avatarAnchor: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
+    // Floating shadow beneath the avatar disc
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
   },
   avatarWrap: {
     width: AVATAR_SIZE,
@@ -52,6 +59,9 @@ const styles = StyleSheet.create({
     borderRadius: AVATAR_SIZE / 2,
     overflow: 'hidden',
     backgroundColor: '#2A2A2A',
+    // 1.5px rim light — separates the disc from the dark background
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.16)',
   },
   avatarPlaceholder: {
     alignItems: 'center',

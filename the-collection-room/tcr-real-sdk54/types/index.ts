@@ -30,6 +30,7 @@ export type Profile = {
   id: string;
   username: string;
   display_name: string | null;
+  hero_display_name: string | null;
   bio: string | null;
   avatar_url: string | null;
   hero_image_url: string | null;

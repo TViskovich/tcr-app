@@ -134,7 +134,7 @@ const styles = StyleSheet.create({
   // Width is set dynamically (14px margin each side). No marginHorizontal here.
   // Shadow kept minimal — cards are the visual focus, not the container.
   vaultShadow: {
-    marginTop: 16,
+    marginTop: -14,
     marginBottom: 8,
     borderRadius: 20,
     shadowColor: '#B8860B',

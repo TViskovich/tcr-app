@@ -1,4 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
+import { Fonts } from '@/constants/theme';
 
 type Props = {
   // Optional — defaults to 'SHOWCASE'. Later phases will accept uploaded logos or SVGs.
@@ -26,7 +27,7 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '-6deg' }],
   },
   wordmark: {
-    fontFamily: 'MarkerFelt-Wide',
+    fontFamily: Fonts?.brand,
     fontSize: 44,
     letterSpacing: 1.5,
     textTransform: 'uppercase',
