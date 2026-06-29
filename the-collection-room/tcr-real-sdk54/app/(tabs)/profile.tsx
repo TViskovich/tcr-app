@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  type AlertButton,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -24,7 +25,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
-import { uploadAvatar } from '@/lib/storage';
+import { uploadAvatar, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 
 export default function ProfileScreen() {
@@ -37,6 +38,8 @@ export default function ProfileScreen() {
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ displayName: '', bio: '' });
   const [newAvatarUri, setNewAvatarUri] = useState<string | null>(null);
+  const [newHeroUri, setNewHeroUri] = useState<string | null>(null);
+  const [removeHero, setRemoveHero] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useFocusEffect(
@@ -52,11 +55,15 @@ export default function ProfileScreen() {
       bio: profile?.bio ?? '',
     });
     setNewAvatarUri(null);
+    setNewHeroUri(null);
+    setRemoveHero(false);
     setEditMode(true);
   }
 
   function cancelEdit() {
     setNewAvatarUri(null);
+    setNewHeroUri(null);
+    setRemoveHero(false);
     setEditMode(false);
   }
 
@@ -101,6 +108,61 @@ export default function ProfileScreen() {
     ]);
   }
 
+  async function pickHeroFromLibrary() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setNewHeroUri(result.assets[0].uri);
+      setRemoveHero(false);
+    }
+  }
+
+  async function pickHeroFromCamera() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow camera access in settings.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [16, 9],
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setNewHeroUri(result.assets[0].uri);
+      setRemoveHero(false);
+    }
+  }
+
+  function pickHero() {
+    const canRemove = !!(profile?.hero_image_url || newHeroUri);
+    const options: AlertButton[] = [
+      { text: 'Take Photo', onPress: pickHeroFromCamera },
+      { text: 'Choose from Library', onPress: pickHeroFromLibrary },
+    ];
+    if (canRemove) {
+      options.push({
+        text: 'Remove Banner',
+        style: 'destructive',
+        onPress: () => {
+          setNewHeroUri(null);
+          setRemoveHero(true);
+        },
+      });
+    }
+    options.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert('Change Banner', undefined, options);
+  }
+
   async function handleSave() {
     if (!userId) return;
     setSaving(true);
@@ -115,12 +177,27 @@ export default function ProfileScreen() {
         }
       }
 
+      let heroUrl: string | null;
+      if (newHeroUri) {
+        try {
+          heroUrl = await uploadHeroImage(newHeroUri, userId);
+        } catch (uploadErr: unknown) {
+          const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
+          throw new Error(`Banner upload failed: ${detail}`);
+        }
+      } else if (removeHero) {
+        heroUrl = null;
+      } else {
+        heroUrl = profile?.hero_image_url ?? null;
+      }
+
       const { error } = await supabase
         .from('profiles')
         .update({
           display_name: editForm.displayName.trim() || null,
           bio: editForm.bio.trim() || null,
           avatar_url: avatarUrl,
+          hero_image_url: heroUrl,
         })
         .eq('id', userId);
 
@@ -128,6 +205,8 @@ export default function ProfileScreen() {
 
       await refresh();
       setNewAvatarUri(null);
+      setNewHeroUri(null);
+      setRemoveHero(false);
       setEditMode(false);
     } catch (e: unknown) {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
@@ -137,6 +216,7 @@ export default function ProfileScreen() {
   }
 
   const avatarUri = newAvatarUri ?? profile?.avatar_url ?? null;
+  const heroUri = removeHero ? null : (newHeroUri ?? profile?.hero_image_url ?? null);
 
   if (loading && !profile) {
     return (
@@ -201,7 +281,9 @@ export default function ProfileScreen() {
             <ProfileHero
               profile={profile}
               avatarUri={avatarUri}
+              heroImageUri={heroUri}
               onAvatarPress={editMode ? pickAvatar : undefined}
+              onHeroPress={editMode ? pickHero : undefined}
               editMode={editMode}
             />
           )}

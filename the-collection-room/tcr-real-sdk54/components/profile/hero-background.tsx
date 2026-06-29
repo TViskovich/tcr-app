@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { HERO_HEIGHT } from './hero-constants';
@@ -6,11 +6,13 @@ import { HERO_HEIGHT } from './hero-constants';
 type Props = {
   // Resolved background source: heroImageUri ?? avatarUri ?? null
   bgSource: string | null;
+  editMode?: boolean;
+  onHeroPress?: () => void;
 };
 
 // Renders the three purely decorative background layers of the hero.
 // All children are absolute and do not affect layout height.
-export function HeroBackground({ bgSource }: Props) {
+export function HeroBackground({ bgSource, editMode = false, onHeroPress }: Props) {
   return (
     <>
       {/* Layer 1 — blurred background image, expanded -20px on each edge
@@ -34,6 +36,13 @@ export function HeroBackground({ bgSource }: Props) {
         style={[StyleSheet.absoluteFill, styles.heroGradient]}
         pointerEvents="none"
       />
+
+      {/* Edit-mode banner button — bottom-right corner, above the gradient */}
+      {editMode && onHeroPress ? (
+        <TouchableOpacity style={styles.heroEditBtn} onPress={onHeroPress} activeOpacity={0.75}>
+          <Text style={styles.heroEditText}>Change Banner</Text>
+        </TouchableOpacity>
+      ) : null}
     </>
   );
 }
@@ -53,5 +62,22 @@ const styles = StyleSheet.create({
   // Gradient starts at the lower 58% of the hero
   heroGradient: {
     top: HERO_HEIGHT * 0.42,
+  },
+  heroEditBtn: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  heroEditText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
 });

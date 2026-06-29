@@ -9,14 +9,15 @@ import { HeroInfo } from './hero-info';
 export { HERO_HEIGHT } from './hero-constants';
 
 // Background source resolution order:
-//   1. heroImageUri — dedicated banner image (future DB field, not yet wired)
-//   2. avatarUri    — current fallback: blurred avatar fills the hero
+//   1. heroImageUri — dedicated banner image (DB field: hero_image_url)
+//   2. avatarUri    — fallback: blurred avatar fills the hero
 //   3. null         — solid dark base (#0D0D0D), no image rendered
 type Props = {
   profile: Profile;
   avatarUri: string | null;
   heroImageUri?: string | null;
   onAvatarPress?: () => void;
+  onHeroPress?: () => void;
   editMode?: boolean;
   actionRow?: ReactNode;
 };
@@ -26,6 +27,7 @@ export function ProfileHero({
   avatarUri,
   heroImageUri = null,
   onAvatarPress,
+  onHeroPress,
   editMode = false,
   actionRow,
 }: Props) {
@@ -35,7 +37,7 @@ export function ProfileHero({
   return (
     <View style={styles.root}>
       <View style={styles.hero}>
-        <HeroBackground bgSource={bgSource} />
+        <HeroBackground bgSource={bgSource} editMode={editMode} onHeroPress={onHeroPress} />
 
         <View style={styles.heroContent}>
           <HeroAvatar

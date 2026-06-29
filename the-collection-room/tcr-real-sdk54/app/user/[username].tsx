@@ -212,6 +212,7 @@ export default function UserProfileScreen() {
   }
 
   const avatarUri = profile.avatar_url;
+  const heroUri = profile.hero_image_url ?? null;
   const isOwnProfile = currentUserId === profile.id;
 
   return (
@@ -240,6 +241,7 @@ export default function UserProfileScreen() {
             <ProfileHero
               profile={profile}
               avatarUri={avatarUri}
+              heroImageUri={heroUri}
               actionRow={!isOwnProfile && currentUserId ? (
                 <View style={styles.actionRow}>
                   <TouchableOpacity

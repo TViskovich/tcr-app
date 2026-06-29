@@ -32,6 +32,7 @@ export type Profile = {
   display_name: string | null;
   bio: string | null;
   avatar_url: string | null;
+  hero_image_url: string | null;
   created_at: string;
 };
 
