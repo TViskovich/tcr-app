@@ -9,7 +9,7 @@ type Props = {
 
 type MenuOption = {
   id: string;
-  icon: 'square.and.pencil' | 'rectangle.stack.fill' | 'camera.fill' | 'sparkles';
+  icon: 'square.and.pencil' | 'rectangle.stack.fill' | 'folder.fill' | 'sparkles';
   title: string;
   subtitle: string;
   // null = disabled / coming soon
@@ -28,21 +28,21 @@ const OPTIONS: MenuOption[] = [
     id: 'card',
     icon: 'rectangle.stack.fill',
     title: 'Share Card',
-    subtitle: 'Post one of your collection items',
+    subtitle: 'Post one collectible from your collection',
     route: null,
   },
   {
-    id: 'photo',
-    icon: 'camera.fill',
-    title: 'Share Photo',
-    subtitle: 'Mail day, display, or pickup photo',
+    id: 'folder',
+    icon: 'folder.fill',
+    title: 'Share Folder',
+    subtitle: 'Share a curated folder',
     route: null,
   },
   {
     id: 'showcase',
     icon: 'sparkles',
     title: 'Showcase',
-    subtitle: 'Feature multiple favorites',
+    subtitle: 'Feature multiple grails or favorites',
     route: null,
   },
 ];
