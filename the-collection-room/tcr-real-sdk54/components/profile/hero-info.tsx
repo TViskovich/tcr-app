@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { Fonts } from '@/constants/theme';
 
 type Props = {
@@ -7,9 +7,10 @@ type Props = {
   username: string;
   bio: string | null;
   actionRow?: ReactNode;
+  animatedBioOpacity?: Animated.Value;
 };
 
-export function HeroInfo({ displayName, username, bio, actionRow }: Props) {
+export function HeroInfo({ displayName, username, bio, actionRow, animatedBioOpacity }: Props) {
   return (
     <>
       {/* Identity block — name + handle as one unit, bio below */}
@@ -17,7 +18,14 @@ export function HeroInfo({ displayName, username, bio, actionRow }: Props) {
         <Text style={styles.displayName} numberOfLines={1}>{displayName}</Text>
         <Text style={styles.username}>@{username}</Text>
         {bio ? (
-          <Text style={styles.bio}>{bio}</Text>
+          <Animated.Text
+            style={[
+              styles.bio,
+              animatedBioOpacity !== undefined ? { opacity: animatedBioOpacity } : undefined,
+            ]}
+          >
+            {bio}
+          </Animated.Text>
         ) : null}
       </View>
 

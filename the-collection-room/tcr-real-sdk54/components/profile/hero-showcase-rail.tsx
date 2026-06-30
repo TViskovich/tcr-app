@@ -3,16 +3,16 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 
-type Props = {
-  avatarUri: string | null;
-  showcaseBadgeUri?: string | null;
-  displayName?: string;
-  editMode?: boolean;
-  onBadgePress?: () => void;
-  // Future: categories?: string[]; selectedCategory?: string | null; onSelectCategory?: (c: string) => void;
-};
+type PillDef = { id: string; label: string };
 
-const CHIPS = ['followers', 'basketball', 'pokemon', 'baseball'];
+// Ordered: left-outer, left-inner, right-inner, right-outer
+const PILL_DEFS: PillDef[] = [
+  { id: 'followers', label: 'Followers' },
+  { id: 'posts',     label: 'Posts' },
+  { id: 'folders',   label: 'Folders' },
+  { id: 'following', label: 'Following' },
+];
+
 // Deeper navy for richer collector-card feel
 const PILL_COLORS: [string, string] = ['rgba(14, 22, 58, 0.96)', 'rgba(4, 8, 22, 0.92)'];
 // Pill top-gloss — fades from 10% white to transparent at 45% height
@@ -46,6 +46,19 @@ const GAP = 6;
 const CENTER_OFFSET = (BADGE_H - PILL_H) / 2; // 11
 const DROP_PX = 10;
 
+type Props = {
+  avatarUri: string | null;
+  showcaseBadgeUri?: string | null;
+  displayName?: string;
+  editMode?: boolean;
+  onBadgePress?: () => void;
+  // Called when user taps an active pill or the center badge (id === 'grails').
+  // The rail has no knowledge of routes — parents decide what to do with each id.
+  onPillPress?: (id: string) => void;
+  // IDs of the four surrounding pills that are interactive. The badge ('grails')
+  // is always tappable when onPillPress is provided — it does not appear in this array.
+  activePills?: string[];
+};
 
 export function HeroShowcaseRail({
   avatarUri,
@@ -53,9 +66,11 @@ export function HeroShowcaseRail({
   displayName = '',
   editMode = false,
   onBadgePress,
+  onPillPress,
+  activePills = [],
 }: Props) {
-  const left = CHIPS.slice(0, 2);  // [outermost, inner]
-  const right = CHIPS.slice(2);    // [inner, outermost]
+  const left = PILL_DEFS.slice(0, 2);  // [followers (outer), posts (inner)]
+  const right = PILL_DEFS.slice(2);    // [folders (inner), following (outer)]
   const initial = displayName.charAt(0).toUpperCase();
 
   const badgeScale = useRef(new Animated.Value(1)).current;
@@ -82,80 +97,125 @@ export function HeroShowcaseRail({
   const badgeImageUri = showcaseBadgeUri ?? avatarUri;
 
   return (
-    // In editMode: 'box-none' lets the badge Pressable receive touches while pills (no onPress) ignore them.
-    // In view mode: 'none' makes the entire rail touch-transparent.
-    <View style={styles.rail} pointerEvents={editMode ? 'box-none' : 'none'}>
-      {left.map((label, i) => {
-        const slot = left.length - i; // left[0]=outermost→2, left[1]=inner→1
-        const marginTop = CENTER_OFFSET + slot * DROP_PX;
-        return (
-          <LinearGradient key={label} colors={PILL_COLORS} style={[styles.pill, { marginTop }]}>
-            {/* Top gloss — premium bevel feel */}
-            <LinearGradient
-              colors={PILL_HIGHLIGHT}
-              locations={[0, 0.45]}
-              style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
-              pointerEvents="none"
-            />
-            <Text style={styles.pillText}>{label}</Text>
-          </LinearGradient>
-        );
-      })}
+    // box-none: the rail container is touch-transparent so it never blocks vertical
+    // scrolling. Only explicit Pressable children consume touch events.
+    <View style={styles.rail} pointerEvents="box-none">
 
-      {/* Collector badge — apex of arc. Scale animates on any press; action only in editMode. */}
-      <Animated.View style={[styles.badgeShadow, { transform: [{ scale: badgeScale }] }]}>
-        <Pressable
-          onPress={editMode ? onBadgePress : undefined}
-          onPressIn={handleBadgePressIn}
-          onPressOut={handleBadgePressOut}
-          style={styles.badge}
-        >
-          {badgeImageUri ? (
-            <Image
-              source={{ uri: badgeImageUri }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-            />
-          ) : (
-            <Text style={styles.badgeInitial}>{initial}</Text>
-          )}
-          {/* Top gloss — fades to transparent at 50%, does not affect lower half */}
+      {left.map((pill, i) => {
+        const slot = left.length - i; // [0]=outermost→slot 2, [1]=inner→slot 1
+        const marginTop = CENTER_OFFSET + slot * DROP_PX;
+        const isActive = activePills.includes(pill.id);
+
+        const pillFace = (
           <LinearGradient
-            colors={BADGE_HIGHLIGHT}
-            locations={[0, 0.5]}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-          {/* Edit overlay — dark scrim + "Change" label, only in edit mode */}
-          {editMode && (
-            <View style={styles.badgeEditOverlay} pointerEvents="none">
-              <Text style={styles.badgeEditText}>Change</Text>
-            </View>
-          )}
-        </Pressable>
-      </Animated.View>
-
-      {right.map((label, i) => {
-        const slot = i + 1; // right[0]=inner→1, right[1]=outermost→2
-        const marginTop = CENTER_OFFSET + slot * DROP_PX;
-        return (
-          <LinearGradient key={label} colors={PILL_COLORS} style={[styles.pill, { marginTop }]}>
+            colors={PILL_COLORS}
+            style={[styles.pill, !isActive && styles.pillDisabled]}
+          >
             <LinearGradient
               colors={PILL_HIGHLIGHT}
               locations={[0, 0.45]}
               style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
               pointerEvents="none"
             />
-            <Text style={styles.pillText}>{label}</Text>
+            <Text style={styles.pillText}>{pill.label}</Text>
           </LinearGradient>
         );
+
+        return isActive && onPillPress ? (
+          <Pressable
+            key={pill.id}
+            style={{ marginTop }}
+            onPress={() => onPillPress(pill.id)}
+            hitSlop={6}
+          >
+            {pillFace}
+          </Pressable>
+        ) : (
+          <View key={pill.id} style={{ marginTop }} pointerEvents="none">
+            {pillFace}
+          </View>
+        );
       })}
+
+      {/* Collector badge — visual hub of the wheel. Fully inert in view mode.
+          Edit mode only: tapping opens the badge picker via onBadgePress. */}
+      <View style={styles.badgeColumn}>
+        <Animated.View style={[styles.badgeShadow, { transform: [{ scale: badgeScale }] }]}>
+          <Pressable
+            onPress={editMode ? onBadgePress : undefined}
+            onPressIn={editMode ? handleBadgePressIn : undefined}
+            onPressOut={editMode ? handleBadgePressOut : undefined}
+            style={styles.badge}
+          >
+            {badgeImageUri ? (
+              <Image
+                source={{ uri: badgeImageUri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+              />
+            ) : (
+              <Text style={styles.badgeInitial}>{initial}</Text>
+            )}
+            {/* Top gloss — fades to transparent at 50%, does not affect lower half */}
+            <LinearGradient
+              colors={BADGE_HIGHLIGHT}
+              locations={[0, 0.5]}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            {/* Edit overlay — dark scrim + "Change" label, only in edit mode */}
+            {editMode && (
+              <View style={styles.badgeEditOverlay} pointerEvents="none">
+                <Text style={styles.badgeEditText}>Change</Text>
+              </View>
+            )}
+          </Pressable>
+        </Animated.View>
+      </View>
+
+      {right.map((pill, i) => {
+        const slot = i + 1; // [0]=inner→slot 1, [1]=outermost→slot 2
+        const marginTop = CENTER_OFFSET + slot * DROP_PX;
+        const isActive = activePills.includes(pill.id);
+
+        const pillFace = (
+          <LinearGradient
+            colors={PILL_COLORS}
+            style={[styles.pill, !isActive && styles.pillDisabled]}
+          >
+            <LinearGradient
+              colors={PILL_HIGHLIGHT}
+              locations={[0, 0.45]}
+              style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+              pointerEvents="none"
+            />
+            <Text style={styles.pillText}>{pill.label}</Text>
+          </LinearGradient>
+        );
+
+        return isActive && onPillPress ? (
+          <Pressable
+            key={pill.id}
+            style={{ marginTop }}
+            onPress={() => onPillPress(pill.id)}
+            hitSlop={6}
+          >
+            {pillFace}
+          </Pressable>
+        ) : (
+          <View key={pill.id} style={{ marginTop }} pointerEvents="none">
+            {pillFace}
+          </View>
+        );
+      })}
+
     </View>
   );
 }
 
 // Row width: 4×104 (pills) + 116 (badge) + 4×6 (gaps) = 556px → ~83px bleed each side on 390px
 const styles = StyleSheet.create({
+  // box-none is set inline so the container is scroll-transparent.
   rail: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -177,12 +237,20 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
   },
+  // Mute the entire pill (gradient + text + border) as one unit.
+  pillDisabled: {
+    opacity: 0.38,
+  },
   pillText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
     textTransform: 'capitalize',
     letterSpacing: 0.3,
+  },
+  // Badge column: image badge stacked above the "Grails" label.
+  badgeColumn: {
+    alignItems: 'center',
   },
   // Shadow wrapper sits outside overflow:hidden so iOS shadow renders unclipped.
   badgeShadow: {

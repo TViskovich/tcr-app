@@ -66,6 +66,21 @@ export default function ProfileScreen() {
     setEditMode(true);
   }
 
+  function handlePillPress(id: string) {
+    if (id === 'grails') {
+      router.push({
+        pathname: '/grails/[userId]',
+        params: {
+          userId: userId ?? '',
+          username: profile?.username ?? '',
+          displayName: profile?.display_name ?? '',
+        },
+      });
+    } else if (id === 'folders') {
+      router.push('/(tabs)/collection' as any);
+    }
+  }
+
   function cancelEdit() {
     setNewAvatarUri(null);
     setNewHeroUri(null);
@@ -376,6 +391,8 @@ export default function ProfileScreen() {
               editMode={editMode}
               brandLabel="SHOWCASE"
               scrollY={scrollY}
+              onPillPress={handlePillPress}
+              activePills={['folders']}
             />
           )}
 

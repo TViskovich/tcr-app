@@ -103,6 +103,20 @@ export default function UserProfileScreen() {
       .then(({ data }) => setIsFollowing(!!data));
   }, [profileId, currentUserId]);
 
+  function handlePillPress(id: string) {
+    if (id === 'grails' && profile) {
+      router.push({
+        pathname: '/grails/[userId]',
+        params: {
+          userId: profile.id,
+          username: profile.username,
+          displayName: profile.display_name ?? '',
+        },
+      });
+    }
+    // Followers, Following, Posts: no routes yet — badge handles 'grails' only for now
+  }
+
   async function handleMessage() {
     if (!currentUserId || !profile || currentUserId === profile.id) return;
     setMsgLoading(true);
@@ -240,6 +254,7 @@ export default function UserProfileScreen() {
                 </View>
               ) : undefined}
               brandLabel="SHOWCASE"
+              onPillPress={handlePillPress}
             />
 
             <GrailsGrid

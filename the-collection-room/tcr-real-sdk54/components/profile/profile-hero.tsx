@@ -27,6 +27,8 @@ type Props = {
   actionRow?: ReactNode;
   brandLabel?: string;
   scrollY?: Animated.Value;
+  onPillPress?: (id: string) => void;
+  activePills?: string[];
 };
 
 export function ProfileHero({
@@ -41,6 +43,8 @@ export function ProfileHero({
   actionRow,
   brandLabel,
   scrollY,
+  onPillPress,
+  activePills,
 }: Props) {
   const displayName = profile.hero_display_name || profile.display_name || profile.username;
   const bgSource = heroImageUri ?? avatarUri;
@@ -67,17 +71,42 @@ export function ProfileHero({
     ]).start();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Scroll-driven SHOWCASE collapse — falls back to static 0 when no scrollY is provided
+  // Scroll-driven collapse animations.
+  // Edit mode bypasses all scroll animation by using the static 0 value,
+  // so rail, bio, and identity block stay fully visible while editing.
   const _defaultScrollY = useRef(new Animated.Value(0)).current;
-  const _scrollY = scrollY ?? _defaultScrollY;
-  const showcaseOpacity = _scrollY.interpolate({
-    inputRange: [0, 65],
+  const _scrollY = editMode ? _defaultScrollY : (scrollY ?? _defaultScrollY);
+  // Phase 1 — SHOWCASE descends solo toward the identity block.
+  // Ratio 1.5 (540px over 280px scroll) → net +0.5px/scroll downward on screen.
+  const showcaseTranslate = _scrollY.interpolate({
+    inputRange: [0, 280],
+    outputRange: [0, 510],
+    extrapolate: 'clamp',
+  });
+  // Phase 2 — single shared value drives SHOWCASE and the name together.
+  // Same ratio (≈1.5) keeps motion consistent with Phase 1.
+  // Starts exactly where Phase 1 ends (280) so the handoff is seamless.
+  const sharedTranslateY = _scrollY.interpolate({
+    inputRange: [280, 410],
+    outputRange: [0, 196],
+    extrapolate: 'clamp',
+  });
+
+  // Phase 1 collapse — rail stays visible until SHOWCASE is halfway down,
+  // then fades so SHOWCASE can visually take over that zone.
+  const railOpacity = _scrollY.interpolate({
+    inputRange: [220, 360],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
-  const showcaseTranslate = _scrollY.interpolate({
-    inputRange: [0, 65],
-    outputRange: [0, -18],
+  const bioOpacity = _scrollY.interpolate({
+    inputRange: [280, 360],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+  const identityNudge = _scrollY.interpolate({
+    inputRange: [0, 140],
+    outputRange: [0, -10],
     extrapolate: 'clamp',
   });
 
@@ -118,35 +147,58 @@ export function ProfileHero({
           <Animated.View
             style={[
               styles.identityBlock,
-              { opacity: identityOpacity, transform: [{ translateY: identitySlide }] },
+              {
+                opacity: identityOpacity,
+                transform: [
+                  { translateY: identitySlide },
+                  { translateY: identityNudge },
+                ],
+              },
             ]}
             pointerEvents="box-none">
-            <HeroShowcaseRail
-              avatarUri={avatarUri}
-              showcaseBadgeUri={showcaseBadgeUri}
-              displayName={displayName}
-              editMode={editMode}
-              onBadgePress={onBadgePress}
-            />
-            <HeroInfo
-              displayName={displayName}
-              username={profile.username}
-              bio={profile.bio}
-              actionRow={actionRow}
-            />
+            <Animated.View style={{ opacity: railOpacity }} pointerEvents="box-none">
+              <HeroShowcaseRail
+                avatarUri={avatarUri}
+                showcaseBadgeUri={showcaseBadgeUri}
+                displayName={displayName}
+                editMode={editMode}
+                onBadgePress={onBadgePress}
+                onPillPress={onPillPress}
+                activePills={activePills}
+              />
+            </Animated.View>
+            <Animated.View
+              style={{ transform: [{ translateY: sharedTranslateY }] }}
+              pointerEvents="box-none"
+            >
+              <HeroInfo
+                displayName={displayName}
+                username={profile.username}
+                bio={profile.bio}
+                actionRow={actionRow}
+                animatedBioOpacity={bioOpacity}
+              />
+            </Animated.View>
           </Animated.View>
         </View>
 
         {/*
-          Layer 3 — wordmark. Animated.View wraps HeroBrand so scroll can
-          fade + slide it upward as the user scrolls into the content below.
+          Layer 3 — wordmark.
+          Phase 1: showcaseTranslate brings SHOWCASE down to meet the name block.
+          Phase 2: sharedTranslateY (same value as the name wrapper below) moves
+          both elements as a locked group to the bottom of the hero canvas.
         */}
         {brandLabel ? (
           <Animated.View
             pointerEvents="none"
             style={[
               StyleSheet.absoluteFill,
-              { opacity: showcaseOpacity, transform: [{ translateY: showcaseTranslate }] },
+              {
+                transform: [
+                  { translateY: showcaseTranslate },
+                  { translateY: sharedTranslateY },
+                ],
+              },
             ]}>
             <HeroBrand label={brandLabel} />
           </Animated.View>
