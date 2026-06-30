@@ -63,7 +63,7 @@ const styles = StyleSheet.create({
   },
   bio: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.48)',
+    color: 'rgba(255,255,255,0.80)',
     textAlign: 'center',
     lineHeight: 19,
   },

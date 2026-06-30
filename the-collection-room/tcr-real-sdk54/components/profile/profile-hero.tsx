@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import type { Profile } from '@/types';
-import { HERO_HEIGHT } from './hero-constants';
+import { HERO_HEIGHT, AVATAR_SIZE } from './hero-constants';
 import { HeroBackground } from './hero-background';
 import { HeroAvatar } from './hero-avatar';
 import { HeroBrand } from './hero-brand';
@@ -10,6 +10,13 @@ import { HeroInfo } from './hero-info';
 import { HeroShowcaseRail } from './hero-showcase-rail';
 
 export { HERO_HEIGHT } from './hero-constants';
+
+// Phase 2 max travel so @tvisko stays inside the hero canvas on every device.
+// Arc rail: 3 slots per side, outer pill bottom = marginTop(41) + PILL_H(72) = 113px row height.
+// Derivation: paddingTop(48) + AVATAR_SIZE - identityNudge(10) + railRow(129) + infoBlock(68)
+// = AVATAR_SIZE + 235  ← @tvisko bottom in hero-coords at Phase 2 start.
+// PHASE2_MAX = HERO_HEIGHT - bottomPad(39) - (AVATAR_SIZE + 235) = 546 - AVATAR_SIZE
+const PHASE2_MAX_TRANSLATE = Math.max(0, 546 - AVATAR_SIZE);
 
 // Background source resolution order:
 //   1. heroImageUri — dedicated banner image (DB field: hero_image_url)
@@ -83,22 +90,15 @@ export function ProfileHero({
     outputRange: [0, 510],
     extrapolate: 'clamp',
   });
-  // Phase 2 — single shared value drives SHOWCASE and the name together.
-  // Same ratio (≈1.5) keeps motion consistent with Phase 1.
+  // Phase 2 — SHOWCASE and identity stack travel together to the bottom of the hero.
   // Starts exactly where Phase 1 ends (280) so the handoff is seamless.
+  // outputRange clamped to PHASE2_MAX_TRANSLATE so @tvisko never exits the hero canvas.
   const sharedTranslateY = _scrollY.interpolate({
     inputRange: [280, 410],
-    outputRange: [0, 196],
+    outputRange: [0, PHASE2_MAX_TRANSLATE],
     extrapolate: 'clamp',
   });
 
-  // Phase 1 collapse — rail stays visible until SHOWCASE is halfway down,
-  // then fades so SHOWCASE can visually take over that zone.
-  const railOpacity = _scrollY.interpolate({
-    inputRange: [220, 360],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
   const bioOpacity = _scrollY.interpolate({
     inputRange: [280, 360],
     outputRange: [1, 0],
@@ -156,7 +156,7 @@ export function ProfileHero({
               },
             ]}
             pointerEvents="box-none">
-            <Animated.View style={{ opacity: railOpacity }} pointerEvents="box-none">
+            <View pointerEvents="box-none">
               <HeroShowcaseRail
                 avatarUri={avatarUri}
                 showcaseBadgeUri={showcaseBadgeUri}
@@ -166,7 +166,7 @@ export function ProfileHero({
                 onPillPress={onPillPress}
                 activePills={activePills}
               />
-            </Animated.View>
+            </View>
             <Animated.View
               style={{ transform: [{ translateY: sharedTranslateY }] }}
               pointerEvents="box-none"
@@ -185,8 +185,8 @@ export function ProfileHero({
         {/*
           Layer 3 — wordmark.
           Phase 1: showcaseTranslate brings SHOWCASE down to meet the name block.
-          Phase 2: sharedTranslateY (same value as the name wrapper below) moves
-          both elements as a locked group to the bottom of the hero canvas.
+          Phase 2: sharedTranslateY moves both SHOWCASE and identity together
+          toward the bottom of the hero canvas.
         */}
         {brandLabel ? (
           <Animated.View
