@@ -13,62 +13,34 @@ import {
   View,
 } from 'react-native';
 
-// ─── Badge data ───────────────────────────────────────────────────────────────
+// ─── Rail item data ───────────────────────────────────────────────────────────
 
-export type Badge = {
+export type RailItemType = 'stat' | 'achievement' | 'progress' | 'shortcut';
+
+export type RailItem = {
   id: string;
-  title: string;
-  description: string;
+  type: RailItemType;
   icon: string;
-  unlocked: boolean;
-  count?: number;
+  title: string;
+  value?: string;
+  locked?: boolean;
+  description?: string;
+  action?: string;
+  destination?: string;
 };
 
-const BADGES: Badge[] = [
-  {
-    id: 'grail-hunter',
-    title: 'Grail Hunter',
-    description: 'Added 3 or more cards to your Grails collection.',
-    icon: '🏆',
-    unlocked: true,
-    count: 3,
-  },
-  {
-    id: 'century-club',
-    title: 'Century Club',
-    description: 'Reached 100 cards in your collection.',
-    icon: '💯',
-    unlocked: true,
-    count: 142,
-  },
-  {
-    id: 'first-pull',
-    title: 'First Pull',
-    description: 'Added your very first card to The Collection Room.',
-    icon: '🎴',
-    unlocked: true,
-  },
-  {
-    id: 'og',
-    title: 'OG Collector',
-    description: 'Joined during launch month.',
-    icon: '⭐',
-    unlocked: true,
-  },
-  {
-    id: 'curator',
-    title: 'Curator',
-    description: 'Created 5 or more folders to organize your collection.',
-    icon: '📁',
-    unlocked: false,
-  },
-  {
-    id: 'going-viral',
-    title: 'Going Viral',
-    description: 'Reached 50 followers on The Collection Room.',
-    icon: '🦋',
-    unlocked: false,
-  },
+const DEFAULT_ITEMS: RailItem[] = [
+  { id: 'grails',        type: 'stat',        icon: '🏆', title: 'Grails',       value: '127'       },
+  { id: 'collections',   type: 'stat',        icon: '📁', title: 'Collections',  value: '18'        },
+  { id: 'followers',     type: 'stat',        icon: '👥', title: 'Followers',    value: '1.2K'      },
+  { id: 'views',         type: 'stat',        icon: '📈', title: 'Views',        value: '4.9K'      },
+  { id: 'likes',         type: 'stat',        icon: '❤️', title: 'Likes',       value: '812'       },
+  { id: 'og-collector',  type: 'achievement', icon: '🥇', title: 'OG Collector'                    },
+  { id: 'century-club',  type: 'achievement', icon: '💯', title: 'Century Club'                    },
+  { id: 'gem-hunter',    type: 'achievement', icon: '💎', title: 'Gem Hunter'                      },
+  { id: 'baseball',      type: 'progress',    icon: '⚾', title: 'Baseball',     value: '82%'       },
+  { id: 'basketball',    type: 'progress',    icon: '🏀', title: 'Basketball',   value: '61%'       },
+  { id: 'add-card',      type: 'shortcut',    icon: '➕', title: 'Add Card',     action: 'add-card' },
 ];
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -106,7 +78,7 @@ const CX = SCREEN_W / 2;
 const CY = ROW_HEIGHT / 2;
 
 // Colors
-const PILL_COLORS: [string, string] = ['rgba(14, 22, 58, 0.96)', 'rgba(4, 8, 22, 0.92)'];
+const PILL_COLORS: [string, string] = ['rgba(36, 36, 46, 0.86)', 'rgba(10, 10, 14, 0.80)'];
 const PILL_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.10)', 'transparent'];
 const BADGE_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.15)', 'rgba(255,255,255,0)'];
 
@@ -120,6 +92,7 @@ type Props = {
   onBadgePress?: () => void;
   onPillPress?: (id: string) => void;
   activePills?: string[];
+  items?: RailItem[];
 };
 
 // ─── HeroShowcaseRail ─────────────────────────────────────────────────────────
@@ -130,6 +103,7 @@ export function HeroShowcaseRail({
   displayName = '',
   editMode = false,
   onBadgePress,
+  items = DEFAULT_ITEMS,
 }: Props) {
   const initial = displayName.charAt(0).toUpperCase();
   const badgeImageUri = showcaseBadgeUri ?? avatarUri;
@@ -153,19 +127,19 @@ export function HeroShowcaseRail({
     }).start();
   }
 
-  const [selectedBadge, setSelectedBadge] = useState<Badge | null>(null);
+  const [selectedItem, setSelectedItem] = useState<RailItem | null>(null);
 
   // Split into left half and right half
-  const leftBadges = BADGES.slice(0, SLOTS);
-  const rightBadges = BADGES.slice(SLOTS);
+  const leftItems = items.slice(0, SLOTS);
+  const rightItems = items.slice(SLOTS);
 
-  function renderPill(badge: Badge) {
+  function renderPill(item: RailItem) {
     return (
       <Pressable
-        key={badge.id}
-        onPress={() => setSelectedBadge(badge)}
+        key={item.id}
+        onPress={() => setSelectedItem(item)}
         hitSlop={4}
-        style={[styles.pillWrap, !badge.unlocked && styles.pillLocked]}
+        style={[styles.pillWrap, item.locked && styles.pillLocked]}
       >
         <LinearGradient colors={PILL_COLORS} style={styles.pill}>
           <LinearGradient
@@ -174,10 +148,55 @@ export function HeroShowcaseRail({
             style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
             pointerEvents="none"
           />
-          <Text style={styles.pillIcon}>{badge.icon}</Text>
-          <Text style={styles.pillTitle} numberOfLines={1}>{badge.title}</Text>
+          {item.locked && (
+            <View style={styles.pillLockBadge} pointerEvents="none">
+              <Text style={styles.pillLockText}>🔒</Text>
+            </View>
+          )}
+          <Text style={styles.pillIcon}>{item.icon}</Text>
+          {item.value !== undefined && (
+            <Text style={styles.pillValue}>{item.value}</Text>
+          )}
+          <Text style={styles.pillTitle} numberOfLines={1}>{item.title}</Text>
         </LinearGradient>
       </Pressable>
+    );
+  }
+
+  function renderSheetContent(item: RailItem) {
+    const fallback =
+      item.type === 'stat'        ? 'Profile stat for this collector.'              :
+      item.type === 'achievement' ? (item.locked
+                                    ? 'Keep collecting to unlock this achievement.'
+                                    : 'Collector achievement.')                     :
+      item.type === 'progress'    ? 'Collection progress for this category.'        :
+                                    'Quick action.';
+    const desc = item.description ?? fallback;
+
+    if (item.type === 'achievement') {
+      return (
+        <>
+          <Text style={styles.sheetIcon}>{item.icon}</Text>
+          <Text style={styles.sheetTitle}>{item.title}</Text>
+          <View style={[styles.sheetStatusPill, item.locked ? styles.sheetStatusLocked : styles.sheetStatusUnlocked]}>
+            <Text style={styles.sheetStatusText}>
+              {item.locked ? '🔒  Locked' : '✓  Unlocked'}
+            </Text>
+          </View>
+          <Text style={styles.sheetDesc}>{desc}</Text>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <Text style={styles.sheetIcon}>{item.icon}</Text>
+        <Text style={styles.sheetTitle}>{item.title}</Text>
+        {item.value != null && (
+          <Text style={styles.sheetCount}>{item.value}</Text>
+        )}
+        <Text style={styles.sheetDesc}>{desc}</Text>
+      </>
     );
   }
 
@@ -198,12 +217,12 @@ export function HeroShowcaseRail({
         style={styles.scrollRail}
         contentContainerStyle={styles.rail}
       >
-        {leftBadges.map(b => renderPill(b))}
+        {leftItems.map(item => renderPill(item))}
 
         {/* Transparent spacer — same size as the showcase badge — holds scroll geometry */}
         <View style={styles.badgeSpacer} />
 
-        {rightBadges.map(b => renderPill(b))}
+        {rightItems.map(item => renderPill(item))}
       </ScrollView>
 
       {/*
@@ -242,38 +261,17 @@ export function HeroShowcaseRail({
         </Animated.View>
       </View>
 
-      {/* ── Badge detail sheet ──────────────────────────────────────────────── */}
+      {/* ── Item detail sheet ───────────────────────────────────────────────── */}
       <Modal
-        visible={selectedBadge !== null}
+        visible={selectedItem !== null}
         transparent
         animationType="slide"
-        onRequestClose={() => setSelectedBadge(null)}
+        onRequestClose={() => setSelectedItem(null)}
       >
-        <Pressable style={styles.backdrop} onPress={() => setSelectedBadge(null)}>
+        <Pressable style={styles.backdrop} onPress={() => setSelectedItem(null)}>
           <Pressable style={styles.sheet} onPress={() => {}}>
             <View style={styles.sheetHandle} />
-            {selectedBadge && (
-              <>
-                <Text style={styles.sheetIcon}>{selectedBadge.icon}</Text>
-                <Text style={styles.sheetTitle}>{selectedBadge.title}</Text>
-                <View
-                  style={[
-                    styles.sheetStatusPill,
-                    selectedBadge.unlocked
-                      ? styles.sheetStatusUnlocked
-                      : styles.sheetStatusLocked,
-                  ]}
-                >
-                  <Text style={styles.sheetStatusText}>
-                    {selectedBadge.unlocked ? '✓  Unlocked' : '🔒  Locked'}
-                  </Text>
-                </View>
-                {selectedBadge.count != null && (
-                  <Text style={styles.sheetCount}>×{selectedBadge.count}</Text>
-                )}
-                <Text style={styles.sheetDesc}>{selectedBadge.description}</Text>
-              </>
-            )}
+            {selectedItem && renderSheetContent(selectedItem)}
           </Pressable>
         </Pressable>
       </Modal>
@@ -314,31 +312,45 @@ const styles = StyleSheet.create({
     height: PILL_H,
   },
   pillLocked: {
-    opacity: 0.35,
+    opacity: 0.50,
   },
   pill: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.22)',
+    borderColor: 'rgba(255, 255, 255, 0.13)',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     shadowColor: '#000',
-    shadowOpacity: 0.40,
-    shadowRadius: 8,
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
+    elevation: 3,
+  },
+  pillLockBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 6,
+  },
+  pillLockText: {
+    fontSize: 9,
   },
   pillIcon: {
-    fontSize: 22,
+    fontSize: 18,
+  },
+  pillValue: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
   },
   pillTitle: {
-    color: '#FFFFFF',
+    color: 'rgba(255,255,255,0.80)',
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    letterSpacing: 0.4,
     textAlign: 'center',
     paddingHorizontal: 8,
   },
