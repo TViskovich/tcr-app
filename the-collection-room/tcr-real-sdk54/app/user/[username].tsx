@@ -2,12 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   ActivityIndicator,
+  Dimensions,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 
+const SCREEN_W = Dimensions.get('window').width;
+
+import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
@@ -233,9 +237,12 @@ export default function UserProfileScreen() {
                     disabled={msgLoading}
                     activeOpacity={0.75}>
                     {msgLoading ? (
-                      <ActivityIndicator size="small" color="#0a7ea4" />
+                      <ActivityIndicator size="small" color="#0A84FF" />
                     ) : (
-                      <Text style={styles.msgBtnText}>Message</Text>
+                      <View style={styles.btnInner}>
+                        <Ionicons name="paper-plane-outline" size={18} color="#0A84FF" />
+                        <Text style={styles.msgBtnText} numberOfLines={1}>Message</Text>
+                      </View>
                     )}
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -244,11 +251,18 @@ export default function UserProfileScreen() {
                     disabled={followLoading}
                     activeOpacity={0.75}>
                     {followLoading ? (
-                      <ActivityIndicator size="small" color={isFollowing ? '#687076' : '#fff'} />
+                      <ActivityIndicator size="small" color={isFollowing ? '#FFFFFF' : '#0D0D0D'} />
                     ) : (
-                      <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]}>
-                        {isFollowing ? 'Following' : 'Follow'}
-                      </Text>
+                      <View style={styles.btnInner}>
+                        <Ionicons
+                          name={isFollowing ? 'checkmark' : 'person-add-outline'}
+                          size={18}
+                          color={isFollowing ? '#FFFFFF' : '#0D0D0D'}
+                        />
+                        <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]} numberOfLines={1}>
+                          {isFollowing ? 'Following' : 'Follow'}
+                        </Text>
+                      </View>
                     )}
                   </TouchableOpacity>
                 </View>
@@ -321,43 +335,57 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 16,
     marginTop: 16,
-    alignSelf: 'stretch',
+    alignSelf: 'center',
+    width: Math.round(SCREEN_W * 0.86),
+  },
+  btnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   msgBtn: {
     flex: 1,
-    paddingVertical: 10,
+    height: 56,
     backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: '#0a7ea4',
-    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#0A84FF',
+    borderRadius: 28,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   msgBtnText: {
-    color: '#0a7ea4',
-    fontSize: 15,
-    fontWeight: '600',
+    color: '#0A84FF',
+    fontSize: 16,
+    fontWeight: '700',
+    flexShrink: 0,
+    includeFontPadding: false,
   },
   followBtn: {
     flex: 1,
-    paddingVertical: 10,
-    backgroundColor: '#0a7ea4',
-    borderRadius: 20,
+    height: 56,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: 'transparent',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   followBtnFollowing: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: '#687076',
+    backgroundColor: '#1C1C1E',
+    borderColor: 'rgba(255,255,255,0.20)',
   },
   followBtnText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
+    color: '#0D0D0D',
+    fontSize: 16,
+    fontWeight: '700',
+    flexShrink: 0,
+    includeFontPadding: false,
   },
   followBtnTextFollowing: {
-    color: '#687076',
+    color: '#FFFFFF',
   },
   foldersLabel: {
     fontSize: 13,
