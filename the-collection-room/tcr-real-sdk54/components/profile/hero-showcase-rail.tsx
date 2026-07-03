@@ -51,9 +51,10 @@ const ROW_HEIGHT = 113;
 const PILL_W = 172;
 const PILL_H = 99;
 const GAP = -30;
+const STEP = PILL_W + GAP; // distance between consecutive pill scroll targets
 
 // Padding so the first (and last) pill sits centered on screen at rest.
-// scrollTarget for pill i = i × (PILL_W + GAP), which is clean whole numbers.
+// scrollTarget for pill i = i × STEP, which is clean whole numbers.
 const LEADING_PAD = Math.floor((SCREEN_W - PILL_W) / 2);
 
 // Colors
@@ -82,25 +83,47 @@ export function HeroShowcaseRail({
   const [selectedItem, setSelectedItem] = useState<RailItem | null>(null);
 
   function renderPill(item: RailItem, index: number) {
-    // At scrollX == scrollTarget the pill center aligns with SCREEN_W/2.
-    const scrollTarget = index * (PILL_W + GAP);
+    const scrollTarget = index * STEP;
+
+    const inputRange = [
+      scrollTarget - 3 * STEP,
+      scrollTarget - 2 * STEP,
+      scrollTarget - STEP,
+      scrollTarget,
+      scrollTarget + STEP,
+      scrollTarget + 2 * STEP,
+      scrollTarget + 3 * STEP,
+    ];
 
     const scale = scrollX.interpolate({
-      inputRange: [scrollTarget - PILL_W, scrollTarget, scrollTarget + PILL_W],
-      outputRange: [1.0, 1.05, 1.0],
+      inputRange,
+      outputRange: [0.82, 0.90, 0.97, 1.0, 0.97, 0.90, 0.82],
       extrapolate: 'clamp',
     });
 
     const opacity = scrollX.interpolate({
-      inputRange: [scrollTarget - PILL_W, scrollTarget, scrollTarget + PILL_W],
-      outputRange: [0.87, 1.0, 0.87],
+      inputRange,
+      outputRange: [0.50, 0.76, 0.94, 1.0, 0.94, 0.76, 0.50],
+      extrapolate: 'clamp',
+    });
+
+    const arcY = scrollX.interpolate({
+      inputRange,
+      outputRange: [-34, -22, -9, 0, -9, -22, -34],
+      extrapolate: 'clamp',
+    });
+
+    // Focus value: 1.0 at center, fades to 0 by ±2 steps.
+    const focusAnim = scrollX.interpolate({
+      inputRange,
+      outputRange: [0, 0, 0.4, 1.0, 0.4, 0, 0],
       extrapolate: 'clamp',
     });
 
     return (
       <Animated.View
         key={item.id}
-        style={[styles.pillWrap, { transform: [{ scale }], opacity }]}
+        style={[styles.pillWrap, { transform: [{ translateY: arcY }, { scale }], opacity }]}
       >
         <Pressable
           onPress={() => setSelectedItem(item)}
@@ -112,6 +135,16 @@ export function HeroShowcaseRail({
               colors={PILL_HIGHLIGHT}
               locations={[0, 0.45]}
               style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+              pointerEvents="none"
+            />
+            {/* Focus glass: slightly more opaque at center */}
+            <Animated.View
+              style={[styles.focusGlass, { opacity: focusAnim }]}
+              pointerEvents="none"
+            />
+            {/* Focus border: brighter ring at center */}
+            <Animated.View
+              style={[styles.focusBorder, { opacity: focusAnim }]}
               pointerEvents="none"
             />
             {item.locked && (
@@ -246,10 +279,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     shadowColor: '#000',
-    shadowOpacity: 0.30,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
+    shadowOpacity: 0.36,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
+  },
+  focusGlass: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  focusBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.75)',
   },
   pillLockBadge: {
     position: 'absolute',
