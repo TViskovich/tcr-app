@@ -82,6 +82,12 @@ export function HeroShowcaseRail({
   const scrollX = useRef(new Animated.Value(0)).current;
   const [selectedItem, setSelectedItem] = useState<RailItem | null>(null);
 
+  function handleRailAction(item: RailItem) {
+    console.log('[Rail] action:', item.id, '|', item.type, '|', item.action ?? '—');
+    // Future: dispatch navigation based on item.id / item.destination
+    setSelectedItem(item);
+  }
+
   function renderPill(item: RailItem, index: number) {
     const scrollTarget = index * STEP;
 
@@ -126,7 +132,7 @@ export function HeroShowcaseRail({
         style={[styles.pillWrap, { transform: [{ translateY: arcY }, { scale }], opacity }]}
       >
         <Pressable
-          onPress={() => setSelectedItem(item)}
+          onPress={() => handleRailAction(item)}
           hitSlop={4}
           style={[styles.pillContent, item.locked && styles.pillLocked]}
         >
@@ -147,6 +153,18 @@ export function HeroShowcaseRail({
               style={[styles.focusBorder, { opacity: focusAnim }]}
               pointerEvents="none"
             />
+            {/* Type accents — absolute, no layout impact */}
+            {item.type === 'achievement' && (
+              <View style={styles.accentLineGold} pointerEvents="none" />
+            )}
+            {item.type === 'shortcut' && (
+              <View style={styles.accentLineBlue} pointerEvents="none" />
+            )}
+            {item.type === 'progress' && item.value != null && !isNaN(parseFloat(item.value)) && (
+              <View style={styles.progressTrack} pointerEvents="none">
+                <View style={[styles.progressFill, { width: `${parseFloat(item.value)}%` }]} />
+              </View>
+            )}
             {item.locked && (
               <View style={styles.pillLockBadge} pointerEvents="none">
                 <Text style={styles.pillLockText}>🔒</Text>
@@ -207,6 +225,8 @@ export function HeroShowcaseRail({
         horizontal
         showsHorizontalScrollIndicator={false}
         decelerationRate="fast"
+        snapToInterval={STEP}
+        disableIntervalMomentum
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { x: scrollX } } }],
@@ -283,6 +303,41 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
     elevation: 5,
+  },
+  accentLineGold: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    backgroundColor: 'rgba(255, 196, 57, 0.65)',
+  },
+  accentLineBlue: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    backgroundColor: 'rgba(10, 132, 255, 0.70)',
+  },
+  progressTrack: {
+    position: 'absolute',
+    bottom: 7,
+    left: 12,
+    right: 12,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.60)',
   },
   focusGlass: {
     ...StyleSheet.absoluteFillObject,
