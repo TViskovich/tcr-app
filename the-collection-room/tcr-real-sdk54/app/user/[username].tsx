@@ -11,7 +11,6 @@ import {
 
 const SCREEN_W = Dimensions.get('window').width;
 
-import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { FolderCard } from '@/components/collection/folder-card';
@@ -203,6 +202,7 @@ export default function UserProfileScreen() {
         data={folders}
         numColumns={2}
         keyExtractor={(item) => item.id}
+        style={styles.screen}
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
@@ -229,47 +229,36 @@ export default function UserProfileScreen() {
               avatarUri={avatarUri}
               heroImageUri={heroUri}
               scrollY={scrollY}
-              actionRow={!isOwnProfile && currentUserId ? (
-                <View style={styles.actionRow}>
-                  <TouchableOpacity
-                    style={styles.msgBtn}
-                    onPress={handleMessage}
-                    disabled={msgLoading}
-                    activeOpacity={0.75}>
-                    {msgLoading ? (
-                      <ActivityIndicator size="small" color="#0A84FF" />
-                    ) : (
-                      <View style={styles.btnInner}>
-                        <Ionicons name="paper-plane-outline" size={18} color="#0A84FF" />
-                        <Text style={styles.msgBtnText} numberOfLines={1}>Message</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
-                    onPress={toggleFollow}
-                    disabled={followLoading}
-                    activeOpacity={0.75}>
-                    {followLoading ? (
-                      <ActivityIndicator size="small" color={isFollowing ? '#FFFFFF' : '#0D0D0D'} />
-                    ) : (
-                      <View style={styles.btnInner}>
-                        <Ionicons
-                          name={isFollowing ? 'checkmark' : 'person-add-outline'}
-                          size={18}
-                          color={isFollowing ? '#FFFFFF' : '#0D0D0D'}
-                        />
-                        <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]} numberOfLines={1}>
-                          {isFollowing ? 'Following' : 'Follow'}
-                        </Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              ) : undefined}
               brandLabel="SHOWCASE"
               onPillPress={handlePillPress}
             />
+
+            {!isOwnProfile && currentUserId ? (
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={styles.msgBtn}
+                  onPress={handleMessage}
+                  disabled={msgLoading}
+                  activeOpacity={0.75}>
+                  {msgLoading
+                    ? <ActivityIndicator size="small" color="#FFFFFF" />
+                    : <Text style={styles.msgBtnText} numberOfLines={1}>Message</Text>
+                  }
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
+                  onPress={toggleFollow}
+                  disabled={followLoading}
+                  activeOpacity={0.75}>
+                  {followLoading
+                    ? <ActivityIndicator size="small" color={isFollowing ? '#FFFFFF' : '#0D0D0D'} />
+                    : <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]} numberOfLines={1}>
+                        {isFollowing ? 'Following' : 'Follow'}
+                      </Text>
+                  }
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             <GrailsGrid
               grails={grails}
@@ -325,63 +314,59 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#687076',
   },
+  screen: {
+    flex: 1,
+    backgroundColor: '#0D0D0D',
+  },
   list: {
-    paddingHorizontal: 10,
     paddingBottom: 32,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#0D0D0D',
   },
   row: {
     justifyContent: 'flex-start',
+    paddingHorizontal: 10,
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 16,
-    marginTop: 16,
+    gap: 10,
+    marginTop: -55,
+    marginBottom: 113,
     alignSelf: 'center',
     width: Math.round(SCREEN_W * 0.86),
   },
-  btnInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
   msgBtn: {
     flex: 1,
-    height: 56,
-    backgroundColor: 'transparent',
-    borderWidth: 2,
-    borderColor: '#0A84FF',
-    borderRadius: 28,
+    height: 46,
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
   },
   msgBtnText: {
-    color: '#0A84FF',
-    fontSize: 16,
-    fontWeight: '700',
-    flexShrink: 0,
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
     includeFontPadding: false,
   },
   followBtn: {
     flex: 1,
-    height: 56,
+    height: 46,
     backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    borderWidth: 2,
-    borderColor: 'transparent',
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
   },
   followBtnFollowing: {
     backgroundColor: '#1C1C1E',
-    borderColor: 'rgba(255,255,255,0.20)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
   },
   followBtnText: {
     color: '#0D0D0D',
-    fontSize: 16,
-    fontWeight: '700',
-    flexShrink: 0,
+    fontSize: 15,
+    fontWeight: '600',
     includeFontPadding: false,
   },
   followBtnTextFollowing: {
