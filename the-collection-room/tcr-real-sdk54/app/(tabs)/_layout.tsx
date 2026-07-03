@@ -3,6 +3,8 @@ import { Tabs } from 'expo-router';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 
+import { usePathname } from 'expo-router';
+
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
@@ -15,11 +17,17 @@ import { TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-co
 const HIDDEN_TABS = new Set(['notifications', 'settings']);
 
 function AnimatedTabBar({ state, descriptors, navigation }: any) {
-  const { translateY } = useTabVisibility();
+  const pathname = usePathname();
+  const hideTabBar = pathname.startsWith('/user/');
+
+  const { translateY, opacity } = useTabVisibility();
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
+    opacity: opacity.value,
   }));
+
+  if (hideTabBar) return null;
 
   return (
     <Animated.View style={[styles.tabBar, animStyle]}>
