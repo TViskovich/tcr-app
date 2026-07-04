@@ -75,7 +75,7 @@ export function HeroInfo({
 const styles = StyleSheet.create({
   textGroup: {
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 20,
     paddingHorizontal: 20,
   },
   displayName: {
@@ -94,7 +94,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.2,
     color: 'rgba(255,255,255,0.82)',
-    marginBottom: 11,
+    marginBottom: 5,
   },
   bio: {
     fontSize: 13,
@@ -134,7 +134,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.82)',
   },
   actionRowWrap: {
-    marginTop: 14,
+    marginTop: 2,
     alignSelf: 'stretch',
   },
 });

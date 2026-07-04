@@ -143,6 +143,7 @@ export default function AddItemScreen() {
         const { error: postError } = await supabase.from('posts').insert({
           user_id: session.user.id,
           item_id: item.id,
+          post_type: 'item',
           image_url: imageUrl,
           caption: form.title.trim() || null,
         });

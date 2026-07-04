@@ -19,7 +19,7 @@ export function HeroBrand({ label = 'SHOWCASE' }: Props) {
 const styles = StyleSheet.create({
   wrap: {
     position: 'absolute',
-    top: 10,
+    top: 0,
     left: 24,
     right: 24,
     alignItems: 'center',

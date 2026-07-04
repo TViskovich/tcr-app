@@ -64,7 +64,7 @@ const PAGE_SIZE = 20;
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
 async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const from = page * PAGE_SIZE;
 
   const { data: postRows } = await supabase
@@ -85,7 +85,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   const [profilesRes, itemsRes, likesRes, commentsRes, followsRes] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name').in('id', itemIds)
+      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
       : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
     supabase.from('comments').select('post_id').in('post_id', postIds),
@@ -120,7 +120,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
       id: post.id,
       user_id: post.user_id,
       post_type: (post.post_type ?? 'item') as 'item' | 'text',
-      image_url: post.image_url ?? null,
+      image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,
@@ -168,7 +168,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   const [profilesRes, itemsRes, likesRes, commentsRes] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name').in('id', itemIds)
+      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
       : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
     supabase.from('comments').select('post_id').in('post_id', postIds),
@@ -197,7 +197,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
       id: post.id,
       user_id: post.user_id,
       post_type: (post.post_type ?? 'item') as 'item' | 'text',
-      image_url: post.image_url ?? null,
+      image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 import {
   Animated,
   Dimensions,
@@ -48,9 +49,9 @@ const SCREEN_W = Dimensions.get('window').width;
 // Must stay 113 so PHASE2_MAX_TRANSLATE (546 - AVATAR_SIZE) is unchanged.
 const ROW_HEIGHT = 113;
 
-const PILL_W = 172;
-const PILL_H = 99;
-const GAP = -30;
+const PILL_W = 140;
+const PILL_H = 108;
+const GAP = -8;
 const STEP = PILL_W + GAP; // distance between consecutive pill scroll targets
 
 // Padding so the first (and last) pill sits centered on screen at rest.
@@ -58,8 +59,8 @@ const STEP = PILL_W + GAP; // distance between consecutive pill scroll targets
 const LEADING_PAD = Math.floor((SCREEN_W - PILL_W) / 2);
 
 // Colors
-const PILL_COLORS: [string, string] = ['rgba(16, 16, 22, 0.90)', 'rgba(4, 4, 8, 0.87)'];
-const PILL_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.10)', 'transparent'];
+const PILL_COLORS: [string, string] = ['rgba(22, 22, 36, 0.94)', 'rgba(6, 6, 16, 0.92)'];
+const PILL_HIGHLIGHT: [string, string] = ['rgba(255,255,255,0.15)', 'transparent'];
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -79,11 +80,17 @@ type Props = {
 export function HeroShowcaseRail({
   items = DEFAULT_ITEMS,
 }: Props) {
+  const router = useRouter();
   const scrollX = useRef(new Animated.Value(0)).current;
   const [selectedItem, setSelectedItem] = useState<RailItem | null>(null);
 
   function handleRailAction(item: RailItem) {
     console.log('[Rail] action:', item.id, '|', item.type, '|', item.action ?? '—');
+    if (item.action === 'add-card') {
+      setSelectedItem(null);
+      router.push('/item/new');
+      return;
+    }
     // Future: dispatch navigation based on item.id / item.destination
     setSelectedItem(item);
   }
@@ -140,7 +147,7 @@ export function HeroShowcaseRail({
             <LinearGradient
               colors={PILL_HIGHLIGHT}
               locations={[0, 0.45]}
-              style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+              style={[StyleSheet.absoluteFill, { borderRadius: 12 }]}
               pointerEvents="none"
             />
             {/* Focus glass: slightly more opaque at center */}
@@ -153,6 +160,9 @@ export function HeroShowcaseRail({
               style={[styles.focusBorder, { opacity: focusAnim }]}
               pointerEvents="none"
             />
+            {/* Card surface details */}
+            <View style={styles.innerFrame} pointerEvents="none" />
+            <View style={styles.cardBottomRule} pointerEvents="none" />
             {/* Type accents — absolute, no layout impact */}
             {item.type === 'achievement' && (
               <View style={styles.accentLineGold} pointerEvents="none" />
@@ -263,8 +273,8 @@ const styles = StyleSheet.create({
   outerWrap: {
     width: SCREEN_W,
     height: ROW_HEIGHT,
-    marginTop: 10,
-    marginBottom: 6,
+    marginTop: 6,
+    marginBottom: 2,
   },
   scrollRail: {
     ...StyleSheet.absoluteFillObject,
@@ -284,44 +294,44 @@ const styles = StyleSheet.create({
   },
   pillContent: {
     flex: 1,
-    paddingHorizontal: 22,
-    paddingVertical: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
   pillLocked: {
     opacity: 0.50,
   },
   pill: {
     flex: 1,
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.22)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.32)',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 2,
+    gap: 5,
     shadowColor: '#000',
-    shadowOpacity: 0.36,
-    shadowRadius: 10,
+    shadowOpacity: 0.50,
+    shadowRadius: 16,
     shadowOffset: { width: 0, height: 3 },
     elevation: 5,
   },
   accentLineGold: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    right: 0,
-    height: 2,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    left: 11,
+    right: 11,
+    height: 3,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
     backgroundColor: 'rgba(255, 196, 57, 0.65)',
   },
   accentLineBlue: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    right: 0,
-    height: 2,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    left: 11,
+    right: 11,
+    height: 3,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
     backgroundColor: 'rgba(10, 132, 255, 0.70)',
   },
   progressTrack: {
@@ -339,14 +349,32 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: 'rgba(255,255,255,0.60)',
   },
+  innerFrame: {
+    position: 'absolute',
+    top: 3,
+    left: 3,
+    right: 3,
+    bottom: 3,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.10)',
+  },
+  cardBottomRule: {
+    position: 'absolute',
+    bottom: 13,
+    left: 10,
+    right: 10,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
   focusGlass: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 16,
+    borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.10)',
   },
   focusBorder: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.75)',
   },
@@ -359,17 +387,17 @@ const styles = StyleSheet.create({
     fontSize: 7,
   },
   pillIcon: {
-    fontSize: 15,
+    fontSize: 20,
   },
   pillValue: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
-    lineHeight: 14,
+    lineHeight: 17,
   },
   pillTitle: {
     color: 'rgba(255,255,255,0.80)',
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
