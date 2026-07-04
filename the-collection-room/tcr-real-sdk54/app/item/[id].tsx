@@ -384,8 +384,16 @@ export default function ItemDetailScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          // posts.item_id is ON DELETE SET NULL — Postgres nulls the FK
-          // automatically when the item is deleted; no manual pre-delete needed.
+          const { error: postError } = await supabase
+            .from('posts')
+            .delete()
+            .eq('item_id', id);
+          if (postError) {
+            console.error('[handleDelete] post cleanup failed:', postError.message);
+            Alert.alert('Error', 'Could not remove feed post. Item was not deleted.');
+            return;
+          }
+
           const { error } = await supabase
             .from('collection_items')
             .delete()
