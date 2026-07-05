@@ -1,0 +1,33 @@
+Vault Package 001.2 — Spectra Alpha v2
+
+Replace the first Spectra test assets with the v2 Material Lab assets.
+
+Goal:
+The first test looked like a dark wallpaper. V2 should feel more like polished graphite chrome with controlled light behavior.
+
+Use files in:
+assets/materials/spectra/
+
+Layer order above the hero photo:
+1. spectra-graphite-base-v2.png — opacity 0.36
+2. spectra-metallic-grain-v2.png — opacity 0.10
+3. spectra-reflection-map-v2.png — opacity 0.22
+4. spectra-spectral-film-v2.png — opacity 0.18
+5. spectra-ambient-light-v2.png — opacity 0.30
+
+Do not change:
+- hero layout
+- hero size
+- SHOWCASE animation
+- badge rail
+- name stack
+- buttons
+- Grails
+- scroll behavior
+
+Important:
+This is not supposed to darken the hero heavily.
+The hero image must stay dominant.
+Reflection and optical film should be visible in the negative space and edges.
+If it feels like haze/dark wallpaper, reduce base opacity first.
+If it feels too rainbow, reduce film opacity first.

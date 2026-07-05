@@ -46,12 +46,15 @@ const styles = StyleSheet.create({
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
-    // Floating shadow beneath the avatar disc
+    // Layout-only — sizes/positions the avatar. Was also casting a floating
+    // drop shadow beneath the disc; neutralized (opacity 0) rather than
+    // removing the properties, since it showed through as a faint dark "ghost"
+    // blob above the badge rail.
     shadowColor: '#000',
-    shadowOpacity: 0.45,
+    shadowOpacity: 0,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 5 },
-    elevation: 10,
+    elevation: 0,
   },
   avatarWrap: {
     width: AVATAR_SIZE,

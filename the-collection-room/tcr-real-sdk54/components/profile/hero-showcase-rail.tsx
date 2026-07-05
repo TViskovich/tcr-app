@@ -273,8 +273,13 @@ const styles = StyleSheet.create({
   outerWrap: {
     width: SCREEN_W,
     height: ROW_HEIGHT,
-    marginTop: 6,
-    marginBottom: 2,
+    // +16px breathing room below the Showcase circle. marginBottom absorbs
+    // the same 16px so the total block height (marginTop + height +
+    // marginBottom = 121) is unchanged — HeroInfo's position and the
+    // PHASE2_MAX_TRANSLATE scroll-math derivation in profile-hero.tsx (which
+    // depends on the rail row's total height) stay exactly as they were.
+    marginTop: 22,
+    marginBottom: -14,
   },
   scrollRail: {
     ...StyleSheet.absoluteFillObject,

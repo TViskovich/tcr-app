@@ -34,6 +34,7 @@ export type Profile = {
   bio: string | null;
   avatar_url: string | null;
   hero_image_url: string | null;
+  hero_theme: string | null;
   showcase_badge_url: string | null;
   created_at: string;
 };

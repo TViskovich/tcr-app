@@ -1,0 +1,26 @@
+{
+  "id": "M-001",
+  "name": "Spectra Alpha v2",
+  "status": "material-lab",
+  "intent": "Premium graphite chrome finish; hero should feel printed onto polished material, not covered by wallpaper.",
+  "files": {
+    "base": "spectra-graphite-base-v2.png",
+    "grain": "spectra-metallic-grain-v2.png",
+    "reflection": "spectra-reflection-map-v2.png",
+    "film": "spectra-spectral-film-v2.png",
+    "ambient": "spectra-ambient-light-v2.png"
+  },
+  "recommendedOpacity": {
+    "base": 0.36,
+    "grain": 0.1,
+    "reflection": 0.22,
+    "film": 0.18,
+    "ambient": 0.3
+  },
+  "notes": [
+    "V2 intentionally lowers graphite base opacity compared to V1 so the hero image does not become a dark wallpaper.",
+    "Reflection and film are the signature layers; tune those before touching layout.",
+    "If it still looks like haze, lower base to 0.24 and raise reflection to 0.28.",
+    "If it looks too rainbow, lower film to 0.10."
+  ]
+}

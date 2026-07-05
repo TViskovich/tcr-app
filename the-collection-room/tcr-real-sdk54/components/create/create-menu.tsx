@@ -1,4 +1,4 @@
-import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -12,48 +12,74 @@ type MenuOption = {
   icon: 'square.and.pencil' | 'rectangle.stack.fill' | 'folder.fill' | 'sparkles';
   title: string;
   subtitle: string;
-  // null = disabled / coming soon
-  route: string | null;
+  onSelect: () => void;
 };
-
-const OPTIONS: MenuOption[] = [
-  {
-    id: 'text',
-    icon: 'square.and.pencil',
-    title: 'Text Post',
-    subtitle: 'Share a collecting thought',
-    route: '/post/new',
-  },
-  {
-    id: 'card',
-    icon: 'rectangle.stack.fill',
-    title: 'Share Card',
-    subtitle: 'Post one collectible from your collection',
-    route: null,
-  },
-  {
-    id: 'folder',
-    icon: 'folder.fill',
-    title: 'Share Folder',
-    subtitle: 'Share a curated folder',
-    route: null,
-  },
-  {
-    id: 'showcase',
-    icon: 'sparkles',
-    title: 'Showcase',
-    subtitle: 'Feature multiple grails or favorites',
-    route: null,
-  },
-];
 
 export function CreateMenu({ visible, onClose }: Props) {
   const router = useRouter();
 
-  function handleOption(route: string) {
+  function handleTextPost() {
     onClose();
-    router.push(route as any);
+    router.push('/post/new');
   }
+
+  // TODO: Share Card — no card-picker or per-card share entry point exists yet
+  // (app/item/[id].tsx has no share action). Real implementation needs a card
+  // picker, then a Share.share() call — see handleShareFolder below for the
+  // exact pattern to reuse (app/folder/[id].tsx already does this for folders).
+  function handleShareCard() {
+    onClose();
+    Alert.alert('Share Card', 'Sharing an individual card is coming soon.');
+  }
+
+  // TODO: Share Folder — app/folder/[id].tsx already has a working Share.share()
+  // call (see its handleShare), but it operates on a folder already loaded in
+  // that screen's state. This menu has no folder selected yet, so there's
+  // nothing to reuse directly until a folder-picker exists here.
+  function handleShareFolder() {
+    onClose();
+    Alert.alert('Share Folder', 'Sharing a folder from here is coming soon.');
+  }
+
+  // TODO: Share Showcase — would deep-link to the current user's own profile
+  // (thecollectionroom://user/${username}), mirroring the folder share
+  // pattern, once the current user's username is available here (needs a
+  // profiles-table lookup; useAuth()'s session only has email, not username).
+  function handleShareShowcase() {
+    onClose();
+    Alert.alert('Share Showcase', 'Sharing your showcase is coming soon.');
+  }
+
+  const OPTIONS: MenuOption[] = [
+    {
+      id: 'text',
+      icon: 'square.and.pencil',
+      title: 'Text Post',
+      subtitle: 'Share a collecting thought',
+      onSelect: handleTextPost,
+    },
+    {
+      id: 'card',
+      icon: 'rectangle.stack.fill',
+      title: 'Share Card',
+      subtitle: 'Post one collectible from your collection',
+      onSelect: handleShareCard,
+    },
+    {
+      id: 'folder',
+      icon: 'folder.fill',
+      title: 'Share Folder',
+      subtitle: 'Share a curated folder',
+      onSelect: handleShareFolder,
+    },
+    {
+      id: 'showcase',
+      icon: 'sparkles',
+      title: 'Share Showcase',
+      subtitle: 'Feature multiple grails or favorites',
+      onSelect: handleShareShowcase,
+    },
+  ];
 
   return (
     <Modal
@@ -72,45 +98,27 @@ export function CreateMenu({ visible, onClose }: Props) {
 
           <Text style={styles.title}>Create</Text>
 
-          {OPTIONS.map((option, index) => {
-            const active = option.route !== null;
-            return (
-              <View key={option.id}>
-                {index > 0 && <View style={styles.divider} />}
-                <TouchableOpacity
-                  style={styles.row}
-                  onPress={active ? () => handleOption(option.route!) : undefined}
-                  disabled={!active}
-                  activeOpacity={0.65}>
+          {OPTIONS.map((option, index) => (
+            <View key={option.id}>
+              {index > 0 && <View style={styles.divider} />}
+              <TouchableOpacity
+                style={styles.row}
+                onPress={option.onSelect}
+                activeOpacity={0.65}>
 
-                  <View style={[styles.iconWrap, !active && styles.iconWrapDisabled]}>
-                    <IconSymbol
-                      name={option.icon}
-                      size={20}
-                      color={active ? '#FFFFFF' : 'rgba(255,255,255,0.35)'}
-                    />
-                  </View>
+                <View style={styles.iconWrap}>
+                  <IconSymbol name={option.icon} size={20} color="#FFFFFF" />
+                </View>
 
-                  <View style={styles.rowText}>
-                    <Text style={[styles.rowTitle, !active && styles.rowTitleDisabled]}>
-                      {option.title}
-                    </Text>
-                    <Text style={[styles.rowSubtitle, !active && styles.rowSubtitleDisabled]}>
-                      {active ? option.subtitle : 'Coming soon'}
-                    </Text>
-                  </View>
+                <View style={styles.rowText}>
+                  <Text style={styles.rowTitle}>{option.title}</Text>
+                  <Text style={styles.rowSubtitle}>{option.subtitle}</Text>
+                </View>
 
-                  {active ? (
-                    <IconSymbol name="chevron.right" size={14} color="rgba(255,255,255,0.28)" />
-                  ) : (
-                    <View style={styles.soonBadge}>
-                      <Text style={styles.soonText}>SOON</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              </View>
-            );
-          })}
+                <IconSymbol name="chevron.right" size={14} color="rgba(255,255,255,0.28)" />
+              </TouchableOpacity>
+            </View>
+          ))}
 
           {/* Bottom safe-area spacer */}
           <View style={styles.bottomSpacer} />
@@ -168,9 +176,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexShrink: 0,
   },
-  iconWrapDisabled: {
-    backgroundColor: 'rgba(255,255,255,0.07)',
-  },
   rowText: {
     flex: 1,
     gap: 2,
@@ -180,29 +185,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  rowTitleDisabled: {
-    color: 'rgba(255,255,255,0.38)',
-  },
   rowSubtitle: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.50)',
-  },
-  rowSubtitleDisabled: {
-    color: 'rgba(255,255,255,0.25)',
-  },
-  soonBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  soonText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.28)',
-    letterSpacing: 0.6,
   },
   bottomSpacer: {
     height: 36,

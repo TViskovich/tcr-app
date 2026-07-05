@@ -1,7 +1,9 @@
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { HERO_HEIGHT } from './hero-constants';
+import { HeroCanvasTheme } from './hero-canvas-theme';
+import type { HeroCanvasThemeId } from './hero-canvas-themes';
 
 type Props = {
   // Resolved background source: heroImageUri ?? avatarUri ?? null
@@ -11,6 +13,10 @@ type Props = {
   isHeroImage?: boolean;
   editMode?: boolean;
   onHeroPress?: () => void;
+  theme?: HeroCanvasThemeId;
+  // Existing scroll position, read-only — drives Spectra's restrained lighting
+  // parallax (Material M-001). Not used by classic/foil.
+  scrollY?: Animated.Value;
 };
 
 export function HeroBackground({
@@ -18,13 +24,20 @@ export function HeroBackground({
   isHeroImage = false,
   editMode = false,
   onHeroPress,
+  theme,
+  scrollY,
 }: Props) {
   return (
     <>
-      {/* Layer 1 — source image fills the full canvas.
-          Hero images run full opacity + minimal blur so artwork is immediately recognizable.
-          Avatar fallback uses light blur to stay atmospheric rather than literal. */}
-      {bgSource ? (
+      {/* Layer 1 — background. Spectra (M-001) is a canvas-replacement material:
+          it IS the display surface the showcase circle mounts onto, so it renders
+          here instead of the photo, fully opaque, with no tint/blur/enhancement
+          of the original image. Every other theme (classic/foil) still shows the
+          photo as before. TEMP(M2): 'spectra' isn't in HeroCanvasThemeId yet
+          (Milestone 3 registers it) — cast to string until then. */}
+      {(theme as string) === 'spectra' ? (
+        <HeroCanvasTheme theme={theme} scrollY={scrollY} />
+      ) : bgSource ? (
         <Image
           source={{ uri: bgSource }}
           style={[styles.heroBg, { opacity: isHeroImage ? 1.0 : 0.82 }]}
@@ -62,6 +75,12 @@ export function HeroBackground({
         style={styles.heroGoldAmbient}
         pointerEvents="none"
       />
+
+      {/* Layer 6 — selectable canvas theme overlay (foil, etc). Renders above the
+          photo and default gradients so the effect reads on every background
+          source. Spectra is rendered at Layer 1 instead (it replaces the photo
+          rather than tinting it), so it's skipped here to avoid double-rendering. */}
+      {(theme as string) !== 'spectra' ? <HeroCanvasTheme theme={theme} /> : null}
 
       {/* Edit-mode banner button — bottom-right corner, above gradients */}
       {editMode && onHeroPress ? (

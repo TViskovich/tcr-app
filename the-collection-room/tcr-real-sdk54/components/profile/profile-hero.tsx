@@ -2,8 +2,9 @@ import { ReactNode, useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import type { Profile } from '@/types';
-import { HERO_HEIGHT, AVATAR_SIZE } from './hero-constants';
+import { HERO_HEIGHT, AVATAR_SIZE, IDENTITY_TOP_PADDING } from './hero-constants';
 import { HeroBackground } from './hero-background';
+import type { HeroCanvasThemeId } from './hero-canvas-themes';
 import { HeroAvatar } from './hero-avatar';
 import { HeroBrand } from './hero-brand';
 import { HeroInfo } from './hero-info';
@@ -26,6 +27,7 @@ type Props = {
   profile: Profile;
   avatarUri: string | null;
   heroImageUri?: string | null;
+  heroTheme?: HeroCanvasThemeId;
   showcaseBadgeUri?: string | null;
   onAvatarPress?: () => void;
   onHeroPress?: () => void;
@@ -42,6 +44,7 @@ export function ProfileHero({
   profile,
   avatarUri,
   heroImageUri = null,
+  heroTheme,
   showcaseBadgeUri,
   onAvatarPress,
   onHeroPress,
@@ -124,6 +127,12 @@ export function ProfileHero({
             isHeroImage={isHeroImage}
             editMode={editMode}
             onHeroPress={onHeroPress}
+            // TEMP(M2): Spectra v2 visual test. Hardcoded to force the Spectra
+            // test render. Revert to `theme={heroTheme}` in Milestone 3.
+            theme={('spectra' as unknown) as HeroCanvasThemeId}
+            // Read-only: drives Spectra's restrained lighting parallax. Does not
+            // change what scrollY does to the rail/identity animations above.
+            scrollY={_scrollY}
           />
         </View>
 
@@ -235,7 +244,7 @@ const styles = StyleSheet.create({
   heroContent: {
     flex: 1,
     alignItems: 'center',
-    paddingTop: 48,
+    paddingTop: IDENTITY_TOP_PADDING,
     paddingBottom: 24,
   },
   identityBlock: {
@@ -245,7 +254,10 @@ const styles = StyleSheet.create({
   heroExtension: {
     height: 72,
   },
-  // Faked radial vignette — dark oval centered behind badge + name + handle
+  // Layout-only — kept for its size/position/clipping in case something
+  // depends on it, but made fully invisible (no fill) per request. Was a
+  // faint dark oval "ghost" showing through behind the badge rail/identity
+  // stack; neutralized here rather than removing the View.
   identityVignette: {
     position: 'absolute',
     bottom: 16,
@@ -253,6 +265,6 @@ const styles = StyleSheet.create({
     width: 340,
     height: 210,
     borderRadius: 170,
-    backgroundColor: 'rgba(0,0,0,0.10)',
+    backgroundColor: 'transparent',
   },
 });

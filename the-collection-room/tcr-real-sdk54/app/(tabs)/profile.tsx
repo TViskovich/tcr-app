@@ -14,12 +14,18 @@ import {
 } from 'react-native';
 
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { ProfileHero } from '@/components/profile/profile-hero';
+import {
+  HERO_CANVAS_THEMES,
+  resolveHeroCanvasTheme,
+  type HeroCanvasThemeId,
+} from '@/components/profile/hero-canvas-themes';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
@@ -43,6 +49,7 @@ export default function ProfileScreen() {
   const [removeHero, setRemoveHero] = useState(false);
   const [newBadgeUri, setNewBadgeUri] = useState<string | null>(null);
   const [removeBadge, setRemoveBadge] = useState(false);
+  const [selectedTheme, setSelectedTheme] = useState<HeroCanvasThemeId>('classic');
   const [saving, setSaving] = useState(false);
 
   useFocusEffect(
@@ -63,6 +70,7 @@ export default function ProfileScreen() {
     setRemoveHero(false);
     setNewBadgeUri(null);
     setRemoveBadge(false);
+    setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
     setEditMode(true);
   }
 
@@ -291,6 +299,7 @@ export default function ProfileScreen() {
           bio: editForm.bio.trim() || null,
           avatar_url: avatarUrl,
           hero_image_url: heroUrl,
+          hero_theme: selectedTheme,
           showcase_badge_url: badgeUrl,
         })
         .eq('id', userId);
@@ -314,6 +323,7 @@ export default function ProfileScreen() {
   const avatarUri = newAvatarUri ?? profile?.avatar_url ?? null;
   const heroUri = removeHero ? null : (newHeroUri ?? profile?.hero_image_url ?? null);
   const badgeUri = removeBadge ? null : (newBadgeUri ?? profile?.showcase_badge_url ?? null);
+  const heroTheme = editMode ? selectedTheme : resolveHeroCanvasTheme(profile?.hero_theme);
 
   if (loading && !profile) {
     return (
@@ -384,6 +394,7 @@ export default function ProfileScreen() {
               profile={profile}
               avatarUri={avatarUri}
               heroImageUri={heroUri}
+              heroTheme={heroTheme}
               showcaseBadgeUri={badgeUri}
               onAvatarPress={editMode ? pickAvatar : undefined}
               onHeroPress={editMode ? pickHero : undefined}
@@ -432,6 +443,27 @@ export default function ProfileScreen() {
                 textAlignVertical="top"
                 maxLength={160}
               />
+              <Text style={styles.fieldLabel}>Hero Theme</Text>
+              <View style={styles.themeRow}>
+                {HERO_CANVAS_THEMES.map((t) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[
+                      styles.themeSwatch,
+                      selectedTheme === t.id && styles.themeSwatchSelected,
+                    ]}
+                    onPress={() => setSelectedTheme(t.id)}
+                    activeOpacity={0.8}>
+                    <LinearGradient
+                      colors={t.swatch}
+                      style={styles.themeSwatchFill}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                    />
+                    <Text style={styles.themeSwatchLabel}>{t.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
           ) : (
             /* ── View Mode ── */
@@ -561,5 +593,30 @@ const styles = StyleSheet.create({
   bioInput: {
     height: 100,
     paddingTop: 12,
+  },
+  themeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  themeSwatch: {
+    alignItems: 'center',
+    gap: 6,
+    padding: 6,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  themeSwatchSelected: {
+    borderColor: '#0a7ea4',
+  },
+  themeSwatchFill: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+  },
+  themeSwatchLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#687076',
   },
 });

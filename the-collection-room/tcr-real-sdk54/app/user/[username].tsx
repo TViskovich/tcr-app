@@ -16,6 +16,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { FolderCard } from '@/components/collection/folder-card';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { ProfileHero } from '@/components/profile/profile-hero';
+import { resolveHeroCanvasTheme } from '@/components/profile/hero-canvas-themes';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
@@ -228,6 +229,7 @@ export default function UserProfileScreen() {
               profile={profile}
               avatarUri={avatarUri}
               heroImageUri={heroUri}
+              heroTheme={resolveHeroCanvasTheme(profile.hero_theme)}
               scrollY={scrollY}
               brandLabel="SHOWCASE"
               onPillPress={handlePillPress}
