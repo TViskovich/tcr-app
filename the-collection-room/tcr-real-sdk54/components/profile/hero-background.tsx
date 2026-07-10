@@ -3,7 +3,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { HERO_HEIGHT } from './hero-constants';
 import { HeroCanvasTheme } from './hero-canvas-theme';
-import type { HeroCanvasThemeId } from './hero-canvas-themes';
+import { getHeroCanvasImageAsset, type HeroCanvasThemeId } from './hero-canvas-themes';
 
 type Props = {
   // Resolved background source: heroImageUri ?? avatarUri ?? null
@@ -27,15 +27,18 @@ export function HeroBackground({
   theme,
   scrollY,
 }: Props) {
+  // Canvas-replacement themes (Spectra, and every 'image'-kind theme like
+  // neonCosmic) ARE the display surface the showcase circle mounts onto, so
+  // they render at Layer 1 instead of the photo, fully opaque, with no
+  // tint/blur/enhancement. Every other theme (classic/foil) still shows the
+  // photo as before, with these themes overlaid at Layer 6.
+  const isImageTheme = !!getHeroCanvasImageAsset(theme);
+
   return (
     <>
-      {/* Layer 1 — background. Spectra (M-001) is a canvas-replacement material:
-          it IS the display surface the showcase circle mounts onto, so it renders
-          here instead of the photo, fully opaque, with no tint/blur/enhancement
-          of the original image. Every other theme (classic/foil) still shows the
-          photo as before. TEMP(M2): 'spectra' isn't in HeroCanvasThemeId yet
+      {/* Layer 1 — background. TEMP(M2): 'spectra' isn't in HeroCanvasThemeId yet
           (Milestone 3 registers it) — cast to string until then. */}
-      {(theme as string) === 'spectra' ? (
+      {(theme as string) === 'spectra' || isImageTheme ? (
         <HeroCanvasTheme theme={theme} scrollY={scrollY} />
       ) : bgSource ? (
         <Image
@@ -76,11 +79,25 @@ export function HeroBackground({
         pointerEvents="none"
       />
 
+      {/* Layer 4b — the Hero owns its own fade-out. Top: transparent, bottom:
+          pure #000000, confined to the last 150px of the canvas. Painted last
+          (above the gold ambient) so its fully-opaque bottom stop overrides
+          everything beneath it — by the hero's last pixel row the canvas has
+          already dissolved to solid black, so heroExtension and the Grails
+          section below need no gradient/tint of their own to meet it. */}
+      <LinearGradient
+        colors={['transparent', '#000000']}
+        locations={[0, 1]}
+        style={styles.heroDissolve}
+        pointerEvents="none"
+      />
+
       {/* Layer 6 — selectable canvas theme overlay (foil, etc). Renders above the
           photo and default gradients so the effect reads on every background
-          source. Spectra is rendered at Layer 1 instead (it replaces the photo
-          rather than tinting it), so it's skipped here to avoid double-rendering. */}
-      {(theme as string) !== 'spectra' ? <HeroCanvasTheme theme={theme} /> : null}
+          source. Canvas-replacement themes (Spectra, image themes) render at
+          Layer 1 instead (they replace the photo rather than tinting it), so
+          they're skipped here to avoid double-rendering. */}
+      {(theme as string) !== 'spectra' && !isImageTheme ? <HeroCanvasTheme theme={theme} /> : null}
 
       {/* Edit-mode banner button — bottom-right corner, above gradients */}
       {editMode && onHeroPress ? (
@@ -116,6 +133,13 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+  },
+  heroDissolve: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 150,
   },
   heroGoldAmbient: {
     position: 'absolute',

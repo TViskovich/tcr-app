@@ -15,6 +15,7 @@ import {
 
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,7 +23,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { ProfileHero } from '@/components/profile/profile-hero';
 import {
-  HERO_CANVAS_THEMES,
+  getHeroCanvasPickerThemes,
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
@@ -304,7 +305,21 @@ export default function ProfileScreen() {
         })
         .eq('id', userId);
 
-      if (error) throw new Error('Failed to save profile. Please try again.');
+      if (error) {
+        if (__DEV__) {
+          console.error('[handleSave] Supabase profile update failed:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+          });
+        }
+        throw new Error(
+          __DEV__
+            ? `Failed to save profile: ${error.message}${error.code ? ` (${error.code})` : ''}`
+            : 'Failed to save profile. Please try again.'
+        );
+      }
 
       await refresh();
       setNewAvatarUri(null);
@@ -445,7 +460,7 @@ export default function ProfileScreen() {
               />
               <Text style={styles.fieldLabel}>Hero Theme</Text>
               <View style={styles.themeRow}>
-                {HERO_CANVAS_THEMES.map((t) => (
+                {getHeroCanvasPickerThemes().map((t) => (
                   <TouchableOpacity
                     key={t.id}
                     style={[
@@ -454,12 +469,21 @@ export default function ProfileScreen() {
                     ]}
                     onPress={() => setSelectedTheme(t.id)}
                     activeOpacity={0.8}>
-                    <LinearGradient
-                      colors={t.swatch}
-                      style={styles.themeSwatchFill}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                    />
+                    {t.kind === 'image' ? (
+                      <Image
+                        source={t.asset.source}
+                        style={styles.themeSwatchFill}
+                        contentFit="cover"
+                        contentPosition={t.asset.focalPoint}
+                      />
+                    ) : (
+                      <LinearGradient
+                        colors={t.swatch}
+                        style={styles.themeSwatchFill}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                      />
+                    )}
                     <Text style={styles.themeSwatchLabel}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}

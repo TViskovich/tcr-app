@@ -3,7 +3,8 @@ import { Animated, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AVATAR_SIZE, IDENTITY_TOP_PADDING } from './hero-constants';
-import type { HeroCanvasThemeId } from './hero-canvas-themes';
+import { getHeroCanvasImageAsset, type HeroCanvasThemeId } from './hero-canvas-themes';
+import { HeroCanvasImage } from './hero-canvas-image';
 import {
   SPECTRA_BASE,
   SPECTRA_CENTER_DARKENING,
@@ -26,6 +27,10 @@ type Props = {
 };
 
 export function HeroCanvasTheme({ theme = 'classic', scrollY }: Props) {
+  // Asset-driven image themes (neonCosmic, and future drops) render generically
+  // here — no per-theme branch needed, just a registry entry in hero-canvas-themes.ts.
+  const imageAsset = getHeroCanvasImageAsset(theme);
+
   // TEMP(M2): 'spectra' isn't a registered HeroCanvasThemeId yet (Milestone 3
   // adds it to the registry). Cast to string so this temporary branch can be
   // reached via the hardcoded test path in profile-hero.tsx. Remove this cast
@@ -47,6 +52,10 @@ export function HeroCanvasTheme({ theme = 'classic', scrollY }: Props) {
     outputRange: [...SPECTRA_MOTION.streaksY],
     extrapolate: 'clamp',
   });
+
+  if (imageAsset) {
+    return <HeroCanvasImage asset={imageAsset} />;
+  }
 
   if (isSpectra) {
     const overscan = SPECTRA_MOTION.overscan;

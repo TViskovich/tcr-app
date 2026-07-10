@@ -1,6 +1,5 @@
 import { ReactNode, useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import type { Profile } from '@/types';
 import { HERO_HEIGHT, AVATAR_SIZE, IDENTITY_TOP_PADDING } from './hero-constants';
 import { HeroBackground } from './hero-background';
@@ -127,9 +126,7 @@ export function ProfileHero({
             isHeroImage={isHeroImage}
             editMode={editMode}
             onHeroPress={onHeroPress}
-            // TEMP(M2): Spectra v2 visual test. Hardcoded to force the Spectra
-            // test render. Revert to `theme={heroTheme}` in Milestone 3.
-            theme={('spectra' as unknown) as HeroCanvasThemeId}
+            theme={heroTheme}
             // Read-only: drives Spectra's restrained lighting parallax. Does not
             // change what scrollY does to the rail/identity animations above.
             scrollY={_scrollY}
@@ -214,14 +211,12 @@ export function ProfileHero({
         ) : null}
       </View>
 
-      {/* Seamless bridge: hero dark → page background.
-          Renders immediately below the hero so the canvas dissolves
-          rather than cutting off at a hard edge. */}
-      <LinearGradient
-        colors={['#0D0D0D', '#f8f9fa']}
-        style={styles.heroExtension}
-        pointerEvents="none"
-      />
+      {/* Solid black spacer: the hero's own bottom dissolve (hero-background.tsx
+          Layer 4b) already fades all the way to pure #000000 by its last pixel,
+          so this holds that same flat black — no gradient/tint of its own —
+          until the Grails section (also solid black) begins. All of the fade
+          is owned by the hero above; this is just inert continuation. */}
+      <View style={styles.heroExtension} pointerEvents="none" />
     </View>
   );
 }
@@ -253,6 +248,7 @@ const styles = StyleSheet.create({
   },
   heroExtension: {
     height: 72,
+    backgroundColor: '#000000',
   },
   // Layout-only — kept for its size/position/clipping in case something
   // depends on it, but made fully invisible (no fill) per request. Was a

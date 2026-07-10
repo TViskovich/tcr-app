@@ -3,6 +3,7 @@ import {
   Animated,
   ActivityIndicator,
   Dimensions,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -13,7 +14,7 @@ const SCREEN_W = Dimensions.get('window').width;
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
-import { FolderCard } from '@/components/collection/folder-card';
+import { FolderChip } from '@/components/collection/folder-chip';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { ProfileHero } from '@/components/profile/profile-hero';
 import { resolveHeroCanvasTheme } from '@/components/profile/hero-canvas-themes';
@@ -199,108 +200,103 @@ export default function UserProfileScreen() {
   return (
     <>
       <Stack.Screen options={{ title: `@${profile.username}` }} />
-      <Animated.FlatList
-        data={folders}
-        numColumns={2}
-        keyExtractor={(item) => item.id}
+      <Animated.ScrollView
         style={styles.screen}
+        contentContainerStyle={styles.list}
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: true },
-        )}
-        renderItem={({ item }) => (
-          <FolderCard
-            folder={item}
-            itemCount={folderItemCounts[item.id] ?? 0}
-            onPress={() =>
-              router.push({
-                pathname: '/folder/[id]',
-                params: { id: item.id, name: item.name },
-              })
-            }
-          />
-        )}
-        contentContainerStyle={styles.list}
-        columnWrapperStyle={styles.row}
-        ListHeaderComponent={
-          <View>
-            <ProfileHero
-              profile={profile}
-              avatarUri={avatarUri}
-              heroImageUri={heroUri}
-              heroTheme={resolveHeroCanvasTheme(profile.hero_theme)}
-              scrollY={scrollY}
-              brandLabel="SHOWCASE"
-              onPillPress={handlePillPress}
-            />
+        )}>
+        <ProfileHero
+          profile={profile}
+          avatarUri={avatarUri}
+          heroImageUri={heroUri}
+          heroTheme={resolveHeroCanvasTheme(profile.hero_theme)}
+          scrollY={scrollY}
+          brandLabel="SHOWCASE"
+          onPillPress={handlePillPress}
+        />
 
-            {!isOwnProfile && currentUserId ? (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  style={styles.msgBtn}
-                  onPress={handleMessage}
-                  disabled={msgLoading}
-                  activeOpacity={0.75}>
-                  {msgLoading
-                    ? <ActivityIndicator size="small" color="#FFFFFF" />
-                    : <Text style={styles.msgBtnText} numberOfLines={1}>Message</Text>
-                  }
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
-                  onPress={toggleFollow}
-                  disabled={followLoading}
-                  activeOpacity={0.75}>
-                  {followLoading
-                    ? <ActivityIndicator size="small" color={isFollowing ? '#FFFFFF' : '#0D0D0D'} />
-                    : <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]} numberOfLines={1}>
-                        {isFollowing ? 'Following' : 'Follow'}
-                      </Text>
-                  }
-                </TouchableOpacity>
-              </View>
-            ) : null}
-
-            <GrailsGrid
-              grails={grails}
-              editable={false}
-              onCabinetPress={() =>
-                router.push({
-                  pathname: '/grails/[userId]',
-                  params: {
-                    userId: profile.id,
-                    username: profile.username,
-                    displayName: profile.display_name ?? '',
-                  },
-                })
+        {!isOwnProfile && currentUserId ? (
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={styles.msgBtn}
+              onPress={handleMessage}
+              disabled={msgLoading}
+              activeOpacity={0.75}>
+              {msgLoading
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Text style={styles.msgBtnText} numberOfLines={1}>Message</Text>
               }
-            />
-
-            {folders.length > 0 && (
-              <Text style={styles.foldersLabel}>Folders</Text>
-            )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.followBtn, isFollowing && styles.followBtnFollowing]}
+              onPress={toggleFollow}
+              disabled={followLoading}
+              activeOpacity={0.75}>
+              {followLoading
+                ? <ActivityIndicator size="small" color={isFollowing ? '#FFFFFF' : '#0D0D0D'} />
+                : <Text style={[styles.followBtnText, isFollowing && styles.followBtnTextFollowing]} numberOfLines={1}>
+                    {isFollowing ? 'Following' : 'Follow'}
+                  </Text>
+              }
+            </TouchableOpacity>
           </View>
-        }
-        ListEmptyComponent={
+        ) : null}
+
+        <GrailsGrid
+          grails={grails}
+          editable={false}
+          onCabinetPress={() =>
+            router.push({
+              pathname: '/grails/[userId]',
+              params: {
+                userId: profile.id,
+                username: profile.username,
+                displayName: profile.display_name ?? '',
+              },
+            })
+          }
+        />
+
+        {folders.length > 0 ? (
+          <>
+            <Text style={styles.foldersLabel}>Folders</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.folderRow}>
+              {folders.map((item) => (
+                <FolderChip
+                  key={item.id}
+                  folder={item}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/folder/[id]',
+                      params: { id: item.id, name: item.name },
+                    })
+                  }
+                />
+              ))}
+            </ScrollView>
+          </>
+        ) : (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyText}>No public folders yet.</Text>
           </View>
-        }
-        ListFooterComponent={
-          <View>
-            {/* Activity — future section */}
-            <View style={styles.placeholderSection}>
-              <Text style={styles.placeholderLabel}>Activity</Text>
-            </View>
-            {/* Collection — future destination */}
-            <View style={styles.placeholderSection}>
-              <Text style={styles.placeholderLabel}>Collection</Text>
-            </View>
-            <View style={styles.bottomSpacer} />
-          </View>
-        }
-      />
+        )}
+
+        {/* Activity — future section */}
+        <View style={styles.placeholderSection}>
+          <Text style={styles.placeholderLabel}>Activity</Text>
+        </View>
+        {/* Collection — future destination */}
+        <View style={styles.placeholderSection}>
+          <Text style={styles.placeholderLabel}>Collection</Text>
+        </View>
+        <View style={styles.bottomSpacer} />
+      </Animated.ScrollView>
     </>
   );
 }
@@ -324,9 +320,13 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     backgroundColor: '#0D0D0D',
   },
-  row: {
-    justifyContent: 'flex-start',
-    paddingHorizontal: 10,
+  folderRow: {
+    flexGrow: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+    paddingHorizontal: 16,
   },
   actionRow: {
     flexDirection: 'row',
