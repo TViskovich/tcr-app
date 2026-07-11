@@ -14,6 +14,7 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 
@@ -220,6 +221,7 @@ export default function SearchScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Search</Text>
+        <CacheCaseLogo variant="icon" size={28} />
       </View>
 
       <View style={styles.toggleRow}>
@@ -269,11 +271,13 @@ export default function SearchScreen() {
         </View>
       ) : !hasSearched ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="dark" size={35} placement="emptyState" />
           <Text style={styles.emptyTitle}>Search for collectors or cards</Text>
           <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
       ) : currentResults.length === 0 ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>
             {mode === 'users' ? 'No users found' : 'No cards found'}
           </Text>
@@ -324,6 +328,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,

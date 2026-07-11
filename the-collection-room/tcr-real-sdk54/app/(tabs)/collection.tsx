@@ -11,6 +11,7 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { FolderCard } from '@/components/collection/folder-card';
 import { useAuth } from '@/lib/auth';
@@ -28,7 +29,10 @@ export default function CollectionScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>My Collection</Text>
+        <View style={styles.headerTitleRow}>
+          <CacheCaseLogo variant="icon" size={30} />
+          <Text style={styles.headerTitle}>Collection</Text>
+        </View>
         <TouchableOpacity onPress={() => setShowModal(true)} style={styles.newButton}>
           <Text style={styles.newButtonText}>+ New Folder</Text>
         </TouchableOpacity>
@@ -40,7 +44,7 @@ export default function CollectionScreen() {
         </View>
       ) : folders.length === 0 ? (
         <View style={styles.center}>
-          <Text style={styles.emptyIcon}>📁</Text>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No folders yet</Text>
           <Text style={styles.emptyBody}>
             Create your first folder to start organizing your collection.
@@ -99,6 +103,11 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     backgroundColor: '#fff',
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   headerTitle: {
     fontSize: 26,
     fontWeight: '800',
@@ -120,10 +129,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
   },
   emptyTitle: {
     fontSize: 20,

@@ -18,6 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { ItemCard } from '@/components/collection/item-card';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { ScreenHeader } from '@/components/ui/screen-header';
@@ -363,7 +364,7 @@ export default function FolderDetailScreen() {
           )}
           ListEmptyComponent={
             <View style={styles.emptyContent}>
-              <Text style={styles.emptyIcon}>🃏</Text>
+              <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
               <Text style={styles.emptyTitle}>No items yet</Text>
               {isOwner && (
                 <Text style={styles.emptyBody}>Tap "+ Add Item" to add your first card.</Text>
@@ -661,10 +662,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 48,
     paddingHorizontal: 32,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
   },
   emptyTitle: {
     fontSize: 18,

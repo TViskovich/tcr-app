@@ -15,12 +15,14 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { withSpring } from 'react-native-reanimated';
+import { useSharedValue, withSpring } from 'react-native-reanimated';
 
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
 import { useTabVisibility } from '@/lib/tab-visibility-context';
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -60,6 +62,11 @@ function scorePost(post: FeedPost): number {
 }
 
 const PAGE_SIZE = 20;
+
+// Temporary: feed tabs replaced by a centered wordmark for branding purposes.
+// The segmented control below is untouched — flip this back to true to restore
+// it, no other changes needed.
+const SHOW_FEED_SEGMENT = false;
 
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
@@ -222,6 +229,7 @@ export default function HomeScreen() {
   const { translateY } = useTabVisibility();
   const lastScrollY = useRef(0);
   const tabBarHidden = useRef(false);
+  const pullProgress = useSharedValue(0);
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
@@ -340,22 +348,26 @@ export default function HomeScreen() {
           <IconSymbol name="plus" size={26} color="#11181C" weight="semibold" />
         </TouchableOpacity>
 
-        <View style={styles.headerSegment}>
-          <TouchableOpacity
-            style={[styles.segmentBtn, feedMode === 'for-you' && styles.segmentBtnActive]}
-            onPress={() => setFeedMode('for-you')}>
-            <Text style={[styles.segmentText, feedMode === 'for-you' && styles.segmentTextActive]}>
-              For You
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.segmentBtn, feedMode === 'following' && styles.segmentBtnActive]}
-            onPress={() => setFeedMode('following')}>
-            <Text style={[styles.segmentText, feedMode === 'following' && styles.segmentTextActive]}>
-              Following
-            </Text>
-          </TouchableOpacity>
-        </View>
+        {SHOW_FEED_SEGMENT ? (
+          <View style={styles.headerSegment}>
+            <TouchableOpacity
+              style={[styles.segmentBtn, feedMode === 'for-you' && styles.segmentBtnActive]}
+              onPress={() => setFeedMode('for-you')}>
+              <Text style={[styles.segmentText, feedMode === 'for-you' && styles.segmentTextActive]}>
+                For You
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segmentBtn, feedMode === 'following' && styles.segmentBtnActive]}
+              onPress={() => setFeedMode('following')}>
+              <Text style={[styles.segmentText, feedMode === 'following' && styles.segmentTextActive]}>
+                Following
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <CacheCaseLogo variant="dark" size={35} />
+        )}
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
           style={styles.bellBtn}
@@ -377,59 +389,76 @@ export default function HomeScreen() {
         </View>
       ) : posts.length === 0 ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No posts yet</Text>
           <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
       ) : (
-        <FlatList
-          data={posts}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <PostCard
-              post={item}
-              onUserPress={() =>
-                router.push({
-                  pathname: '/user/[username]',
-                  params: { username: item.username },
-                })
+        <View style={styles.listWrap}>
+          <FlatList
+            data={posts}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <PostCard
+                post={item}
+                onUserPress={() =>
+                  router.push({
+                    pathname: '/user/[username]',
+                    params: { username: item.username },
+                  })
+                }
+                onPostPress={() =>
+                  router.push({
+                    pathname: '/post/[id]',
+                    params: { id: item.id },
+                  })
+                }
+                onLike={() => handleLike(item.id)}
+              />
+            )}
+            contentContainerStyle={styles.list}
+            scrollEventThrottle={16}
+            onScroll={(e) => {
+              const y = e.nativeEvent.contentOffset.y;
+              const dy = y - lastScrollY.current;
+              // Hide on scroll down (past 80px), show on scroll up
+              if (dy > 6 && y > 80 && !tabBarHidden.current) {
+                tabBarHidden.current = true;
+                translateY.value = withSpring(102, { damping: 20, stiffness: 200 });
+              } else if (dy < -6 && tabBarHidden.current) {
+                tabBarHidden.current = false;
+                translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
               }
-              onPostPress={() =>
-                router.push({
-                  pathname: '/post/[id]',
-                  params: { id: item.id },
-                })
-              }
-              onLike={() => handleLike(item.id)}
-            />
-          )}
-          contentContainerStyle={styles.list}
-          scrollEventThrottle={16}
-          onScroll={(e) => {
-            const y = e.nativeEvent.contentOffset.y;
-            const dy = y - lastScrollY.current;
-            // Hide on scroll down (past 80px), show on scroll up
-            if (dy > 6 && y > 80 && !tabBarHidden.current) {
-              tabBarHidden.current = true;
-              translateY.value = withSpring(102, { damping: 20, stiffness: 200 });
-            } else if (dy < -6 && tabBarHidden.current) {
-              tabBarHidden.current = false;
-              translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+              lastScrollY.current = y;
+
+              // Overscroll-only (y < 0, iOS pull bounce) drives the custom
+              // refresh icon below — purely visual, doesn't touch refresh logic.
+              pullProgress.value = y < 0 ? Math.min(1.15, -y / PULL_THRESHOLD) : 0;
+            }}
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={
+              loadingMore ? (
+                <View style={styles.footer}>
+                  <ActivityIndicator size="small" color="#0a7ea4" />
+                </View>
+              ) : null
             }
-            lastScrollY.current = y;
-          }}
-          onEndReached={loadMore}
-          onEndReachedThreshold={0.4}
-          ListFooterComponent={
-            loadingMore ? (
-              <View style={styles.footer}>
-                <ActivityIndicator size="small" color="#0a7ea4" />
-              </View>
-            ) : null
-          }
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
-          }
-        />
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                // True alpha-transparent tint is unreliable on iOS — UIRefreshControl
+                // can still paint its spinner glyph even at tintColor alpha 0. Camouflaging
+                // against the screen's real background color hides it completely instead.
+                tintColor="#f8f9fa"
+                colors={['#f8f9fa']}
+                progressBackgroundColor="#f8f9fa"
+              />
+            }
+          />
+          <CacheCaseRefreshControl pullProgress={pullProgress} refreshing={refreshing} />
+        </View>
       )}
 
       <CreateMenu
@@ -620,6 +649,9 @@ const styles = StyleSheet.create({
     color: '#687076',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  listWrap: {
+    flex: 1,
   },
   list: {
     padding: 12,

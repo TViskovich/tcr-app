@@ -13,6 +13,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
@@ -228,6 +229,7 @@ export default function NotificationsScreen() {
         </View>
       ) : notifications.length === 0 ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No notifications yet</Text>
           <Text style={styles.emptyBody}>
             You'll see likes, comments, follows, and messages here.

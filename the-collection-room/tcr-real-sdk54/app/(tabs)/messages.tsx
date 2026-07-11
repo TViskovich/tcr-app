@@ -13,6 +13,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
@@ -159,6 +160,7 @@ export default function MessagesScreen() {
         </View>
       ) : conversations.length === 0 ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No messages yet</Text>
           <Text style={styles.emptyBody}>
             Visit someone's profile and tap Message to start a conversation.

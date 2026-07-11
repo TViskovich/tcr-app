@@ -12,6 +12,7 @@ import {
 import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
@@ -44,6 +45,7 @@ export default function SavedScreen() {
         </View>
       ) : isEmpty ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>Nothing saved yet</Text>
           <Text style={styles.emptyBody}>
             Bookmark collections, cards, and Grails showcases to revisit them here.

@@ -13,6 +13,7 @@ import {
 
 import { Link } from 'expo-router';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginScreen() {
@@ -36,7 +37,7 @@ export default function LoginScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.inner}>
-        <Text style={styles.title}>The Collection Room</Text>
+        <CacheCaseLogo variant="dark" size="lg" style={styles.logo} />
         <Text style={styles.subtitle}>Sign in to your account</Text>
 
         <TextInput
@@ -89,12 +90,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     gap: 12,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 4,
-    color: '#11181C',
+  logo: {
+    alignSelf: 'center',
+    marginBottom: 12,
   },
   subtitle: {
     fontSize: 16,

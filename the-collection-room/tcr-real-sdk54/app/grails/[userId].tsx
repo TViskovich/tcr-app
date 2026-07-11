@@ -3,6 +3,7 @@ import { Animated, ActivityIndicator, ScrollView, StyleSheet, Text, View } from 
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { useGrails } from '@/hooks/use-grails';
@@ -60,6 +61,7 @@ export default function GrailsShowcaseScreen() {
           </View>
         ) : grails.length === 0 ? (
           <View style={styles.center}>
+            <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
             <Text style={styles.emptyText}>No Grails yet.</Text>
           </View>
         ) : (

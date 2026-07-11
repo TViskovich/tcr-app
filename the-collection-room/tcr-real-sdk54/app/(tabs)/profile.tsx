@@ -20,6 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { ProfileHero } from '@/components/profile/profile-hero';
 import {
@@ -345,7 +346,7 @@ export default function ProfileScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
           <View style={styles.headerSide} />
-          <Text style={styles.headerTitle}>Profile</Text>
+          <CacheCaseLogo variant="dark" size={35} />
           <View style={styles.headerSide} />
         </View>
         <View style={styles.center}>
@@ -370,7 +371,11 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
         </View>
-        <Text style={styles.headerTitle}>{editMode ? 'Edit Profile' : 'Profile'}</Text>
+        {editMode ? (
+          <Text style={styles.headerTitle}>Edit Profile</Text>
+        ) : (
+          <CacheCaseLogo variant="dark" size={35} />
+        )}
         <View style={[styles.headerSide, styles.headerSideRight]}>
           {editMode ? (
             <TouchableOpacity onPress={handleSave} disabled={saving}>
