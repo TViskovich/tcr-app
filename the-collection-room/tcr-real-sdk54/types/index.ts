@@ -42,7 +42,7 @@ export type Profile = {
 export type Post = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text';
+  post_type: 'item' | 'text' | 'rate_my_grails';
   item_id: string | null;
   image_url: string | null;
   content: string | null;
@@ -59,4 +59,25 @@ export type ShowcaseItem = {
   badge_type: string | null;
   added_at: string;
   item: CollectionItem;
+};
+
+// Snapshot of one grail at the moment a Rate My Grails post was created —
+// deliberately denormalized (snapshot_*) so the post keeps rendering even if
+// the source collection_item is later edited or deleted. item_id is only an
+// optional "view original card" link, never required for rendering.
+export type RateMyGrailCard = {
+  id: string;
+  post_id: string;
+  item_id: string | null;
+  snapshot_image_url: string;
+  snapshot_title: string | null;
+  snapshot_subtitle: string | null;
+  display_order: number;
+};
+
+export type GrailRating = {
+  post_id: string;
+  rater_user_id: string;
+  score: number;
+  updated_at: string;
 };

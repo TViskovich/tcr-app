@@ -1,8 +1,20 @@
-import { useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, Animated, Image, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import ReanimatedView, {
+  Easing as ReEasing,
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { GrailsSlot } from '@/components/profile/grails-slot';
 import type { ShowcaseItem } from '@/types';
 
@@ -11,6 +23,7 @@ type Props = {
   editable?: boolean;
   onItemPress?: (item: ShowcaseItem) => void;
   onCabinetPress?: () => void;
+  onAddFirstGrail?: () => void;
   vaultMargin?: number;
 };
 
@@ -20,7 +33,14 @@ const MAX_SLOTS = 9;
 // Warm near-black — aged wood / display case felt
 const VAULT_COLORS = ['#1A1510', '#0F0D09', '#080604'] as const;
 
-export function GrailsGrid({ grails, editable = false, onItemPress, onCabinetPress, vaultMargin = 14 }: Props) {
+export function GrailsGrid({
+  grails,
+  editable = false,
+  onItemPress,
+  onCabinetPress,
+  onAddFirstGrail,
+  vaultMargin = 14,
+}: Props) {
   // Explicit pixel width ensures identical screen-edge margins regardless of parent padding.
   const { width: screenWidth } = useWindowDimensions();
   const vaultWidth = screenWidth - vaultMargin * 2;
@@ -51,10 +71,7 @@ export function GrailsGrid({ grails, editable = false, onItemPress, onCabinetPre
       <View style={[styles.vaultShadow, { width: vaultWidth, alignSelf: 'center' }]}>
         <LinearGradient colors={VAULT_COLORS} style={styles.vault} start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}>
           <VaultHeader />
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>Showcase your favorite cards here.</Text>
-            <Text style={styles.emptyBody}>Add your first Grail from any item page.</Text>
-          </View>
+          <ZeroGrailsState onAddFirstGrail={onAddFirstGrail} />
         </LinearGradient>
       </View>
     );
@@ -129,6 +146,161 @@ function VaultHeader() {
   );
 }
 
+// Best-effort reduced-motion check — no existing shared hook for this in the
+// codebase, kept local since this is the only place that needs it.
+function useReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((value) => {
+      if (mounted) setReduced(value);
+    });
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduced);
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, []);
+  return reduced;
+}
+
+// First-time empty state — aspirational rather than a bare "no items" notice.
+// The floating CacheCase mark is untouched and remains the hero element,
+// hovering above the grails-display-platform.png stage image.
+function ZeroGrailsState({ onAddFirstGrail }: { onAddFirstGrail?: () => void }) {
+  const reducedMotion = useReducedMotion();
+  const floatY = useSharedValue(0);
+
+  useEffect(() => {
+    if (reducedMotion) {
+      floatY.value = 0;
+      return;
+    }
+    floatY.value = withRepeat(
+      withSequence(
+        withTiming(-2.5, { duration: 1750, easing: ReEasing.inOut(ReEasing.sin) }),
+        withTiming(0, { duration: 1750, easing: ReEasing.inOut(ReEasing.sin) }),
+      ),
+      -1,
+      false,
+    );
+  }, [reducedMotion, floatY]);
+
+  const floatStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: floatY.value }],
+  }));
+
+  return (
+    <View style={styles.zeroState}>
+      <View style={styles.stage}>
+        {/* The existing floating logo — unchanged asset, only its bob amplitude/timing live here. */}
+        <ReanimatedView.View style={[styles.floatingPiece, floatStyle]}>
+          <CacheCaseLogo variant="icon" size={40} />
+        </ReanimatedView.View>
+
+        <DisplayStage reducedMotion={reducedMotion} />
+      </View>
+
+      <Text style={styles.zeroHeading}>A grail isn&apos;t just rare. It&apos;s personal.</Text>
+      <Text style={styles.zeroBody}>Every collector has one.</Text>
+
+      <Pressable
+        style={({ pressed }) => [styles.zeroCta, pressed && styles.zeroCtaPressed]}
+        onPress={onAddFirstGrail}>
+        <Text style={styles.zeroCtaText}>➕ Add First Grail</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+// The stage beneath the logo: a small animated glow + a few drifting dust
+// motes (the only animated elements here), sitting above the static
+// grails-display-platform.png. The PNG itself is never animated.
+function DisplayStage({ reducedMotion }: { reducedMotion: boolean }) {
+  const glowBreathe = useSharedValue(0.5);
+
+  useEffect(() => {
+    if (reducedMotion) {
+      glowBreathe.value = 0.55;
+      return;
+    }
+    glowBreathe.value = withRepeat(
+      withSequence(
+        withTiming(0.65, { duration: 2600, easing: ReEasing.inOut(ReEasing.sin) }),
+        withTiming(0.45, { duration: 2600, easing: ReEasing.inOut(ReEasing.sin) }),
+      ),
+      -1,
+      false,
+    );
+  }, [reducedMotion, glowBreathe]);
+
+  const glowStyle = useAnimatedStyle(() => ({ opacity: glowBreathe.value }));
+
+  return (
+    <View style={styles.pedestalStage} pointerEvents="none">
+      {/* Subtle warm glow directly beneath the logo — separate from, and much
+          smaller than, the light beam already baked into the platform image. */}
+      <ReanimatedView.View style={[styles.underLogoGlow, glowStyle]}>
+        <LinearGradient
+          colors={['rgba(255,214,140,0)', 'rgba(255,214,140,0.16)']}
+          style={StyleSheet.absoluteFill}
+        />
+      </ReanimatedView.View>
+
+      {/* A few tiny dust motes drifting through the beam — kept sparse. */}
+      {!reducedMotion && (
+        <>
+          <DustParticle left="41%" size={1.5} duration={6400} delay={0} />
+          <DustParticle left="54%" size={2} duration={7600} delay={2400} />
+          <DustParticle left="47%" size={1.5} duration={5600} delay={4400} />
+        </>
+      )}
+
+      <Image
+        source={require('@/assets/ui/grails-display-platform.png')}
+        style={styles.platformImage}
+        resizeMode="contain"
+      />
+    </View>
+  );
+}
+
+function DustParticle({
+  left,
+  size,
+  duration,
+  delay,
+}: {
+  left: `${number}%`;
+  size: number;
+  duration: number;
+  delay: number;
+}) {
+  const t = useSharedValue(0);
+
+  useEffect(() => {
+    t.value = withRepeat(
+      withSequence(
+        withDelay(delay, withTiming(1, { duration, easing: ReEasing.linear })),
+        withTiming(0, { duration: 0 }),
+      ),
+      -1,
+      false,
+    );
+  }, [t, duration, delay]);
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ translateY: interpolate(t.value, [0, 1], [8, -60]) }],
+    opacity: interpolate(t.value, [0, 0.15, 0.75, 1], [0, 0.45, 0.28, 0], Extrapolation.CLAMP),
+  }));
+
+  return (
+    <ReanimatedView.View
+      style={[styles.dustParticle, { left, width: size, height: size, borderRadius: size / 2 }, style]}
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   // ── Vault panel ───────────────────────────────────────────────
   // Width is set dynamically (14px margin each side). No marginHorizontal here.
@@ -200,21 +372,84 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
 
-  // ── Empty state ───────────────────────────────────────────────
-  emptyState: {
-    paddingVertical: 18,
+  // ── Zero state ────────────────────────────────────────────────
+  zeroState: {
+    paddingVertical: 30,
+    paddingHorizontal: 20,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
+    gap: 14,
   },
-  emptyTitle: {
+  stage: {
+    width: '100%',
+    alignItems: 'center',
+    gap: 18,
+  },
+  floatingPiece: {
+    shadowColor: '#FFE060',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.55,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  // Sized to content (the platform image) — no fixed height, so the image's
+  // own aspect ratio is never cropped or squashed.
+  pedestalStage: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  // grails-display-platform.png — cropped tight to the platform itself
+  // (886x200, ~4.4:1). Scaled by width only so contain never distorts it.
+  platformImage: {
+    width: '60%',
+    aspectRatio: 886 / 200,
+  },
+  // Small, separate accent glow directly under the logo — distinct from (and
+  // much smaller than) the light beam already baked into the platform image.
+  underLogoGlow: {
+    position: 'absolute',
+    top: -4,
+    left: '50%',
+    marginLeft: -16,
+    width: 32,
+    height: 38,
+  },
+  dustParticle: {
+    position: 'absolute',
+    top: 6,
+    backgroundColor: 'rgba(255, 231, 170, 0.85)',
+  },
+  zeroHeading: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.90)',
+    textAlign: 'center',
+    lineHeight: 22,
+    maxWidth: 260,
+  },
+  zeroBody: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.50)',
+    textAlign: 'center',
+    lineHeight: 19,
+    maxWidth: 250,
+  },
+  zeroCta: {
+    marginTop: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    backgroundColor: 'rgba(212, 165, 32, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(212, 165, 32, 0.55)',
+  },
+  zeroCtaPressed: {
+    opacity: 0.7,
+  },
+  zeroCtaText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.58)',
-    textAlign: 'center',
-  },
-  emptyBody: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.34)',
-    textAlign: 'center',
+    fontWeight: '700',
+    color: '#D4A520',
+    letterSpacing: 0.3,
   },
 });

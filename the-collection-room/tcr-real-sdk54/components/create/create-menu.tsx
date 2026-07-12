@@ -9,7 +9,7 @@ type Props = {
 
 type MenuOption = {
   id: string;
-  icon: 'square.and.pencil' | 'rectangle.stack.fill' | 'folder.fill' | 'sparkles';
+  icon: 'square.and.pencil' | 'rectangle.stack.fill' | 'folder.fill' | 'crown.fill';
   title: string;
   subtitle: string;
   onSelect: () => void;
@@ -41,13 +41,9 @@ export function CreateMenu({ visible, onClose }: Props) {
     Alert.alert('Share Folder', 'Sharing a folder from here is coming soon.');
   }
 
-  // TODO: Share Showcase — would deep-link to the current user's own profile
-  // (thecollectionroom://user/${username}), mirroring the folder share
-  // pattern, once the current user's username is available here (needs a
-  // profiles-table lookup; useAuth()'s session only has email, not username).
-  function handleShareShowcase() {
+  function handleRateMyGrails() {
     onClose();
-    Alert.alert('Share Showcase', 'Sharing your showcase is coming soon.');
+    router.push('/rate-my-grails/new');
   }
 
   const OPTIONS: MenuOption[] = [
@@ -73,11 +69,11 @@ export function CreateMenu({ visible, onClose }: Props) {
       onSelect: handleShareFolder,
     },
     {
-      id: 'showcase',
-      icon: 'sparkles',
-      title: 'Share Showcase',
-      subtitle: 'Feature multiple grails or favorites',
-      onSelect: handleShareShowcase,
+      id: 'rate-my-grails',
+      icon: 'crown.fill',
+      title: 'Rate My Grails',
+      subtitle: 'Share your showcase for others to rate',
+      onSelect: handleRateMyGrails,
     },
   ];
 

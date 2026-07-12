@@ -221,7 +221,6 @@ export default function SearchScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Search</Text>
-        <CacheCaseLogo variant="icon" size={28} />
       </View>
 
       <View style={styles.toggleRow}>

@@ -23,13 +23,16 @@ import { supabase } from '@/lib/supabase';
 import { useTabVisibility } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
+import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { CreateMenu } from '@/components/create/create-menu';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useGrailRating } from '@/hooks/use-grail-rating';
+import type { RateMyGrailCard } from '@/types';
 
 type FeedPost = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text';
+  post_type: 'item' | 'text' | 'rate_my_grails';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -42,7 +45,43 @@ type FeedPost = {
   liked: boolean;
   commentCount: number;
   isFollowing: boolean;
+  grailCards: RateMyGrailCard[];
+  avgRating: number | null;
+  ratingCount: number;
+  myRating: number | null;
 };
+
+// Shared by queryFeed/queryFollowingFeed — batch-fetches the grail snapshot
+// rows + ratings for whichever of the given posts are Rate My Grails posts,
+// keyed by post_id, so both queries build FeedPost the same way.
+async function fetchGrailData(postIds: string[], currentUserId?: string) {
+  const [cardsRes, ratingsRes] = await Promise.all([
+    supabase
+      .from('rate_my_grail_cards')
+      .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+      .in('post_id', postIds)
+      .order('display_order', { ascending: true }),
+    supabase.from('grail_ratings').select('post_id, rater_user_id, score').in('post_id', postIds),
+  ]);
+
+  const cardsMap = new Map<string, RateMyGrailCard[]>();
+  for (const row of (cardsRes.data ?? []) as any[]) {
+    const list = cardsMap.get(row.post_id) ?? [];
+    list.push(row as RateMyGrailCard);
+    cardsMap.set(row.post_id, list);
+  }
+
+  const ratingTotals = new Map<string, { sum: number; count: number; mine: number | null }>();
+  for (const row of (ratingsRes.data ?? []) as any[]) {
+    const entry = ratingTotals.get(row.post_id) ?? { sum: 0, count: 0, mine: null };
+    entry.sum += row.score;
+    entry.count += 1;
+    if (row.rater_user_id === currentUserId) entry.mine = row.score;
+    ratingTotals.set(row.post_id, entry);
+  }
+
+  return { cardsMap, ratingTotals };
+}
 
 function formatAge(iso: string) {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -77,7 +116,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   const { data: postRows } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text'])
+    .in('post_type', ['item', 'text', 'rate_my_grails'])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
@@ -85,11 +124,14 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   if (!postRows?.length) return [];
 
   const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  // Text posts have no item_id — filter nulls before querying collection_items.
+  // Text/rate_my_grails posts have no item_id — filter nulls before querying collection_items.
   const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
   const postIds = (postRows as any[]).map((p) => p.id as string);
+  const grailPostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'rate_my_grails')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
@@ -99,6 +141,9 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     currentUserId
       ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId)
       : Promise.resolve({ data: [] }),
+    grailPostIds.length > 0
+      ? fetchGrailData(grailPostIds, currentUserId)
+      : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -120,13 +165,16 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     ((followsRes.data ?? []) as any[]).map((f) => f.following_id as string),
   );
 
+  const { cardsMap, ratingTotals } = grailData;
+
   const posts = (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
+    const rating = ratingTotals.get(post.id);
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -139,6 +187,10 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
       liked: likedSet.has(post.id),
       commentCount: commentCountMap.get(post.id) ?? 0,
       isFollowing: followedSet.has(post.user_id),
+      grailCards: cardsMap.get(post.id) ?? [],
+      avgRating: rating ? rating.sum / rating.count : null,
+      ratingCount: rating?.count ?? 0,
+      myRating: rating?.mine ?? null,
     };
   });
 
@@ -161,7 +213,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   const { data: postRows } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text'])
+    .in('post_type', ['item', 'text', 'rate_my_grails'])
     .in('user_id', followedIds)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
@@ -171,14 +223,20 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
   const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
   const postIds = (postRows as any[]).map((p) => p.id as string);
+  const grailPostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'rate_my_grails')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, grailData] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
       : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
     supabase.from('comments').select('post_id').in('post_id', postIds),
+    grailPostIds.length > 0
+      ? fetchGrailData(grailPostIds, currentUserId)
+      : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -196,14 +254,17 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
     commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
   }
 
+  const { cardsMap, ratingTotals } = grailData;
+
   // Already newest-first from .order('created_at', { ascending: false }) — no ranking applied
   return (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
+    const rating = ratingTotals.get(post.id);
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -216,6 +277,10 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
       liked: likedSet.has(post.id),
       commentCount: commentCountMap.get(post.id) ?? 0,
       isFollowing: true,
+      grailCards: cardsMap.get(post.id) ?? [],
+      avgRating: rating ? rating.sum / rating.count : null,
+      ratingCount: rating?.count ?? 0,
+      myRating: rating?.mine ?? null,
     };
   });
 }
@@ -401,6 +466,7 @@ export default function HomeScreen() {
             renderItem={({ item }) => (
               <PostCard
                 post={item}
+                currentUserId={currentUserId}
                 onUserPress={() =>
                   router.push({
                     pathname: '/user/[username]',
@@ -471,11 +537,13 @@ export default function HomeScreen() {
 
 function PostCard({
   post,
+  currentUserId,
   onUserPress,
   onPostPress,
   onLike,
 }: {
   post: FeedPost;
+  currentUserId: string | undefined;
   onUserPress: () => void;
   onPostPress: () => void;
   onLike: () => void;
@@ -483,6 +551,16 @@ function PostCard({
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const isTextPost = post.post_type === 'text';
+  const isRateMyGrails = post.post_type === 'rate_my_grails';
+
+  const rating = useGrailRating({
+    postId: post.id,
+    postOwnerId: post.user_id,
+    currentUserId,
+    initialAvg: post.avgRating,
+    initialCount: post.ratingCount,
+    initialMyRating: post.myRating,
+  });
 
   function handleLikeTap() {
     Animated.sequence([
@@ -526,11 +604,24 @@ function PostCard({
         <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
       </TouchableOpacity>
 
-      {/* Post body — text block for text posts, image for item posts */}
+      {/* Post body — text block for text posts, grails grid for Rate My Grails, image otherwise */}
       {isTextPost ? (
         <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
           <Text style={styles.cardTextContent}>{post.content}</Text>
         </TouchableOpacity>
+      ) : isRateMyGrails ? (
+        <View style={styles.cardGrailsWrap}>
+          <GrailsPostBody
+            cards={post.grailCards}
+            caption={post.caption}
+            avg={rating.avg}
+            count={rating.count}
+            myRating={rating.myRating}
+            isOwner={rating.isOwner}
+            submitting={rating.submitting}
+            onRate={rating.submitRating}
+          />
+        </View>
       ) : (
         <TouchableOpacity style={styles.cardImageWrap} onPress={onPostPress} activeOpacity={0.95}>
           <Image
@@ -543,9 +634,10 @@ function PostCard({
         </TouchableOpacity>
       )}
 
-      {/* Caption + actions — caption only shown for item posts */}
+      {/* Caption + actions — caption only shown for item posts (Rate My Grails
+          renders its own caption inside GrailsPostBody, above) */}
       <View style={styles.cardBody}>
-        {!isTextPost && (post.caption || post.item_name) ? (
+        {!isTextPost && !isRateMyGrails && (post.caption || post.item_name) ? (
           <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
         ) : null}
         <View style={styles.cardActions}>
@@ -716,6 +808,10 @@ const styles = StyleSheet.create({
   cardImageWrap: {
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
+  },
+  cardGrailsWrap: {
+    padding: 10,
+    backgroundColor: '#1A1A1A',
   },
   cardTextWrap: {
     backgroundColor: '#1A1A1A',

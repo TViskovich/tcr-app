@@ -38,7 +38,6 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.inner}>
         <CacheCaseLogo variant="dark" size="lg" style={styles.logo} />
-        <Text style={styles.subtitle}>Sign in to your account</Text>
 
         <TextInput
           style={styles.input}
@@ -93,12 +92,6 @@ const styles = StyleSheet.create({
   logo: {
     alignSelf: 'center',
     marginBottom: 12,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 16,
   },
   input: {
     borderWidth: 1,

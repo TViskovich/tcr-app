@@ -500,6 +500,7 @@ export default function ProfileScreen() {
               <GrailsGrid
                 grails={grails}
                 editable
+                onAddFirstGrail={() => router.push('/(tabs)/collection' as any)}
                 onCabinetPress={() =>
                   router.push({
                     pathname: '/grails/[userId]',

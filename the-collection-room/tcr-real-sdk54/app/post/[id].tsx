@@ -18,13 +18,16 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
+import type { RateMyGrailCard } from '@/types';
 
 type PostDetail = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text';
+  post_type: 'item' | 'text' | 'rate_my_grails';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -35,6 +38,10 @@ type PostDetail = {
   avatar_url: string | null;
   likeCount: number;
   liked: boolean;
+  grailCards: RateMyGrailCard[];
+  avgRating: number | null;
+  ratingCount: number;
+  myRating: number | null;
 };
 
 type Comment = {
@@ -60,11 +67,15 @@ function PostHeader({
   commentCount,
   likeScaleAnim,
   onLikeTap,
+  rating,
+  onRate,
 }: {
   post: PostDetail;
   commentCount: number;
   likeScaleAnim: Animated.Value;
   onLikeTap: () => void;
+  rating: { avg: number | null; count: number; myRating: number | null; isOwner: boolean; submitting: boolean };
+  onRate: (score: number) => void;
 }) {
   const displayName = post.display_name || post.username;
   return (
@@ -87,17 +98,31 @@ function PostHeader({
         <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
       </View>
 
-      {/* Post body — text for text posts, image for item posts */}
+      {/* Post body — text for text posts, grails grid for Rate My Grails, image otherwise */}
       {post.post_type === 'text' ? (
         <Text style={styles.textContent}>{post.content}</Text>
+      ) : post.post_type === 'rate_my_grails' ? (
+        <View style={styles.grailsWrap}>
+          <GrailsPostBody
+            cards={post.grailCards}
+            caption={post.caption}
+            avg={rating.avg}
+            count={rating.count}
+            myRating={rating.myRating}
+            isOwner={rating.isOwner}
+            submitting={rating.submitting}
+            onRate={onRate}
+          />
+        </View>
       ) : (
         <View style={styles.imageWrap}>
           <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         </View>
       )}
 
-      {/* Caption only for item posts */}
-      {post.post_type !== 'text' && (post.caption || post.item_name) ? (
+      {/* Caption only for item posts (Rate My Grails renders its own caption
+          inside GrailsPostBody, above) */}
+      {post.post_type !== 'text' && post.post_type !== 'rate_my_grails' && (post.caption || post.item_name) ? (
         <Text style={styles.caption}>{post.caption || post.item_name}</Text>
       ) : null}
 
@@ -175,6 +200,15 @@ export default function PostDetailScreen() {
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
 
+  const rating = useGrailRating({
+    postId: post?.id ?? '',
+    postOwnerId: post?.user_id ?? '',
+    currentUserId,
+    initialAvg: post?.avgRating ?? null,
+    initialCount: post?.ratingCount ?? 0,
+    initialMyRating: post?.myRating ?? null,
+  });
+
   const fetchComments = useCallback(async (pid: string): Promise<Comment[]> => {
     const { data: rows } = await supabase
       .from('comments')
@@ -225,25 +259,37 @@ export default function PostDetailScreen() {
       }
 
       const row = postRow as any;
+      const isRateMyGrails = row.post_type === 'rate_my_grails';
 
-      const [profileRes, itemRes, likesRes, fetchedComments] = await Promise.all([
+      const [profileRes, itemRes, likesRes, fetchedComments, cardsRes, ratingsRes] = await Promise.all([
         supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).single(),
-        // Text posts have no item_id — skip the items lookup to avoid a malformed query.
+        // Text/rate_my_grails posts have no item_id — skip the items lookup to avoid a malformed query.
         row.item_id
           ? supabase.from('collection_items').select('name').eq('id', row.item_id).maybeSingle()
           : Promise.resolve({ data: null }),
         supabase.from('likes').select('user_id').eq('post_id', postId),
         fetchComments(postId),
+        isRateMyGrails
+          ? supabase
+              .from('rate_my_grail_cards')
+              .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+              .eq('post_id', postId)
+              .order('display_order', { ascending: true })
+          : Promise.resolve({ data: [] }),
+        isRateMyGrails
+          ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', postId)
+          : Promise.resolve({ data: [] }),
       ]);
 
       const likeRows = (likesRes.data ?? []) as any[];
       const p = profileRes.data as any;
       const item = itemRes.data as any;
+      const ratingRows = (ratingsRes.data ?? []) as any[];
 
       setPost({
         id: row.id,
         user_id: row.user_id,
-        post_type: (row.post_type ?? 'item') as 'item' | 'text',
+        post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
         image_url: row.image_url ?? null,
         content: row.content ?? null,
         caption: row.caption ?? null,
@@ -254,6 +300,12 @@ export default function PostDetailScreen() {
         avatar_url: p?.avatar_url ?? null,
         likeCount: likeRows.length,
         liked: likeRows.some((l: any) => l.user_id === currentUserId),
+        grailCards: (cardsRes.data ?? []) as any[],
+        avgRating: ratingRows.length
+          ? ratingRows.reduce((sum, r) => sum + r.score, 0) / ratingRows.length
+          : null,
+        ratingCount: ratingRows.length,
+        myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
       });
 
       setComments(fetchedComments);
@@ -401,6 +453,8 @@ export default function PostDetailScreen() {
               commentCount={comments.length}
               likeScaleAnim={likeScaleAnim}
               onLikeTap={handleLikeTap}
+              rating={rating}
+              onRate={rating.submitRating}
             />
           }
           ListEmptyComponent={
@@ -462,6 +516,10 @@ const styles = StyleSheet.create({
   imageWrap: {
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
+  },
+  grailsWrap: {
+    padding: 12,
+    backgroundColor: '#1A1A1A',
   },
   userRow: {
     flexDirection: 'row',
