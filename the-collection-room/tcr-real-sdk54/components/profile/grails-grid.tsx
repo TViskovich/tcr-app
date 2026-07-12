@@ -1,17 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Animated, Image, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AccessibilityInfo, Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import ReanimatedView, {
   Easing as ReEasing,
-  Extrapolation,
-  interpolate,
   useAnimatedStyle,
   useSharedValue,
-  withDelay,
   withRepeat,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
 
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -32,6 +30,134 @@ const MAX_SLOTS = 9;
 
 // Warm near-black — aged wood / display case felt
 const VAULT_COLORS = ['#1A1510', '#0F0D09', '#080604'] as const;
+
+// Reuses the Hero Canvas material language (see hero-canvas-theme.tsx /
+// spectra-config.ts): the same grain texture asset, a warm gold wash, and
+// several crisp diagonal streak reflections sharing one axis — here in
+// gold/champagne instead of Spectra's cyan/violet, so the empty-state card
+// reads as another surface in CacheCase's material system rather than a
+// bespoke rendered scene. Covers the whole card (header included), not just
+// the zero-state body, so the shimmer plays across the entire Grails area.
+const GRAILS_GRAIN_SOURCE = require('../../assets/materials/spectra/spectra-metallic-grain-v2.png');
+const GRAILS_WARM_WASH = {
+  colors: ['rgba(255,190,90,0.05)', 'transparent', 'rgba(255,190,90,0.05)'],
+  locations: [0, 0.5, 1],
+} as const;
+const GRAILS_MATERIAL_STREAKS = [
+  {
+    colors: ['transparent', 'rgba(255,200,100,0.16)', 'transparent'],
+    locations: [0.04, 0.16, 0.28],
+  },
+  {
+    colors: ['transparent', 'rgba(255,224,160,0.24)', 'transparent'],
+    locations: [0.38, 0.5, 0.62],
+  },
+  {
+    colors: ['transparent', 'rgba(255,190,90,0.14)', 'transparent'],
+    locations: [0.72, 0.84, 0.96],
+  },
+] as const;
+
+// The floating logo uses CacheCaseLogo's numeric `size`, which maps to its
+// rendered HEIGHT, not width (see components/brand/cachecase-logo.tsx —
+// width = height * (454/359) for the icon variant). Duplicated here (rather
+// than importing a constant that component doesn't export) purely to compute
+// the platform's width as a fraction of the logo's actual rendered width.
+const LOGO_ICON_ASPECT = 454 / 359;
+const LOGO_SIZE = 40;
+const LOGO_WIDTH = LOGO_SIZE * LOGO_ICON_ASPECT;
+// Optical centering: the mark's diagonal/angled shape reads as left-heavy
+// when placed at strict geometric center, so it's nudged right a few px.
+// Does not move the platform — only the logo itself, via its float transform.
+const LOGO_OPTICAL_SHIFT_X = 5;
+
+// The provided platform asset (assets/ui/grails-platform.png, 1536x1024) has
+// its artwork — a slim bar with a baked-in gold rim + soft bloom — sitting in
+// a small region of a much larger transparent canvas. Crop box found by
+// scanning the PNG's alpha channel directly (any alpha > ~2%); re-verified
+// this is the real content region, not noise — alpha stays negligible
+// (<1%) everywhere else in the file.
+const PLATFORM_SOURCE = require('../../assets/ui/grails-platform.png');
+const PLATFORM_SOURCE_SIZE = { width: 1536, height: 1024 };
+const PLATFORM_CROP = { x: 196, y: 567, width: 1136, height: 168 };
+// Base vertical squish from the previous pass (70-75% asked for). This round
+// asks for a further ~2x height boost on top of that so the platform reads
+// as a pedestal with real thickness rather than a flat line — combined
+// that's slightly *taller* than the source's native proportions, which is
+// intentional (a flat 2D asset needs help reading as a dimensional object).
+const PLATFORM_VERTICAL_SQUISH = 0.725;
+const PLATFORM_THICKNESS_BOOST = 2;
+const PLATFORM_HEIGHT_FACTOR = PLATFORM_VERTICAL_SQUISH * PLATFORM_THICKNESS_BOOST;
+// Card's own default left+right margin (GrailsGrid's vaultMargin default —
+// ZeroGrailsState is only ever reached with editable=true, i.e. only from
+// the one call site in app/(tabs)/profile.tsx that uses this default).
+const CARD_MARGIN = 14;
+// Target: platform occupies ~25-30% of the card's width.
+const PLATFORM_WIDTH_RATIO = 0.275;
+
+// The full source image, scaled + the above height factor, then shifted so
+// the cropped region lands exactly inside a clipped window sized to the
+// computed platform width/height — the same oversize-and-clip technique
+// hero-background.tsx uses for heroBg. This crops and reshapes purely via
+// layout/rendering; the source PNG file itself is never modified.
+function computePlatformLayout(cardWidth: number) {
+  const width = cardWidth * PLATFORM_WIDTH_RATIO;
+  const scale = width / PLATFORM_CROP.width;
+  const height = PLATFORM_CROP.height * scale * PLATFORM_HEIGHT_FACTOR;
+  return {
+    width,
+    height,
+    imageWidth: PLATFORM_SOURCE_SIZE.width * scale,
+    imageHeight: PLATFORM_SOURCE_SIZE.height * scale * PLATFORM_HEIGHT_FACTOR,
+    imageLeft: -PLATFORM_CROP.x * scale,
+    imageTop: -PLATFORM_CROP.y * scale * PLATFORM_HEIGHT_FACTOR,
+  };
+}
+// 8px gap below the logo, per spec — unchanged from the previous pass.
+const PLATFORM_TOP = LOGO_SIZE + 8;
+
+// Grain + warm wash + streaks + edge light — one component so both the
+// zero-state and (if ever needed) the filled grid can share the exact same
+// material treatment.
+function GrailsMaterial() {
+  return (
+    <>
+      <Image
+        source={GRAILS_GRAIN_SOURCE}
+        style={[StyleSheet.absoluteFill, styles.grain]}
+        contentFit="cover"
+        pointerEvents="none"
+      />
+      <LinearGradient
+        colors={GRAILS_WARM_WASH.colors}
+        locations={GRAILS_WARM_WASH.locations}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+      {GRAILS_MATERIAL_STREAKS.map((streak, i) => (
+        <LinearGradient
+          key={i}
+          colors={streak.colors}
+          locations={streak.locations}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+      ))}
+      <LinearGradient
+        colors={['rgba(255,214,150,0.10)', 'transparent']}
+        style={styles.materialEdgeTop}
+        pointerEvents="none"
+      />
+      <LinearGradient
+        colors={['transparent', 'rgba(255,170,60,0.08)']}
+        style={styles.materialEdgeBottom}
+        pointerEvents="none"
+      />
+    </>
+  );
+}
 
 export function GrailsGrid({
   grails,
@@ -68,8 +194,15 @@ export function GrailsGrid({
     if (!editable) return null;
 
     return (
-      <View style={[styles.vaultShadow, { width: vaultWidth, alignSelf: 'center' }]}>
-        <LinearGradient colors={VAULT_COLORS} style={styles.vault} start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}>
+      <View style={[styles.vaultShadow, styles.vaultShadowFlat, { width: vaultWidth, alignSelf: 'center' }]}>
+        <LinearGradient
+          colors={VAULT_COLORS}
+          style={[styles.vault, styles.vaultFlat]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}>
+          {/* Covers the whole card — header included — so the shimmer plays
+              across the entire Grails area, not just the body below it. */}
+          <GrailsMaterial />
           <VaultHeader />
           <ZeroGrailsState onAddFirstGrail={onAddFirstGrail} />
         </LinearGradient>
@@ -165,21 +298,29 @@ function useReducedMotion() {
 }
 
 // First-time empty state — aspirational rather than a bare "no items" notice.
-// The floating CacheCase mark is untouched and remains the hero element,
-// hovering above the grails-display-platform.png stage image.
+// The card's material (grain, streaks, edge light) is rendered by the caller
+// via <GrailsMaterial /> so it covers the whole card including the header;
+// this component is just the logo + copy + CTA on top of it. The floating
+// CacheCase mark is untouched — unchanged asset, tilt, proportions, gradient.
 function ZeroGrailsState({ onAddFirstGrail }: { onAddFirstGrail?: () => void }) {
   const reducedMotion = useReducedMotion();
   const floatY = useSharedValue(0);
+  // Responsive: platform width targets ~25-30% of the card, and the card's
+  // width itself is screenWidth - CARD_MARGIN*2 (same formula GrailsGrid
+  // uses for vaultWidth).
+  const { width: screenWidth } = useWindowDimensions();
+  const platform = computePlatformLayout(screenWidth - CARD_MARGIN * 2);
 
   useEffect(() => {
     if (reducedMotion) {
       floatY.value = 0;
       return;
     }
+    // ~6s full loop (3s up, 3s down), 5px amplitude — slow and premium.
     floatY.value = withRepeat(
       withSequence(
-        withTiming(-2.5, { duration: 1750, easing: ReEasing.inOut(ReEasing.sin) }),
-        withTiming(0, { duration: 1750, easing: ReEasing.inOut(ReEasing.sin) }),
+        withTiming(-5, { duration: 3000, easing: ReEasing.inOut(ReEasing.sin) }),
+        withTiming(0, { duration: 3000, easing: ReEasing.inOut(ReEasing.sin) }),
       ),
       -1,
       false,
@@ -187,21 +328,57 @@ function ZeroGrailsState({ onAddFirstGrail }: { onAddFirstGrail?: () => void }) 
   }, [reducedMotion, floatY]);
 
   const floatStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: floatY.value }],
+    transform: [{ translateY: floatY.value }, { translateX: LOGO_OPTICAL_SHIFT_X }],
   }));
+
+  // The much taller platform (see computePlatformLayout) now extends past
+  // the old fixed 16px gap reserved below the logo. logoWrap's marginBottom
+  // is widened just enough to keep the platform clear of the heading below
+  // it — the one deliberate exception to "everything else pixel-for-pixel
+  // identical," made to avoid the platform visually overlapping the text.
+  const logoWrapMarginBottom = PLATFORM_TOP - LOGO_SIZE + platform.height + 4;
 
   return (
     <View style={styles.zeroState}>
-      <View style={styles.stage}>
-        {/* The existing floating logo — unchanged asset, only its bob amplitude/timing live here. */}
-        <ReanimatedView.View style={[styles.floatingPiece, floatStyle]}>
-          <CacheCaseLogo variant="icon" size={40} />
-        </ReanimatedView.View>
+      <View style={[styles.logoWrap, { marginBottom: logoWrapMarginBottom }]}>
+        {/* Platform — the provided asset, cropped to its content region,
+            sized to ~25-30% of the card width, and given extra vertical
+            thickness (beyond the source's native proportions) so it reads
+            as a pedestal with real presence rather than a flat line. Sits
+            at the very back of this cluster; its own baked-in gold
+            rim/bloom is the "warm gold bloom from the platform" layer, and
+            scales with it automatically since the crop region is unchanged.
+            Static, no animation. */}
+        <View
+          style={[
+            styles.platformClip,
+            { top: PLATFORM_TOP, width: platform.width, height: platform.height },
+          ]}
+          pointerEvents="none">
+          <Image
+            source={PLATFORM_SOURCE}
+            contentFit="fill"
+            style={{
+              position: 'absolute',
+              width: platform.imageWidth,
+              height: platform.imageHeight,
+              left: platform.imageLeft,
+              top: platform.imageTop,
+            }}
+          />
+        </View>
 
-        <DisplayStage reducedMotion={reducedMotion} />
+        {/* The existing floating logo — unchanged asset, larger (+~18%) and
+            with a slower, taller float amplitude/timing live here. Nudged
+            ~5px right of strict geometric center: the mark's diagonal shape
+            reads as left-heavy when perfectly centered, so this is optical
+            centering, not a layout shift. */}
+        <ReanimatedView.View style={[styles.floatingPiece, floatStyle]}>
+          <CacheCaseLogo variant="icon" size={LOGO_SIZE} />
+        </ReanimatedView.View>
       </View>
 
-      <Text style={styles.zeroHeading}>A grail isn&apos;t just rare. It&apos;s personal.</Text>
+      <Text style={styles.zeroHeading}>A grail isn&apos;t just rare.{'\n'}It&apos;s personal.</Text>
       <Text style={styles.zeroBody}>Every collector has one.</Text>
 
       <Pressable
@@ -213,100 +390,15 @@ function ZeroGrailsState({ onAddFirstGrail }: { onAddFirstGrail?: () => void }) 
   );
 }
 
-// The stage beneath the logo: a small animated glow + a few drifting dust
-// motes (the only animated elements here), sitting above the static
-// grails-display-platform.png. The PNG itself is never animated.
-function DisplayStage({ reducedMotion }: { reducedMotion: boolean }) {
-  const glowBreathe = useSharedValue(0.5);
-
-  useEffect(() => {
-    if (reducedMotion) {
-      glowBreathe.value = 0.55;
-      return;
-    }
-    glowBreathe.value = withRepeat(
-      withSequence(
-        withTiming(0.65, { duration: 2600, easing: ReEasing.inOut(ReEasing.sin) }),
-        withTiming(0.45, { duration: 2600, easing: ReEasing.inOut(ReEasing.sin) }),
-      ),
-      -1,
-      false,
-    );
-  }, [reducedMotion, glowBreathe]);
-
-  const glowStyle = useAnimatedStyle(() => ({ opacity: glowBreathe.value }));
-
-  return (
-    <View style={styles.pedestalStage} pointerEvents="none">
-      {/* Subtle warm glow directly beneath the logo — separate from, and much
-          smaller than, the light beam already baked into the platform image. */}
-      <ReanimatedView.View style={[styles.underLogoGlow, glowStyle]}>
-        <LinearGradient
-          colors={['rgba(255,214,140,0)', 'rgba(255,214,140,0.16)']}
-          style={StyleSheet.absoluteFill}
-        />
-      </ReanimatedView.View>
-
-      {/* A few tiny dust motes drifting through the beam — kept sparse. */}
-      {!reducedMotion && (
-        <>
-          <DustParticle left="41%" size={1.5} duration={6400} delay={0} />
-          <DustParticle left="54%" size={2} duration={7600} delay={2400} />
-          <DustParticle left="47%" size={1.5} duration={5600} delay={4400} />
-        </>
-      )}
-
-      <Image
-        source={require('@/assets/ui/grails-display-platform.png')}
-        style={styles.platformImage}
-        resizeMode="contain"
-      />
-    </View>
-  );
-}
-
-function DustParticle({
-  left,
-  size,
-  duration,
-  delay,
-}: {
-  left: `${number}%`;
-  size: number;
-  duration: number;
-  delay: number;
-}) {
-  const t = useSharedValue(0);
-
-  useEffect(() => {
-    t.value = withRepeat(
-      withSequence(
-        withDelay(delay, withTiming(1, { duration, easing: ReEasing.linear })),
-        withTiming(0, { duration: 0 }),
-      ),
-      -1,
-      false,
-    );
-  }, [t, duration, delay]);
-
-  const style = useAnimatedStyle(() => ({
-    transform: [{ translateY: interpolate(t.value, [0, 1], [8, -60]) }],
-    opacity: interpolate(t.value, [0, 0.15, 0.75, 1], [0, 0.45, 0.28, 0], Extrapolation.CLAMP),
-  }));
-
-  return (
-    <ReanimatedView.View
-      style={[styles.dustParticle, { left, width: size, height: size, borderRadius: size / 2 }, style]}
-    />
-  );
-}
-
 const styles = StyleSheet.create({
   // ── Vault panel ───────────────────────────────────────────────
   // Width is set dynamically (14px margin each side). No marginHorizontal here.
   // Shadow kept minimal — cards are the visual focus, not the container.
   vaultShadow: {
-    marginTop: -14,
+    // Was -14 (pulled the whole card up into the hero canvas). Now positive
+    // so the card sits with real breathing room below the hero instead of
+    // colliding with it.
+    marginTop: 16,
     marginBottom: 8,
     borderRadius: 20,
     shadowColor: '#B8860B',
@@ -323,6 +415,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 14,
     paddingBottom: 14,
+  },
+  // Zero-state only: no border, no box — content sits directly on the
+  // gradient background. Rounded corners and the background/material stay;
+  // only the stroke is neutralized (kept as a property, set to 0-width,
+  // rather than deleted, so the filled-grid card's border is untouched).
+  vaultFlat: {
+    borderWidth: 0,
+  },
+  // Zero-state only: no drop shadow behind the card — same "no box" goal.
+  vaultShadowFlat: {
+    shadowOpacity: 0,
+    elevation: 0,
   },
 
   // ── Header ────────────────────────────────────────────────────
@@ -378,12 +482,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 14,
   },
-  stage: {
-    width: '100%',
+  // Reused Hero Canvas grain texture, kept quiet.
+  grain: {
+    opacity: 0.08,
+  },
+  // Restrained top/bottom edge light — same beveled-edge language as the
+  // Hero Canvas material, not a glow.
+  materialEdgeTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 40,
+  },
+  materialEdgeBottom: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 40,
+  },
+  // Wraps the logo + platform + bloom. marginBottom is computed responsively
+  // (logoWrapMarginBottom, in ZeroGrailsState) since the platform's height
+  // now varies with screen width and is tall enough to need more than a
+  // fixed value — see the comment at its call site.
+  logoWrap: {
     alignItems: 'center',
-    gap: 18,
   },
   floatingPiece: {
     shadowColor: '#FFE060',
@@ -392,32 +517,13 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     elevation: 8,
   },
-  // Sized to content (the platform image) — no fixed height, so the image's
-  // own aspect ratio is never cropped or squashed.
-  pedestalStage: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  // grails-display-platform.png — cropped tight to the platform itself
-  // (886x200, ~4.4:1). Scaled by width only so contain never distorts it.
-  platformImage: {
-    width: '60%',
-    aspectRatio: 886 / 200,
-  },
-  // Small, separate accent glow directly under the logo — distinct from (and
-  // much smaller than) the light beam already baked into the platform image.
-  underLogoGlow: {
+  // Clips the (oversized, positioned) platform Image down to just its
+  // content region. width/height/top are screen-size-responsive, so they're
+  // applied inline from computePlatformLayout() — see the PLATFORM_*
+  // constants above for the underlying math.
+  platformClip: {
     position: 'absolute',
-    top: -4,
-    left: '50%',
-    marginLeft: -16,
-    width: 32,
-    height: 38,
-  },
-  dustParticle: {
-    position: 'absolute',
-    top: 6,
-    backgroundColor: 'rgba(255, 231, 170, 0.85)',
+    overflow: 'hidden',
   },
   zeroHeading: {
     fontSize: 16,
@@ -428,6 +534,7 @@ const styles = StyleSheet.create({
     maxWidth: 260,
   },
   zeroBody: {
+    marginTop: 4,
     fontSize: 13,
     color: 'rgba(255, 255, 255, 0.50)',
     textAlign: 'center',
@@ -435,7 +542,7 @@ const styles = StyleSheet.create({
     maxWidth: 250,
   },
   zeroCta: {
-    marginTop: 4,
+    marginTop: 16,
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 24,
