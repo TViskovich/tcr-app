@@ -513,11 +513,6 @@ export default function ProfileScreen() {
                 }
               />
 
-              {/* Activity — future section */}
-              <View style={styles.placeholderSection}>
-                <Text style={styles.placeholderLabel}>Activity</Text>
-              </View>
-
               {/* Collection — future destination */}
               <View style={styles.placeholderSection}>
                 <Text style={styles.placeholderLabel}>Collection</Text>
