@@ -14,7 +14,15 @@ import ReanimatedView, {
 
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
+import Svg, {
+  Defs,
+  Ellipse,
+  LinearGradient as SvgLinearGradient,
+  Path,
+  RadialGradient,
+  Rect,
+  Stop,
+} from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 
@@ -45,7 +53,9 @@ const WARM_WASH = {
 // The floating logo uses CacheCaseLogo's numeric `size`, which maps to its
 // rendered HEIGHT, not width (see components/brand/cachecase-logo.tsx —
 // width = height * (454/359) for the icon variant).
-const LOGO_SIZE = 80;
+// Shrunk from 80 to fit the transparent display-case card more comfortably
+// (its own width is fixed at LOGO_CARD_WIDTH, independent of this).
+const LOGO_SIZE = 55;
 // Optical centering: the mark's diagonal/angled shape reads as left-heavy
 // when placed at strict geometric center, so it's nudged right a few px.
 const LOGO_OPTICAL_SHIFT_X = 3;
@@ -58,10 +68,10 @@ const LOGO_VERTICAL_SHIFT = -60;
 // boundary between the logo area and the text area below it. Exactly one
 // gradient, no glow/blur layer, no second line, no background — see its
 // render site for the full spec.
-// Nudged up 10px from the logo (was LOGO_SIZE + 8) — logoWrap's own
-// marginBottom to the heading text below is a fixed value, so moving this
-// up increases the gap to the text without touching that spacing directly.
-const HORIZON_TOP = LOGO_SIZE - 2;
+// Fixed at 78 (was LOGO_SIZE - 2 back when LOGO_SIZE was 80) rather than
+// derived from LOGO_SIZE — frozen so resizing the logo doesn't also shift
+// the horizon/its glow, which are positioned independently of the logo.
+const HORIZON_TOP = 78;
 const HORIZON_HEIGHT = 1.5;
 // Of the vault's actual INNER width (vaultWidth minus the vault's own
 // paddingHorizontal on each side) — the vault's overflow:hidden is the only
@@ -111,10 +121,29 @@ const HORIZON_RISE_HEIGHT = 230;
 // as the horizon glow, much smaller and fainter, so it reads as ambient
 // light reaching the logo rather than a light source of its own.
 const LOGO_GLOW_SIZE = 130;
-// The logo's own visual vertical center relative to logoWrap's top — it's a
-// normal-flow child moved by LOGO_VERTICAL_SHIFT via transform, which
-// doesn't affect layout, so this accounts for that shift explicitly.
-const LOGO_GLOW_OFFSET_Y = LOGO_SIZE / 2 + LOGO_VERTICAL_SHIFT;
+// Fixed at -20 (was LOGO_SIZE / 2 + LOGO_VERTICAL_SHIFT back when LOGO_SIZE
+// was 80) rather than derived from LOGO_SIZE — frozen for the same reason
+// as HORIZON_TOP above, so resizing the logo doesn't shift its own glow.
+const LOGO_GLOW_OFFSET_Y = -20;
+
+// Transparent display-case card framing the logo — a plain bordered box,
+// no fill, no gradient. Bottom edge anchored at the horizon line (like it's
+// standing on it), tall enough to give the logo generous empty space inside
+// the frame above and below it, matching the reference's glass-vitrine look.
+const LOGO_CARD_WIDTH = 130;
+const LOGO_CARD_HEIGHT = 210;
+
+// Small 3D bronze/gold platform, flush against the horizon line — a real
+// cylinder (flat top ellipse + a visible front "wall" giving it height),
+// not just a flat disc, matching the reference photo. The wall is an SVG
+// Path: straight down the left edge, an elliptical arc along the bottom,
+// straight up the right edge, arc back along the top ellipse's own lower
+// half to close — the standard technique for a 2D "cylinder" silhouette.
+// The top ellipse is drawn last so it caps the wall cleanly.
+const PLATFORM_3D_WIDTH = 150;
+const PLATFORM_3D_HEIGHT = 34; // top ellipse's own height (flatness)
+const PLATFORM_3D_WALL_HEIGHT = 16; // visible thickness of the cylinder
+const PLATFORM_3D_GAP = 0;
 
 // Best-effort reduced-motion check — no existing shared hook for this in the
 // codebase.
@@ -246,6 +275,68 @@ function LogoGlow() {
         </RadialGradient>
       </Defs>
       <Rect x={0} y={0} width={LOGO_GLOW_SIZE} height={LOGO_GLOW_SIZE} fill="url(#logoGlow)" />
+    </Svg>
+  );
+}
+
+// Small 3D bronze platform beneath the display case — see PLATFORM_3D_WIDTH
+// comment for the construction technique. Recolored from scratch to match
+// the reference photo directly: warm dark bronze throughout (wall and the
+// top face's outer area alike — never pure black), with a bright warm gold
+// hotspot at the top face's center-front and a thin bright gold rim
+// tracing the top ellipse's edge.
+function Platform3D() {
+  const cx = PLATFORM_3D_WIDTH / 2;
+  const topCy = PLATFORM_3D_HEIGHT / 2;
+  const rx = PLATFORM_3D_WIDTH / 2 - 4;
+  const ry = PLATFORM_3D_HEIGHT / 2;
+  const bottomCy = topCy + PLATFORM_3D_WALL_HEIGHT;
+  const wallPath = `M ${cx - rx} ${topCy} L ${cx - rx} ${bottomCy} A ${rx} ${ry} 0 0 0 ${cx + rx} ${bottomCy} L ${cx + rx} ${topCy} A ${rx} ${ry} 0 0 1 ${cx - rx} ${topCy} Z`;
+  return (
+    <Svg
+      width={PLATFORM_3D_WIDTH}
+      height={bottomCy + 14}
+      style={styles.platform3d}
+      pointerEvents="none">
+      <Defs>
+        <RadialGradient id="platformShadow" cx="50%" cy="50%" r="50%">
+          <Stop offset="0%" stopColor="#000000" stopOpacity={0.55} />
+          <Stop offset="100%" stopColor="#000000" stopOpacity={0} />
+        </RadialGradient>
+        {/* Warm dark bronze wall — a mild lift near the top where it meets
+            the light, settling into a darker (but still warm, never pure
+            black) bronze toward the base. */}
+        <SvgLinearGradient id="platformWall" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0%" stopColor="#4a3018" stopOpacity={1} />
+          <Stop offset="100%" stopColor="#1c1208" stopOpacity={1} />
+        </SvgLinearGradient>
+        {/* Top face — bright warm gold hotspot at center-front, fading
+            through amber to a darker warm bronze at the outer edge — the
+            edge stays warm-toned, it never goes to black. Kept fairly
+            tight/quick (not a broad slow falloff) — a wide soft gradient
+            here previously read as light pooling into a concave bowl
+            rather than a crisp reflection sitting on a flat surface. */}
+        <RadialGradient id="platformTop" cx="50%" cy="58%" r="42%">
+          <Stop offset="0%" stopColor="#FFF0C8" stopOpacity={1} />
+          <Stop offset="18%" stopColor="#FFCB74" stopOpacity={1} />
+          <Stop offset="38%" stopColor="#8a5a22" stopOpacity={1} />
+          <Stop offset="100%" stopColor="#3a2410" stopOpacity={1} />
+        </RadialGradient>
+      </Defs>
+      {/* Grounding shadow beneath the base of the cylinder. */}
+      <Ellipse
+        cx={cx}
+        cy={bottomCy + 5}
+        rx={PLATFORM_3D_WIDTH / 2}
+        ry={ry / 1.6}
+        fill="url(#platformShadow)"
+      />
+      {/* The wall — front face of the cylinder, giving it visible height. */}
+      <Path d={wallPath} fill="url(#platformWall)" />
+      {/* The top face — caps the wall, warm gold hotspot at front-center. */}
+      <Ellipse cx={cx} cy={topCy} rx={rx} ry={ry} fill="url(#platformTop)" />
+      {/* Thin bright gold rim tracing the top edge, per the reference. */}
+      <Ellipse cx={cx} cy={topCy} rx={rx} ry={ry} fill="none" stroke="#FFD37A" strokeOpacity={0.55} strokeWidth={1.2} />
     </Svg>
   );
 }
@@ -503,6 +594,46 @@ export function PremiumEmptyCard({
               pointerEvents="none"
             />
 
+            {/* Small 3D onyx platform the card appears to float just above
+                — rendered after the horizon line so it sits in front of
+                the glow, before the card so the card sits in front of it. */}
+            <Platform3D />
+
+            {/* Transparent display-case card framing the logo — mostly
+                see-through, but its border and a faint interior wash both
+                brighten toward the bottom edge (nearest the horizon) and
+                fade toward the top, like it's catching light rising off the
+                line rather than being lit evenly. */}
+            <Svg
+              width={LOGO_CARD_WIDTH}
+              height={LOGO_CARD_HEIGHT}
+              style={[styles.logoCard, { top: HORIZON_TOP - LOGO_CARD_HEIGHT }]}
+              pointerEvents="none">
+              <Defs>
+                <SvgLinearGradient id="logoCardBorder" x1="0" y1="1" x2="0" y2="0">
+                  <Stop offset="0%" stopColor="#FFD9A0" stopOpacity={0.8} />
+                  <Stop offset="30%" stopColor="#D8A542" stopOpacity={0.45} />
+                  <Stop offset="100%" stopColor="#8A6B28" stopOpacity={0.22} />
+                </SvgLinearGradient>
+                <SvgLinearGradient id="logoCardFill" x1="0" y1="1" x2="0" y2="0">
+                  <Stop offset="0%" stopColor="#FFC978" stopOpacity={0.14} />
+                  <Stop offset="35%" stopColor="#FFC978" stopOpacity={0.03} />
+                  <Stop offset="100%" stopColor="#FFC978" stopOpacity={0} />
+                </SvgLinearGradient>
+              </Defs>
+              <Rect
+                x={0.5}
+                y={0.5}
+                width={LOGO_CARD_WIDTH - 1}
+                height={LOGO_CARD_HEIGHT - 1}
+                rx={18}
+                ry={18}
+                fill="url(#logoCardFill)"
+                stroke="url(#logoCardBorder)"
+                strokeWidth={1}
+              />
+            </Svg>
+
             {/* The floating logo — unchanged asset. Nudged a few px right of
                 strict geometric center: the mark's diagonal shape reads as
                 left-heavy when perfectly centered, so this is optical
@@ -588,15 +719,10 @@ const styles = StyleSheet.create({
     lineHeight: 10,
   },
 
-  // paddingTop/paddingBottom split (not a single paddingVertical) — the
-  // header sits above this block with no matching space below it, so equal
-  // top/bottom padding here actually centers the logo/text/button group
-  // within zeroState alone, not within the full card. Shifting ~half the
-  // header's own height (~53px: title line + gap + divider + margin) from
-  // top to bottom compensates, centering the whole card's content —
-  // header included — top to bottom.
+  // paddingTop pushes this whole block (horizon, card shell, logo, text,
+  // button) down, away from the GRAILS title above it.
   zeroState: {
-    paddingTop: 124,
+    paddingTop: 155,
     paddingBottom: 176,
     paddingHorizontal: 20,
     alignItems: 'center',
@@ -640,7 +766,7 @@ const styles = StyleSheet.create({
   logoWrap: {
     width: '100%',
     alignItems: 'center',
-    marginBottom: 25.5,
+    marginBottom: 95,
     backgroundColor: 'transparent',
   },
   // No shadow here — a View shadow (especially Android's elevation) draws
@@ -648,7 +774,9 @@ const styles = StyleSheet.create({
   // silhouette, which read as a semi-transparent box behind the logo. There
   // is no separate "glow behind the logo" element anymore — removed rather
   // than rebuilt again, per instruction not to replace it with another layer.
-  floatingPiece: {},
+  floatingPiece: {
+    opacity: 0.65,
+  },
   // Absolute + only `top` set: centers horizontally via logoWrap's own
   // alignItems: 'center', same pattern used elsewhere in this file.
   horizonLine: {
@@ -670,6 +798,13 @@ const styles = StyleSheet.create({
   logoGlow: {
     position: 'absolute',
     top: LOGO_GLOW_OFFSET_Y - LOGO_GLOW_SIZE / 2,
+  },
+  logoCard: {
+    position: 'absolute',
+  },
+  platform3d: {
+    position: 'absolute',
+    top: HORIZON_TOP + PLATFORM_3D_GAP,
   },
   zeroHeading: {
     fontSize: 16,
