@@ -270,13 +270,13 @@ export default function SearchScreen() {
         </View>
       ) : !hasSearched ? (
         <View style={styles.center}>
-          <CacheCaseLogo variant="dark" size={35} placement="emptyState" />
+          <CacheCaseLogo variant="dark" size={48} placement="emptyState" style={styles.emptyLogoSpacing} />
           <Text style={styles.emptyTitle}>Search for collectors or cards</Text>
           <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
       ) : currentResults.length === 0 ? (
         <View style={styles.center}>
-          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
+          <CacheCaseLogo variant="icon" size={44} placement="emptyState" style={styles.emptyLogoSpacing} />
           <Text style={styles.emptyTitle}>
             {mode === 'users' ? 'No users found' : 'No cards found'}
           </Text>
@@ -402,6 +402,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
+    transform: [{ translateY: -25 }],
+  },
+  // Overrides CacheCaseLogo's default emptyState marginBottom (14) to keep
+  // the gap to the title proportionate now that the logo here is bigger —
+  // scoped to just this screen's instances, not the shared component default.
+  emptyLogoSpacing: {
+    marginBottom: 18,
   },
   emptyTitle: {
     fontSize: 18,

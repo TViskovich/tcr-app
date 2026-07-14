@@ -267,18 +267,30 @@ export default function UserProfileScreen() {
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.folderRow}>
-              {folders.map((item) => (
-                <FolderChip
-                  key={item.id}
-                  folder={item}
-                  onPress={() =>
-                    router.push({
-                      pathname: '/folder/[id]',
-                      params: { id: item.id, name: item.name },
-                    })
-                  }
-                />
-              ))}
+              {folders.map((item, index) => {
+                // Subtle static tilt on the outer cards only — first tilts
+                // left, last tilts right, everything between stays flat.
+                const rotationDeg = folders.length > 1
+                  ? index === 0
+                    ? -1.5
+                    : index === folders.length - 1
+                      ? 1.5
+                      : 0
+                  : 0;
+                return (
+                  <FolderChip
+                    key={item.id}
+                    folder={item}
+                    rotationDeg={rotationDeg}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/folder/[id]',
+                        params: { id: item.id, name: item.name },
+                      })
+                    }
+                  />
+                );
+              })}
             </ScrollView>
           </>
         ) : (
@@ -287,14 +299,6 @@ export default function UserProfileScreen() {
           </View>
         )}
 
-        {/* Activity — future section */}
-        <View style={styles.placeholderSection}>
-          <Text style={styles.placeholderLabel}>Activity</Text>
-        </View>
-        {/* Collection — future destination */}
-        <View style={styles.placeholderSection}>
-          <Text style={styles.placeholderLabel}>Collection</Text>
-        </View>
         <View style={styles.bottomSpacer} />
       </Animated.ScrollView>
     </>
@@ -384,18 +388,6 @@ const styles = StyleSheet.create({
     marginTop: 24,
     marginBottom: 4,
     paddingHorizontal: 16,
-  },
-  placeholderSection: {
-    paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 8,
-  },
-  placeholderLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#adb5bd',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
   },
   bottomSpacer: {
     height: 48,

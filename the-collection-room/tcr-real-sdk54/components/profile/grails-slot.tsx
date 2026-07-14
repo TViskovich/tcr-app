@@ -12,7 +12,8 @@ type Props = {
 export function GrailsSlot({ item, onPress }: Props) {
   return (
     // Layer 1: outer glow/shadow ring.
-    // width:'32%' — grid's space-between math depends on this value.
+    // width:'100%' — fills the fixed-size grailCell the grid now wraps
+    // every card in (that's what carries the 32%-of-row sizing).
     // No overflow:'hidden' — would clip the shadow.
     <View style={styles.shadowWrap}>
 
@@ -61,13 +62,13 @@ const styles = StyleSheet.create({
   // Every Grail gets the same bright gold display-case glow.
   // Opacity 0.62 (not max) so all 9 in a grid don't visually compete.
   shadowWrap: {
-    width: '32%',
+    width: '100%',
     borderRadius: 12,
     shadowColor: '#FFD700',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.62,
-    shadowRadius: 16,
-    elevation: 16,
+    shadowOpacity: 0.48,
+    shadowRadius: 13,
+    elevation: 13,
   },
 
   // ── Layer 2: slot frame ───────────────────────────────────────

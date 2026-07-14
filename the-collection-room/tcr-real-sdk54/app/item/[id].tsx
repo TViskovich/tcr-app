@@ -19,6 +19,7 @@ import {
   View,
 } from 'react-native';
 
+import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -293,6 +294,20 @@ export default function ItemDetailScreen() {
     fetchItem();
   }, [id, currentUserId]);
 
+  // Guarded back handler — every entry point into this screen uses
+  // router.push (never replace), so a stack entry should normally exist.
+  // canGoBack() is checked anyway as a safety net for the rare case this
+  // screen is the root of its stack (e.g. opened via a deep link).
+  function handleBack() {
+    const canGoBack = router.canGoBack();
+    console.log('[card-detail] back pressed', { canGoBack });
+    if (canGoBack) {
+      router.back();
+      return;
+    }
+    router.replace('/(tabs)');
+  }
+
   function enterEdit() {
     if (!isOwner) return;
     if (item) setForm(itemToForm(item));
@@ -480,7 +495,7 @@ export default function ItemDetailScreen() {
                   <Text style={[styles.headerBtnText, styles.cancelBtnText]}>Cancel</Text>
                 </TouchableOpacity>
               )
-            : undefined,
+            : () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />,
         }}
       />
 

@@ -33,9 +33,11 @@ export default function CollectionScreen() {
           <CacheCaseLogo variant="icon" size={30} />
           <Text style={styles.headerTitle}>Collection</Text>
         </View>
-        <TouchableOpacity onPress={() => setShowModal(true)} style={styles.newButton}>
-          <Text style={styles.newButtonText}>+ New Folder</Text>
-        </TouchableOpacity>
+        {folders.length > 0 && (
+          <TouchableOpacity onPress={() => setShowModal(true)} style={styles.newButton}>
+            <Text style={styles.newButtonText}>+ New Folder</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {loading ? (
@@ -376,10 +378,10 @@ const styles = StyleSheet.create({
   },
   folderTabLarge: {
     position: 'absolute',
-    top: -20,
+    top: -18,
     left: 18,
     width: 82,
-    height: 28,
+    height: 18,
     backgroundColor: '#F1F4F8',
     borderTopLeftRadius: 14,
     borderTopRightRadius: 14,
@@ -389,10 +391,10 @@ const styles = StyleSheet.create({
   },
   folderTabSmall: {
     position: 'absolute',
-    top: -16,
+    top: -14,
     left: 14,
     width: 64,
-    height: 22,
+    height: 14,
     backgroundColor: '#F1F4F8',
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
