@@ -27,6 +27,7 @@ CREATE TABLE public.folders (
   user_id          uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   name             text        NOT NULL,
   cover_image_url  text,
+  color            text, -- binder color key (added 2026-07-14 — see supabase/migrations/20260714120000_folder_binder_color.sql); null = auto (name-hash)
   is_public        boolean     NOT NULL DEFAULT true,
   created_at       timestamptz DEFAULT now()
 );

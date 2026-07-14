@@ -19,6 +19,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { GrailsGrid } from '@/components/profile/grails-grid';
@@ -497,25 +498,42 @@ export default function ProfileScreen() {
           ) : (
             /* ── View Mode ── */
             <>
-              <GrailsGrid
-                grails={grails}
-                editable
-                onAddFirstGrail={() => router.push('/(tabs)/collection' as any)}
-                onCabinetPress={() =>
-                  router.push({
-                    pathname: '/grails/[userId]',
-                    params: {
-                      userId: userId ?? '',
-                      username: profile?.username ?? '',
-                      displayName: profile?.display_name ?? '',
-                    },
-                  })
-                }
-              />
+              {/* Dark full-bleed wrapper — same near-black as the hero's own
+                  tail (profile-hero.tsx's heroExtension), so it continues
+                  flush with no gap. GrailsGrid itself has no background of
+                  its own outside the vault, so this wrapper's color is what
+                  now shows in the vault's horizontal margins and top/bottom
+                  spacing, instead of the page's light background. Sized to
+                  hug the card (no extra padding) — not a full-screen panel. */}
+              <View style={styles.grailsSection}>
+                <View style={styles.grailsTopShadow} pointerEvents="none">
+                  <Svg width="100%" height="100%">
+                    <Defs>
+                      <RadialGradient id="grailsTopShadow" cx="50%" cy="20%" r="55%">
+                        <Stop offset="0%" stopColor="#C9952C" stopOpacity={0.10} />
+                        <Stop offset="100%" stopColor="#C9952C" stopOpacity={0} />
+                      </RadialGradient>
+                    </Defs>
+                    <Rect x={0} y={0} width="100%" height="100%" fill="url(#grailsTopShadow)" />
+                  </Svg>
+                </View>
 
-              {/* Collection — future destination */}
-              <View style={styles.placeholderSection}>
-                <Text style={styles.placeholderLabel}>Collection</Text>
+                <GrailsGrid
+                  grails={grails}
+                  editable
+                  vaultMargin={24}
+                  onAddFirstGrail={() => router.push('/(tabs)/collection' as any)}
+                  onCabinetPress={() =>
+                    router.push({
+                      pathname: '/grails/[userId]',
+                      params: {
+                        userId: userId ?? '',
+                        username: profile?.username ?? '',
+                        displayName: profile?.display_name ?? '',
+                      },
+                    })
+                  }
+                />
               </View>
             </>
           )}
@@ -593,17 +611,20 @@ const styles = StyleSheet.create({
     color: '#999',
     marginTop: 5,
   },
-  placeholderSection: {
-    paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 8,
+  // Exact same #000000 as profile-hero.tsx's heroExtension (not the
+  // slightly lighter #0D0D0D hero root tone) — an identical flat color on
+  // both sides of that boundary is what actually removes the seam, rather
+  // than a merely "close" one. No padding of its own — GrailsGrid's
+  // internal vaultShadow margins provide the spacing around the card.
+  grailsSection: {
+    backgroundColor: '#000000',
   },
-  placeholderLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#adb5bd',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
+  grailsTopShadow: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 70,
   },
   fieldInput: {
     borderWidth: 1,

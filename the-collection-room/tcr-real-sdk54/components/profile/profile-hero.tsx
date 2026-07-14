@@ -214,8 +214,8 @@ export function ProfileHero({
       {/* Solid black spacer: the hero's own bottom dissolve (hero-background.tsx
           Layer 4b) already fades all the way to pure #000000 by its last pixel,
           so this holds that same flat black — no gradient/tint of its own —
-          until the Grails section (also solid black) begins. All of the fade
-          is owned by the hero above; this is just inert continuation. */}
+          for a short distance so the Grails card's top edge has something
+          dark to slightly overlap before the light page background resumes. */}
       <View style={styles.heroExtension} pointerEvents="none" />
     </View>
   );
@@ -247,7 +247,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   heroExtension: {
-    height: 72,
+    height: 48,
     backgroundColor: '#000000',
   },
   // Layout-only — kept for its size/position/clipping in case something

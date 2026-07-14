@@ -4,6 +4,7 @@ export type Folder = {
   name: string;
   cover_image_url: string | null;
   cover_source: string; // 'upload' | 'first_card'
+  color: string | null; // FolderColorKey (components/collection/folder-card.tsx) or null = auto (name-hash)
   is_public: boolean;
   created_at: string;
 };

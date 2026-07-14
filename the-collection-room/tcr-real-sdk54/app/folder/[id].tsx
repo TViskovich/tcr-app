@@ -29,6 +29,8 @@ import Svg, {
 } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
+import { FolderColorPicker } from '@/components/collection/folder-color-picker';
 import { ItemCard } from '@/components/collection/item-card';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { ScreenHeader } from '@/components/ui/screen-header';
@@ -166,6 +168,7 @@ export default function FolderDetailScreen() {
   const [editIsPublic, setEditIsPublic] = useState(true);
   const [editCoverSource, setEditCoverSource] = useState<string>('upload');
   const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
+  const [editColor, setEditColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
   const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -209,6 +212,14 @@ export default function FolderDetailScreen() {
     setEditIsPublic(folder.is_public);
     setEditCoverSource(folder.cover_source ?? 'upload');
     setEditCoverUrl(folder.cover_image_url);
+    // Same name-hash fallback folder-card.tsx's leatherTone() uses, so the
+    // picker opens pre-selected on whatever color the card is actually
+    // showing right now, even if this folder predates the color column.
+    setEditColor(
+      (folder.color as FolderColorKey) && FOLDER_COLOR_KEYS.includes(folder.color as FolderColorKey)
+        ? (folder.color as FolderColorKey)
+        : FOLDER_COLOR_KEYS[folder.name.charCodeAt(0) % FOLDER_COLOR_KEYS.length],
+    );
     setNewCoverUri(null);
     setEditVisible(true);
   }
@@ -273,6 +284,7 @@ export default function FolderDetailScreen() {
           is_public: editIsPublic,
           cover_image_url: coverUrl,
           cover_source: editCoverSource,
+          color: editColor,
         })
         .eq('id', folder.id)
         .select()
@@ -623,6 +635,12 @@ export default function FolderDetailScreen() {
                 autoFocus={!hasCover}
                 maxLength={80}
               />
+            </View>
+
+            {/* Binder color */}
+            <View>
+              <Text style={styles.modalLabel}>Binder Color</Text>
+              <FolderColorPicker value={editColor} onChange={setEditColor} />
             </View>
 
             {/* Public toggle */}

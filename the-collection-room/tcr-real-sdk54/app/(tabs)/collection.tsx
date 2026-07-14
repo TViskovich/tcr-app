@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -13,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
-import { FolderCard } from '@/components/collection/folder-card';
+import { CARD_GUTTER, CARD_WIDTH, FolderCard } from '@/components/collection/folder-card';
 import { useAuth } from '@/lib/auth';
 import { useFolders } from '@/hooks/use-collection';
 
@@ -23,6 +24,12 @@ export default function CollectionScreen() {
   const { folders, loading, refresh, itemCounts } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
+
+  // Derived so the two fixed-width cards plus the gutter between them always
+  // fit the row exactly, with the leftover split evenly as left/right page
+  // padding — this is what keeps the grid symmetric at any screen width.
+  const { width: windowWidth } = useWindowDimensions();
+  const pagePadding = Math.max(16, (windowWidth - CARD_WIDTH * 2 - CARD_GUTTER) / 2);
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
@@ -117,7 +124,7 @@ export default function CollectionScreen() {
               }
             />
           )}
-          contentContainerStyle={styles.grid}
+          contentContainerStyle={[styles.grid, { paddingHorizontal: pagePadding }]}
           columnWrapperStyle={styles.row}
         />
       )}
@@ -403,11 +410,17 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(137, 155, 178, 0.62)',
   },
   grid: {
-    padding: 10,
+    // paddingHorizontal is applied inline (see pagePadding above) so it can
+    // respond to screen width — this is just layout defaults otherwise.
     paddingTop: 14,
     paddingBottom: 104,
   },
+  // gap (not space-between) so the horizontal gutter is a fixed, consistent
+  // value that matches the vertical gap below — space-between let whatever
+  // space was left over collect into one big, inconsistent middle gutter.
   row: {
     justifyContent: 'flex-start',
+    gap: CARD_GUTTER,
+    marginBottom: CARD_GUTTER,
   },
 });
