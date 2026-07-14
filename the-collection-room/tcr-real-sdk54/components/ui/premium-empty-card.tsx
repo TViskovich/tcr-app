@@ -73,6 +73,13 @@ const LOGO_VERTICAL_SHIFT = -60;
 // the horizon/its glow, which are positioned independently of the logo.
 const HORIZON_TOP = 78;
 const HORIZON_HEIGHT = 1.5;
+// How far below HORIZON_TOP the crisp line itself sits — separate from
+// HORIZON_TOP so the glow (which stays anchored at HORIZON_TOP) doesn't
+// move too. Pushing the line down into the platform's own vertical range
+// means the platform (painted on top of it) naturally occludes the middle
+// of the line, leaving it visible only where it pokes out past the
+// platform's sides — reading as the line extending from behind it.
+const HORIZON_LINE_OFFSET = 20;
 // Of the vault's actual INNER width (vaultWidth minus the vault's own
 // paddingHorizontal on each side) — the vault's overflow:hidden is the only
 // real clip boundary in the parent chain, so this is what "92% of usable
@@ -127,11 +134,13 @@ const LOGO_GLOW_SIZE = 130;
 const LOGO_GLOW_OFFSET_Y = -20;
 
 // Transparent display-case card framing the logo — a plain bordered box,
-// no fill, no gradient. Bottom edge anchored at the horizon line (like it's
-// standing on it), tall enough to give the logo generous empty space inside
-// the frame above and below it, matching the reference's glass-vitrine look.
+// no fill, no gradient. Sits just above the horizon/platform with a small
+// gap (not flush against it), so the card itself reads as floating —
+// tall enough to give the logo generous empty space inside the frame
+// above and below it, matching the reference's glass-vitrine look.
 const LOGO_CARD_WIDTH = 130;
-const LOGO_CARD_HEIGHT = 210;
+const LOGO_CARD_HEIGHT = 220;
+const LOGO_CARD_FLOAT_GAP = 10;
 
 // Small 3D bronze/gold platform, flush against the horizon line — a real
 // cylinder (flat top ellipse + a visible front "wall" giving it height),
@@ -210,8 +219,8 @@ function HorizonGlow() {
         pointerEvents="none">
         <Defs>
           <RadialGradient id="horizonGlowWash" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#FFC978" stopOpacity={0.22} />
-            <Stop offset="40%" stopColor="#E2903F" stopOpacity={0.1} />
+            <Stop offset="0%" stopColor="#FFC978" stopOpacity={0.05} />
+            <Stop offset="40%" stopColor="#E2903F" stopOpacity={0.02} />
             <Stop offset="100%" stopColor="#E2903F" stopOpacity={0} />
           </RadialGradient>
         </Defs>
@@ -230,9 +239,9 @@ function HorizonGlow() {
         pointerEvents="none">
         <Defs>
           <RadialGradient id="horizonGlowRise" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#FFD9A0" stopOpacity={0.2} />
-            <Stop offset="35%" stopColor="#E2903F" stopOpacity={0.1} />
-            <Stop offset="70%" stopColor="#C9642A" stopOpacity={0.04} />
+            <Stop offset="0%" stopColor="#FFD9A0" stopOpacity={0.04} />
+            <Stop offset="35%" stopColor="#E2903F" stopOpacity={0.02} />
+            <Stop offset="70%" stopColor="#C9642A" stopOpacity={0.01} />
             <Stop offset="100%" stopColor="#C9642A" stopOpacity={0} />
           </RadialGradient>
         </Defs>
@@ -245,9 +254,9 @@ function HorizonGlow() {
         pointerEvents="none">
         <Defs>
           <RadialGradient id="horizonGlowCore" cx="50%" cy="50%" r="50%">
-            <Stop offset="0%" stopColor="#FFEFD1" stopOpacity={0.95} />
-            <Stop offset="25%" stopColor="#FFC978" stopOpacity={0.55} />
-            <Stop offset="55%" stopColor="#E2903F" stopOpacity={0.2} />
+            <Stop offset="0%" stopColor="#FFEFD1" stopOpacity={0.5} />
+            <Stop offset="25%" stopColor="#FFC978" stopOpacity={0.26} />
+            <Stop offset="55%" stopColor="#E2903F" stopOpacity={0.08} />
             <Stop offset="100%" stopColor="#E2903F" stopOpacity={0} />
           </RadialGradient>
         </Defs>
@@ -269,8 +278,8 @@ function LogoGlow() {
     <Svg width={LOGO_GLOW_SIZE} height={LOGO_GLOW_SIZE} style={styles.logoGlow} pointerEvents="none">
       <Defs>
         <RadialGradient id="logoGlow" cx="50%" cy="50%" r="50%">
-          <Stop offset="0%" stopColor="#FFD9A0" stopOpacity={0.22} />
-          <Stop offset="45%" stopColor="#E2903F" stopOpacity={0.09} />
+          <Stop offset="0%" stopColor="#FFD9A0" stopOpacity={0.06} />
+          <Stop offset="45%" stopColor="#E2903F" stopOpacity={0.02} />
           <Stop offset="100%" stopColor="#E2903F" stopOpacity={0} />
         </RadialGradient>
       </Defs>
@@ -279,12 +288,11 @@ function LogoGlow() {
   );
 }
 
-// Small 3D bronze platform beneath the display case — see PLATFORM_3D_WIDTH
-// comment for the construction technique. Recolored from scratch to match
-// the reference photo directly: warm dark bronze throughout (wall and the
-// top face's outer area alike — never pure black), with a bright warm gold
-// hotspot at the top face's center-front and a thin bright gold rim
-// tracing the top ellipse's edge.
+// Small 3D black platform beneath the display case — see PLATFORM_3D_WIDTH
+// comment for the construction technique. The wall (sides) stays black with
+// barely any reflection; the light is concentrated on the top face instead
+// — a clearly-sized warm gold hotspot fading to black at its edge, plus a
+// thin gold rim tracing the top ellipse. Sides dark, top catching the light.
 function Platform3D() {
   const cx = PLATFORM_3D_WIDTH / 2;
   const topCy = PLATFORM_3D_HEIGHT / 2;
@@ -303,24 +311,23 @@ function Platform3D() {
           <Stop offset="0%" stopColor="#000000" stopOpacity={0.55} />
           <Stop offset="100%" stopColor="#000000" stopOpacity={0} />
         </RadialGradient>
-        {/* Warm dark bronze wall — a mild lift near the top where it meets
-            the light, settling into a darker (but still warm, never pure
-            black) bronze toward the base. */}
+        {/* Black wall — only the faintest lift right at the very top,
+            essentially no reflection on the sides. */}
         <SvgLinearGradient id="platformWall" x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0%" stopColor="#4a3018" stopOpacity={1} />
-          <Stop offset="100%" stopColor="#1c1208" stopOpacity={1} />
+          <Stop offset="0%" stopColor="#0e0e10" stopOpacity={1} />
+          <Stop offset="100%" stopColor="#000000" stopOpacity={1} />
         </SvgLinearGradient>
-        {/* Top face — bright warm gold hotspot at center-front, fading
-            through amber to a darker warm bronze at the outer edge — the
-            edge stays warm-toned, it never goes to black. Kept fairly
-            tight/quick (not a broad slow falloff) — a wide soft gradient
-            here previously read as light pooling into a concave bowl
-            rather than a crisp reflection sitting on a flat surface. */}
-        <RadialGradient id="platformTop" cx="50%" cy="58%" r="42%">
-          <Stop offset="0%" stopColor="#FFF0C8" stopOpacity={1} />
-          <Stop offset="18%" stopColor="#FFCB74" stopOpacity={1} />
-          <Stop offset="38%" stopColor="#8a5a22" stopOpacity={1} />
-          <Stop offset="100%" stopColor="#3a2410" stopOpacity={1} />
+        {/* Top face — the only place light really lands. A clearly-sized
+            (not tiny) warm gold hotspot fading to black at the true edge.
+            Kept quick past the highlight itself (not a broad slow falloff)
+            — a wide soft gradient here previously read as light pooling
+            into a concave bowl rather than a reflection on a flat top. */}
+        <RadialGradient id="platformTop" cx="50%" cy="56%" r="52%">
+          <Stop offset="0%" stopColor="#E0C088" stopOpacity={1} />
+          <Stop offset="22%" stopColor="#B08A44" stopOpacity={1} />
+          <Stop offset="40%" stopColor="#5c3c16" stopOpacity={1} />
+          <Stop offset="62%" stopColor="#161210" stopOpacity={1} />
+          <Stop offset="100%" stopColor="#000000" stopOpacity={1} />
         </RadialGradient>
       </Defs>
       {/* Grounding shadow beneath the base of the cylinder. */}
@@ -335,8 +342,9 @@ function Platform3D() {
       <Path d={wallPath} fill="url(#platformWall)" />
       {/* The top face — caps the wall, warm gold hotspot at front-center. */}
       <Ellipse cx={cx} cy={topCy} rx={rx} ry={ry} fill="url(#platformTop)" />
-      {/* Thin bright gold rim tracing the top edge, per the reference. */}
-      <Ellipse cx={cx} cy={topCy} rx={rx} ry={ry} fill="none" stroke="#FFD37A" strokeOpacity={0.55} strokeWidth={1.2} />
+      {/* Thin bright gold rim tracing the top edge only — the wall/sides
+          get none of this. */}
+      <Ellipse cx={cx} cy={topCy} rx={rx} ry={ry} fill="none" stroke="#C9A055" strokeOpacity={0.32} strokeWidth={1} />
     </Svg>
   );
 }
@@ -590,7 +598,7 @@ export function PremiumEmptyCard({
               locations={[0, 0.18, 0.38, 0.5, 0.62, 0.82, 1]}
               start={{ x: 0, y: 0.5 }}
               end={{ x: 1, y: 0.5 }}
-              style={[styles.horizonLine, { top: HORIZON_TOP, width: horizonWidth }]}
+              style={[styles.horizonLine, { top: HORIZON_TOP + HORIZON_LINE_OFFSET, width: horizonWidth }]}
               pointerEvents="none"
             />
 
@@ -607,7 +615,7 @@ export function PremiumEmptyCard({
             <Svg
               width={LOGO_CARD_WIDTH}
               height={LOGO_CARD_HEIGHT}
-              style={[styles.logoCard, { top: HORIZON_TOP - LOGO_CARD_HEIGHT }]}
+              style={[styles.logoCard, { top: HORIZON_TOP - LOGO_CARD_HEIGHT - LOGO_CARD_FLOAT_GAP }]}
               pointerEvents="none">
               <Defs>
                 <SvgLinearGradient id="logoCardBorder" x1="0" y1="1" x2="0" y2="0">
@@ -679,7 +687,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(180, 128, 20, 0.30)',
     paddingHorizontal: 10,
-    paddingTop: 26,
+    paddingTop: 60,
     paddingBottom: 14,
   },
   vaultShadowFlat: {
@@ -723,7 +731,7 @@ const styles = StyleSheet.create({
   // button) down, away from the GRAILS title above it.
   zeroState: {
     paddingTop: 155,
-    paddingBottom: 176,
+    paddingBottom: 90,
     paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
