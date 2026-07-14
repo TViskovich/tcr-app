@@ -4,15 +4,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle } from 'react-native-svg';
 
-import { detectFolderIcon, FolderIconGlyph } from './folder-icon';
 import type { Folder } from '@/types';
-
-// Same three-layer trick the old embossed letter used (dark offset
-// down-right + light offset up-left + a faint true-center base) — just
-// applied to an SVG icon glyph instead of a Text character.
-const EMBOSS_SHADOW_COLOR = 'rgba(0,0,0,0.58)';
-const EMBOSS_HIGHLIGHT_COLOR = 'rgba(255,255,255,0.22)';
-const EMBOSS_BASE_COLOR = 'rgba(255,255,255,0.105)';
 
 // A dense field of tiny, faint flecks reads as texture; a sparse one reads as
 // dust — the previous 16-dot version was sparse enough that each fleck stood
@@ -77,14 +69,10 @@ export const CARD_GUTTER = 14;
 type Props = {
   folder: Folder;
   onPress: () => void;
-  itemCount?: number;
 };
 
-export function FolderCard({ folder, onPress, itemCount }: Props) {
+export function FolderCard({ folder, onPress }: Props) {
   const tone = leatherTone(folder);
-  const icon = detectFolderIcon(folder.name);
-  const countLabel =
-    typeof itemCount === 'number' ? (itemCount === 1 ? '1 card' : `${itemCount} cards`) : null;
 
   return (
     <Pressable
@@ -162,69 +150,39 @@ export function FolderCard({ folder, onPress, itemCount }: Props) {
                 />
               </>
             ) : (
-              <>
-                {/* Embossed sport/category icon — same three-layer carved-in
-                    trick the old initial used, now on an SVG glyph. */}
-                <View style={styles.embossWrap} pointerEvents="none">
-                  <Svg
-                    width={34}
-                    height={34}
-                    viewBox="0 0 40 40"
-                    color={EMBOSS_SHADOW_COLOR}
-                    style={[styles.embossIconLayer, styles.embossIconShadowOffset]}>
-                    <FolderIconGlyph icon={icon} />
-                  </Svg>
-                  <Svg
-                    width={34}
-                    height={34}
-                    viewBox="0 0 40 40"
-                    color={EMBOSS_HIGHLIGHT_COLOR}
-                    style={[styles.embossIconLayer, styles.embossIconHighlightOffset]}>
-                    <FolderIconGlyph icon={icon} />
-                  </Svg>
-                  <Svg
-                    width={34}
-                    height={34}
-                    viewBox="0 0 40 40"
-                    color={EMBOSS_BASE_COLOR}
-                    style={styles.embossIconLayer}>
-                    <FolderIconGlyph icon={icon} />
-                  </Svg>
-                </View>
-                <LinearGradient
-                  colors={['transparent', 'rgba(0,0,0,0.08)', 'rgba(0,0,0,0.28)']}
-                  locations={[0, 0.45, 1]}
-                  style={styles.gradient}
-                />
-              </>
+              <LinearGradient
+                colors={['transparent', 'rgba(0,0,0,0.08)', 'rgba(0,0,0,0.28)']}
+                locations={[0, 0.45, 1]}
+                style={styles.gradient}
+              />
             )}
+
+            {/* Embossed 9-Grail mark (3x3 grid) — centered as the binder's
+                main mark now, not a small corner nod. A normal (non-
+                absolute) child here, so content's own alignItems/
+                justifyContent center it, same as the old center icon did. */}
+            <View style={styles.premiumMark} pointerEvents="none">
+              <View style={styles.premiumMarkRow}>
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+              </View>
+              <View style={styles.premiumMarkRow}>
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+              </View>
+              <View style={styles.premiumMarkRow}>
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+                <View style={styles.premiumMarkDot} />
+              </View>
+            </View>
 
             <View style={styles.label} pointerEvents="none">
               <Text style={styles.folderName} numberOfLines={1}>
                 {folder.name}
               </Text>
-              {countLabel && <Text style={styles.folderCount}>{countLabel}</Text>}
-            </View>
-          </View>
-
-          {/* Tiny embossed 9-Grail mark (3x3 grid) — a quiet nod to the
-              brand, not a logo. Same gray/opacity treatment and top-right
-              placement as before, just a 3x3 grid instead of 2x2. */}
-          <View style={styles.premiumMark} pointerEvents="none">
-            <View style={styles.premiumMarkRow}>
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
-            </View>
-            <View style={styles.premiumMarkRow}>
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
-            </View>
-            <View style={styles.premiumMarkRow}>
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
-              <View style={styles.premiumMarkDot} />
             </View>
           </View>
         </View>
@@ -321,20 +279,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  embossWrap: {
-    width: 34,
-    height: 34,
-    transform: [{ translateY: -10 }],
-  },
-  embossIconLayer: {
-    position: 'absolute',
-  },
-  embossIconShadowOffset: {
-    transform: [{ translateX: 1.4 }, { translateY: 1.7 }],
-  },
-  embossIconHighlightOffset: {
-    transform: [{ translateX: -1 }, { translateY: -1 }],
-  },
   // Gradient occupies the bottom ~30% of the card, anchoring the label.
   gradient: {
     position: 'absolute',
@@ -355,30 +299,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.1,
   },
-  folderCount: {
-    color: 'rgba(255,255,255,0.70)',
-    fontSize: 11,
-    fontWeight: '400',
-    marginTop: 2,
-  },
-  // Tiny 3x3 "9 Grail" grid mark, upper-right — quiet brand nod, not a logo
-  // lockup. Dot size/gap shrunk from the old 2x2 version so the overall
-  // footprint (~10x10) and position stay the same with one more row/column.
+  // 3x3 "9 Grail" grid mark — the binder's centered main mark. No offset
+  // transform, so it sits at true dead-center rather than nudged upward.
   premiumMark: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    gap: 1.25,
-    opacity: 0.30,
+    gap: 3,
+    opacity: 0.16,
   },
   premiumMarkRow: {
     flexDirection: 'row',
-    gap: 1.25,
+    gap: 3,
   },
   premiumMarkDot: {
-    width: 2.5,
-    height: 2.5,
-    borderRadius: 0.65,
+    width: 7,
+    height: 7,
+    borderRadius: 1.8,
     backgroundColor: '#FFFFFF',
   },
 });

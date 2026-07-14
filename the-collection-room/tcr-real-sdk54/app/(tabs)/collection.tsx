@@ -21,7 +21,7 @@ import { useFolders } from '@/hooks/use-collection';
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, refresh, itemCounts } = useFolders(userId);
+  const { folders, loading, refresh } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
 
@@ -115,7 +115,6 @@ export default function CollectionScreen() {
           renderItem={({ item }) => (
             <FolderCard
               folder={item}
-              itemCount={itemCounts[item.id] ?? 0}
               onPress={() =>
                 router.push({
                   pathname: '/folder/[id]',
