@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -12,9 +13,21 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
-import { FolderCard } from '@/components/collection/folder-card';
+import {
+  PORTRAIT_SCREEN_BG,
+  PORTRAIT_TEXT_MUTED,
+  PORTRAIT_TEXT_PRIMARY,
+  PortraitFolderCard,
+} from '@/components/collection/portrait-folder-card';
 import { useAuth } from '@/lib/auth';
 import { useFolders } from '@/hooks/use-collection';
+
+// portrait-folder-v1 grid spacing — one consistent outer screen gutter, a
+// tighter gap between the two columns, and a taller gap between rows so
+// folder groups read as distinct rows rather than one dense mass.
+const OUTER_GUTTER = 18;
+const COLUMN_GAP = 12;
+const ROW_GAP = 22;
 
 export default function CollectionScreen() {
   const { session } = useAuth();
@@ -22,8 +35,13 @@ export default function CollectionScreen() {
   const { folders, loading, refresh, itemCounts } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
+
+  // Derived from the real window width and the grid's own spacing constants
+  // — never a hardcoded card width tied to one device.
+  const tileWidth = (windowWidth - OUTER_GUTTER * 2 - COLUMN_GAP) / 2;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -57,9 +75,11 @@ export default function CollectionScreen() {
           numColumns={2}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
-            <FolderCard
-              folder={item}
+            <PortraitFolderCard
+              title={item.name}
               itemCount={itemCounts[item.id] ?? 0}
+              previewSource={item.cover_image_url}
+              tileWidth={tileWidth}
               onPress={() =>
                 router.push({
                   pathname: '/folder/[id]',
@@ -89,7 +109,7 @@ export default function CollectionScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PORTRAIT_SCREEN_BG,
   },
   header: {
     flexDirection: 'row',
@@ -97,12 +117,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingVertical: 18,
-    backgroundColor: '#fff',
+    backgroundColor: PORTRAIT_SCREEN_BG,
   },
   headerTitle: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#11181C',
+    color: PORTRAIT_TEXT_PRIMARY,
   },
   newButton: {
     paddingHorizontal: 16,
@@ -128,12 +148,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PORTRAIT_TEXT_PRIMARY,
     marginBottom: 8,
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PORTRAIT_TEXT_MUTED,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
@@ -150,11 +170,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   grid: {
-    padding: 10,
-    paddingTop: 14,
+    paddingHorizontal: OUTER_GUTTER,
+    paddingTop: 16,
     paddingBottom: 104,
   },
   row: {
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: ROW_GAP,
   },
 });
