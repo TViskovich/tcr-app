@@ -29,9 +29,35 @@ export async function resolveCovers(folders: Folder[]): Promise<Folder[]> {
   );
 }
 
+// Preview rows only ever show the latest few items per folder — capping
+// each folder's own query (rather than one unlimited query across all
+// folder ids) means a folder with hundreds of items never pulls more than
+// this many rows just to populate its horizontal preview row.
+const PREVIEW_ITEM_LIMIT = 10;
+
+async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, CollectionItem[]>> {
+  if (!folderIds.length) return {};
+  const results = await Promise.all(
+    folderIds.map(id =>
+      supabase
+        .from('collection_items')
+        .select('*')
+        .eq('folder_id', id)
+        .order('created_at', { ascending: false })
+        .limit(PREVIEW_ITEM_LIMIT),
+    ),
+  );
+  const byFolder: Record<string, CollectionItem[]> = {};
+  folderIds.forEach((id, i) => {
+    byFolder[id] = (results[i].data ?? []) as CollectionItem[];
+  });
+  return byFolder;
+}
+
 export function useFolders(userId: string | undefined) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
+  const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -64,8 +90,11 @@ export function useFolders(userId: string | undefined) {
         counts[row.folder_id] = (counts[row.folder_id] ?? 0) + 1;
       }
       setItemCounts(counts);
+
+      setPreviewItems(await fetchPreviewItems(folderIds));
     } else {
       setItemCounts({});
+      setPreviewItems({});
     }
 
     setLoading(false);
@@ -75,7 +104,7 @@ export function useFolders(userId: string | undefined) {
     load();
   }, [load]);
 
-  return { folders, loading, refresh: load, itemCounts };
+  return { folders, loading, refresh: load, itemCounts, previewItems };
 }
 
 export function useItems(folderId: string | undefined) {

@@ -17,11 +17,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
-import { PortraitFolderCard } from '@/components/collection/portrait-folder-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
+import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { useFolders } from '@/hooks/use-collection';
+import type { CollectionItem, Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
 // carousel below scrolls edge-to-edge on purpose), just a fixed inset.
@@ -199,25 +201,26 @@ function CollectionAtmosphere({ width }: { width: number }) {
   );
 }
 
-// portrait-folder-v1 — one consistent outer screen gutter, used both to size
-// each full-width portrait tile and as the folder list's own horizontal
-// inset (folders now stack vertically one per row, not a 2-column grid).
-const OUTER_GUTTER = 18;
-
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, refresh, itemCounts } = useFolders(userId);
+  const { folders, loading, refresh, previewItems } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
   const pagePadding = PAGE_PADDING;
+  const { isExpanded, toggle } = useCollapsedSections();
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
-  // Derived from the real window width and the outer gutter — never a
-  // hardcoded card width tied to one device.
-  const tileWidth = windowWidth - OUTER_GUTTER * 2;
+  const openFolder = (folder: Folder) =>
+    router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } });
+
+  const openItem = (item: CollectionItem) =>
+    router.push({ pathname: '/item/[id]', params: { id: item.id } });
+
+  const addItem = (folder: Folder) =>
+    router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -272,20 +275,18 @@ export default function CollectionScreen() {
         <FlatList
           data={folders}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={[styles.listContent, { paddingHorizontal: OUTER_GUTTER }]}
+          contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
           renderItem={({ item }) => (
-            <PortraitFolderCard
+            <CollectionPreviewSection
+              folderId={item.id}
               title={item.name}
-              itemCount={itemCounts[item.id] ?? 0}
-              previewSource={item.cover_image_url}
-              tileWidth={tileWidth}
-              onPress={() =>
-                router.push({
-                  pathname: '/folder/[id]',
-                  params: { id: item.id, name: item.name },
-                })
-              }
+              items={previewItems[item.id] ?? []}
+              isExpanded={isExpanded(item.id)}
+              onToggle={() => toggle(item.id)}
+              onOpenFolder={() => openFolder(item)}
+              onOpenItem={openItem}
+              onAddItem={() => addItem(item)}
             />
           )}
         />
@@ -448,9 +449,9 @@ const styles = StyleSheet.create({
     paddingTop: 28,
     paddingBottom: 12,
   },
-  // Clearly larger than the ~9px title-to-tile gap inside each portrait
-  // folder card — otherwise the next folder's title would read as
-  // belonging to the previous tile instead of its own.
+  // Clearly larger than CollectionHeaderRow's own ~10px title-to-preview
+  // gap — otherwise the next section's title would read as belonging to
+  // the previous section's preview row instead of its own.
   rowSeparator: {
     height: 22,
   },
