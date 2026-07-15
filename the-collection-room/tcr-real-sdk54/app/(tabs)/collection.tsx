@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,11 +18,10 @@ import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg'
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
-import { BOX_ASPECT_RATIO, FolderCard } from '@/components/collection/folder-card';
+import { WideFolderCard } from '@/components/collection/wide-folder-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { useFolders } from '@/hooks/use-collection';
-import type { Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
 // carousel below scrolls edge-to-edge on purpose), just a fixed inset.
@@ -199,74 +199,6 @@ function CollectionAtmosphere({ width }: { width: number }) {
   );
 }
 
-// How far apart adjacent binders sit — the visible gap between them once
-// centered (not the item's own rendered width).
-const CAROUSEL_GAP = 20;
-
-// A horizontal, snap-to-center carousel — swipe/scroll left or right to
-// browse binders one at a time, tap the one you want to open it. The
-// centered item renders at full size/opacity; neighbors scale down and dim
-// as they move away from center, purely driven by scroll position (no
-// separate "selected index" state to keep in sync).
-function FolderCarousel({
-  folders,
-  itemCounts,
-  onFolderPress,
-  windowWidth,
-}: {
-  folders: Folder[];
-  itemCounts: Record<string, number>;
-  onFolderPress: (folder: Folder) => void;
-  windowWidth: number;
-}) {
-  const itemWidth = Math.min(268, windowWidth * 0.68);
-  const slotWidth = itemWidth + CAROUSEL_GAP;
-  const sidePadding = (windowWidth - itemWidth) / 2;
-  const carouselHeight = itemWidth / BOX_ASPECT_RATIO + 60;
-  const scrollX = useRef(new Animated.Value(0)).current;
-
-  return (
-    <Animated.FlatList<Folder>
-      data={folders}
-      horizontal
-      keyExtractor={(item) => item.id}
-      showsHorizontalScrollIndicator={false}
-      snapToInterval={slotWidth}
-      decelerationRate="fast"
-      style={{ height: carouselHeight }}
-      contentContainerStyle={{ paddingHorizontal: sidePadding }}
-      onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
-        useNativeDriver: true,
-      })}
-      scrollEventThrottle={16}
-      renderItem={({ item, index }) => {
-        const inputRange = [(index - 1) * slotWidth, index * slotWidth, (index + 1) * slotWidth];
-        const scale = scrollX.interpolate({
-          inputRange,
-          outputRange: [0.86, 1, 0.86],
-          extrapolate: 'clamp',
-        });
-        const opacity = scrollX.interpolate({
-          inputRange,
-          outputRange: [0.5, 1, 0.5],
-          extrapolate: 'clamp',
-        });
-        return (
-          <Animated.View style={[styles.carouselSlot, { width: slotWidth, transform: [{ scale }], opacity }]}>
-            <FolderCard
-              folder={item}
-              itemCount={itemCounts[item.id] ?? 0}
-              width={itemWidth}
-              maxBoxWidth={itemWidth}
-              onPress={() => onFolderPress(item)}
-            />
-          </Animated.View>
-        );
-      }}
-    />
-  );
-}
-
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
@@ -329,19 +261,24 @@ export default function CollectionScreen() {
           </View>
         </View>
       ) : (
-        <View style={styles.carouselWrap}>
-          <FolderCarousel
-            folders={folders}
-            itemCounts={itemCounts}
-            windowWidth={windowWidth}
-            onFolderPress={(folder) =>
-              router.push({
-                pathname: '/folder/[id]',
-                params: { id: folder.id, name: folder.name },
-              })
-            }
-          />
-        </View>
+        <FlatList
+          data={folders}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={[styles.listContent, { paddingHorizontal: pagePadding }]}
+          ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
+          renderItem={({ item }) => (
+            <WideFolderCard
+              title={item.name}
+              itemCount={itemCounts[item.id] ?? 0}
+              onPress={() =>
+                router.push({
+                  pathname: '/folder/[id]',
+                  params: { id: item.id, name: item.name },
+                })
+              }
+            />
+          )}
+        />
       )}
 
       {folders.length > 0 && (
@@ -497,11 +434,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
   },
-  carouselWrap: {
+  listContent: {
     paddingTop: 28,
     paddingBottom: 12,
   },
-  carouselSlot: {
-    alignItems: 'center',
+  // Within the 12-16px spec range for gaps between wide folder rows.
+  rowSeparator: {
+    height: 14,
   },
 });
