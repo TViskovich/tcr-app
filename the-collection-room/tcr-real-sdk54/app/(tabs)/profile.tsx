@@ -24,6 +24,7 @@ import { ProfileV2Collections } from '@/components/profile-v2/profile-v2-collect
 import { ProfileV2Grid } from '@/components/profile-v2/profile-v2-grid';
 import { ProfileV2Hero } from '@/components/profile-v2/profile-v2-hero';
 import { ProfileV2Identity } from '@/components/profile-v2/profile-v2-identity';
+import { ProfileV2SectionPage } from '@/components/profile-v2/profile-v2-section-page';
 import { ProfileV2Selector, type ProfileV2Section } from '@/components/profile-v2/profile-v2-selector';
 import { ProfileV2Stats } from '@/components/profile-v2/profile-v2-stats';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
@@ -60,6 +61,12 @@ export default function ProfileScreen() {
   const { folders, refresh: refreshFolders } = useFolders(userId);
 
   const [section, setSection] = useState<ProfileV2Section>('cachecase');
+  // Measured once off the cachecase section's real rendered height (see
+  // ProfileV2SectionPage below) — cachecase is both the default tab and the
+  // tallest, so this captures a real "Grails" dimension rather than a
+  // hardcoded guess, with no visible flash since it's measured before the
+  // user can switch to a shorter section.
+  const [sectionMinHeight, setSectionMinHeight] = useState<number | undefined>(undefined);
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ heroName: '', displayName: '', bio: '' });
@@ -476,54 +483,68 @@ export default function ProfileScreen() {
 
               <ProfileV2Selector active={section} onChange={setSection} />
 
-              {section === 'posts' && (
-                <View style={styles.sectionEmpty}>
-                  <Text style={styles.sectionEmptyText}>Posts coming soon.</Text>
-                </View>
-              )}
-
-              {section === 'cachecase' && (
-                <>
-                  <ProfileV2CollectorPanel
-                    avatarUri={avatarUri}
-                    displayName={displayName}
-                    username={profile?.username ?? ''}
-                    vaultTotal={stats.itemCount}
-                    graded={stats.gradedCount}
-                    prototype={prototypeCollectorStats}
-                    badgeUri={badgeUri}
-                  />
-                  <ProfileV2Grid
-                    grails={grails}
-                    onItemPress={(item) =>
-                      router.push({ pathname: '/item/[id]', params: { id: item.item_id, fromGrails: '1' } })
-                    }
-                    onAddPress={() => router.push('/(tabs)/collection' as any)}
-                  />
-                </>
-              )}
-
-              {section === 'collections' && (
-                <ProfileV2Collections
-                  folders={folders}
-                  onFolderPress={(folder) =>
-                    router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } })
+              {/* One shared, fixed-minHeight container for whichever section
+                  is active — measured once off the cachecase section (the
+                  tallest: collector panel + Grails grid), since that's the
+                  default/starting tab. Shorter sections (posts/transfers/
+                  bookmarked/collections) then hold the same floor instead of
+                  shrinking the page and shifting everything below it. */}
+              <ProfileV2SectionPage
+                minHeight={sectionMinHeight}
+                onLayout={(e) => {
+                  if (section === 'cachecase' && sectionMinHeight === undefined) {
+                    setSectionMinHeight(e.nativeEvent.layout.height);
                   }
-                  onCreatePress={() => router.push('/(tabs)/collection' as any)}
-                />
-              )}
+                }}>
+                {section === 'posts' && (
+                  <View style={styles.sectionEmpty}>
+                    <Text style={styles.sectionEmptyText}>Posts coming soon.</Text>
+                  </View>
+                )}
 
-              {section === 'transfers' && (
-                <View style={styles.sectionEmpty}>
-                  <Text style={styles.sectionEmptyText}>Transfers coming soon.</Text>
-                </View>
-              )}
+                {section === 'cachecase' && (
+                  <>
+                    <ProfileV2CollectorPanel
+                      avatarUri={avatarUri}
+                      displayName={displayName}
+                      username={profile?.username ?? ''}
+                      vaultTotal={stats.itemCount}
+                      graded={stats.gradedCount}
+                      prototype={prototypeCollectorStats}
+                      badgeUri={badgeUri}
+                    />
+                    <ProfileV2Grid
+                      grails={grails}
+                      onItemPress={(item) =>
+                        router.push({ pathname: '/item/[id]', params: { id: item.item_id, fromGrails: '1' } })
+                      }
+                      onAddPress={() => router.push('/(tabs)/collection' as any)}
+                    />
+                  </>
+                )}
 
-              {section === 'bookmarked' && (
-                <View style={styles.sectionEmpty}>
-                  <Text style={styles.sectionEmptyText}>Bookmarked coming soon.</Text>
-                </View>
-              )}
+                {section === 'collections' && (
+                  <ProfileV2Collections
+                    folders={folders}
+                    onFolderPress={(folder) =>
+                      router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } })
+                    }
+                    onCreatePress={() => router.push('/(tabs)/collection' as any)}
+                  />
+                )}
+
+                {section === 'transfers' && (
+                  <View style={styles.sectionEmpty}>
+                    <Text style={styles.sectionEmptyText}>Transfers coming soon.</Text>
+                  </View>
+                )}
+
+                {section === 'bookmarked' && (
+                  <View style={styles.sectionEmpty}>
+                    <Text style={styles.sectionEmptyText}>Bookmarked coming soon.</Text>
+                  </View>
+                )}
+              </ProfileV2SectionPage>
             </>
           )}
 

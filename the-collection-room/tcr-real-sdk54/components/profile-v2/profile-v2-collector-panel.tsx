@@ -95,7 +95,10 @@ export function ProfileV2CollectorPanel({
 const styles = StyleSheet.create({
   panel: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    // 'stretch' (not 'flex-start') so all three columns fill the panel's
+    // full height — otherwise each column's height is just its own content
+    // height, leaving justifyContent:'center' nothing to center within.
+    alignItems: 'stretch',
     marginTop: 0,
     marginHorizontal: 3,
     marginBottom: 3,
@@ -113,6 +116,7 @@ const styles = StyleSheet.create({
   },
   leftCol: {
     gap: 3,
+    justifyContent: 'center',
   },
   centerCol: {
     gap: 2,
