@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
   wrap: {
     alignItems: 'center',
     paddingHorizontal: 24,
-    marginTop: 8,
+    marginTop: -2,
   },
   actionRow: {
     flexDirection: 'row',

@@ -1,63 +1,154 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useRef } from 'react';
+import {
+  Animated,
+  FlatList,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from './profile-v2-theme';
 
-// The reference shows a two-line "cache/case" wordmark lockup that doesn't
-// match any exported CacheCaseLogo asset (icon: square grid mark; light/
-// dark: a single-line wide wordmark) — approximated here with styled Text
-// plus the existing small grid icon, rather than inventing a new PNG asset.
 const IRIDESCENT_BORDER = ['#8FE3C0', '#F2A6C9', '#8FC7EA', '#B9E8B0'] as const;
 
-export type ProfileV2Section = 'posts' | 'cachecase' | 'collections';
+// Real logo asset (cachecase-primary.png, 1627x684) rendered at this height
+// inside the pill — width follows from CacheCaseLogo's own aspect ratio math.
+const CACHECASE_LOGO_HEIGHT = 30;
 
-const SECTIONS: ProfileV2Section[] = ['posts', 'cachecase', 'collections'];
+// All three pills share this exact footprint now — "collections" being a
+// longer word than "posts" no longer widens its box; its Text instead
+// shrinks to fit via adjustsFontSizeToFit below. Widened from the initial
+// 108 to give the logo pill more breathing room around the wordmark, which
+// was crowding the gradient border closely enough to read as "cut off."
+const PILL_WIDTH = 122;
+const PILL_HEIGHT = 44;
+const CACHECASE_BORDER_WIDTH = 1.5;
+
+export type ProfileV2Section = 'posts' | 'cachecase' | 'collections' | 'transfers' | 'bookmarked';
+
+// cachecase sits at index 2 (dead center of 5) deliberately — it's the
+// carousel's default/starting selection, and this ordering is what makes
+// both the carousel itself AND the dot rail below (which just maps over
+// this same array) show it as the center item.
+const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase', 'transfers', 'bookmarked'];
+
+// Fixed per-item width, same idea as the Collection tab's FolderCarousel
+// (see app/(tabs)/collection.tsx) — a constant slot each pill centers
+// within, so the carousel's snap math doesn't have to account for pills
+// changing size on selection anymore (that's now the scale animation's job).
+const SLOT_WIDTH = 132;
+
+// A true mathematically-infinite loop isn't possible with a finite list, so
+// instead the FlatList's data is SECTIONS repeated many times over, with the
+// initial scroll position starting deep in the middle of that buffer. That
+// gives ~100 loops' worth of scroll room in either direction before hitting
+// a physical edge — far more than anyone will ever swipe through in one
+// sitting, so it reads as endless without any scroll-position-reset hack
+// (which risks a visible jump/flicker) to actually stitch the ends together.
+const LOOP_COUNT = 200;
+const LOOPED_SECTIONS: ProfileV2Section[] = Array.from({ length: LOOP_COUNT }, () => SECTIONS).flat();
+const LOOP_START = Math.floor(LOOP_COUNT / 2) * SECTIONS.length;
 
 type Props = {
   active: ProfileV2Section;
   onChange: (section: ProfileV2Section) => void;
 };
 
-// Local-state tab selector — does not touch the app's bottom Tabs navigator.
+// A horizontal, snap-to-center carousel — the exact same mechanics as
+// FolderCarousel: fixed-width slots, scroll-position-driven scale/opacity
+// falloff on neighbors, and the centered slot IS the active selection.
+// Tapping a pill scrolls it to center (which is what actually flips
+// `active`, via onMomentumScrollEnd) rather than switching state directly,
+// so there's a single source of truth for "what's selected."
 export function ProfileV2Selector({ active, onChange }: Props) {
+  const { width: windowWidth } = useWindowDimensions();
+  const sidePadding = (windowWidth - SLOT_WIDTH) / 2;
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const listRef = useRef<FlatList<ProfileV2Section>>(null);
+
+  const initialIndex = LOOP_START + Math.max(0, SECTIONS.indexOf(active));
+
+  const goToIndex = (index: number) => {
+    onChange(LOOPED_SECTIONS[index]);
+    listRef.current?.scrollToIndex({ index, animated: true });
+  };
+
+  const handleMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = Math.round(e.nativeEvent.contentOffset.x / SLOT_WIDTH);
+    const clamped = Math.min(LOOPED_SECTIONS.length - 1, Math.max(0, index));
+    const section = LOOPED_SECTIONS[clamped];
+    if (section !== active) onChange(section);
+  };
+
   return (
     <View style={styles.wrap}>
-      <ScrollView
+      <Animated.FlatList<ProfileV2Section>
+        ref={listRef}
+        data={LOOPED_SECTIONS}
         horizontal
+        keyExtractor={(s, index) => `${s}-${index}`}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.row}>
-        <TouchableOpacity
-          style={[styles.pill, active === 'posts' && styles.pillActive]}
-          onPress={() => onChange('posts')}
-          activeOpacity={0.8}>
-          <Text style={[styles.pillLabel, active === 'posts' && styles.pillLabelActive]}>posts</Text>
-        </TouchableOpacity>
+        snapToInterval={SLOT_WIDTH}
+        decelerationRate="fast"
+        initialScrollIndex={initialIndex}
+        getItemLayout={(_, index) => ({ length: SLOT_WIDTH, offset: SLOT_WIDTH * index, index })}
+        contentContainerStyle={{ paddingHorizontal: sidePadding }}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
+          useNativeDriver: true,
+        })}
+        onMomentumScrollEnd={handleMomentumEnd}
+        scrollEventThrottle={16}
+        renderItem={({ item, index }) => {
+          const inputRange = [(index - 1) * SLOT_WIDTH, index * SLOT_WIDTH, (index + 1) * SLOT_WIDTH];
+          const scale = scrollX.interpolate({
+            inputRange,
+            outputRange: [0.86, 1, 0.86],
+            extrapolate: 'clamp',
+          });
+          const opacity = scrollX.interpolate({
+            inputRange,
+            outputRange: [0.5, 1, 0.5],
+            extrapolate: 'clamp',
+          });
 
-        <TouchableOpacity onPress={() => onChange('cachecase')} activeOpacity={0.85}>
-          <LinearGradient
-            colors={IRIDESCENT_BORDER}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={[styles.cachecaseBorder, active === 'cachecase' ? styles.pillActiveSize : styles.pillInactiveSize]}>
-            <View style={styles.cachecasePill}>
-              <View>
-                <Text style={styles.cachecaseWordTop}>cache</Text>
-                <Text style={styles.cachecaseWordBottom}>case</Text>
-              </View>
-              <CacheCaseLogo variant="icon" size={12} style={styles.cachecaseIcon} />
+          return (
+            <View style={styles.slot}>
+              <Animated.View style={{ transform: [{ scale }], opacity }}>
+                {item === 'cachecase' ? (
+                  <TouchableOpacity onPress={() => goToIndex(index)} activeOpacity={0.85}>
+                    <LinearGradient
+                      colors={IRIDESCENT_BORDER}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.cachecaseBorder}>
+                      <View style={styles.cachecasePill}>
+                        <CacheCaseLogo variant="light" size={CACHECASE_LOGO_HEIGHT} />
+                      </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={styles.pill} onPress={() => goToIndex(index)} activeOpacity={0.8}>
+                    <Text
+                      style={styles.pillLabel}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}>
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </Animated.View>
             </View>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.pill, active === 'collections' && styles.pillActive]}
-          onPress={() => onChange('collections')}
-          activeOpacity={0.8}>
-          <Text style={[styles.pillLabel, active === 'collections' && styles.pillLabelActive]}>collections</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          );
+        }}
+      />
 
       <View style={styles.dots}>
         {SECTIONS.map((s) => (
@@ -73,87 +164,60 @@ const styles = StyleSheet.create({
     marginTop: 10,
     alignItems: 'center',
   },
-  row: {
-    flexDirection: 'row',
+  slot: {
+    width: SLOT_WIDTH,
     alignItems: 'center',
-    gap: 14,
-    paddingHorizontal: 20,
+    justifyContent: 'center',
   },
+  // One constant pill size now (both across posts/collections AND matching
+  // the cachecase logo pill below) — the scroll-driven scale above is what
+  // makes the centered pill read as "active," not a per-pill size swap.
   pill: {
-    height: 38,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  // Active pill: 108x44 (overrides the 38px inactive height above).
-  pillActive: {
-    width: 108,
-    height: 44,
-    backgroundColor: 'rgba(16,16,26,0.92)',
-    borderWidth: 0,
-  },
-  // Same 108x44 active / 38-tall inactive sizing applied to the cachecase
-  // pill's outer gradient-border wrapper, so all three pills share one
-  // active/inactive size language.
-  pillActiveSize: {
-    width: 108,
-    height: 44,
-  },
-  pillInactiveSize: {
-    height: 38,
-  },
-  // Gradient rect that shows through as a thin border around the black
-  // interior — the standard "gradient border" trick (padding = border width).
-  cachecaseBorder: {
-    borderRadius: 13,
-    padding: 1.5,
-  },
-  cachecasePill: {
-    flex: 1,
-    minWidth: 76,
+    width: PILL_WIDTH,
+    height: PILL_HEIGHT,
     paddingHorizontal: 10,
-    borderRadius: 11.5,
+    borderRadius: 13,
     backgroundColor: 'rgba(16,16,26,0.92)',
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
   },
-  cachecaseWordTop: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '800',
-    fontStyle: 'italic',
-    lineHeight: 12,
-  },
-  cachecaseWordBottom: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '800',
-    fontStyle: 'italic',
-    lineHeight: 12,
-  },
-  cachecaseIcon: {},
   pillLabel: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.9,
-    textTransform: 'lowercase',
-  },
-  pillLabelActive: {
     color: '#fff',
     fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.0,
+    textTransform: 'lowercase',
+  },
+  // Gradient rect that shows through as a thin border around the black
+  // interior — the standard "gradient border" trick (padding = border
+  // width). Sized to PILL_WIDTH/HEIGHT so its outer footprint matches the
+  // other two pills exactly. overflow:hidden keeps the gradient strictly
+  // clipped to its own rounded corners.
+  cachecaseBorder: {
+    width: PILL_WIDTH,
+    height: PILL_HEIGHT,
+    borderRadius: 13,
+    padding: CACHECASE_BORDER_WIDTH,
+    overflow: 'hidden',
+  },
+  // Explicit width/height (PILL minus the border padding on each side)
+  // rather than flex:1 — sidesteps any flex-sizing ambiguity inside a
+  // LinearGradient, which was letting this pill's content brush right up
+  // against (and visually interrupt) the gradient border on some edges.
+  cachecasePill: {
+    width: PILL_WIDTH - CACHECASE_BORDER_WIDTH * 2,
+    height: PILL_HEIGHT - CACHECASE_BORDER_WIDTH * 2,
+    borderRadius: 11.5,
+    backgroundColor: 'rgba(16,16,26,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
   dots: {
     flexDirection: 'row',
     gap: 5,
     marginTop: 10,
+    marginBottom: 12,
   },
   dot: {
     width: 4,

@@ -477,8 +477,8 @@ export default function ProfileScreen() {
               <ProfileV2Selector active={section} onChange={setSection} />
 
               {section === 'posts' && (
-                <View style={styles.postsEmpty}>
-                  <Text style={styles.postsEmptyText}>Posts coming soon.</Text>
+                <View style={styles.sectionEmpty}>
+                  <Text style={styles.sectionEmptyText}>Posts coming soon.</Text>
                 </View>
               )}
 
@@ -511,6 +511,18 @@ export default function ProfileScreen() {
                   }
                   onCreatePress={() => router.push('/(tabs)/collection' as any)}
                 />
+              )}
+
+              {section === 'transfers' && (
+                <View style={styles.sectionEmpty}>
+                  <Text style={styles.sectionEmptyText}>Transfers coming soon.</Text>
+                </View>
+              )}
+
+              {section === 'bookmarked' && (
+                <View style={styles.sectionEmpty}>
+                  <Text style={styles.sectionEmptyText}>Bookmarked coming soon.</Text>
+                </View>
               )}
             </>
           )}
@@ -608,11 +620,14 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: PV2.textSecondary,
   },
-  postsEmpty: {
+  // Shared "coming soon" placeholder for sections with no real data source
+  // yet (posts, transfers, bookmarked) — cachecase/collections render real
+  // content instead.
+  sectionEmpty: {
     alignItems: 'center',
     paddingVertical: 60,
   },
-  postsEmptyText: {
+  sectionEmptyText: {
     color: PV2.textTertiary,
     fontSize: 14,
   },

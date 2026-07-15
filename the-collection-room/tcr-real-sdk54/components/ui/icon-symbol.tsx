@@ -34,6 +34,11 @@ const MAPPING = {
   'camera.fill': 'camera-alt',
   'rectangle.stack.fill': 'layers',
   'sparkles': 'auto-awesome',
+  // Bottom tab bar — thin outline glyphs (vs the .fill glyphs above)
+  'house': 'home',
+  'message': 'chat-bubble-outline',
+  'person': 'person-outline',
+  'square.grid.2x2': 'grid-view',
 } as IconMapping;
 
 /**

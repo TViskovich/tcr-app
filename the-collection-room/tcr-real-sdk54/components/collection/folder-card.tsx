@@ -70,6 +70,24 @@ function folderArtSource(folder: Folder) {
   return COLLECTION_FOLDER_SOURCE;
 }
 
+// All these assets share the same 1024x1536 canvas, but the actual drawn
+// content isn't padded identically within it — the One Piece art fills
+// noticeably more of its canvas than the others, so it reads as "too big"
+// next to them at the same box size even though the box itself is
+// identical. Rendered a bit smaller (centered) rather than resizing the box
+// itself, which would also shift the name/count text below it.
+function folderArtScale(folder: Folder) {
+  return folder.name.trim().toLowerCase() === 'one piece' ? 0.88 : 1;
+}
+
+// The One Piece art's own internal padding is asymmetric (more at the top
+// of its canvas than the bottom), so even centered+scaled it still sits
+// lower than the other assets, crowding the name label below it. A small
+// upward nudge, specific to this one asset, corrects just that.
+function folderArtOffsetY(folder: Folder) {
+  return folder.name.trim().toLowerCase() === 'one piece' ? -10 : 0;
+}
+
 // Real PNG dimensions (1024x1536) — the box container is given this exact
 // ratio so contentFit="contain" fills it edge-to-edge with no letterboxing,
 // while BOX_MAX_WIDTH keeps the rendered art itself in the ~125-145px range
@@ -109,7 +127,11 @@ export function FolderCard({
       <View style={[styles.boxWrap, { maxWidth: maxBoxWidth }]}>
         <Image
           source={folderArtSource(folder)}
-          style={StyleSheet.absoluteFill}
+          style={{
+            width: `${folderArtScale(folder) * 100}%`,
+            height: `${folderArtScale(folder) * 100}%`,
+            transform: [{ translateY: folderArtOffsetY(folder) }],
+          }}
           contentFit="contain"
           transition={150}
         />
@@ -143,6 +165,8 @@ const styles = StyleSheet.create({
     width: '100%',
     aspectRatio: BOX_ASPECT_RATIO,
     alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   folderName: {
     marginTop: -53,
