@@ -28,6 +28,17 @@ const MAPPING = {
   'gearshape.fill': 'settings',
   'magnifyingglass': 'search',
   'crown.fill': 'emoji-events',
+  // Create menu icons
+  'plus': 'add',
+  'square.and.pencil': 'edit',
+  'camera.fill': 'camera-alt',
+  'rectangle.stack.fill': 'layers',
+  'sparkles': 'auto-awesome',
+  // Bottom tab bar — thin outline glyphs (vs the .fill glyphs above)
+  'house': 'home',
+  'message': 'chat-bubble-outline',
+  'person': 'person-outline',
+  'square.grid.2x2': 'grid-view',
 } as IconMapping;
 
 /**

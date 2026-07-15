@@ -12,7 +12,9 @@ import {
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
@@ -113,6 +115,81 @@ async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
     );
 }
 
+// Two overlapping chat bubbles, each holding a faint card silhouette, with a
+// few small iridescent tiles drifting between them and a soft ground shadow
+// beneath — metallic white-silver surfaces with restrained cyan/lavender/pink
+// accents, no gold, no glow.
+function EmptyMessagesArtwork() {
+  return (
+    <Svg width={320} height={230} viewBox="0 0 320 230">
+      <Defs>
+        <LinearGradient id="bubbleRear" x1="0%" y1="0%" x2="100%" y2="100%">
+          <Stop offset="0%" stopColor="#FFFFFF" />
+          <Stop offset="100%" stopColor="#E4EEF0" />
+        </LinearGradient>
+        <LinearGradient id="bubbleFront" x1="0%" y1="0%" x2="100%" y2="100%">
+          <Stop offset="0%" stopColor="#FFFFFF" />
+          <Stop offset="100%" stopColor="#EEEAF6" />
+        </LinearGradient>
+        <RadialGradient id="groundShadow" cx="50%" cy="50%" r="50%">
+          <Stop offset="0%" stopColor="#1B2733" stopOpacity={0.16} />
+          <Stop offset="100%" stopColor="#1B2733" stopOpacity={0} />
+        </RadialGradient>
+      </Defs>
+
+      {/* Ground shadow */}
+      <Ellipse cx={170} cy={207} rx={95} ry={11} fill="url(#groundShadow)" />
+
+      {/* Rear-left bubble — tail drawn first so the body's rounded edge covers the seam */}
+      <Path d="M62,151 L82,151 L54,175 Z" fill="url(#bubbleRear)" />
+      <Rect
+        x={35}
+        y={48}
+        width={155}
+        height={105}
+        rx={24}
+        fill="url(#bubbleRear)"
+        stroke="#C9D3D6"
+        strokeWidth={1}
+      />
+      <Path
+        d="M55,60 Q47,68 47,80"
+        stroke="#FFFFFF"
+        strokeWidth={3}
+        strokeLinecap="round"
+        opacity={0.6}
+        fill="none"
+      />
+      {/* Card silhouette — no image or text, just faint frame */}
+      <Rect x={90} y={68} width={46} height={66} rx={8} fill="#EDF2F3" stroke="#D3DBDD" strokeWidth={1} />
+      <Rect x={95} y={73} width={36} height={56} rx={5} fill="none" stroke="#C7D0D2" strokeWidth={0.75} opacity={0.7} />
+
+      {/* Front-right bubble */}
+      <Path d="M243,181 L263,181 L271,203 Z" fill="url(#bubbleFront)" />
+      <Rect
+        x={130}
+        y={78}
+        width={155}
+        height={105}
+        rx={24}
+        fill="url(#bubbleFront)"
+        stroke="#D2CDE0"
+        strokeWidth={1}
+      />
+      <Path
+        d="M150,90 Q142,98 142,110"
+        stroke="#FFFFFF"
+        strokeWidth={3}
+        strokeLinecap="round"
+        opacity={0.6}
+        fill="none"
+      />
+      <Rect x={185} y={98} width={46} height={66} rx={8} fill="#F1EEF7" stroke="#DAD4E8" strokeWidth={1} />
+      <Rect x={190} y={103} width={36} height={56} rx={5} fill="none" stroke="#CFC8E0" strokeWidth={0.75} opacity={0.7} />
+    </Svg>
+  );
+}
+
 export default function MessagesScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -147,6 +224,10 @@ export default function MessagesScreen() {
     }, [load]),
   );
 
+  function handleFindCollectors() {
+    router.push('/(tabs)/search');
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -158,11 +239,27 @@ export default function MessagesScreen() {
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
       ) : conversations.length === 0 ? (
-        <View style={styles.center}>
-          <Text style={styles.emptyTitle}>No messages yet</Text>
-          <Text style={styles.emptyBody}>
-            Visit someone's profile and tap Message to start a conversation.
+        <View style={styles.messagesEmptyState}>
+          <CacheCaseLogo
+            variant="dark"
+            size="lg"
+            placement="emptyState"
+            style={styles.messagesEmptyLogo}
+          />
+          <EmptyMessagesArtwork />
+
+          <Text style={styles.messagesEmptyTitle}>No conversations yet</Text>
+
+          <Text style={styles.messagesEmptyBody}>
+            Connect with collectors and start talking cards.
           </Text>
+
+          <TouchableOpacity
+            style={styles.messagesEmptyButton}
+            onPress={handleFindCollectors}
+            activeOpacity={0.82}>
+            <Text style={styles.messagesEmptyButtonText}>Find Collectors</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -252,17 +349,51 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 32,
   },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#11181C',
-    marginBottom: 8,
+  messagesEmptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    transform: [{ translateY: -24 }],
   },
-  emptyBody: {
-    fontSize: 15,
+  messagesEmptyArtwork: {
+    width: 320,
+    height: 230,
+    alignSelf: 'center',
+  },
+  messagesEmptyLogo: {
+    transform: [{ translateY: -50 }],
+  },
+  messagesEmptyTitle: {
+    marginTop: 18,
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: '700',
+    color: '#11181C',
+    textAlign: 'center',
+  },
+  messagesEmptyBody: {
+    marginTop: 10,
+    maxWidth: 330,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
     color: '#687076',
     textAlign: 'center',
-    lineHeight: 22,
+  },
+  messagesEmptyButton: {
+    marginTop: 24,
+    width: 230,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#0A8BAD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  messagesEmptyButtonText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   row: {
     flexDirection: 'row',

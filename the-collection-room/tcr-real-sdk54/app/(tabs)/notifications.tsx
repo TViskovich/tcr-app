@@ -13,6 +13,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
@@ -20,11 +21,12 @@ import { supabase } from '@/lib/supabase';
 
 type NotificationItem = {
   id: string;
-  type: 'follow' | 'like' | 'comment' | 'message';
+  type: 'follow' | 'like' | 'comment' | 'message' | 'grail_rating';
   read: boolean;
   created_at: string;
   post_id: string | null;
   conversation_id: string | null;
+  ratingScore: number | null;
   actorId: string;
   actorUsername: string;
   actorDisplayName: string | null;
@@ -38,20 +40,21 @@ function formatAge(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function notifLabel(type: string): string {
-  switch (type) {
-    case 'follow':  return 'started following you.';
-    case 'like':    return 'liked your post.';
-    case 'comment': return 'commented on your post.';
-    case 'message': return 'sent you a message.';
-    default:        return 'interacted with you.';
+function notifLabel(item: NotificationItem): string {
+  switch (item.type) {
+    case 'follow':       return 'started following you.';
+    case 'like':          return 'liked your post.';
+    case 'comment':       return 'commented on your post.';
+    case 'message':       return 'sent you a message.';
+    case 'grail_rating':  return `rated your Grails ${item.ratingScore ?? '?'}/10.`;
+    default:               return 'interacted with you.';
   }
 }
 
 async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
   const { data: rows } = await supabase
     .from('notifications')
-    .select('id, type, read, created_at, post_id, conversation_id, actor_id')
+    .select('id, type, read, created_at, post_id, conversation_id, actor_id, rating_score')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(100);
@@ -75,6 +78,7 @@ async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
       created_at: r.created_at,
       post_id: r.post_id ?? null,
       conversation_id: r.conversation_id ?? null,
+      ratingScore: r.rating_score ?? null,
       actorId: r.actor_id,
       actorUsername: p.username ?? 'user',
       actorDisplayName: p.display_name ?? null,
@@ -113,7 +117,7 @@ function NotificationRow({
       <View style={styles.rowBody}>
         <Text style={styles.rowText} numberOfLines={2}>
           <Text style={styles.rowActor}>{displayName}</Text>
-          {' '}{notifLabel(item.type)}
+          {' '}{notifLabel(item)}
         </Text>
         <Text style={styles.rowTime}>{formatAge(item.created_at)}</Text>
       </View>
@@ -183,6 +187,7 @@ export default function NotificationsScreen() {
         break;
       case 'like':
       case 'comment':
+      case 'grail_rating':
         if (notif.post_id) router.push({ pathname: '/post/[id]', params: { id: notif.post_id } });
         break;
       case 'message':
@@ -228,6 +233,7 @@ export default function NotificationsScreen() {
         </View>
       ) : notifications.length === 0 ? (
         <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No notifications yet</Text>
           <Text style={styles.emptyBody}>
             You'll see likes, comments, follows, and messages here.

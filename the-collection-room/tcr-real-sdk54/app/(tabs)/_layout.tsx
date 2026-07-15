@@ -1,7 +1,8 @@
 import * as Haptics from 'expo-haptics';
-import { Tabs } from 'expo-router';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Tabs, usePathname } from 'expo-router';
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadCount } from '@/hooks/use-unread-count';
@@ -14,60 +15,153 @@ import { TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-co
 // Routes that have href:null — don't render a visible tab button for these.
 const HIDDEN_TABS = new Set(['notifications', 'settings']);
 
+const BAR_HEIGHT = 74;
+const BAR_BG = '#090A10';
+const BAR_BORDER = 'rgba(100,105,145,0.28)';
+const BOTTOM_RADIUS = 56;
+const ICON_SIZE = 22;
+const INACTIVE_COLOR = '#555762';
+const TEAL_LINE_COLOR = 'rgba(45,140,130,0.5)';
+const TEAL_LINE_HEIGHT = 1;
+
+// Per-tab active accent, used both to tint the icon and to color its glow —
+// one distinct color per tab.
+const DEFAULT_ACCENT = '#A97BFF';
+const TAB_ACCENTS: Record<string, string> = {
+  index: '#74F5C8', // Home — mint/green
+  collection: '#A97BFF', // Collection — purple
+  search: '#4DA6FF', // Search — blue
+  messages: '#FF5C5C', // Messages — red
+  profile: '#FFD84D', // Profile — yellow
+};
+
+// Only used for the small Android glow assist now (see glowAssist below).
+function glowAssistColorFor(accent: string) {
+  const hex = accent.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},0.18)`;
+}
+
+// A single tab button — icon, optional badge, and (when focused) a glow
+// that lights the icon itself up rather than sitting behind it as a
+// separate shape. Its own component (rather than inlined in the .map()
+// below) purely to keep AnimatedTabBar's render body readable.
+//
+// On iOS this is a real shadow applied directly to the View wrapping the
+// icon (shadowOffset 0,0, no shadowPath) — UIKit computes that shadow from
+// the icon's own rendered alpha mask, so the "glow" traces the actual SF
+// Symbol pixels with no separate visible shape and no hidden light source
+// to spot. That alpha-mask shadow trick doesn't exist on Android (shadow*
+// is a no-op there without `elevation`, which can't be tinted), so Android
+// gets one small, tight, low-opacity circle as a much subtler assist —
+// deliberately undersized so it reads as ambient bleed rather than a halo
+// shape, not the previous 3-layer 50px blob.
+function TabBarItem({
+  isFocused,
+  icon,
+  accent,
+  badge,
+  accessibilityLabel,
+  onPress,
+}: {
+  isFocused: boolean;
+  icon: React.ReactNode;
+  accent: string;
+  badge?: string | number;
+  accessibilityLabel?: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={styles.tabItem}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityState={isFocused ? { selected: true } : {}}
+      accessibilityLabel={accessibilityLabel}>
+      <View style={styles.iconWrap}>
+        {isFocused && Platform.OS !== 'ios' && (
+          <View
+            style={[styles.glowAssist, { backgroundColor: glowAssistColorFor(accent) }]}
+            pointerEvents="none"
+          />
+        )}
+        <View
+          style={
+            isFocused
+              ? [styles.iconLitWrap, styles.iconLit, { shadowColor: accent }]
+              : styles.iconLitWrap
+          }>
+          {icon}
+        </View>
+        {badge != null ? (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{badge}</Text>
+          </View>
+        ) : null}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 function AnimatedTabBar({ state, descriptors, navigation }: any) {
-  const { translateY } = useTabVisibility();
+  const pathname = usePathname();
+  const hideTabBar = pathname.startsWith('/user/');
+  const insets = useSafeAreaInsets();
+
+  const { translateY, opacity } = useTabVisibility();
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
+    opacity: opacity.value,
   }));
 
+  if (hideTabBar) return null;
+
   return (
-    <Animated.View style={[styles.tabBar, animStyle]}>
-      {state.routes.map((route: any, index: number) => {
-        if (HIDDEN_TABS.has(route.name)) return null;
+    <Animated.View style={[styles.rootWrap, animStyle]} pointerEvents="box-none">
+      <View style={[styles.tabBar, { height: BAR_HEIGHT + insets.bottom }]}>
+        <View style={styles.tabRow}>
+          {state.routes.map((route: any, index: number) => {
+            if (HIDDEN_TABS.has(route.name)) return null;
 
-        const { options } = descriptors[route.key];
-        const isFocused = state.index === index;
-        const color = isFocused ? '#ffffff' : 'rgba(255,255,255,0.42)';
-        const badge = options.tabBarBadge;
+            const { options } = descriptors[route.key];
+            const isFocused = state.index === index;
+            const badge = options.tabBarBadge;
+            const accent = TAB_ACCENTS[route.name] ?? DEFAULT_ACCENT;
+            const color = isFocused ? accent : INACTIVE_COLOR;
 
-        const onPress = () => {
-          if (process.env.EXPO_OS === 'ios') {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          }
-          const event = navigation.emit({
-            type: 'tabPress',
-            target: route.key,
-            canPreventDefault: true,
-          });
-          if (!isFocused && !event.defaultPrevented) {
-            navigation.navigate(route.name, route.params);
-          }
-        };
+            const onPress = () => {
+              if (process.env.EXPO_OS === 'ios') {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }
+              const event = navigation.emit({
+                type: 'tabPress',
+                target: route.key,
+                canPreventDefault: true,
+              });
+              if (!isFocused && !event.defaultPrevented) {
+                navigation.navigate(route.name, route.params);
+              }
+            };
 
-        return (
-          <TouchableOpacity
-            key={route.key}
-            onPress={onPress}
-            style={styles.tabItem}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityState={isFocused ? { selected: true } : {}}
-            accessibilityLabel={options.tabBarAccessibilityLabel}>
-            <View style={styles.iconWrap}>
-              {options.tabBarIcon?.({ color, size: 28, focused: isFocused })}
-              {badge != null ? (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{badge}</Text>
-                </View>
-              ) : null}
-            </View>
-            <Text style={[styles.tabLabel, { color }]} numberOfLines={1}>
-              {options.title ?? route.name}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+            return (
+              <TabBarItem
+                key={route.key}
+                isFocused={isFocused}
+                icon={options.tabBarIcon?.({ color, size: ICON_SIZE, focused: isFocused })}
+                accent={accent}
+                badge={badge}
+                accessibilityLabel={options.tabBarAccessibilityLabel}
+                onPress={onPress}
+              />
+            );
+          })}
+        </View>
+      </View>
+      <View style={styles.tealLine} pointerEvents="none" />
     </Animated.View>
   );
 }
@@ -97,28 +191,30 @@ export default function TabLayout() {
               name="index"
               options={{
                 title: 'Home',
-                tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
               }}
             />
             <Tabs.Screen
               name="collection"
               options={{
                 title: 'Collection',
-                tabBarIcon: ({ color }) => <IconSymbol size={28} name="folder.fill" color={color} />,
+                tabBarIcon: ({ color }) => (
+                  <IconSymbol size={ICON_SIZE} name="square.grid.2x2" color={color} />
+                ),
               }}
             />
             <Tabs.Screen
               name="search"
               options={{
                 title: 'Search',
-                tabBarIcon: ({ color }) => <IconSymbol size={28} name="magnifyingglass" color={color} />,
+                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
               }}
             />
             <Tabs.Screen
               name="messages"
               options={{
                 title: 'Messages',
-                tabBarIcon: ({ color }) => <IconSymbol size={28} name="message.fill" color={color} />,
+                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
                 tabBarBadge: messageBadge,
               }}
             />
@@ -130,7 +226,7 @@ export default function TabLayout() {
               name="profile"
               options={{
                 title: 'Profile',
-                tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.fill" color={color} />,
+                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
               }}
             />
             <Tabs.Screen
@@ -145,40 +241,77 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  tabBar: {
+  // Full-width, attached to the true bottom of the screen — not a floating
+  // inset pill. Contains the bar itself plus the separate teal accent line
+  // beneath it, so both hide/show together with the existing scroll-driven
+  // translateY/opacity behavior from useTabVisibility.
+  rootWrap: {
     position: 'absolute',
-    left: 16,
-    right: 16,
-    // start/end override React Navigation's default start:0, end:0
-    start: 16,
-    end: 16,
-    bottom: 24,
-    height: 78,
-    borderRadius: 39,
-    backgroundColor: '#1c1c1e',
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  // Sits directly below the bar, full width, and stays visually distinct
+  // from the bar's own 1px outline border.
+  tealLine: {
+    height: TEAL_LINE_HEIGHT,
+    backgroundColor: TEAL_LINE_COLOR,
+  },
+  tabBar: {
+    backgroundColor: BAR_BG,
+    borderWidth: 1,
+    borderColor: BAR_BORDER,
+    // Bleeds 3px past each screen edge so the left/right border lines fall
+    // off-screen instead of rendering as a visible sliver at the edge.
+    marginHorizontal: -3,
+    // Top edge stays straight; only the bottom corners are rounded.
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: BOTTOM_RADIUS,
+    borderBottomRightRadius: BOTTOM_RADIUS,
+    overflow: 'hidden',
+  },
+  // The icon row is pinned to BAR_HEIGHT at the top of tabBar; the extra
+  // insets.bottom height below it is pure background, extending the bar's
+  // color through the home-indicator safe area instead of stopping short.
+  // `gap` adds real fixed space between the flex:1 columns (on top of
+  // whatever justifyContent contributes) without changing the row's own
+  // total width — that's what widens the spacing between icons.
+  tabRow: {
+    height: BAR_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
-    elevation: 14,
+    justifyContent: 'space-evenly',
+    gap: 8,
   },
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingTop: 9,
-    paddingBottom: 8,
   },
   iconWrap: {
     position: 'relative',
   },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '500',
-    lineHeight: 16,
-    marginTop: 3,
-    paddingBottom: 2,
+  // shadowOffset/shadowRadius live in the base style always (harmless when
+  // shadowOpacity is 0); iconLit only adds shadowOpacity, and shadowColor
+  // comes in inline per-tab. Together, on iOS, this makes the icon's own
+  // alpha silhouette cast the glow — no separate shape, no visible source.
+  iconLitWrap: {
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 8,
+  },
+  iconLit: {
+    shadowOpacity: 0.85,
+  },
+  // Android/web fallback only (view shadows there don't hug alpha content
+  // the way iOS's do) — kept small and tight so it reads as a faint bleed
+  // right at the icon's edge rather than a distinct halo shape.
+  glowAssist: {
+    position: 'absolute',
+    top: -5,
+    left: -5,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
   badge: {
     position: 'absolute',

@@ -2,14 +2,18 @@ import React, { createContext, useContext } from 'react';
 import { useSharedValue } from 'react-native-reanimated';
 import type { SharedValue } from 'react-native-reanimated';
 
-type TabVisibilityCtx = { translateY: SharedValue<number> };
+type TabVisibilityCtx = {
+  translateY: SharedValue<number>;
+  opacity: SharedValue<number>;
+};
 
 const TabVisibilityContext = createContext<TabVisibilityCtx | null>(null);
 
 export function TabVisibilityProvider({ children }: { children: React.ReactNode }) {
   const translateY = useSharedValue(0);
+  const opacity = useSharedValue(1);
   return (
-    <TabVisibilityContext.Provider value={{ translateY }}>
+    <TabVisibilityContext.Provider value={{ translateY, opacity }}>
       {children}
     </TabVisibilityContext.Provider>
   );

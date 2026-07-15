@@ -13,6 +13,7 @@ import {
 
 import { Link } from 'expo-router';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { supabase } from '@/lib/supabase';
 
 export default function SignUpScreen() {
@@ -73,6 +74,7 @@ export default function SignUpScreen() {
         contentContainerStyle={styles.inner}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
+        <CacheCaseLogo variant="dark" size="md" style={styles.logo} />
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Join The Collection Room</Text>
 
@@ -136,6 +138,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 48,
     gap: 12,
+  },
+  logo: {
+    alignSelf: 'center',
+    marginBottom: 12,
   },
   title: {
     fontSize: 28,

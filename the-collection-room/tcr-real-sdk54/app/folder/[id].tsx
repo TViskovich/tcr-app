@@ -17,7 +17,20 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, {
+  Defs,
+  LinearGradient,
+  RadialGradient,
+  Stop,
+  G,
+  Rect,
+  Line,
+  Ellipse,
+} from 'react-native-svg';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
+import { FolderColorPicker } from '@/components/collection/folder-color-picker';
 import { ItemCard } from '@/components/collection/item-card';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { ScreenHeader } from '@/components/ui/screen-header';
@@ -33,6 +46,111 @@ type OwnerProfile = {
   display_name: string | null;
   avatar_url: string | null;
 };
+
+// The colorful CacheCase logo overlaid on the front card, matching the
+// Collection tab's empty-state front folder. Sized/centered against the
+// front card's SVG bounds (x112 y50 w116 h178, so its true center is
+// (170, 139)) — rendered as a real RN component layered on top of the Svg
+// rather than drawn inside it, since react-native-svg's canvas can't host
+// arbitrary RN components.
+const FRONT_CARD_LOGO_SIZE = 44;
+const FRONT_CARD_LOGO_WIDTH = FRONT_CARD_LOGO_SIZE * (454 / 359);
+const FRONT_CARD_LOGO_CENTER_X = 170;
+const FRONT_CARD_LOGO_CENTER_Y = 140;
+
+// Folder empty-state illustration — three collectible-card silhouettes, the
+// CacheCase logo on the front card, and a silver shelf, built from
+// react-native-svg (no PNG asset) plus one real logo overlay. Same light/
+// premium visual language as the Collection tab's empty state: white/silver
+// surfaces, pale pink/blue-ish/lavender accents, restrained iridescent edge
+// highlights. No gold, no dark background, no particles. Layer order
+// matters: ground shadow, rear-left card, rear-right card, front-center
+// card, logo, shelf, then a handful of restrained iridescent highlights.
+function EmptyCardDisplayArtwork() {
+  return (
+    <View style={styles.emptyCardArtwork}>
+      <Svg width={340} height={270} viewBox="0 0 340 270">
+        <Defs>
+          <LinearGradient id="frontCardFill" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor="#FFFFFF" />
+            <Stop offset="0.4" stopColor="#F6F8FC" />
+            <Stop offset="0.75" stopColor="#E8EDF5" />
+            <Stop offset="1" stopColor="#FCFDFE" />
+          </LinearGradient>
+          <LinearGradient id="rearPinkFill" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor="#FBF1F7" />
+            <Stop offset="1" stopColor="#EDD9E8" />
+          </LinearGradient>
+          <LinearGradient id="rearLavenderFill" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor="#F4F1FB" />
+            <Stop offset="1" stopColor="#E0D8F1" />
+          </LinearGradient>
+          <LinearGradient id="shelfFill" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor="#F7F9FC" />
+            <Stop offset="0.55" stopColor="#E7ECF2" />
+            <Stop offset="1" stopColor="#D7DEE8" />
+          </LinearGradient>
+          <LinearGradient id="folderCardIridescent" x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0" stopColor="#75D7EE" stopOpacity="0.5" />
+            <Stop offset="0.5" stopColor="#C8B5F4" stopOpacity="0.42" />
+            <Stop offset="1" stopColor="#F0AFCB" stopOpacity="0.48" />
+          </LinearGradient>
+          <RadialGradient id="frontCardSheen" cx="0.26" cy="0.16" r="0.55">
+            <Stop offset="0" stopColor="#FFFFFF" stopOpacity="0.6" />
+            <Stop offset="1" stopColor="#FFFFFF" stopOpacity="0" />
+          </RadialGradient>
+        </Defs>
+
+        {/* 1. Ground shadow */}
+        <Ellipse cx="170" cy="244" rx="118" ry="9" fill="rgba(87,103,126,0.09)" />
+
+        {/* 2. Rear-left card — pale pink-silver, no artwork/text */}
+        <G transform="rotate(-8 109 155)">
+          <Rect x={55} y={78} width={108} height={154} rx={14} fill="url(#rearPinkFill)" stroke="rgba(196,150,186,0.5)" strokeWidth={1.2} />
+          <Rect x={64} y={87} width={90} height={136} rx={9} fill="none" stroke="rgba(255,255,255,0.65)" strokeWidth={1} />
+          <Rect x={64} y={87} width={90} height={20} rx={9} fill="rgba(255,255,255,0.3)" />
+        </G>
+
+        {/* 3. Rear-right card — pale lavender-silver, no artwork/text */}
+        <G transform="rotate(8 231 155)">
+          <Rect x={177} y={78} width={108} height={154} rx={14} fill="url(#rearLavenderFill)" stroke="rgba(174,154,209,0.5)" strokeWidth={1.2} />
+          <Rect x={186} y={87} width={90} height={136} rx={9} fill="none" stroke="rgba(255,255,255,0.65)" strokeWidth={1} />
+          <Rect x={186} y={87} width={90} height={20} rx={9} fill="rgba(255,255,255,0.3)" />
+        </G>
+
+        {/* 4. Front-center card — dominant, metallic white-silver */}
+        <Rect x={112} y={50} width={116} height={178} rx={16} fill="url(#frontCardFill)" stroke="rgba(118,140,170,0.65)" strokeWidth={1.4} />
+        <Rect x={112} y={50} width={116} height={178} rx={16} fill="url(#frontCardSheen)" />
+        <Rect x={121} y={59} width={98} height={160} rx={10} fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={1} />
+
+        {/* 5. Metallic shelf */}
+        <Rect x={42} y={225} width={256} height={15} rx={7.5} fill="url(#shelfFill)" stroke="rgba(120,140,165,0.5)" strokeWidth={1.1} />
+        <Line x1={48} y1={227.5} x2={292} y2={227.5} stroke="rgba(255,255,255,0.7)" strokeWidth={1} />
+        <Line x1={48} y1={229.5} x2={292} y2={229.5} stroke="url(#folderCardIridescent)" strokeWidth={1} strokeOpacity={0.55} />
+
+        {/* 6. Restrained iridescent highlights — a few short strokes, not an
+            outline around every edge. */}
+        <Line x1={112} y1={70} x2={112} y2={160} stroke="#75D7EE" strokeOpacity={0.42} strokeWidth={1.2} />
+        <Line x1={210} y1={52} x2={226} y2={52} stroke="#F0AFCB" strokeOpacity={0.4} strokeWidth={1.2} />
+        <Line x1={226} y1={52} x2={226} y2={68} stroke="#F0AFCB" strokeOpacity={0.4} strokeWidth={1.2} />
+        <Line x1={281} y1={100} x2={281} y2={180} stroke="#C8B5F4" strokeOpacity={0.38} strokeWidth={1.2} />
+      </Svg>
+
+      {/* 7. CacheCase logo, layered on top of the SVG, centered on the front card */}
+      <View
+        style={[
+          styles.emptyCardLogo,
+          {
+            top: FRONT_CARD_LOGO_CENTER_Y - FRONT_CARD_LOGO_SIZE / 2,
+            left: FRONT_CARD_LOGO_CENTER_X - FRONT_CARD_LOGO_WIDTH / 2,
+          },
+        ]}
+        pointerEvents="none">
+        <CacheCaseLogo variant="icon" size={FRONT_CARD_LOGO_SIZE} />
+      </View>
+    </View>
+  );
+}
 
 export default function FolderDetailScreen() {
   const { id, name: paramName } = useLocalSearchParams<{ id: string; name?: string }>();
@@ -50,8 +168,10 @@ export default function FolderDetailScreen() {
   const [editIsPublic, setEditIsPublic] = useState(true);
   const [editCoverSource, setEditCoverSource] = useState<string>('upload');
   const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
+  const [editColor, setEditColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
   const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const { items, loading: itemsLoading, refresh: refreshItems } = useItems(id);
   const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(id, currentUserId);
@@ -92,6 +212,14 @@ export default function FolderDetailScreen() {
     setEditIsPublic(folder.is_public);
     setEditCoverSource(folder.cover_source ?? 'upload');
     setEditCoverUrl(folder.cover_image_url);
+    // Same name-hash fallback folder-card.tsx's leatherTone() uses, so the
+    // picker opens pre-selected on whatever color the card is actually
+    // showing right now, even if this folder predates the color column.
+    setEditColor(
+      (folder.color as FolderColorKey) && FOLDER_COLOR_KEYS.includes(folder.color as FolderColorKey)
+        ? (folder.color as FolderColorKey)
+        : FOLDER_COLOR_KEYS[folder.name.charCodeAt(0) % FOLDER_COLOR_KEYS.length],
+    );
     setNewCoverUri(null);
     setEditVisible(true);
   }
@@ -156,6 +284,7 @@ export default function FolderDetailScreen() {
           is_public: editIsPublic,
           cover_image_url: coverUrl,
           cover_source: editCoverSource,
+          color: editColor,
         })
         .eq('id', folder.id)
         .select()
@@ -167,6 +296,33 @@ export default function FolderDetailScreen() {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
       setEditSaving(false);
+    }
+  }
+
+  function confirmDeleteFolder() {
+    if (!folder) return;
+    Alert.alert(
+      'Delete Folder',
+      `Delete "${folder.name}"? This will permanently remove the folder and everything inside it. This can't be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: deleteFolder },
+      ],
+    );
+  }
+
+  async function deleteFolder() {
+    if (!folder) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.from('folders').delete().eq('id', folder.id);
+      if (error) throw new Error(error.message);
+      setEditVisible(false);
+      router.back();
+    } catch (e) {
+      Alert.alert('Delete failed', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -362,11 +518,30 @@ export default function FolderDetailScreen() {
             />
           )}
           ListEmptyComponent={
-            <View style={styles.emptyContent}>
-              <Text style={styles.emptyIcon}>🃏</Text>
-              <Text style={styles.emptyTitle}>No items yet</Text>
+            <View style={styles.folderEmptyState}>
+              <EmptyCardDisplayArtwork />
+
+              <Text style={styles.folderEmptyTitle}>
+                No items yet
+              </Text>
+
               {isOwner && (
-                <Text style={styles.emptyBody}>Tap "+ Add Item" to add your first card.</Text>
+                <>
+                  <Text style={styles.folderEmptyBody}>
+                    Add the first card to your {folder!.name} collection.
+                  </Text>
+
+                  <TouchableOpacity
+                    style={styles.folderEmptyButton}
+                    onPress={() =>
+                      router.push({ pathname: '/item/new', params: { folderId: id, folderName: folder!.name } })
+                    }
+                    activeOpacity={0.82}>
+                    <Text style={styles.folderEmptyButtonText}>
+                      Add First Card
+                    </Text>
+                  </TouchableOpacity>
+                </>
               )}
             </View>
           }
@@ -462,6 +637,12 @@ export default function FolderDetailScreen() {
               />
             </View>
 
+            {/* Binder color */}
+            <View>
+              <Text style={styles.modalLabel}>Binder Color</Text>
+              <FolderColorPicker value={editColor} onChange={setEditColor} />
+            </View>
+
             {/* Public toggle */}
             <View style={styles.modalToggleRow}>
               <View style={styles.modalToggleLabel}>
@@ -477,6 +658,19 @@ export default function FolderDetailScreen() {
                 onValueChange={setEditIsPublic}
                 trackColor={{ true: '#0a7ea4' }}
               />
+            </View>
+
+            {/* Delete folder — destructive, kept separate at the bottom */}
+            <View style={styles.modalDangerZone}>
+              <TouchableOpacity
+                style={styles.modalDeleteButton}
+                onPress={confirmDeleteFolder}
+                disabled={deleting}>
+                {deleting
+                  ? <ActivityIndicator size="small" color="#e53935" />
+                  : <Text style={styles.modalDeleteButtonText}>Delete Folder</Text>
+                }
+              </TouchableOpacity>
             </View>
           </View>
         </SafeAreaView>
@@ -662,10 +856,6 @@ const styles = StyleSheet.create({
     paddingTop: 48,
     paddingHorizontal: 32,
   },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
   emptyTitle: {
     fontSize: 18,
     fontWeight: '600',
@@ -675,6 +865,54 @@ const styles = StyleSheet.create({
   emptyBody: {
     fontSize: 14,
     color: '#687076',
+    textAlign: 'center',
+  },
+  // Folder empty-state artwork (react-native-svg) — see EmptyCardDisplayArtwork
+  folderEmptyState: {
+    flex: 1,
+    alignItems: 'center',
+    paddingTop: 34,
+    paddingHorizontal: 24,
+  },
+  emptyCardArtwork: {
+    width: 340,
+    height: 270,
+    alignSelf: 'center',
+  },
+  emptyCardLogo: {
+    position: 'absolute',
+  },
+  folderEmptyTitle: {
+    marginTop: 20,
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: '700',
+    color: '#11181C',
+    textAlign: 'center',
+  },
+  folderEmptyBody: {
+    marginTop: 10,
+    maxWidth: 330,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
+    color: '#687076',
+    textAlign: 'center',
+  },
+  folderEmptyButton: {
+    marginTop: 24,
+    width: 250,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#0A8BAD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  folderEmptyButtonText: {
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '700',
+    color: '#FFFFFF',
     textAlign: 'center',
   },
   // Edit folder modal
@@ -806,6 +1044,25 @@ const styles = StyleSheet.create({
     color: '#11181C',
   },
   coverBtnDestructive: {
+    color: '#e53935',
+  },
+  // Delete folder (bottom of edit modal)
+  modalDangerZone: {
+    paddingTop: 20,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e0e0e0',
+  },
+  modalDeleteButton: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e53935',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalDeleteButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
     color: '#e53935',
   },
 });

@@ -15,6 +15,7 @@ import {
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
@@ -235,6 +236,7 @@ export default function ConversationScreen() {
           contentContainerStyle={styles.messageList}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
+              <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
               <Text style={styles.emptyText}>No messages yet. Say hi!</Text>
             </View>
           }

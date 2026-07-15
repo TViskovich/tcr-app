@@ -47,7 +47,10 @@ export function useFolders(userId: string | undefined) {
       .order('created_at', { ascending: false });
 
     const resolved = await resolveCovers((data ?? []) as Folder[]);
-    setFolders(resolved);
+    const sorted = resolved.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+    );
+    setFolders(sorted);
 
     // Batch item count for all folders in a single query
     const folderIds = resolved.map(f => f.id);

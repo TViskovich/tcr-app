@@ -27,6 +27,7 @@ CREATE TABLE public.folders (
   user_id          uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   name             text        NOT NULL,
   cover_image_url  text,
+  color            text, -- binder color key (added 2026-07-14 — see supabase/migrations/20260714120000_folder_binder_color.sql); null = auto (name-hash)
   is_public        boolean     NOT NULL DEFAULT true,
   created_at       timestamptz DEFAULT now()
 );
@@ -131,6 +132,91 @@ CREATE POLICY "posts_delete_own"        ON public.posts FOR DELETE USING (auth.u
 CREATE POLICY "likes_select_public"     ON public.likes FOR SELECT USING (true);
 CREATE POLICY "likes_insert_own"        ON public.likes FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "likes_delete_own"        ON public.likes FOR DELETE USING (auth.uid() = user_id);
+
+-- ============================================================
+-- Rate My Grails (added 2026-07-11 — see supabase/migrations/20260711_rate_my_grails.sql)
+-- NOTE: this file predates several other live tables (comments, notifications,
+-- conversations/messages, saved_*, profile_showcase_items) that are NOT
+-- documented above — do not treat this file as the full source of truth.
+-- ============================================================
+
+-- NOTE: this table did not actually get created when this file was first
+-- written (posting failed with "Could not find the table
+-- 'public.rate_my_grail_cards' in the schema cache") — recreated in
+-- supabase/migrations/20260712_create_rate_my_grail_cards.sql, which also
+-- corrects snapshot_image_url below to nullable (CollectionItem.image_url is
+-- `string | null` in the app; this file wrongly had it NOT NULL originally).
+CREATE TABLE public.rate_my_grail_cards (
+  id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id             uuid        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  item_id             uuid        REFERENCES public.collection_items(id) ON DELETE SET NULL,
+  snapshot_image_url  text,
+  snapshot_title      text,
+  snapshot_subtitle   text,
+  display_order       smallint    NOT NULL DEFAULT 0,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (post_id, item_id)
+);
+
+-- NOTE: like rate_my_grail_cards above, this table did not actually get
+-- created when this file was first written (submitRating failed with
+-- "Could not find the table 'public.grail_ratings' in the schema cache") —
+-- recreated in supabase/migrations/20260712_create_grail_ratings.sql.
+CREATE TABLE public.grail_ratings (
+  id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id        uuid        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  rater_user_id  uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  score          smallint    NOT NULL CHECK (score BETWEEN 1 AND 10),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (post_id, rater_user_id)
+);
+
+-- notifications.rating_score added via ALTER — see migration file (notifications
+-- table itself isn't defined in this file; it already exists live). Also
+-- likely never landed the first time (same rollback pattern as
+-- rate_my_grail_cards/grail_ratings) — recreated in
+-- supabase/migrations/20260712140000_fix_notifications_for_grail_rating.sql,
+-- which also (defensively, unconfirmed) extends notifications_type_check —
+-- if that constraint exists live under a different name, this file is wrong
+-- until someone corrects it with the real name.
+ALTER TABLE public.notifications ADD COLUMN IF NOT EXISTS rating_score smallint;
+ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
+ALTER TABLE public.notifications
+  ADD CONSTRAINT notifications_type_check
+  CHECK (type IN ('follow', 'like', 'comment', 'message', 'grail_rating'));
+
+-- posts_post_type_check (a live constraint that predates this file and was
+-- never documented here) only allowed 'item'/'text' — extended to also allow
+-- 'rate_my_grails'. See supabase/migrations/20260711193000_fix_posts_post_type_check.sql.
+ALTER TABLE public.posts DROP CONSTRAINT IF EXISTS posts_post_type_check;
+ALTER TABLE public.posts
+  ADD CONSTRAINT posts_post_type_check
+  CHECK (post_type IN ('item', 'text', 'rate_my_grails'));
+
+ALTER TABLE public.rate_my_grail_cards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.grail_ratings       ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "rate_my_grail_cards_select_public" ON public.rate_my_grail_cards FOR SELECT USING (true);
+CREATE POLICY "rate_my_grail_cards_insert_own" ON public.rate_my_grail_cards
+  FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.user_id = auth.uid())
+    AND (
+      item_id IS NULL
+      OR EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
+    )
+  );
+
+CREATE POLICY "grail_ratings_select_public" ON public.grail_ratings FOR SELECT USING (true);
+CREATE POLICY "grail_ratings_insert_own" ON public.grail_ratings
+  FOR INSERT WITH CHECK (
+    auth.uid() = rater_user_id
+    AND NOT EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.user_id = auth.uid())
+  );
+CREATE POLICY "grail_ratings_update_own" ON public.grail_ratings
+  FOR UPDATE USING (auth.uid() = rater_user_id) WITH CHECK (auth.uid() = rater_user_id);
+CREATE POLICY "grail_ratings_delete_own" ON public.grail_ratings
+  FOR DELETE USING (auth.uid() = rater_user_id);
 
 -- STORAGE BUCKETS ----------------------------------------------
 -- 1. Create these in Supabase Dashboard → Storage → New bucket:

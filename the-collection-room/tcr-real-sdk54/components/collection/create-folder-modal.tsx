@@ -13,6 +13,8 @@ import {
   View,
 } from 'react-native';
 
+import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
+import { FolderColorPicker } from '@/components/collection/folder-color-picker';
 import { supabase } from '@/lib/supabase';
 
 type Props = {
@@ -24,6 +26,7 @@ type Props = {
 
 export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props) {
   const [name, setName] = useState('');
+  const [color, setColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
   const [loading, setLoading] = useState(false);
 
   async function handleCreate() {
@@ -31,11 +34,12 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
     setLoading(true);
     const { error } = await supabase
       .from('folders')
-      .insert({ user_id: userId, name: name.trim() });
+      .insert({ user_id: userId, name: name.trim(), color });
     if (error) {
       Alert.alert('Error', error.message);
     } else {
       setName('');
+      setColor(FOLDER_COLOR_KEYS[0]);
       onCreated();
     }
     setLoading(false);
@@ -43,6 +47,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
 
   function handleClose() {
     setName('');
+    setColor(FOLDER_COLOR_KEYS[0]);
     onClose();
   }
 
@@ -69,6 +74,10 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
             returnKeyType="done"
             onSubmitEditing={handleCreate}
           />
+          <View>
+            <Text style={styles.colorLabel}>Binder Color</Text>
+            <FolderColorPicker value={color} onChange={setColor} />
+          </View>
           <TouchableOpacity
             style={[styles.button, !name.trim() && styles.buttonDisabled]}
             onPress={handleCreate}
@@ -117,6 +126,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#11181C',
     marginBottom: 4,
+  },
+  colorLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#687076',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
   input: {
     borderWidth: 1,
