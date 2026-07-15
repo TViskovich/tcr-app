@@ -22,10 +22,18 @@ import { WideFolderCard } from '@/components/collection/wide-folder-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { useFolders } from '@/hooks/use-collection';
+import type { Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
 // carousel below scrolls edge-to-edge on purpose), just a fixed inset.
 const PAGE_PADDING = 22;
+// Deliberately smaller/separate from PAGE_PADDING — the wide folder cards
+// want to sit much closer to the screen edges than the header text does.
+// This is the ONLY horizontal inset applied to the folder list — the
+// screen wrapper (SafeAreaView/container) has no paddingHorizontal of its
+// own, and the FlatList has no intermediate wrapping View, so there's
+// nothing else to double up with.
+const LIST_PAGE_PADDING = 8;
 
 // Restrained, low-opacity version of the same iridescent family as the
 // CacheCase pill on the Profile page (mint/pink/cyan), with a muted violet
@@ -209,6 +217,19 @@ export default function CollectionScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const pagePadding = PAGE_PADDING;
 
+  // Drives WideFolderCard's cover-photo pan animation: only folders
+  // currently on screen animate, and everything pauses while the list is
+  // actively being dragged/flung. Both are plain state (not per-frame
+  // values), since they only change a few times per scroll gesture.
+  const [visibleFolderIds, setVisibleFolderIds] = useState<Set<string>>(new Set());
+  const [isScrolling, setIsScrolling] = useState(false);
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 40 }).current;
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: { item: Folder }[] }) => {
+      setVisibleFolderIds(new Set(viewableItems.map((v) => v.item.id)));
+    },
+  ).current;
+
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
   return (
@@ -264,12 +285,28 @@ export default function CollectionScreen() {
         <FlatList
           data={folders}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={[styles.listContent, { paddingHorizontal: pagePadding }]}
+          contentContainerStyle={[styles.listContent, { paddingHorizontal: LIST_PAGE_PADDING }]}
           ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
-          renderItem={({ item }) => (
+          onViewableItemsChanged={onViewableItemsChanged}
+          viewabilityConfig={viewabilityConfig}
+          onScrollBeginDrag={() => setIsScrolling(true)}
+          onScrollEndDrag={(e) => {
+            // A slow release with negligible velocity won't trigger
+            // momentum scrolling, so onMomentumScrollEnd never fires —
+            // this catches that case so animations don't stay paused.
+            if (Math.abs(e.nativeEvent.velocity?.y ?? 0) < 0.05) setIsScrolling(false);
+          }}
+          onMomentumScrollBegin={() => setIsScrolling(true)}
+          onMomentumScrollEnd={() => setIsScrolling(false)}
+          renderItem={({ item, index }) => (
             <WideFolderCard
+              id={item.id}
+              index={index}
               title={item.name}
               itemCount={itemCounts[item.id] ?? 0}
+              previewSource={item.cover_image_url}
+              isVisible={visibleFolderIds.has(item.id)}
+              isScrolling={isScrolling}
               onPress={() =>
                 router.push({
                   pathname: '/folder/[id]',
@@ -438,8 +475,11 @@ const styles = StyleSheet.create({
     paddingTop: 28,
     paddingBottom: 12,
   },
-  // Within the 12-16px spec range for gaps between wide folder rows.
+  // Clearly larger than the 9px title-to-shell gap inside each folder
+  // group (see wide-folder-card.tsx's titleRow) — otherwise the next
+  // folder's title would read as belonging to the previous shell instead
+  // of its own.
   rowSeparator: {
-    height: 14,
+    height: 22,
   },
 });
