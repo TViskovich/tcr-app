@@ -1,28 +1,15 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle } from 'react-native-svg';
 
 import type { Folder } from '@/types';
 
-// A dense field of tiny, faint flecks reads as texture; a sparse one reads as
-// dust — the previous 16-dot version was sparse enough that each fleck stood
-// out on its own. Denser count + smaller/fainter dots so no single fleck is
-// individually noticeable, only the aggregate grain. Still deterministic
-// per-index jitter (not a tiled/repeating grid) so it stays organic-looking.
-const GRAIN_COUNT = 70;
-const GRAIN_DOTS = Array.from({ length: GRAIN_COUNT }, (_, i) => ({
-  x: (i * 13 + (i % 7) * 5) % 100,
-  y: (i * 29 + (i % 5) * 11) % 100,
-  r: 0.3 + ((i * 17) % 10) / 30,
-  light: i % 2 === 0,
-}));
-
-// Premium leather binder tones — a lighter base cover color, a clearly darker
-// spine shade (kept dark/graphite, not gray), and light/dark sheen stops for
-// the matte wash. Keyed (not a plain array) so a folder can pin a specific
-// tone via folder.color; FOLDER_COLOR_KEYS preserves display/hash order.
+// Premium leather binder tones — kept as a color registry even though the
+// card itself now renders a photographic box asset instead of a flat-color
+// binder. Still the live source for FolderColorPicker's swatches and the
+// name-hash fallback used at app/folder/[id].tsx, so folder.color keeps
+// meaning something even while most cards render the same graphite folder
+// art (see folderArtSource() below).
 export type FolderColorKey = 'graphite' | 'navy' | 'forest' | 'plum' | 'chestnut' | 'charcoal';
 
 export const LEATHER_TONES: Record<
@@ -39,280 +26,137 @@ export const LEATHER_TONES: Record<
 
 export const FOLDER_COLOR_KEYS = Object.keys(LEATHER_TONES) as FolderColorKey[];
 
-// folder.color is a free-text DB column — an unrecognized or legacy value
-// (or null, for every folder created before this existed) falls back to the
-// original name-hash so nothing breaks and every existing folder keeps
-// rendering exactly as it does today.
-function leatherTone(folder: Folder) {
-  if (folder.color && folder.color in LEATHER_TONES) {
-    return LEATHER_TONES[folder.color as FolderColorKey];
+// Default footprint for callers that don't size this responsively (e.g.
+// ProfileV2Collections). app/(tabs)/collection.tsx overrides this via the
+// `width` prop with a value computed from the screen's own grid math.
+export const CARD_WIDTH = 150;
+
+// Default folder-cover art — the graphite finish, used unless a folder's
+// name matches one of the special-cased finishes below. Once there's a real
+// per-folder "art"/category field, this should become a proper lookup by
+// folder.color the same way LEATHER_TONES already resolves per-folder.
+const COLLECTION_FOLDER_SOURCE = require('@/assets/collection-folders/collection-folder-graphite.png');
+// A dedicated Pokemon-themed binder — matched by name (case-insensitive)
+// until there's a real per-folder "art"/category field to key off of.
+const COLLECTION_ICON_POKEBALL_SOURCE = require('@/assets/collection-icons/collection-icon-pokeball.png');
+// Forest-green finish, temporarily assigned to the "basketball" folder by
+// name match — same stopgap as the Pokemon/pokeball pairing above.
+const COLLECTION_FOLDER_FOREST_SOURCE = require('@/assets/collection-folders/collection-folder-forest.png');
+// Red finish, temporarily assigned to the "football" folder by name match.
+const COLLECTION_FOLDER_RED_SOURCE = require('@/assets/collection-folders/collection-folder-red.png');
+// Navy finish, temporarily assigned to the "hockey" folder by name match.
+const COLLECTION_FOLDER_NAVY_SOURCE = require('@/assets/collection-folders/collection-folder-navy.png');
+// A dedicated One Piece-themed binder — matched by name (case-insensitive),
+// same stopgap as the Pokemon/pokeball pairing above.
+const COLLECTION_ICON_ONEPIECE_SOURCE = require('@/assets/collection-icons/collection-icon-onepiece.png');
+
+function folderArtSource(folder: Folder) {
+  const name = folder.name.trim().toLowerCase();
+  if (name === 'pokemon') {
+    return COLLECTION_ICON_POKEBALL_SOURCE;
   }
-  return LEATHER_TONES[FOLDER_COLOR_KEYS[folder.name.charCodeAt(0) % FOLDER_COLOR_KEYS.length]];
+  if (name === 'basketball') {
+    return COLLECTION_FOLDER_FOREST_SOURCE;
+  }
+  if (name === 'football') {
+    return COLLECTION_FOLDER_RED_SOURCE;
+  }
+  if (name === 'hockey') {
+    return COLLECTION_FOLDER_NAVY_SOURCE;
+  }
+  if (name === 'one piece') {
+    return COLLECTION_ICON_ONEPIECE_SOURCE;
+  }
+  return COLLECTION_FOLDER_SOURCE;
 }
 
-const SPINE_WIDTH = 11;
-const CONTENT_INSET = SPINE_WIDTH + 9;
-// Left (spine-side) corners read tighter/more structured than the outer-right
-// ones — a plain uniform radius is what made the card feel like a generic tile.
-const SPINE_RADIUS = 16;
-const OUTER_RADIUS = 21;
-
-// A fixed pixel width (not a percentage of row width) so the card is exactly
-// the same size whether a row has one folder or two — the previous '42%'
-// approach meant the leftover space in a two-up row had nowhere consistent
-// to go, producing a big uneven middle gutter. collection.tsx derives its
-// page padding from these two constants so the grid always fits exactly:
-// pagePadding = (screenWidth - 2*CARD_WIDTH - CARD_GUTTER) / 2.
-export const CARD_WIDTH = 150;
-export const CARD_GUTTER = 14;
+// Real PNG dimensions (1024x1536) — the box container is given this exact
+// ratio so contentFit="contain" fills it edge-to-edge with no letterboxing,
+// while BOX_MAX_WIDTH keeps the rendered art itself in the ~125-145px range
+// regardless of how wide the surrounding grid cell is. Exported so callers
+// (e.g. the carousel) can derive their own layout math from the same ratio
+// instead of duplicating the magic number.
+export const BOX_ASPECT_RATIO = 1024 / 1536;
+const BOX_MAX_WIDTH = 138;
 
 type Props = {
   folder: Folder;
   onPress: () => void;
+  // Real, batch-fetched count from hooks/use-collection.ts's useFolders().
+  // Optional because not every FolderCard call site has this data today
+  // (e.g. the Profile page's own Collections tab) — omit it there rather
+  // than showing a stale or fabricated number.
+  itemCount?: number;
+  // Grid-cell width, provided by the caller's own column math. Defaults to
+  // CARD_WIDTH for callers that don't compute a responsive column width.
+  width?: number;
+  // Overrides BOX_MAX_WIDTH for callers (like the carousel) that want the
+  // art rendered larger than the default grid cap.
+  maxBoxWidth?: number;
 };
 
-export function FolderCard({ folder, onPress }: Props) {
-  const tone = leatherTone(folder);
-
+export function FolderCard({
+  folder,
+  onPress,
+  itemCount,
+  width = CARD_WIDTH,
+  maxBoxWidth = BOX_MAX_WIDTH,
+}: Props) {
   return (
     <Pressable
-      style={({ pressed }) => [styles.cell, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.item, { width }, pressed && styles.itemPressed]}
       onPress={onPress}>
-      {/* Shadow layer — kept separate from the clipped binder below, since
-          overflow:'hidden' (needed for the rounded cover/spine) would also
-          clip a shadow applied on the same view. */}
-      <View style={styles.shadowWrap}>
-        <View style={[styles.binder, { backgroundColor: tone.base }]}>
-          {/* Matte material shading — a faint top-to-bottom wash, not a
-              diagonal shine (a diagonal streak reads as glossy). */}
-          <LinearGradient
-            colors={[tone.sheenLight, 'transparent', tone.sheenDark]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-            pointerEvents="none"
-          />
-
-          {/* Fine grain — soft-touch material texture, only visible up close. */}
-          <Svg width="100%" height="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
-            {GRAIN_DOTS.map((dot, i) => (
-              <Circle
-                key={i}
-                cx={`${dot.x}%`}
-                cy={`${dot.y}%`}
-                r={dot.r}
-                fill={dot.light ? '#FFFFFF' : '#000000'}
-                opacity={dot.light ? 0.035 : 0.045}
-              />
-            ))}
-          </Svg>
-
-          {/* Faint highlight along the right edge — physical cover depth. */}
-          <View style={styles.rightEdgeHighlight} pointerEvents="none" />
-          {/* Restrained shadow along the bottom edge — suggests cover thickness. */}
-          <View style={styles.bottomEdgeShadow} pointerEvents="none" />
-
-          {/* Spine — darker strip down the left edge. A faint horizontal
-              bevel keeps it from reading as one flat dark bar, a raised-edge
-              line marks where it meets the cover, and one seam line sits
-              further in. */}
-          <View style={[styles.spine, { backgroundColor: tone.spine }]} pointerEvents="none">
-            <LinearGradient
-              colors={['rgba(255,255,255,0.16)', 'transparent']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={StyleSheet.absoluteFillObject}
-            />
-            <View style={styles.spineSeam} />
-            <View style={styles.spineRaisedEdge} />
-          </View>
-          <LinearGradient
-            colors={['rgba(0,0,0,0.42)', 'transparent']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.spineInnerShadow}
-            pointerEvents="none"
-          />
-
-          <View style={styles.content}>
-            {folder.cover_image_url ? (
-              <>
-                <Image
-                  source={{ uri: folder.cover_image_url }}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="cover"
-                  transition={200}
-                />
-                <LinearGradient
-                  colors={['transparent', 'rgba(0,0,0,0.14)', 'rgba(0,0,0,0.72)']}
-                  locations={[0, 0.45, 1]}
-                  style={styles.gradient}
-                />
-              </>
-            ) : (
-              <LinearGradient
-                colors={['transparent', 'rgba(0,0,0,0.08)', 'rgba(0,0,0,0.28)']}
-                locations={[0, 0.45, 1]}
-                style={styles.gradient}
-              />
-            )}
-
-            {/* Embossed 9-Grail mark (3x3 grid) — centered as the binder's
-                main mark now, not a small corner nod. A normal (non-
-                absolute) child here, so content's own alignItems/
-                justifyContent center it, same as the old center icon did. */}
-            <View style={styles.premiumMark} pointerEvents="none">
-              <View style={styles.premiumMarkRow}>
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-              </View>
-              <View style={styles.premiumMarkRow}>
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-              </View>
-              <View style={styles.premiumMarkRow}>
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-                <View style={styles.premiumMarkDot} />
-              </View>
-            </View>
-
-            <View style={styles.label} pointerEvents="none">
-              <Text style={styles.folderName} numberOfLines={1}>
-                {folder.name}
-              </Text>
-            </View>
-          </View>
-        </View>
+      <View style={[styles.boxWrap, { maxWidth: maxBoxWidth }]}>
+        <Image
+          source={folderArtSource(folder)}
+          style={StyleSheet.absoluteFill}
+          contentFit="contain"
+          transition={150}
+        />
       </View>
+
+      <Text style={styles.folderName} numberOfLines={1}>
+        {folder.name}
+      </Text>
+      {itemCount !== undefined && (
+        <Text style={styles.folderCount} numberOfLines={1}>
+          {itemCount} {itemCount === 1 ? 'card' : 'cards'}
+        </Text>
+      )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  // Fixed pixel width (see CARD_WIDTH above) rather than flex:1 or a
-  // percentage — this way every card is exactly the same size no matter how
-  // many are in a row, and collection.tsx can derive page padding that fits
-  // it exactly instead of leaving a leftover gap for space-between to fill.
-  cell: {
-    width: CARD_WIDTH,
-    aspectRatio: 0.79,
+  // No fixed dimensions baked in beyond the `width` prop — height follows
+  // naturally from the box's aspect ratio plus the text below it, so the
+  // touch target already covers all three (box, name, count) without any
+  // extra hitSlop.
+  item: {
+    alignItems: 'center',
   },
-  pressed: {
+  itemPressed: {
     opacity: 0.88,
     transform: [{ scale: 0.97 }],
   },
-  shadowWrap: {
-    flex: 1,
-    borderTopLeftRadius: SPINE_RADIUS,
-    borderBottomLeftRadius: SPINE_RADIUS,
-    borderTopRightRadius: OUTER_RADIUS,
-    borderBottomRightRadius: OUTER_RADIUS,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.16,
-    shadowRadius: 7,
-    elevation: 4,
-  },
-  binder: {
-    flex: 1,
-    borderTopLeftRadius: SPINE_RADIUS,
-    borderBottomLeftRadius: SPINE_RADIUS,
-    borderTopRightRadius: OUTER_RADIUS,
-    borderBottomRightRadius: OUTER_RADIUS,
-    overflow: 'hidden',
-  },
-  spine: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: SPINE_WIDTH,
-  },
-  spineSeam: {
-    position: 'absolute',
-    left: SPINE_WIDTH - 3,
-    top: 10,
-    bottom: 10,
-    width: 1,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-  },
-  // Marks where the spine's raised edge meets the cover, right at the
-  // boundary — distinct from spineSeam (the stitch line, set further in).
-  spineRaisedEdge: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: 'rgba(255,255,255,0.24)',
-  },
-  // Narrow shadow cast onto the cover by the spine's raised edge.
-  spineInnerShadow: {
-    position: 'absolute',
-    left: SPINE_WIDTH,
-    top: 0,
-    bottom: 0,
-    width: 9,
-  },
-  rightEdgeHighlight: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 1.5,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-  },
-  bottomEdgeShadow: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 2,
-    backgroundColor: 'rgba(0,0,0,0.22)',
-  },
-  content: {
-    flex: 1,
-    marginLeft: CONTENT_INSET,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  // Gradient occupies the bottom ~30% of the card, anchoring the label.
-  gradient: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: '30%',
-  },
-  label: {
-    position: 'absolute',
-    left: 16,
-    right: 12,
-    bottom: 16,
+  boxWrap: {
+    width: '100%',
+    aspectRatio: BOX_ASPECT_RATIO,
+    alignSelf: 'center',
   },
   folderName: {
+    marginTop: -53,
+    maxWidth: '100%',
     color: '#fff',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.1,
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
   },
-  // 3x3 "9 Grail" grid mark — the binder's centered main mark. No offset
-  // transform, so it sits at true dead-center rather than nudged upward.
-  premiumMark: {
-    gap: 3,
-    opacity: 0.16,
-  },
-  premiumMarkRow: {
-    flexDirection: 'row',
-    gap: 3,
-  },
-  premiumMarkDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 1.8,
-    backgroundColor: '#FFFFFF',
+  folderCount: {
+    marginTop: 1,
+    maxWidth: '100%',
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 13,
+    textAlign: 'center',
   },
 });

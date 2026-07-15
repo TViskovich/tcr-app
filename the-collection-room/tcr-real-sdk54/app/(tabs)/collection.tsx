@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
+  Animated,
+  Easing,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -9,123 +10,350 @@ import {
   View,
 } from 'react-native';
 
+import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
-import { CARD_GUTTER, CARD_WIDTH, FolderCard } from '@/components/collection/folder-card';
+import { BOX_ASPECT_RATIO, FolderCard } from '@/components/collection/folder-card';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { useFolders } from '@/hooks/use-collection';
+import type { Folder } from '@/types';
+
+// Header/rail margin — no longer tied to a grid column formula (the
+// carousel below scrolls edge-to-edge on purpose), just a fixed inset.
+const PAGE_PADDING = 22;
+
+// Restrained, low-opacity version of the same iridescent family as the
+// CacheCase pill on the Profile page (mint/pink/cyan), with a muted violet
+// added per this pass — used for the straight header rail lines below, not
+// an enclosing outline.
+const RAIL_CORE = [
+  'rgba(143,227,192,0.42)', // mint
+  'rgba(143,199,234,0.42)', // cool cyan
+  'rgba(160,140,220,0.36)', // muted violet
+  'rgba(242,166,201,0.28)', // very subtle pink
+] as const;
+const RAIL_HALO = [
+  'rgba(143,227,192,0.12)',
+  'rgba(143,199,234,0.12)',
+  'rgba(160,140,220,0.10)',
+  'rgba(242,166,201,0.08)',
+] as const;
+
+// Same four hues as RAIL_CORE, brightened and bookended with transparent so
+// it reads as a traveling band of light rather than a static line — this is
+// the "light passing through" layer, not a new color family.
+const RAIL_SHIMMER = [
+  'rgba(143,227,192,0)',
+  'rgba(143,227,192,0.85)',
+  'rgba(143,199,234,0.85)',
+  'rgba(160,140,220,0.7)',
+  'rgba(242,166,201,0.5)',
+  'rgba(242,166,201,0)',
+] as const;
+const RAIL_SHIMMER_WIDTH = 160;
+const RAIL_SHIMMER_DURATION = 2600;
+
+// A straight, full-width ~1px iridescent line with a faint, slightly taller
+// halo behind it (a stacked fainter copy, not a real blur) — one continuous
+// line, not segments broken around content. A bright band of the same
+// colors ping-pongs end to end on a loop, like light bouncing back and
+// forth. Both directions share the exact same 0→1→0 driver (so they bounce
+// identically) — only the translateX output range is mirrored, which is
+// what actually makes 'rtl' start from the right edge instead of the left.
+function RailLine({ direction = 'ltr' }: { direction?: 'ltr' | 'rtl' }) {
+  const { width } = useWindowDimensions();
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    progress.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(progress, {
+          toValue: 1,
+          duration: RAIL_SHIMMER_DURATION,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(progress, {
+          toValue: 0,
+          duration: RAIL_SHIMMER_DURATION,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [progress]);
+
+  const translateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange:
+      direction === 'ltr' ? [-RAIL_SHIMMER_WIDTH, width] : [width, -RAIL_SHIMMER_WIDTH],
+  });
+
+  return (
+    <View style={styles.railWrap} pointerEvents="none">
+      <LinearGradient
+        colors={RAIL_HALO}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <LinearGradient
+        colors={RAIL_CORE}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={styles.railCore}
+      />
+      <Animated.View
+        style={[styles.railShimmer, { width: RAIL_SHIMMER_WIDTH, transform: [{ translateX }] }]}>
+        <LinearGradient
+          colors={RAIL_SHIMMER}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+      </Animated.View>
+    </View>
+  );
+}
+
+// Page-wide grain — same deterministic-jitter technique as folder-card.tsx's
+// GRAIN_DOTS (not Math.random, so it's stable across re-renders), just
+// scaled up to cover the page instead of one card. Capped to a fixed field
+// height (like premium-empty-card.tsx's DUST_FIELD_HEIGHT) rather than the
+// full scrollable content — it's meant to texture the header/upper-fold
+// area, not every row all the way down.
+const PAGE_GRAIN_COUNT = 130;
+const PAGE_GRAIN_FIELD_HEIGHT = 620;
+const PAGE_GRAIN_DOTS = Array.from({ length: PAGE_GRAIN_COUNT }, (_, i) => ({
+  x: (i * 17 + (i % 11) * 7) % 100,
+  y: (i * 23 + (i % 9) * 13) % 100,
+  r: 0.3 + ((i * 13) % 10) / 35,
+  light: i % 2 === 0,
+}));
+
+// Layered background environment — vertical charcoal-to-black base, a
+// broad low-opacity violet/blue atmospheric wash behind the header, a
+// soft overhead highlight bled mostly above the top edge, and the grain
+// field above. All pointerEvents="none", all fixed (renders once behind
+// the header/FlatList, doesn't scroll with content) so it reads as the
+// room the binders sit in rather than something printed on the list.
+function CollectionAtmosphere({ width }: { width: number }) {
+  return (
+    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+      <LinearGradient
+        colors={['#18181f', '#0d0d12', PV2.bg]}
+        locations={[0, 0.45, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      {/* Violet → cool-blue wash, same hue family as hero-canvas-theme.tsx's
+          'foil' layer 1 (rgba(120,60,220,...) / rgba(40,80,220,...)), at a
+          fraction of its opacity since this sits behind an entire page
+          rather than one focused hero. Bled well past the sides/top so it
+          has no visible edge. */}
+      <Svg width={width * 1.4} height={420} style={{ position: 'absolute', top: -60, left: -width * 0.2 }}>
+        <Defs>
+          <RadialGradient id="collectionAtmo" cx="50%" cy="35%" rx="55%" ry="60%">
+            <Stop offset="0%" stopColor="#8C6EDC" stopOpacity={0.055} />
+            <Stop offset="55%" stopColor="#5A78D2" stopOpacity={0.028} />
+            <Stop offset="100%" stopColor="#5A78D2" stopOpacity={0} />
+          </RadialGradient>
+        </Defs>
+        <Rect x={0} y={0} width={width * 1.4} height={420} fill="url(#collectionAtmo)" />
+      </Svg>
+
+      {/* Soft overhead highlight — mostly bled above the top edge (top:-150
+          inside a SafeAreaView means it never touches the actual OS status
+          bar, just the app's own background). */}
+      <Svg width={width * 1.6} height={220} style={{ position: 'absolute', top: -150, left: -width * 0.3 }}>
+        <Defs>
+          <RadialGradient id="collectionTopLight" cx="50%" cy="50%" rx="60%" ry="50%">
+            <Stop offset="0%" stopColor="#E4E8FF" stopOpacity={0.05} />
+            <Stop offset="100%" stopColor="#E4E8FF" stopOpacity={0} />
+          </RadialGradient>
+        </Defs>
+        <Rect x={0} y={0} width={width * 1.6} height={220} fill="url(#collectionTopLight)" />
+      </Svg>
+
+      <Svg width="100%" height={PAGE_GRAIN_FIELD_HEIGHT} style={{ position: 'absolute', top: 0, left: 0 }}>
+        {PAGE_GRAIN_DOTS.map((d, i) => (
+          <Circle
+            key={i}
+            cx={`${d.x}%`}
+            cy={`${d.y}%`}
+            r={d.r}
+            fill={d.light ? '#FFFFFF' : '#000000'}
+            opacity={d.light ? 0.02 : 0.025}
+          />
+        ))}
+      </Svg>
+    </View>
+  );
+}
+
+// How far apart adjacent binders sit — the visible gap between them once
+// centered (not the item's own rendered width).
+const CAROUSEL_GAP = 20;
+
+// A horizontal, snap-to-center carousel — swipe/scroll left or right to
+// browse binders one at a time, tap the one you want to open it. The
+// centered item renders at full size/opacity; neighbors scale down and dim
+// as they move away from center, purely driven by scroll position (no
+// separate "selected index" state to keep in sync).
+function FolderCarousel({
+  folders,
+  itemCounts,
+  onFolderPress,
+  windowWidth,
+}: {
+  folders: Folder[];
+  itemCounts: Record<string, number>;
+  onFolderPress: (folder: Folder) => void;
+  windowWidth: number;
+}) {
+  const itemWidth = Math.min(268, windowWidth * 0.68);
+  const slotWidth = itemWidth + CAROUSEL_GAP;
+  const sidePadding = (windowWidth - itemWidth) / 2;
+  const carouselHeight = itemWidth / BOX_ASPECT_RATIO + 60;
+  const scrollX = useRef(new Animated.Value(0)).current;
+
+  return (
+    <Animated.FlatList<Folder>
+      data={folders}
+      horizontal
+      keyExtractor={(item) => item.id}
+      showsHorizontalScrollIndicator={false}
+      snapToInterval={slotWidth}
+      decelerationRate="fast"
+      style={{ height: carouselHeight }}
+      contentContainerStyle={{ paddingHorizontal: sidePadding }}
+      onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
+        useNativeDriver: true,
+      })}
+      scrollEventThrottle={16}
+      renderItem={({ item, index }) => {
+        const inputRange = [(index - 1) * slotWidth, index * slotWidth, (index + 1) * slotWidth];
+        const scale = scrollX.interpolate({
+          inputRange,
+          outputRange: [0.86, 1, 0.86],
+          extrapolate: 'clamp',
+        });
+        const opacity = scrollX.interpolate({
+          inputRange,
+          outputRange: [0.5, 1, 0.5],
+          extrapolate: 'clamp',
+        });
+        return (
+          <Animated.View style={[styles.carouselSlot, { width: slotWidth, transform: [{ scale }], opacity }]}>
+            <FolderCard
+              folder={item}
+              itemCount={itemCounts[item.id] ?? 0}
+              width={itemWidth}
+              maxBoxWidth={itemWidth}
+              onPress={() => onFolderPress(item)}
+            />
+          </Animated.View>
+        );
+      }}
+    />
+  );
+}
 
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, refresh } = useFolders(userId);
+  const { folders, loading, refresh, itemCounts } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const router = useRouter();
 
-  // Derived so the two fixed-width cards plus the gutter between them always
-  // fit the row exactly, with the leftover split evenly as left/right page
-  // padding — this is what keeps the grid symmetric at any screen width.
   const { width: windowWidth } = useWindowDimensions();
-  const pagePadding = Math.max(16, (windowWidth - CARD_WIDTH * 2 - CARD_GUTTER) / 2);
+  const pagePadding = PAGE_PADDING;
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
+      <CollectionAtmosphere width={windowWidth} />
+
+      <RailLine direction="ltr" />
+
+      <View style={[styles.header, { paddingHorizontal: pagePadding }]}>
         <View style={styles.headerTitleRow}>
-          <CacheCaseLogo variant="icon" size={30} />
-          <Text style={styles.headerTitle}>Collection</Text>
+          <CacheCaseLogo variant="icon" size={28} />
+          <Text style={styles.headerTitle}>Collection . . .</Text>
         </View>
-        {folders.length > 0 && (
-          <TouchableOpacity onPress={() => setShowModal(true)} style={styles.newButton}>
-            <Text style={styles.newButtonText}>+ New Folder</Text>
-          </TouchableOpacity>
-        )}
       </View>
+
+      <RailLine direction="rtl" />
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.accent} />
         </View>
       ) : folders.length === 0 ? (
-        <View style={styles.collectionEmptyState}>
-          <View style={styles.collectionEmptyContent}>
-            <View style={styles.folderDisplay}>
-              <View style={styles.folderShelf} pointerEvents="none" />
-
-              <View style={[styles.folderShell, styles.folderBackLeft]}>
-                <View style={styles.folderTabSmall} />
-                <CacheCaseLogo variant="icon" size={34} />
-              </View>
-
-              <View style={[styles.folderShell, styles.folderBackRight]}>
-                <View style={styles.folderTabSmall} />
-                <CacheCaseLogo variant="icon" size={34} />
-              </View>
-
-              <View style={styles.cardStack} pointerEvents="none">
-                <View style={[styles.cardSilhouette, styles.cardLeft, styles.cardSurfacePink]}>
-                  <View style={styles.cardInnerFrame} />
-                </View>
-
-                <View style={[styles.cardSilhouette, styles.cardCenter, styles.cardSurfaceBlue]}>
-                  <View style={styles.cardInnerFrame} />
-                </View>
-
-                <View style={[styles.cardSilhouette, styles.cardRight, styles.cardSurfaceLavender]}>
-                  <View style={styles.cardInnerFrame} />
-                </View>
-              </View>
-
-              <View style={[styles.folderShell, styles.folderFront]}>
-                <View style={styles.folderTabLarge} />
-                <CacheCaseLogo variant="icon" size={42} />
-              </View>
+        <View style={styles.emptyWrap}>
+          <View style={styles.emptyPanel}>
+            <View style={styles.emptyGlowWrap} pointerEvents="none">
+              <Svg width={180} height={180}>
+                <Defs>
+                  <RadialGradient id="collectionEmptyGlow" cx="50%" cy="50%" r="50%">
+                    <Stop offset="0%" stopColor="#FFFFFF" stopOpacity={0.09} />
+                    <Stop offset="100%" stopColor="#FFFFFF" stopOpacity={0} />
+                  </RadialGradient>
+                </Defs>
+                <Rect x={0} y={0} width={180} height={180} fill="url(#collectionEmptyGlow)" />
+              </Svg>
             </View>
 
-            <View style={styles.collectionEmptyCopy}>
-              <Text style={styles.collectionEmptyTitle}>
-                No folders yet
-              </Text>
+            <CacheCaseLogo variant="icon" size="lg" style={styles.emptyLogo} />
 
-              <Text style={styles.collectionEmptyBody}>
-                Create spaces for sets, players, teams, or anything you collect.
-              </Text>
+            <Text style={styles.emptyTitle}>No collections yet</Text>
+            <Text style={styles.emptyBody}>
+              Start organizing your cards into folders — by set, player, team, or however you collect.
+            </Text>
 
-              <TouchableOpacity
-                style={styles.collectionEmptyButton}
-                onPress={() => setShowModal(true)}
-                activeOpacity={0.82}>
-                <Text style={styles.collectionEmptyButtonText}>
-                  Create First Folder
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              style={styles.emptyButton}
+              onPress={() => setShowModal(true)}
+              activeOpacity={0.82}>
+              <Text style={styles.emptyButtonText}>Create First Collection</Text>
+            </TouchableOpacity>
           </View>
         </View>
       ) : (
-        <FlatList
-          data={folders}
-          numColumns={2}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <FolderCard
-              folder={item}
-              onPress={() =>
-                router.push({
-                  pathname: '/folder/[id]',
-                  params: { id: item.id, name: item.name },
-                })
-              }
-            />
-          )}
-          contentContainerStyle={[styles.grid, { paddingHorizontal: pagePadding }]}
-          columnWrapperStyle={styles.row}
-        />
+        <View style={styles.carouselWrap}>
+          <FolderCarousel
+            folders={folders}
+            itemCounts={itemCounts}
+            windowWidth={windowWidth}
+            onFolderPress={(folder) =>
+              router.push({
+                pathname: '/folder/[id]',
+                params: { id: folder.id, name: folder.name },
+              })
+            }
+          />
+        </View>
+      )}
+
+      {folders.length > 0 && (
+        <View style={styles.newFolderRow}>
+          <TouchableOpacity
+            style={styles.newFolderButton}
+            onPress={() => setShowModal(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.7}>
+            <Text style={styles.newFolderText}>+ New Folder</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       <CreateFolderModal
@@ -144,36 +372,65 @@ export default function CollectionScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
+  // Row between the two RailLines — just the icon+title now. The RailLines
+  // themselves render outside any horizontal padding so they run
+  // edge-to-edge; paddingHorizontal is applied to this row alone (inline,
+  // via pagePadding) so its content still lines up with the binder grid's
+  // margins underneath.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    backgroundColor: '#fff',
+    paddingVertical: 14,
   },
   headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    marginLeft: -10,
   },
   headerTitle: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '800',
-    color: '#11181C',
+    color: PV2.textPrimary,
+    letterSpacing: 0.2,
   },
-  newButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    backgroundColor: '#0a7ea4',
-    borderRadius: 20,
+  railWrap: {
+    height: 3,
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
-  newButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+  railCore: {
+    height: 1,
+  },
+  railShimmer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+  },
+  // Now sits below the carousel instead of crowding the header rail area,
+  // with enough bottom padding to clear the tab bar.
+  newFolderRow: {
+    alignItems: 'center',
+    paddingTop: 20,
+    paddingBottom: 24,
+  },
+  // Given real button weight per this pass — translucent graphite fill,
+  // thin cool-toned border, pill radius — rather than the bare unboxed
+  // text action used previously.
+  newFolderButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  newFolderText: {
+    color: PV2.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
   },
   center: {
     flex: 1,
@@ -181,245 +438,70 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 32,
   },
+  // ── Empty state — same restrained dark-panel language as the Profile
+  // page's collector panel (reuses its exact bg/border tokens), not the
+  // ornate gold Grails pedestal.
+  emptyWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  emptyPanel: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 24,
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    paddingVertical: 36,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    transform: [{ translateY: -24 }],
+  },
+  emptyGlowWrap: {
+    position: 'absolute',
+    top: -10,
+    alignSelf: 'center',
+  },
+  emptyLogo: {
+    opacity: 0.85,
+    marginBottom: 18,
+  },
   emptyTitle: {
     fontSize: 20,
-    fontWeight: '600',
-    color: '#11181C',
-    marginBottom: 8,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+    textAlign: 'center',
   },
   emptyBody: {
-    fontSize: 15,
-    color: '#687076',
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    color: PV2.textSecondary,
     textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 24,
   },
   emptyButton: {
-    backgroundColor: '#0a7ea4',
-    borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
+    marginTop: 22,
+    height: 46,
+    paddingHorizontal: 26,
+    borderRadius: 23,
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: PV2.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
   },
-  collectionEmptyState: {
-    flex: 1,
-    width: '100%',
+  carouselWrap: {
+    paddingTop: 28,
+    paddingBottom: 12,
+  },
+  carouselSlot: {
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'transparent',
-  },
-  collectionEmptyContent: {
-    width: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ translateY: -18 }],
-  },
-  collectionEmptyCopy: {
-    alignItems: 'center',
-    marginTop: 22,
-    paddingHorizontal: 32,
-  },
-  collectionEmptyTitle: {
-    fontSize: 26,
-    lineHeight: 32,
-    fontWeight: '700',
-    color: '#11181C',
-    textAlign: 'center',
-  },
-  collectionEmptyBody: {
-    marginTop: 10,
-    maxWidth: 330,
-    fontSize: 17,
-    lineHeight: 24,
-    fontWeight: '400',
-    color: '#687076',
-    textAlign: 'center',
-  },
-  collectionEmptyButton: {
-    marginTop: 24,
-    width: 286,
-    height: 54,
-    paddingHorizontal: 24,
-    borderRadius: 27,
-    backgroundColor: '#0A8BAD',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  collectionEmptyButtonText: {
-    fontSize: 17,
-    lineHeight: 21,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-  folderDisplay: {
-    width: 340,
-    height: 230,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    position: 'relative',
-  },
-  folderShelf: {
-    position: 'absolute',
-    bottom: 0,
-    width: 300,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#E4E9F0',
-    borderWidth: 1.25,
-    borderColor: 'rgba(126, 145, 168, 0.58)',
-    shadowColor: '#66788F',
-    shadowOffset: { width: 0, height: 7 },
-    shadowOpacity: 0.16,
-    shadowRadius: 10,
-    elevation: 4,
-    zIndex: 5,
-  },
-  folderShell: {
-    position: 'absolute',
-    backgroundColor: '#F1F4F8',
-    borderWidth: 1.5,
-    borderColor: 'rgba(137, 155, 178, 0.72)',
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'visible',
-    shadowColor: '#7E8FA6',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.1,
-    shadowRadius: 14,
-    elevation: 3,
-  },
-  folderFront: {
-    width: 220,
-    height: 142,
-    bottom: 18,
-    zIndex: 3,
-    shadowColor: '#6F8098',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.16,
-    shadowRadius: 18,
-    elevation: 6,
-  },
-  folderBackLeft: {
-    width: 172,
-    height: 116,
-    left: 12,
-    bottom: 24,
-    opacity: 0.88,
-    zIndex: 1,
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  folderBackRight: {
-    width: 172,
-    height: 116,
-    right: 12,
-    bottom: 24,
-    opacity: 0.88,
-    zIndex: 1,
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  cardStack: {
-    position: 'absolute',
-    width: 170,
-    height: 120,
-    bottom: 110,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    zIndex: 2,
-  },
-  cardSilhouette: {
-    position: 'absolute',
-    width: 68,
-    height: 96,
-    borderRadius: 8,
-    borderWidth: 1.25,
-    borderColor: 'rgba(145, 165, 192, 0.58)',
-    backgroundColor: 'rgba(222, 231, 244, 0.82)',
-    padding: 5,
-  },
-  cardInnerFrame: {
-    flex: 1,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.78)',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  cardLeft: {
-    left: 14,
-    bottom: 0,
-    transform: [{ rotate: '-7deg' }],
-    opacity: 0.68,
-  },
-  cardCenter: {
-    bottom: 10,
-    zIndex: 2,
-    opacity: 0.84,
-  },
-  cardRight: {
-    right: 14,
-    bottom: 1,
-    transform: [{ rotate: '7deg' }],
-    opacity: 0.72,
-  },
-  cardSurfacePink: {
-    backgroundColor: 'rgba(242, 224, 238, 0.88)',
-    borderColor: 'rgba(201, 159, 194, 0.52)',
-  },
-  cardSurfaceBlue: {
-    backgroundColor: 'rgba(222, 233, 247, 0.94)',
-    borderColor: 'rgba(145, 174, 210, 0.62)',
-  },
-  cardSurfaceLavender: {
-    backgroundColor: 'rgba(230, 225, 245, 0.90)',
-    borderColor: 'rgba(174, 154, 209, 0.54)',
-  },
-  folderTabLarge: {
-    position: 'absolute',
-    top: -18,
-    left: 18,
-    width: 82,
-    height: 18,
-    backgroundColor: '#F1F4F8',
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-    borderWidth: 1.5,
-    borderBottomWidth: 0,
-    borderColor: 'rgba(137, 155, 178, 0.72)',
-  },
-  folderTabSmall: {
-    position: 'absolute',
-    top: -14,
-    left: 14,
-    width: 64,
-    height: 14,
-    backgroundColor: '#F1F4F8',
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-    borderWidth: 1.25,
-    borderBottomWidth: 0,
-    borderColor: 'rgba(137, 155, 178, 0.62)',
-  },
-  grid: {
-    // paddingHorizontal is applied inline (see pagePadding above) so it can
-    // respond to screen width — this is just layout defaults otherwise.
-    paddingTop: 14,
-    paddingBottom: 104,
-  },
-  // gap (not space-between) so the horizontal gutter is a fixed, consistent
-  // value that matches the vertical gap below — space-between let whatever
-  // space was left over collect into one big, inconsistent middle gutter.
-  row: {
-    justifyContent: 'flex-start',
-    gap: CARD_GUTTER,
-    marginBottom: CARD_GUTTER,
   },
 });
