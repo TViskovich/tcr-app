@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
-  Animated,
   ActivityIndicator,
   Alert,
   type AlertButton,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -13,37 +13,53 @@ import {
   View,
 } from 'react-native';
 
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
-import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
-import { GrailsGrid } from '@/components/profile/grails-grid';
-import { ProfileHero } from '@/components/profile/profile-hero';
+import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from '@/components/profile-v2/profile-v2-collector-panel';
+import { ProfileV2Collections } from '@/components/profile-v2/profile-v2-collections';
+import { ProfileV2Grid } from '@/components/profile-v2/profile-v2-grid';
+import { ProfileV2Hero } from '@/components/profile-v2/profile-v2-hero';
+import { ProfileV2Identity } from '@/components/profile-v2/profile-v2-identity';
+import { ProfileV2Selector, type ProfileV2Section } from '@/components/profile-v2/profile-v2-selector';
+import { ProfileV2Stats } from '@/components/profile-v2/profile-v2-stats';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import {
   getHeroCanvasPickerThemes,
+  HERO_CANVAS_THEMES,
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useFolders } from '@/hooks/use-collection';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
 import { uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 
+// Values with no corresponding column/table yet (see PrototypeCollectorStats
+// in profile-v2-collector-panel.tsx). Kept in exactly one place, clearly
+// named, rather than inlined in JSX — swap these out if/when the real data
+// lands (an authentications table, an ownership-transfer history, a
+// collector registry id).
+const prototypeCollectorStats: PrototypeCollectorStats = {
+  authenticated: 0,
+  transferred: 0,
+  collectorId: 'CCA #1',
+};
+
 export default function ProfileScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id;
   const router = useRouter();
-  const { profile, loading, refresh } = useProfile(userId);
+  const { profile, stats, loading, refresh } = useProfile(userId);
   const { grails, refresh: refreshGrails } = useGrails(userId);
+  const { folders, refresh: refreshFolders } = useFolders(userId);
 
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const [section, setSection] = useState<ProfileV2Section>('cachecase');
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ heroName: '', displayName: '', bio: '' });
@@ -59,7 +75,8 @@ export default function ProfileScreen() {
     useCallback(() => {
       refresh();
       refreshGrails();
-    }, [refresh, refreshGrails]),
+      refreshFolders();
+    }, [refresh, refreshGrails, refreshFolders]),
   );
 
   function enterEdit() {
@@ -75,21 +92,6 @@ export default function ProfileScreen() {
     setRemoveBadge(false);
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
     setEditMode(true);
-  }
-
-  function handlePillPress(id: string) {
-    if (id === 'grails') {
-      router.push({
-        pathname: '/grails/[userId]',
-        params: {
-          userId: userId ?? '',
-          username: profile?.username ?? '',
-          displayName: profile?.display_name ?? '',
-        },
-      });
-    } else if (id === 'folders') {
-      router.push('/(tabs)/collection' as any);
-    }
   }
 
   function cancelEdit() {
@@ -341,90 +343,46 @@ export default function ProfileScreen() {
   const heroUri = removeHero ? null : (newHeroUri ?? profile?.hero_image_url ?? null);
   const badgeUri = removeBadge ? null : (newBadgeUri ?? profile?.showcase_badge_url ?? null);
   const heroTheme = editMode ? selectedTheme : resolveHeroCanvasTheme(profile?.hero_theme);
+  const themeDef = HERO_CANVAS_THEMES.find((t) => t.id === heroTheme);
+  const themeFallbackSwatch: [string, string] =
+    themeDef?.kind === 'procedural' ? themeDef.swatch : ['#1C1C1E', '#0A0A0C'];
 
   if (loading && !profile) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <View style={styles.header}>
-          <View style={styles.headerSide} />
-          <CacheCaseLogo variant="dark" size={35} />
-          <View style={styles.headerSide} />
-        </View>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.accent} />
         </View>
       </SafeAreaView>
     );
   }
 
+  const displayName = profile?.hero_display_name || profile?.display_name || profile?.username || '';
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerSide}>
-          {editMode ? (
-            <TouchableOpacity onPress={cancelEdit}>
-              <Text style={styles.headerCancel}>Cancel</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity onPress={() => router.push('/settings')} hitSlop={8}>
-              <IconSymbol name="gearshape.fill" size={22} color="#687076" />
-            </TouchableOpacity>
-          )}
-        </View>
-        {editMode ? (
-          <Text style={styles.headerTitle}>Edit Profile</Text>
-        ) : (
-          <CacheCaseLogo variant="dark" size={35} />
-        )}
-        <View style={[styles.headerSide, styles.headerSideRight]}>
-          {editMode ? (
-            <TouchableOpacity onPress={handleSave} disabled={saving}>
-              {saving
-                ? <ActivityIndicator size="small" color="#0a7ea4" />
-                : <Text style={styles.headerSave}>Save</Text>}
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.headerRightGroup}>
-              <TouchableOpacity onPress={() => router.push('/saved')} hitSlop={12} activeOpacity={0.55}>
-                <MaterialIcons name="bookmark-border" size={32} color="#687076" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={enterEdit}>
-                <Text style={styles.headerEdit}>Edit</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      </View>
-
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? undefined : 'height'}>
-        <Animated.ScrollView
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
+        <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-          scrollEventThrottle={16}
-          onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-            { useNativeDriver: true },
-          )}>
+          showsVerticalScrollIndicator={false}>
 
           {profile && (
-            <ProfileHero
-              profile={profile}
+            <ProfileV2Hero
               avatarUri={avatarUri}
               heroImageUri={heroUri}
-              heroTheme={heroTheme}
-              showcaseBadgeUri={badgeUri}
+              themeFallbackSwatch={themeFallbackSwatch}
+              displayName={displayName}
+              username={profile?.username ?? ''}
+              editMode={editMode}
+              saving={saving}
               onAvatarPress={editMode ? pickAvatar : undefined}
               onHeroPress={editMode ? pickHero : undefined}
-              onBadgePress={editMode ? pickBadge : undefined}
-              editMode={editMode}
-              brandLabel="SHOWCASE"
-              scrollY={scrollY}
-              onPillPress={handlePillPress}
-              activePills={['folders']}
+              onSettingsPress={() => router.push('/settings')}
+              onSavedPress={() => router.push('/saved')}
+              onCancelPress={cancelEdit}
+              onSavePress={handleSave}
             />
           )}
 
@@ -437,11 +395,11 @@ export default function ProfileScreen() {
                 value={editForm.heroName}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, heroName: v }))}
                 placeholder="Knicks Vault, Griffey Guy, The Ruler…"
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={40}
               />
               <Text style={styles.fieldHint}>
-                Shown large in your profile hero. Leave blank to use your display name.
+                Shown large on your profile. Leave blank to use your display name.
               </Text>
               <Text style={styles.fieldLabel}>Display Name</Text>
               <TextInput
@@ -449,7 +407,7 @@ export default function ProfileScreen() {
                 value={editForm.displayName}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, displayName: v }))}
                 placeholder="Display name"
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={50}
               />
               <Text style={styles.fieldLabel}>Bio</Text>
@@ -458,12 +416,22 @@ export default function ProfileScreen() {
                 value={editForm.bio}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, bio: v }))}
                 placeholder="Tell people about yourself..."
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.35)"
                 multiline
                 numberOfLines={4}
                 textAlignVertical="top"
                 maxLength={160}
               />
+              <TouchableOpacity style={styles.badgeEditRow} onPress={pickBadge} activeOpacity={0.8}>
+                <View style={styles.badgeEditPreview}>
+                  {badgeUri ? (
+                    <Image source={{ uri: badgeUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                  ) : null}
+                </View>
+                <Text style={styles.badgeEditLabel}>
+                  {badgeUri ? 'Change Collector Badge' : 'Add Collector Badge'}
+                </Text>
+              </TouchableOpacity>
               <Text style={styles.fieldLabel}>Hero Theme</Text>
               <View style={styles.themeRow}>
                 {getHeroCanvasPickerThemes().map((t) => (
@@ -498,47 +466,56 @@ export default function ProfileScreen() {
           ) : (
             /* ── View Mode ── */
             <>
-              {/* Dark full-bleed wrapper — same near-black as the hero's own
-                  tail (profile-hero.tsx's heroExtension), so it continues
-                  flush with no gap. GrailsGrid itself has no background of
-                  its own outside the vault, so this wrapper's color is what
-                  now shows in the vault's horizontal margins and top/bottom
-                  spacing, instead of the page's light background. Sized to
-                  hug the card (no extra padding) — not a full-screen panel. */}
-              <View style={styles.grailsSection}>
-                <View style={styles.grailsTopShadow} pointerEvents="none">
-                  <Svg width="100%" height="100%">
-                    <Defs>
-                      <RadialGradient id="grailsTopShadow" cx="50%" cy="20%" r="55%">
-                        <Stop offset="0%" stopColor="#C9952C" stopOpacity={0.10} />
-                        <Stop offset="100%" stopColor="#C9952C" stopOpacity={0} />
-                      </RadialGradient>
-                    </Defs>
-                    <Rect x={0} y={0} width="100%" height="100%" fill="url(#grailsTopShadow)" />
-                  </Svg>
-                </View>
+              <ProfileV2Identity
+                bio={profile?.bio ?? null}
+                mode="owner"
+                onEditPress={enterEdit}
+              />
 
-                <GrailsGrid
-                  grails={grails}
-                  editable
-                  vaultMargin={24}
-                  onAddFirstGrail={() => router.push('/(tabs)/collection' as any)}
-                  onCabinetPress={() =>
-                    router.push({
-                      pathname: '/grails/[userId]',
-                      params: {
-                        userId: userId ?? '',
-                        username: profile?.username ?? '',
-                        displayName: profile?.display_name ?? '',
-                      },
-                    })
+              <ProfileV2Stats followers={stats.followerCount} following={stats.followingCount} />
+
+              <ProfileV2Selector active={section} onChange={setSection} />
+
+              {section === 'posts' && (
+                <View style={styles.postsEmpty}>
+                  <Text style={styles.postsEmptyText}>Posts coming soon.</Text>
+                </View>
+              )}
+
+              {section === 'cachecase' && (
+                <>
+                  <ProfileV2CollectorPanel
+                    avatarUri={avatarUri}
+                    displayName={displayName}
+                    username={profile?.username ?? ''}
+                    vaultTotal={stats.itemCount}
+                    graded={stats.gradedCount}
+                    prototype={prototypeCollectorStats}
+                    badgeUri={badgeUri}
+                  />
+                  <ProfileV2Grid
+                    grails={grails}
+                    onItemPress={(item) =>
+                      router.push({ pathname: '/item/[id]', params: { id: item.item_id, fromGrails: '1' } })
+                    }
+                    onAddPress={() => router.push('/(tabs)/collection' as any)}
+                  />
+                </>
+              )}
+
+              {section === 'collections' && (
+                <ProfileV2Collections
+                  folders={folders}
+                  onFolderPress={(folder) =>
+                    router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } })
                   }
+                  onCreatePress={() => router.push('/(tabs)/collection' as any)}
                 />
-              </View>
+              )}
             </>
           )}
 
-        </Animated.ScrollView>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -547,46 +524,7 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
-  },
-  headerSide: {
-    flex: 1,
-  },
-  headerSideRight: {
-    alignItems: 'flex-end',
-  },
-  headerRightGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#11181C',
-  },
-  headerCancel: {
-    fontSize: 16,
-    color: '#687076',
-  },
-  headerSave: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0a7ea4',
-  },
-  headerEdit: {
-    fontSize: 16,
-    color: '#0a7ea4',
+    backgroundColor: PV2.bg,
   },
   center: {
     flex: 1,
@@ -594,7 +532,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scroll: {
-    paddingBottom: 104,
+    paddingBottom: 120,
   },
   editSection: {
     padding: 16,
@@ -602,43 +540,48 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#687076',
+    color: PV2.textSecondary,
     marginTop: 16,
     marginBottom: 6,
   },
   fieldHint: {
     fontSize: 12,
-    color: '#999',
+    color: PV2.textTertiary,
     marginTop: 5,
-  },
-  // Exact same #000000 as profile-hero.tsx's heroExtension (not the
-  // slightly lighter #0D0D0D hero root tone) — an identical flat color on
-  // both sides of that boundary is what actually removes the seam, rather
-  // than a merely "close" one. No padding of its own — GrailsGrid's
-  // internal vaultShadow margins provide the spacing around the card.
-  grailsSection: {
-    backgroundColor: '#000000',
-  },
-  grailsTopShadow: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 70,
   },
   fieldInput: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.panelBorder,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
-    backgroundColor: '#fafafa',
-    color: '#11181C',
+    backgroundColor: PV2.panel,
+    color: '#fff',
   },
   bioInput: {
     height: 100,
     paddingTop: 12,
+  },
+  badgeEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 20,
+  },
+  badgeEditPreview: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: PV2.panel,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+  },
+  badgeEditLabel: {
+    color: PV2.link,
+    fontSize: 14,
+    fontWeight: '600',
   },
   themeRow: {
     flexDirection: 'row',
@@ -653,7 +596,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   themeSwatchSelected: {
-    borderColor: '#0a7ea4',
+    borderColor: PV2.accent,
   },
   themeSwatchFill: {
     width: 52,
@@ -663,6 +606,14 @@ const styles = StyleSheet.create({
   themeSwatchLabel: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#687076',
+    color: PV2.textSecondary,
+  },
+  postsEmpty: {
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  postsEmptyText: {
+    color: PV2.textTertiary,
+    fontSize: 14,
   },
 });
