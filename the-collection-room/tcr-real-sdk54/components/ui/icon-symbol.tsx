@@ -31,6 +31,7 @@ const MAPPING = {
   // Create menu icons
   'plus': 'add',
   'square.and.pencil': 'edit',
+  'square.and.arrow.up': 'share',
   'camera.fill': 'camera-alt',
   'rectangle.stack.fill': 'layers',
   'sparkles': 'auto-awesome',

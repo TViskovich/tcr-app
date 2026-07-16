@@ -284,8 +284,8 @@ export default function UserProfileScreen() {
                     rotationDeg={rotationDeg}
                     onPress={() =>
                       router.push({
-                        pathname: '/folder/[id]',
-                        params: { id: item.id, name: item.name },
+                        pathname: '/collection/[folderId]',
+                        params: { folderId: item.id, title: item.name },
                       })
                     }
                   />

@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, Share, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
@@ -12,6 +12,7 @@ import {
   PREVIEW_CARD_RADIUS,
 } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
@@ -21,7 +22,16 @@ import {
   useItems,
   type PlayerGroup,
 } from '@/hooks/use-collection';
-import type { CollectionItem } from '@/types';
+import { useSavedFolder } from '@/hooks/use-saved';
+import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
+import type { CollectionItem, Folder } from '@/types';
+
+type OwnerProfile = {
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
 
 // Dense grid. Gap is applied via FlatList's own contentContainerStyle/
 // columnWrapperStyle gap support — no per-item margin math, no
@@ -80,14 +90,67 @@ export default function CollectionFolderScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
 
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
+
   // Existing hook (hooks/use-collection.ts) — already filters
   // collection_items by folder_id and orders newest-first. Not duplicated,
   // and shared by both grouping mode and card mode below.
-  const { items, loading } = useItems(folderId);
+  const { items, loading, refresh: refreshItems } = useItems(folderId);
+
+  // Legacy app/folder/[id].tsx refreshed on focus so returning here after
+  // adding a card (or from any other entry point) shows it immediately —
+  // preserved since Profile/Saved/public-profile now land on this screen.
+  useFocusEffect(useCallback(() => { refreshItems(); }, [refreshItems]));
+
+  // Folder record itself (name, owner, visibility, cover) — this screen used
+  // to rely solely on the `title` route param, but now that every folder
+  // entry point (Profile, public profiles, Saved) routes here instead of the
+  // legacy app/folder/[id].tsx, it needs the real row to enforce ownership
+  // and privacy the same way that screen did.
+  const [folder, setFolder] = useState<Folder | null>(null);
+  const [folderLoading, setFolderLoading] = useState(true);
+  const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
+  const [editVisible, setEditVisible] = useState(false);
+
+  const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setFolderLoading(true);
+      const { data } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('id', folderId)
+        .single();
+      if (cancelled) return;
+      if (data) {
+        setFolder(data as Folder);
+        if (data.user_id !== currentUserId) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('username, display_name, avatar_url')
+            .eq('id', data.user_id)
+            .single();
+          if (!cancelled && profile) setOwnerProfile(profile as OwnerProfile);
+        }
+      } else {
+        setFolder(null);
+      }
+      if (!cancelled) setFolderLoading(false);
+    }
+    if (folderId) load();
+    else setFolderLoading(false);
+    return () => { cancelled = true; };
+  }, [folderId, currentUserId]);
+
+  const isOwner = !!currentUserId && folder?.user_id === currentUserId;
+  const isPrivate = folder !== null && !folder.is_public && !isOwner;
 
   const [search, setSearch] = useState('');
 
-  const folderTitle = passedTitle || 'Collection';
+  const folderTitle = folder?.name || passedTitle || 'Collection';
   const thumbWidth = (windowWidth - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
 
   const groups = useMemo(() => groupItemsByPlayer(items), [items]);
@@ -148,13 +211,89 @@ export default function CollectionFolderScreen() {
   // Same /item/new + folderId/folderName params app/folder/[id].tsx and
   // app/(tabs)/collection.tsx already use — not a new creation flow.
   function addCard() {
+    if (!isOwner) return;
     router.push({
       pathname: '/item/new',
       params: { folderId: folderId ?? '', folderName: folderTitle },
     });
   }
 
+  // Same share text/deep-link pattern as the legacy app/folder/[id].tsx
+  // screen this was migrated from, pointed at the canonical route.
+  async function handleShare() {
+    if (!folder) return;
+    const handle = isOwner
+      ? (session?.user?.email?.split('@')[0] ?? 'me')
+      : (ownerProfile?.username ?? 'user');
+    try {
+      await Share.share({
+        title: folder.name,
+        message: `Check out "${folder.name}" by @${handle} on The Collection Room\nthecollectionroom://collection/${folderId}`,
+      });
+    } catch {
+      // user dismissed share sheet — no-op
+    }
+  }
+
   const showInitialLoading = loading && items.length === 0;
+
+  // ── Loading / not-found / private states ────────────────────────
+  // Only relevant now that non-owner traffic (public profiles, Saved,
+  // shared links) can reach this screen — folder loading used to be a
+  // no-op here since the Collection tab only ever opened the signed-in
+  // user's own folders.
+  if (folderLoading) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <SafeAreaView style={styles.container} edges={['bottom']}>
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color={PV2.accent} />
+          </View>
+        </SafeAreaView>
+      </>
+    );
+  }
+
+  if (!folder) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <SafeAreaView style={styles.container} edges={['bottom']}>
+          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+          <View style={styles.center}>
+            <Text style={styles.emptyTitle}>Collection not found</Text>
+          </View>
+        </SafeAreaView>
+      </>
+    );
+  }
+
+  if (isPrivate) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <SafeAreaView style={styles.container} edges={['bottom']}>
+          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+          <View style={styles.center}>
+            <Text style={styles.privateIcon}>🔒</Text>
+            <Text style={styles.emptyTitle}>This collection is private</Text>
+            <Text style={styles.emptyBody}>Only the owner can view this collection.</Text>
+          </View>
+        </SafeAreaView>
+      </>
+    );
+  }
+
+  const showBookmark = !isOwner && !!currentUserId && folder.is_public;
 
   return (
     <>
@@ -185,12 +324,14 @@ export default function CollectionFolderScreen() {
               <IconSymbol name="chevron.left" size={20} color="#fff" />
             </Pressable>
 
-            <Pressable
-              onPress={addCard}
-              hitSlop={12}
-              style={[styles.heroCircleBtn, styles.heroAddCircle, { top: insets.top + 62 }]}>
-              <IconSymbol name="plus" size={18} color="#fff" />
-            </Pressable>
+            {isOwner && (
+              <Pressable
+                onPress={addCard}
+                hitSlop={12}
+                style={[styles.heroCircleBtn, styles.heroAddCircle, { top: insets.top + 62 }]}>
+                <IconSymbol name="plus" size={18} color="#fff" />
+              </Pressable>
+            )}
 
             {/* Reserved space for the like/search/bookmark/share row — not built yet. */}
             <View style={styles.heroActionsGap} />
@@ -212,10 +353,61 @@ export default function CollectionFolderScreen() {
               )}
             </View>
 
-            <Pressable onPress={addCard} hitSlop={12} style={styles.iconBtn}>
-              <IconSymbol name="plus" size={22} color={PV2.textPrimary} />
-            </Pressable>
+            <View style={styles.headerActions}>
+              {showBookmark && (
+                <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol
+                    name={isSaved ? 'bookmark.fill' : 'bookmark'}
+                    size={20}
+                    color={isSaved ? PV2.accent : PV2.textPrimary}
+                  />
+                </Pressable>
+              )}
+              <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+                <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+              </Pressable>
+              {isOwner && (
+                <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="square.and.pencil" size={20} color={PV2.textPrimary} />
+                </Pressable>
+              )}
+              {isOwner && (
+                <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="plus" size={22} color={PV2.textPrimary} />
+                </Pressable>
+              )}
+            </View>
           </View>
+        )}
+
+        {!isCardMode && !isOwner && ownerProfile && (
+          <Pressable
+            style={styles.ownerRow}
+            onPress={() =>
+              router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
+            }>
+            <View style={styles.ownerAvatar}>
+              {ownerProfile.avatar_url ? (
+                <Image
+                  source={{ uri: ownerProfile.avatar_url }}
+                  style={StyleSheet.absoluteFill}
+                  contentFit="cover"
+                  transition={200}
+                />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
+                  <Text style={styles.ownerAvatarInitial}>
+                    {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.ownerInfo}>
+              <Text style={styles.ownerName}>{ownerProfile.display_name || ownerProfile.username}</Text>
+              <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
+          </Pressable>
         )}
 
         {!isCardMode && !showInitialLoading && items.length > 0 && (
@@ -273,9 +465,11 @@ export default function CollectionFolderScreen() {
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyTitle}>No cards yet</Text>
                   <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
-                  <Pressable style={styles.emptyButton} onPress={addCard}>
-                    <Text style={styles.emptyButtonText}>Add Card</Text>
-                  </Pressable>
+                  {isOwner && (
+                    <Pressable style={styles.emptyButton} onPress={addCard}>
+                      <Text style={styles.emptyButtonText}>Add Card</Text>
+                    </Pressable>
+                  )}
                 </View>
               )
             }
@@ -320,15 +514,28 @@ export default function CollectionFolderScreen() {
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyTitle}>No cards yet</Text>
                   <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
-                  <Pressable style={styles.emptyButton} onPress={addCard}>
-                    <Text style={styles.emptyButtonText}>Add Card</Text>
-                  </Pressable>
+                  {isOwner && (
+                    <Pressable style={styles.emptyButton} onPress={addCard}>
+                      <Text style={styles.emptyButtonText}>Add Card</Text>
+                    </Pressable>
+                  )}
                 </View>
               )
             }
           />
         )}
       </SafeAreaView>
+
+      {isOwner && (
+        <FolderEditModal
+          visible={editVisible}
+          folder={folder}
+          currentUserId={currentUserId}
+          onClose={() => setEditVisible(false)}
+          onSaved={(updated) => setFolder(updated)}
+          onDeleted={() => router.back()}
+        />
+      )}
     </>
   );
 }
@@ -361,6 +568,58 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   count: {
+    fontSize: 12,
+    color: PV2.textSecondary,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  privateIcon: {
+    fontSize: 40,
+    marginBottom: 12,
+  },
+  // Owner card — non-owner viewing someone else's folder only (public
+  // profiles, Saved). Migrated from the legacy app/folder/[id].tsx screen.
+  ownerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 12,
+    marginBottom: 10,
+    padding: 10,
+    backgroundColor: PV2.panel,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    gap: 10,
+  },
+  ownerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+    flexShrink: 0,
+  },
+  ownerAvatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ownerAvatarInitial: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  ownerInfo: {
+    flex: 1,
+    gap: 1,
+  },
+  ownerName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  ownerUsername: {
     fontSize: 12,
     color: PV2.textSecondary,
   },

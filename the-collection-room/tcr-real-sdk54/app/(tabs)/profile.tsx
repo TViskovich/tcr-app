@@ -527,7 +527,10 @@ export default function ProfileScreen() {
                   <ProfileV2Collections
                     folders={folders}
                     onFolderPress={(folder) =>
-                      router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } })
+                      router.push({
+                        pathname: '/collection/[folderId]',
+                        params: { folderId: folder.id, title: folder.name },
+                      })
                     }
                     onCreatePress={() => router.push('/(tabs)/collection' as any)}
                   />

@@ -66,7 +66,10 @@ export default function SavedScreen() {
                   key={folder.id}
                   folder={folder}
                   onPress={() =>
-                    router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } })
+                    router.push({
+                      pathname: '/collection/[folderId]',
+                      params: { folderId: folder.id, title: folder.name },
+                    })
                   }
                 />
               ))}
