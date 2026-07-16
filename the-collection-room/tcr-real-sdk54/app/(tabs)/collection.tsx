@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -18,12 +18,13 @@ import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg'
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
+import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
-import { useFolders } from '@/hooks/use-collection';
-import type { CollectionItem, Folder } from '@/types';
+import { itemMatchesSearch, useFolders, type PlayerGroup } from '@/hooks/use-collection';
+import type { Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
 // carousel below scrolls edge-to-edge on purpose), just a fixed inset.
@@ -206,6 +207,7 @@ export default function CollectionScreen() {
   const userId = session?.user?.id ?? '';
   const { folders, loading, refresh, previewItems } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
+  const [search, setSearch] = useState('');
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
   const pagePadding = PAGE_PADDING;
@@ -213,11 +215,32 @@ export default function CollectionScreen() {
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
-  const openFolder = (folder: Folder) =>
-    router.push({ pathname: '/folder/[id]', params: { id: folder.id, name: folder.name } });
+  // Filters what's already loaded — folder names plus each folder's own
+  // (capped, already-fetched) preview items, per hooks/use-collection.ts's
+  // itemMatchesSearch. No new query per keystroke. Preview items are capped
+  // at 10/folder (see PREVIEW_ITEM_LIMIT), so a match deep in a large
+  // folder's history can be missed here — the folder detail screen searches
+  // the folder's full item set instead.
+  const filteredFolders = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return folders;
+    return folders.filter((folder) => {
+      if (folder.name.toLowerCase().includes(q)) return true;
+      return (previewItems[folder.id] ?? []).some((item) => itemMatchesSearch(item, search));
+    });
+  }, [folders, previewItems, search]);
 
-  const openItem = (item: CollectionItem) =>
-    router.push({ pathname: '/item/[id]', params: { id: item.id } });
+  const openFolder = (folder: Folder) =>
+    router.push({
+      pathname: '/collection/[folderId]',
+      params: { folderId: folder.id, title: folder.name },
+    });
+
+  const openGroup = (folder: Folder, group: PlayerGroup) =>
+    router.push({
+      pathname: '/collection/[folderId]',
+      params: { folderId: folder.id, title: folder.name, player: group.key },
+    });
 
   const addItem = (folder: Folder) =>
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
@@ -236,6 +259,15 @@ export default function CollectionScreen() {
       </View>
 
       <RailLine direction="rtl" />
+
+      {folders.length > 0 && (
+        <CollectionSearchBar
+          value={search}
+          onChange={setSearch}
+          placeholder="Search players, teams, collections..."
+          style={{ marginHorizontal: pagePadding, marginTop: 13, marginBottom: 4 }}
+        />
+      )}
 
       {loading ? (
         <View style={styles.center}>
@@ -271,9 +303,13 @@ export default function CollectionScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      ) : filteredFolders.length === 0 ? (
+        <View style={styles.center}>
+          <Text style={styles.noResultsText}>No matches for &quot;{search}&quot;</Text>
+        </View>
       ) : (
         <FlatList
-          data={folders}
+          data={filteredFolders}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
@@ -285,7 +321,7 @@ export default function CollectionScreen() {
               isExpanded={isExpanded(item.id)}
               onToggle={() => toggle(item.id)}
               onOpenFolder={() => openFolder(item)}
-              onOpenItem={openItem}
+              onOpenGroup={(group) => openGroup(item, group)}
               onAddItem={() => addItem(item)}
             />
           )}
@@ -385,6 +421,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
+  },
+  noResultsText: {
+    fontSize: 14,
+    color: PV2.textSecondary,
   },
   // ── Empty state — same restrained dark-panel language as the Profile
   // page's collector panel (reuses its exact bg/border tokens), not the

@@ -2,6 +2,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { CollectionHeaderRow } from '@/components/collection/collection-header-row';
 import { HorizontalCardPreview } from '@/components/collection/horizontal-card-preview';
+import type { PlayerGroup } from '@/hooks/use-collection';
 import type { CollectionItem } from '@/types';
 
 type Props = {
@@ -11,7 +12,7 @@ type Props = {
   isExpanded: boolean;
   onToggle: () => void;
   onOpenFolder?: () => void;
-  onOpenItem: (item: CollectionItem) => void;
+  onOpenGroup: (group: PlayerGroup) => void;
   onAddItem: () => void;
 };
 
@@ -39,7 +40,7 @@ export function CollectionPreviewSection({
   isExpanded,
   onToggle,
   onOpenFolder,
-  onOpenItem,
+  onOpenGroup,
   onAddItem,
 }: Props) {
   return (
@@ -55,7 +56,7 @@ export function CollectionPreviewSection({
         <HorizontalCardPreview
           folderId={folderId}
           items={items}
-          onItemPress={onOpenItem}
+          onOpenGroup={onOpenGroup}
           onAddItem={onAddItem}
         />
       )}
