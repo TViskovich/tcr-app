@@ -27,6 +27,17 @@ export default function NewPostScreen() {
   const charCount = text.length;
   const canPost = text.trim().length > 0 && charCount <= MAX_CHARS && !posting;
 
+  // No back history when this screen was deep-linked, reloaded directly, or
+  // opened during development — fall back to the main feed, where the Create
+  // menu that opens this screen always lives and where the new post appears.
+  function leaveScreen() {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/');
+    }
+  }
+
   async function handlePost() {
     if (!canPost || !session?.user?.id) return;
     setPosting(true);
@@ -40,7 +51,7 @@ export default function NewPostScreen() {
       setPosting(false);
       return;
     }
-    router.back();
+    leaveScreen();
   }
 
   return (
@@ -49,7 +60,7 @@ export default function NewPostScreen() {
         options={{
           title: 'New Post',
           headerLeft: () => (
-            <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
+            <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
               <Text style={styles.headerCancel}>Cancel</Text>
             </TouchableOpacity>
           ),

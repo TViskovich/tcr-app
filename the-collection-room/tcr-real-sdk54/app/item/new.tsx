@@ -152,7 +152,16 @@ export default function AddItemScreen() {
         }
       }
 
-      router.back();
+      // No back history when this screen was deep-linked, reloaded directly,
+      // or opened during development — fall back to the folder we just added
+      // to (if we know which one), otherwise the canonical Collection tab.
+      if (router.canGoBack()) {
+        router.back();
+      } else if (folderId) {
+        router.replace({ pathname: '/collection/[folderId]', params: { folderId } });
+      } else {
+        router.replace('/collection');
+      }
     } catch (e: unknown) {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {

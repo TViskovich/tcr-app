@@ -90,14 +90,17 @@ function formatAge(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-// Hacker News-style gravity decay with engagement and social signals.
-// hoursOld+2 prevents division by near-zero for brand-new posts.
-function scorePost(post: FeedPost): number {
-  const hoursOld = (Date.now() - new Date(post.created_at).getTime()) / 3_600_000;
-  const engagement = 1 + post.likeCount + post.commentCount * 2;
-  const followBoost = post.isFollowing ? 3 : 1;
-  const hasImage = post.image_url ? 1.5 : 1;
-  return (engagement * hasImage * followBoost) / Math.pow(hoursOld + 2, 1.8);
+// Canonical feed chronology — every dataset this screen renders (initial
+// load, refresh, pagination merges) must end up sorted strictly by the post
+// record's own created_at, newest first, regardless of post type. Missing/
+// malformed timestamps sort to the bottom (0), never the top. Returns a new
+// array — never mutates the one passed in.
+function sortPostsByCreatedAtDesc(list: FeedPost[]): FeedPost[] {
+  return [...list].sort((a, b) => {
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return bTime - aTime;
+  });
 }
 
 const PAGE_SIZE = 20;
@@ -194,7 +197,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     };
   });
 
-  return posts.sort((a, b) => scorePost(b) - scorePost(a));
+  return sortPostsByCreatedAtDesc(posts);
 }
 
 async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
@@ -256,8 +259,9 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
 
   const { cardsMap, ratingTotals } = grailData;
 
-  // Already newest-first from .order('created_at', { ascending: false }) — no ranking applied
-  return (postRows as any[]).map((post) => {
+  // Query already orders by created_at DESC; wrapped in the same canonical
+  // sort as queryFeed so both paths share one ordering guarantee.
+  return sortPostsByCreatedAtDesc((postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
     const rating = ratingTotals.get(post.id);
@@ -282,7 +286,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
     };
-  });
+  }));
 }
 
 export default function HomeScreen() {
@@ -339,7 +343,17 @@ export default function HomeScreen() {
       feedMode === 'for-you'
         ? await queryFeed(currentUserId, nextPage)
         : await queryFollowingFeed(currentUserId, nextPage);
-    if (data.length > 0) setPosts((prev) => [...prev, ...data]);
+    if (data.length > 0) {
+      // Merge, dedupe by post ID (a page boundary can shift if a new post
+      // lands mid-fetch), then re-sort globally — appending pages blindly
+      // would only be valid if both halves were already perfectly ordered
+      // and non-overlapping.
+      setPosts((prev) => {
+        const seenIds = new Set(prev.map((p) => p.id));
+        const merged = [...prev, ...data.filter((p) => !seenIds.has(p.id))];
+        return sortPostsByCreatedAtDesc(merged);
+      });
+    }
     setPage(nextPage);
     setHasMore(data.length === PAGE_SIZE);
     setLoadingMore(false);
