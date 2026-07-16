@@ -13,7 +13,7 @@ import { MessageBadgeRefreshContext } from '@/lib/message-badge-context';
 import { TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
-const HIDDEN_TABS = new Set(['notifications', 'settings']);
+const HIDDEN_TABS = new Set(['notifications']);
 
 const BAR_HEIGHT = 74;
 const BAR_BG = '#090A10';
@@ -228,10 +228,6 @@ export default function TabLayout() {
                 title: 'Profile',
                 tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
               }}
-            />
-            <Tabs.Screen
-              name="settings"
-              options={{ href: null }}
             />
           </Tabs>
         </MessageBadgeRefreshContext.Provider>
