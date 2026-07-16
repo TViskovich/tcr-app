@@ -26,19 +26,21 @@ export function CreateMenu({ visible, onClose }: Props) {
   // TODO: Share Card — no card-picker or per-card share entry point exists yet
   // (app/item/[id].tsx has no share action). Real implementation needs a card
   // picker, then a Share.share() call — see handleShareFolder below for the
-  // exact pattern to reuse (app/folder/[id].tsx already does this for folders).
+  // exact pattern to reuse (app/collection/[folderId].tsx already does this
+  // for folders).
   function handleShareCard() {
     onClose();
-    Alert.alert('Share Card', 'Sharing an individual card is coming soon.');
+    Alert.alert('Card sharing', "Shareable card links aren't available yet.");
   }
 
-  // TODO: Share Folder — app/folder/[id].tsx already has a working Share.share()
-  // call (see its handleShare), but it operates on a folder already loaded in
-  // that screen's state. This menu has no folder selected yet, so there's
-  // nothing to reuse directly until a folder-picker exists here.
+  // TODO: Share Folder — app/collection/[folderId].tsx already has a working
+  // Share.share() call (see its handleShare), but it operates on a folder
+  // already loaded in that screen's state. This menu has no folder selected
+  // yet, so there's nothing to reuse directly until a folder-picker exists
+  // here.
   function handleShareFolder() {
     onClose();
-    Alert.alert('Share Folder', 'Sharing a folder from here is coming soon.');
+    Alert.alert('Folder sharing', "Public folder links aren't available yet.");
   }
 
   function handleRateMyGrails() {

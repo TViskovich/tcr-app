@@ -1,6 +1,6 @@
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth';
@@ -13,9 +13,13 @@ type Row = {
 
 export default function SettingsScreen() {
   const { signOut, session } = useAuth();
+  const router = useRouter();
 
+  // Activity = likes, comments, follows, messages, Grail ratings — exactly
+  // what the Notifications screen already shows (also reachable via the
+  // feed's bell icon), so this reuses it rather than a separate screen.
   function handleActivity() {
-    Alert.alert('Activity', 'Coming soon.');
+    router.push('/(tabs)/notifications');
   }
 
   function handleSignOut() {

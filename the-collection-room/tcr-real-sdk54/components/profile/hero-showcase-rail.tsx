@@ -79,19 +79,26 @@ type Props = {
 
 export function HeroShowcaseRail({
   items = DEFAULT_ITEMS,
+  onPillPress,
 }: Props) {
   const router = useRouter();
   const scrollX = useRef(new Animated.Value(0)).current;
   const [selectedItem, setSelectedItem] = useState<RailItem | null>(null);
 
   function handleRailAction(item: RailItem) {
-    console.log('[Rail] action:', item.id, '|', item.type, '|', item.action ?? '—');
     if (item.action === 'add-card') {
       setSelectedItem(null);
       router.push('/item/new');
       return;
     }
-    // Future: dispatch navigation based on item.id / item.destination
+    // 'grails' already has a real destination wired by the caller
+    // (app/user/[username].tsx routes it to /grails/[userId]) — use that
+    // instead of the generic detail sheet. Other stat/achievement pills
+    // have no real destination yet, so they keep the sheet fallback.
+    if (item.id === 'grails' && onPillPress) {
+      onPillPress(item.id);
+      return;
+    }
     setSelectedItem(item);
   }
 
