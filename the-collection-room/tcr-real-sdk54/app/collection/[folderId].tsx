@@ -5,6 +5,7 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
 import {
   CollectionPreviewCard,
   PREVIEW_CARD_ASPECT_RATIO,
@@ -27,6 +28,35 @@ import type { CollectionItem } from '@/types';
 // ItemSeparatorComponent (unreliable with numColumns > 1).
 const NUM_COLUMNS = 2;
 const GRID_GAP = 3;
+
+// Restrained fixed target for the "intended initial grid" — real tiles
+// always render first; ghost shells only pad up to this many total slots
+// (or, once real content already meets/exceeds it, just complete whatever
+// row is currently dangling). Never grows into a long trailing field of
+// placeholders down the page.
+const MIN_GRID_SLOTS = 4;
+
+type GridSlot<T> = { kind: 'real'; data: T } | { kind: 'placeholder'; key: string };
+
+function toRealSlots<T>(data: T[]): GridSlot<T>[] {
+  return data.map((item) => ({ kind: 'real', data: item }));
+}
+
+// Pads with generated, local-only CacheCasePlaceholderShell tiles — never
+// persisted, never tappable, never part of counts or search. Below the
+// fixed minimum, pads up to exactly MIN_GRID_SLOTS; at or above it, only
+// completes the currently-dangling row.
+function padToMinimumGrid<T>(data: T[], keyPrefix: string): GridSlot<T>[] {
+  if (data.length === 0) return [];
+  const target =
+    data.length >= MIN_GRID_SLOTS ? Math.ceil(data.length / NUM_COLUMNS) * NUM_COLUMNS : MIN_GRID_SLOTS;
+  const padCount = Math.max(0, target - data.length);
+  const placeholders: GridSlot<T>[] = Array.from({ length: padCount }, (_, i) => ({
+    kind: 'placeholder',
+    key: `${keyPrefix}-${i}`,
+  }));
+  return [...toRealSlots(data), ...placeholders];
+}
 
 // The gallery for one folder — "a folder that holds folders": opening a
 // top-level category (Basketball, Baseball, ...) first reveals its
@@ -88,6 +118,18 @@ export default function CollectionFolderScreen() {
     return cardItems.filter((item) => itemMatchesSearch(item, q));
   }, [cardItems, search]);
 
+  // No ghost padding while a search is active — placeholders represent
+  // "grow your real collection here," not a layout for search results.
+  const cardSlots = useMemo(() => {
+    if (search.trim()) return toRealSlots(filteredCardItems);
+    return padToMinimumGrid(filteredCardItems, `item-placeholder-${folderId}`);
+  }, [filteredCardItems, search, folderId]);
+
+  const groupSlots = useMemo(() => {
+    if (search.trim()) return toRealSlots(filteredGroups);
+    return padToMinimumGrid(filteredGroups, `folder-placeholder-${folderId}`);
+  }, [filteredGroups, search, folderId]);
+
   const isCardMode = !!activePlayer;
   const screenTitle = isCardMode ? (activePlayer === NO_PLAYER_KEY ? 'Other' : activePlayer!) : folderTitle;
   const visibleCount = isCardMode ? cardItems.length : items.length;
@@ -118,32 +160,69 @@ export default function CollectionFolderScreen() {
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView style={styles.container} edges={['bottom']}>
-        <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
-            <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-          </Pressable>
+        {isCardMode ? (
+          // Individual-card gallery gets its own large "cover" header instead
+          // of the compact bar below — grouping mode is untouched. Back/add
+          // float as circular buttons over the hero box rather than sitting
+          // in a row, matching the mockup; the button row it reserves space
+          // for (like/search/bookmark/share) is intentionally not built yet.
+          <View style={[styles.heroSection, { paddingTop: insets.top + 56 }]}>
+            <View style={styles.heroBox}>
+              <View style={styles.heroTextWrap}>
+                <Text style={styles.heroTitle} numberOfLines={1}>
+                  {screenTitle}
+                </Text>
+                {!showInitialLoading && (
+                  <Text style={styles.heroCount}>ITEMS {String(visibleCount).padStart(2, '0')}</Text>
+                )}
+              </View>
+            </View>
 
-          <View style={styles.titleArea}>
-            <Text style={styles.title} numberOfLines={1}>
-              {screenTitle}
-            </Text>
-            {!showInitialLoading && (
-              <Text style={styles.count}>
-                {visibleCount} {visibleCount === 1 ? 'Card' : 'Cards'}
-              </Text>
-            )}
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={[styles.heroCircleBtn, styles.heroBackCircle, { top: insets.top + 12 }]}>
+              <IconSymbol name="chevron.left" size={20} color="#fff" />
+            </Pressable>
+
+            <Pressable
+              onPress={addCard}
+              hitSlop={12}
+              style={[styles.heroCircleBtn, styles.heroAddCircle, { top: insets.top + 62 }]}>
+              <IconSymbol name="plus" size={18} color="#fff" />
+            </Pressable>
+
+            {/* Reserved space for the like/search/bookmark/share row — not built yet. */}
+            <View style={styles.heroActionsGap} />
           </View>
+        ) : (
+          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
+            </Pressable>
 
-          <Pressable onPress={addCard} hitSlop={12} style={styles.iconBtn}>
-            <IconSymbol name="plus" size={22} color={PV2.textPrimary} />
-          </Pressable>
-        </View>
+            <View style={styles.titleArea}>
+              <Text style={styles.title} numberOfLines={1}>
+                {screenTitle}
+              </Text>
+              {!showInitialLoading && (
+                <Text style={styles.count}>
+                  {visibleCount} {visibleCount === 1 ? 'Card' : 'Cards'}
+                </Text>
+              )}
+            </View>
 
-        {!showInitialLoading && items.length > 0 && (
+            <Pressable onPress={addCard} hitSlop={12} style={styles.iconBtn}>
+              <IconSymbol name="plus" size={22} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+        )}
+
+        {!isCardMode && !showInitialLoading && items.length > 0 && (
           <CollectionSearchBar
             value={search}
             onChange={setSearch}
-            placeholder={isCardMode ? 'Search this player’s cards...' : 'Search players, teams...'}
+            placeholder="Search players, teams..."
             style={styles.searchBar}
           />
         )}
@@ -154,27 +233,36 @@ export default function CollectionFolderScreen() {
           </View>
         ) : isCardMode ? (
           <FlatList
-            data={filteredCardItems}
+            data={cardSlots}
             numColumns={NUM_COLUMNS}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
             columnWrapperStyle={styles.row}
-            contentContainerStyle={styles.gridContent}
-            renderItem={({ item }) => (
-              <Pressable
-                style={[styles.thumb, { width: thumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-                onPress={() => openItem(item)}>
-                {item.image_url ? (
-                  <Image
-                    source={{ uri: item.image_url }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="cover"
-                    transition={150}
-                  />
-                ) : (
-                  <View style={styles.thumbPlaceholder} />
-                )}
-              </Pressable>
-            )}
+            contentContainerStyle={[styles.gridContent, styles.cardGridContent]}
+            renderItem={({ item: slot }) =>
+              slot.kind === 'placeholder' ? (
+                <CacheCasePlaceholderShell
+                  width={thumbWidth}
+                  aspectRatio={PREVIEW_CARD_ASPECT_RATIO}
+                  borderRadius={PREVIEW_CARD_RADIUS}
+                  accessibilityLabel="Empty card slot"
+                />
+              ) : (
+                <Pressable
+                  style={[styles.thumb, { width: thumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+                  onPress={() => openItem(slot.data)}>
+                  {slot.data.image_url ? (
+                    <Image
+                      source={{ uri: slot.data.image_url }}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                      transition={150}
+                    />
+                  ) : (
+                    <View style={styles.thumbPlaceholder} />
+                  )}
+                </Pressable>
+              )
+            }
             ListEmptyComponent={
               search.trim() && cardItems.length > 0 ? (
                 <View style={styles.emptyWrap}>
@@ -194,12 +282,23 @@ export default function CollectionFolderScreen() {
           />
         ) : (
           <FlatList
-            data={filteredGroups}
+            data={groupSlots}
             numColumns={NUM_COLUMNS}
-            keyExtractor={(group) => group.key}
+            keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.key : slot.key)}
             columnWrapperStyle={styles.row}
             contentContainerStyle={styles.gridContent}
-            renderItem={({ item: group }) => {
+            renderItem={({ item: slot }) => {
+              if (slot.kind === 'placeholder') {
+                return (
+                  <CacheCasePlaceholderShell
+                    width={thumbWidth}
+                    aspectRatio={PREVIEW_CARD_ASPECT_RATIO}
+                    borderRadius={PREVIEW_CARD_RADIUS}
+                    accessibilityLabel="Empty folder slot"
+                  />
+                );
+              }
+              const group = slot.data;
               const cover = group.items.find((i) => i.image_url)?.image_url ?? null;
               return (
                 <CollectionPreviewCard
@@ -265,6 +364,58 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: PV2.textSecondary,
   },
+  // Card-mode-only "cover" header — a large gray banner behind the title/
+  // count, with the back/add buttons floating above it as circles rather
+  // than living in a row (see the mockup this was built from).
+  heroSection: {
+    paddingHorizontal: 12,
+  },
+  heroBox: {
+    width: '100%',
+    aspectRatio: 1.55,
+    borderRadius: 20,
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+  },
+  heroTextWrap: {
+    padding: 18,
+  },
+  heroTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: PV2.textPrimary,
+  },
+  heroCount: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: PV2.textSecondary,
+    textTransform: 'uppercase',
+  },
+  heroCircleBtn: {
+    position: 'absolute',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroBackCircle: {
+    left: 12,
+  },
+  heroAddCircle: {
+    right: 17,
+  },
+  // Empty on purpose — reserved for the like/search/bookmark/share row from
+  // the mockup, which isn't being built yet.
+  heroActionsGap: {
+    height: 44,
+  },
   searchBar: {
     marginHorizontal: 12,
     marginBottom: 10,
@@ -282,6 +433,10 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 24,
     flexGrow: 1,
+  },
+  // Card mode only — pulls the grid up closer to the hero header below it.
+  cardGridContent: {
+    paddingTop: 3,
   },
   // Same look as CollectionPreviewCard's own tile (bordered dark panel,
   // rounded corners) so individual-card thumbnails match the Collection
