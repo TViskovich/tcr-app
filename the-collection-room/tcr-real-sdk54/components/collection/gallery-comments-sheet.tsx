@@ -28,7 +28,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useFolderComments, type FolderComment } from '@/hooks/use-folder-comments';
+import { useGalleryComments, type GalleryComment } from '@/hooks/use-gallery-comments';
 
 // Dragging the sheet down past this many px, or flicking it down fast
 // enough, dismisses it — otherwise it snaps back to resting position.
@@ -48,7 +48,7 @@ function CommentRow({
   isOwn,
   onDelete,
 }: {
-  comment: FolderComment;
+  comment: GalleryComment;
   isOwn: boolean;
   onDelete: (id: string) => void;
 }) {
@@ -84,17 +84,18 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   folderId: string | undefined;
-  folderTitle: string;
+  playerKey: string | undefined;
+  galleryTitle: string;
   currentUserId: string | undefined;
 };
 
-// Bottom sheet for discussing one specific folder's cards — opened from the
-// chat-bubble icon in app/collection/[folderId].tsx's header. Slides up
-// from the bottom on open; a downward swipe (or tapping the backdrop)
-// slides it back down and dismisses it. Kept mounted through the close
-// animation (parent's `visible` flips to false only once the slide-down
-// finishes) so the dismissal is never an abrupt cut.
-export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, currentUserId }: Props) {
+// Bottom sheet for discussing one specific player-group gallery within a
+// folder — opened from the chat-bubble icon in app/collection/[folderId].tsx's
+// card-mode header. Own comment thread per (folderId, playerKey), separate
+// from FolderCommentsSheet's whole-folder thread. Same slide/gesture/
+// keyboard behavior as FolderCommentsSheet (kept mounted through the close
+// animation so dismissal is never an abrupt cut).
+export function GalleryCommentsSheet({ visible, onClose, folderId, playerKey, galleryTitle, currentUserId }: Props) {
   const { height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const sheetHeight = screenHeight * SHEET_HEIGHT_RATIO;
@@ -103,8 +104,9 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
   const [mounted, setMounted] = useState(false);
   const [draft, setDraft] = useState('');
 
-  const { comments, loading, sending, addComment, deleteComment } = useFolderComments(
+  const { comments, loading, sending, addComment, deleteComment } = useGalleryComments(
     mounted ? folderId : undefined,
+    mounted ? playerKey : undefined,
     currentUserId,
   );
 
@@ -207,7 +209,7 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
 
               <View style={styles.header}>
                 <Text style={styles.headerTitle} numberOfLines={1}>
-                  {folderTitle} — Comments
+                  {galleryTitle} — Comments
                 </Text>
                 <Pressable onPress={dismiss} hitSlop={10}>
                   <IconSymbol name="chevron.left" size={20} color={PV2.textSecondary} style={styles.closeIcon} />

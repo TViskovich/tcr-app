@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, Share, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
@@ -13,6 +26,7 @@ import {
 } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
+import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-sheet';
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -23,10 +37,27 @@ import {
   useItems,
   type PlayerGroup,
 } from '@/hooks/use-collection';
+import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { CollectionItem, Folder } from '@/types';
+
+// Wraps expo-image's Image so the hero's overlay layer can drive its
+// opacity from a Reanimated shared value on the UI thread.
+const AnimatedExpoImage = Animated.createAnimatedComponent(Image);
+
+// Swipe-to-advance threshold for the hero preview — below this, the
+// gesture is treated as a tap/scroll attempt, not a page change.
+const HERO_SWIPE_THRESHOLD = 40;
+// Fixed crossfade duration for hero image transitions (swipe or grid tap).
+const HERO_TRANSITION_DURATION = 240;
+// Top-biased focal crop for the hero image — expo-image's own contentFit
+// "cover" + contentPosition combination, not a manual translateY hack.
+// top: '0%' means the source image's own top edge is never cropped (excess
+// height is trimmed from the bottom instead), so a card's face/upper body
+// stays fully visible. Applied identically to every hero image layer.
+const HERO_IMAGE_CONTENT_POSITION = { top: '0%', left: '50%' } as const;
 
 type OwnerProfile = {
   username: string;
@@ -38,6 +69,10 @@ type OwnerProfile = {
 // columnWrapperStyle gap support — no per-item margin math, no
 // ItemSeparatorComponent (unreliable with numColumns > 1).
 const NUM_COLUMNS = 2;
+// Individual-card gallery (isCardMode) uses a denser 3-column grid than the
+// grouping grid above — only affects that grid's own columns/padding/tile
+// width, computed separately below.
+const CARD_NUM_COLUMNS = 3;
 const GRID_GAP = 3;
 
 // Restrained fixed target for the "intended initial grid" — real tiles
@@ -57,10 +92,10 @@ function toRealSlots<T>(data: T[]): GridSlot<T>[] {
 // persisted, never tappable, never part of counts or search. Below the
 // fixed minimum, pads up to exactly MIN_GRID_SLOTS; at or above it, only
 // completes the currently-dangling row.
-function padToMinimumGrid<T>(data: T[], keyPrefix: string): GridSlot<T>[] {
+function padToMinimumGrid<T>(data: T[], keyPrefix: string, columns: number): GridSlot<T>[] {
   if (data.length === 0) return [];
   const target =
-    data.length >= MIN_GRID_SLOTS ? Math.ceil(data.length / NUM_COLUMNS) * NUM_COLUMNS : MIN_GRID_SLOTS;
+    data.length >= MIN_GRID_SLOTS ? Math.ceil(data.length / columns) * columns : MIN_GRID_SLOTS;
   const padCount = Math.max(0, target - data.length);
   const placeholders: GridSlot<T>[] = Array.from({ length: padCount }, (_, i) => ({
     kind: 'placeholder',
@@ -114,8 +149,13 @@ export default function CollectionFolderScreen() {
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [editVisible, setEditVisible] = useState(false);
   const [commentsVisible, setCommentsVisible] = useState(false);
+  // Separate from commentsVisible/FolderCommentsSheet (whole-folder
+  // comments, grouping mode) — the gallery/card-mode comment thread is its
+  // own, scoped to this folder+player group. See GalleryCommentsSheet.
+  const [galleryCommentsVisible, setGalleryCommentsVisible] = useState(false);
 
   const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
+  const { likeCount, liked, toggle: toggleFolderLike } = useFolderLikes(folderId, currentUserId);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +194,7 @@ export default function CollectionFolderScreen() {
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
   const thumbWidth = (windowWidth - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
+  const cardThumbWidth = (windowWidth - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
 
   const groups = useMemo(() => groupItemsByPlayer(items), [items]);
 
@@ -163,6 +204,98 @@ export default function CollectionFolderScreen() {
       ? items.filter((i) => !i.player?.trim())
       : items.filter((i) => i.player?.trim() === activePlayer);
   }, [items, activePlayer]);
+
+  // Hero preview — a stable collection cover, not an auto-playing slideshow.
+  // Ordered newest-first (useItems already orders collection_items by
+  // created_at DESC), so index 0 doubles as both "default cover" and
+  // "newest item" — there's no separate per-player-group cover-selection
+  // concept in the data model to draw a distinct "selected cover" from.
+  const heroItems = useMemo(() => cardItems.filter((i) => !!i.image_url), [cardItems]);
+  const [heroIndex, setHeroIndex] = useState(0);
+  // Non-null only while a transition is in flight — the overlay layer
+  // renders (and fades in) exactly when this is set, then disappears once
+  // the transition commits and heroIndex catches up to it.
+  const [heroPendingIndex, setHeroPendingIndex] = useState<number | null>(null);
+  const heroOverlayOpacity = useSharedValue(0);
+  const [reduceMotionEnabled, setReduceMotionEnabled] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (isMounted) setReduceMotionEnabled(enabled);
+    });
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotionEnabled);
+    return () => {
+      isMounted = false;
+      sub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    setHeroIndex(0);
+    setHeroPendingIndex(null);
+    heroOverlayOpacity.value = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderId, activePlayer]);
+
+  // Warm the cache for every image in this gallery up front, so a swipe or
+  // grid tap never has to wait on a network fetch mid-transition.
+  useEffect(() => {
+    const uris = heroItems.map((i) => i.image_url!);
+    if (uris.length) Image.prefetch(uris).catch(() => {});
+  }, [heroItems]);
+
+  // Single entry point for every hero change (swipe or grid tap) — decodes
+  // the target image first, then runs one 240ms opacity crossfade on the UI
+  // thread. No timers, no automatic advancing; only ever called from a
+  // discrete user action.
+  function goToHeroIndex(targetIndex: number) {
+    if (targetIndex < 0 || targetIndex >= heroItems.length) return;
+    if (targetIndex === heroIndex || heroPendingIndex !== null) return;
+
+    const commit = () => {
+      setHeroIndex(targetIndex);
+      setHeroPendingIndex(null);
+      heroOverlayOpacity.value = 0;
+    };
+
+    if (reduceMotionEnabled) {
+      commit();
+      return;
+    }
+
+    const targetUri = heroItems[targetIndex].image_url!;
+    setHeroPendingIndex(targetIndex);
+    heroOverlayOpacity.value = 0;
+    Image.prefetch(targetUri)
+      .catch(() => {})
+      .finally(() => {
+        heroOverlayOpacity.value = withTiming(1, { duration: HERO_TRANSITION_DURATION }, (finished) => {
+          if (finished) runOnJS(commit)();
+        });
+      });
+  }
+
+  function goToNextHero() {
+    goToHeroIndex(heroIndex + 1);
+  }
+
+  function goToPreviousHero() {
+    goToHeroIndex(heroIndex - 1);
+  }
+
+  const heroOverlayStyle = useAnimatedStyle(() => ({ opacity: heroOverlayOpacity.value }));
+
+  const heroPan = Gesture.Pan()
+    .activeOffsetX([-10, 10])
+    .failOffsetY([-15, 15])
+    .onEnd((e) => {
+      if (e.translationX <= -HERO_SWIPE_THRESHOLD) {
+        runOnJS(goToNextHero)();
+      } else if (e.translationX >= HERO_SWIPE_THRESHOLD) {
+        runOnJS(goToPreviousHero)();
+      }
+    });
 
   // Filters what's already loaded (the full per-folder item set from
   // useItems, not a capped preview) — no new query per keystroke. A group
@@ -187,12 +320,12 @@ export default function CollectionFolderScreen() {
   // "grow your real collection here," not a layout for search results.
   const cardSlots = useMemo(() => {
     if (search.trim()) return toRealSlots(filteredCardItems);
-    return padToMinimumGrid(filteredCardItems, `item-placeholder-${folderId}`);
+    return padToMinimumGrid(filteredCardItems, `item-placeholder-${folderId}`, CARD_NUM_COLUMNS);
   }, [filteredCardItems, search, folderId]);
 
   const groupSlots = useMemo(() => {
     if (search.trim()) return toRealSlots(filteredGroups);
-    return padToMinimumGrid(filteredGroups, `folder-placeholder-${folderId}`);
+    return padToMinimumGrid(filteredGroups, `folder-placeholder-${folderId}`, NUM_COLUMNS);
   }, [filteredGroups, search, folderId]);
 
   const isCardMode = !!activePlayer;
@@ -200,6 +333,8 @@ export default function CollectionFolderScreen() {
   const visibleCount = isCardMode ? cardItems.length : items.length;
 
   function openItem(item: CollectionItem) {
+    const heroIdx = heroItems.findIndex((i) => i.id === item.id);
+    if (heroIdx !== -1) goToHeroIndex(heroIdx);
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
   }
 
@@ -262,7 +397,7 @@ export default function CollectionFolderScreen() {
       <>
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
-          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+          <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
             <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
               <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
             </Pressable>
@@ -280,7 +415,7 @@ export default function CollectionFolderScreen() {
       <>
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
-          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+          <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
             <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
               <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
             </Pressable>
@@ -295,133 +430,226 @@ export default function CollectionFolderScreen() {
     );
   }
 
-  const showBookmark = !isOwner && !!currentUserId && folder.is_public;
+  const showBookmark = !!currentUserId;
 
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView style={styles.container} edges={['bottom']}>
         {isCardMode ? (
-          // Individual-card gallery gets its own large "cover" header instead
-          // of the compact bar below — grouping mode is untouched. Back/add
-          // float as circular buttons over the hero box rather than sitting
-          // in a row, matching the mockup; the button row it reserves space
-          // for (like/search/bookmark/share) is intentionally not built yet.
-          <View style={[styles.heroSection, { paddingTop: insets.top + 56 }]}>
-            <View style={styles.heroBox}>
-              <View style={styles.heroTextWrap}>
-                <Text style={styles.heroTitle} numberOfLines={1}>
-                  {screenTitle}
-                </Text>
-                {!showInitialLoading && (
-                  <Text style={styles.heroCount}>ITEMS {String(visibleCount).padStart(2, '0')}</Text>
+          // Individual-card gallery — layout only for now (matches the
+          // latest mockup): top bar with back/add/menu, the hero cover box,
+          // then an action row (like/comment left, search/bookmark/share
+          // right). Only the search icon has no handler yet — everything
+          // else reuses the folder-level actions already wired below.
+          <>
+            <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
+              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.heroBackCircleBtn}>
+                <IconSymbol name="chevron.left" size={20} color="#fff" />
+              </Pressable>
+
+              <View style={styles.headerTopActions}>
+                {isOwner && (
+                  <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
+                  </Pressable>
+                )}
+                {isOwner && (
+                  <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
+                  </Pressable>
                 )}
               </View>
             </View>
 
-            <Pressable
-              onPress={() => router.back()}
-              hitSlop={12}
-              style={[styles.heroCircleBtn, styles.heroBackCircle, { top: insets.top + 12 }]}>
-              <IconSymbol name="chevron.left" size={20} color="#fff" />
-            </Pressable>
+            <View style={styles.heroSection}>
+              <GestureDetector gesture={heroPan}>
+                <View style={styles.heroBox}>
+                  {heroItems.length > 0 && (
+                    <>
+                      {/* Base layer — the committed, settled image. Never
+                          animates itself; only the overlay below does.
+                          contentPosition top:'0%' keeps the source image's
+                          own top edge (face/upper body) fully uncropped —
+                          cover-fit trims the excess from the bottom instead. */}
+                      <Image
+                        source={{ uri: heroItems[heroIndex].image_url! }}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="cover"
+                        contentPosition={HERO_IMAGE_CONTENT_POSITION}
+                      />
+                      {/* Overlay — present only mid-transition, crossfades
+                          the incoming image on top of the base layer. Once
+                          fully opaque, heroIndex commits to match and this
+                          layer unmounts with no visible change. Same
+                          contentPosition as the base layer so nothing jumps
+                          vertically during the crossfade. */}
+                      {heroPendingIndex !== null && (
+                        <AnimatedExpoImage
+                          source={{ uri: heroItems[heroPendingIndex].image_url! }}
+                          style={[StyleSheet.absoluteFill, heroOverlayStyle]}
+                          contentFit="cover"
+                          contentPosition={HERO_IMAGE_CONTENT_POSITION}
+                        />
+                      )}
+                      <LinearGradient
+                        colors={['transparent', 'rgba(0,0,0,0.75)']}
+                        style={StyleSheet.absoluteFill}
+                        pointerEvents="none"
+                      />
+                      {heroItems.length > 1 && (
+                        <View style={styles.heroCounterBadge} pointerEvents="none">
+                          <Text style={styles.heroCounterText}>
+                            {(heroPendingIndex ?? heroIndex) + 1} / {heroItems.length}
+                          </Text>
+                        </View>
+                      )}
+                    </>
+                  )}
+                  <View style={styles.heroTextWrap}>
+                    <Text style={styles.heroTitle} numberOfLines={1}>
+                      {screenTitle}
+                    </Text>
+                    {!showInitialLoading && (
+                      <Text style={styles.heroCount}>ITEMS {String(visibleCount).padStart(2, '0')}</Text>
+                    )}
+                  </View>
+                </View>
+              </GestureDetector>
+            </View>
 
-            {isOwner && (
-              <Pressable
-                onPress={addCard}
-                hitSlop={12}
-                style={[styles.heroCircleBtn, styles.heroAddCircle, { top: insets.top + 62 }]}>
-                <IconSymbol name="plus" size={18} color="#fff" />
+            <View style={styles.galleryActionsRow}>
+              <View style={styles.galleryActionsSide}>
+                <Pressable onPress={toggleFolderLike} hitSlop={10} style={styles.likeBtn}>
+                  <IconSymbol
+                    name={liked ? 'heart.fill' : 'heart'}
+                    size={20}
+                    color={liked ? PV2.accent : PV2.textPrimary}
+                  />
+                  <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+                </Pressable>
+                <Pressable onPress={() => setGalleryCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+                </Pressable>
+              </View>
+
+              <View style={styles.galleryActionsSide}>
+                {/* Not wired yet — layout placeholder. */}
+                <Pressable hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="magnifyingglass" size={20} color={PV2.textPrimary} />
+                </Pressable>
+                {showBookmark && (
+                  <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol
+                      name={isSaved ? 'bookmark.fill' : 'bookmark'}
+                      size={20}
+                      color={isSaved ? PV2.accent : PV2.textPrimary}
+                    />
+                  </Pressable>
+                )}
+                <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+                </Pressable>
+              </View>
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
+              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+                <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
               </Pressable>
+
+              <View style={styles.headerTopActions}>
+                {isOwner && (
+                  <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
+                  </Pressable>
+                )}
+                {isOwner && (
+                  <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
+                  </Pressable>
+                )}
+              </View>
+            </View>
+
+            {!showInitialLoading && items.length > 0 && (
+              <CollectionSearchBar
+                value={search}
+                onChange={setSearch}
+                placeholder="Search players, teams..."
+                style={styles.searchBar}
+              />
             )}
 
-            {/* Reserved space for the like/search/bookmark/share row — not built yet. */}
-            <View style={styles.heroActionsGap} />
-          </View>
-        ) : (
-          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
-            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
-              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-            </Pressable>
-
-            <View style={styles.titleArea}>
-              <Text style={styles.title} numberOfLines={1}>
-                {screenTitle}
-              </Text>
-              {!showInitialLoading && (
-                <Text style={styles.count}>
-                  {visibleCount} {visibleCount === 1 ? 'Card' : 'Cards'}
+            <View style={styles.titleRow}>
+              <View style={styles.titleTextArea}>
+                <Text style={styles.title} numberOfLines={1}>
+                  {screenTitle}
                 </Text>
-              )}
-            </View>
 
-            <View style={styles.headerActions}>
-              {showBookmark && (
-                <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol
-                    name={isSaved ? 'bookmark.fill' : 'bookmark'}
-                    size={20}
-                    color={isSaved ? PV2.accent : PV2.textPrimary}
-                  />
-                </Pressable>
-              )}
-              <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                <IconSymbol name="message" size={20} color={PV2.textPrimary} />
-              </Pressable>
-              <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
-                <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
-              </Pressable>
-              {isOwner && (
-                <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="square.and.pencil" size={20} color={PV2.textPrimary} />
-                </Pressable>
-              )}
-              {isOwner && (
-                <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="plus" size={22} color={PV2.textPrimary} />
-                </Pressable>
-              )}
-            </View>
-          </View>
-        )}
-
-        {!isCardMode && !isOwner && ownerProfile && (
-          <Pressable
-            style={styles.ownerRow}
-            onPress={() =>
-              router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
-            }>
-            <View style={styles.ownerAvatar}>
-              {ownerProfile.avatar_url ? (
-                <Image
-                  source={{ uri: ownerProfile.avatar_url }}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="cover"
-                  transition={200}
-                />
-              ) : (
-                <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
-                  <Text style={styles.ownerAvatarInitial}>
-                    {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
-                  </Text>
+                <View style={styles.titleInlineActions}>
+                  <Pressable onPress={toggleFolderLike} hitSlop={10} style={styles.likeBtn}>
+                    <IconSymbol
+                      name={liked ? 'heart.fill' : 'heart'}
+                      size={20}
+                      color={liked ? PV2.accent : PV2.textPrimary}
+                    />
+                    <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+                  </Pressable>
                 </View>
-              )}
-            </View>
-            <View style={styles.ownerInfo}>
-              <Text style={styles.ownerName}>{ownerProfile.display_name || ownerProfile.username}</Text>
-              <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
-            </View>
-            <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
-          </Pressable>
-        )}
+              </View>
 
-        {!isCardMode && !showInitialLoading && items.length > 0 && (
-          <CollectionSearchBar
-            value={search}
-            onChange={setSearch}
-            placeholder="Search players, teams..."
-            style={styles.searchBar}
-          />
+              <View style={styles.titleActions}>
+                {showBookmark && (
+                  <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
+                    <IconSymbol
+                      name={isSaved ? 'bookmark.fill' : 'bookmark'}
+                      size={20}
+                      color={isSaved ? PV2.accent : PV2.textPrimary}
+                    />
+                  </Pressable>
+                )}
+                <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+                </Pressable>
+              </View>
+            </View>
+
+            {!isOwner && ownerProfile && (
+              <Pressable
+                style={styles.ownerRow}
+                onPress={() =>
+                  router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
+                }>
+                <View style={styles.ownerAvatar}>
+                  {ownerProfile.avatar_url ? (
+                    <Image
+                      source={{ uri: ownerProfile.avatar_url }}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                      transition={200}
+                    />
+                  ) : (
+                    <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
+                      <Text style={styles.ownerAvatarInitial}>
+                        {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <View style={styles.ownerInfo}>
+                  <Text style={styles.ownerName}>{ownerProfile.display_name || ownerProfile.username}</Text>
+                  <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
+                </View>
+                <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
+              </Pressable>
+            )}
+          </>
         )}
 
         {showInitialLoading ? (
@@ -431,21 +659,21 @@ export default function CollectionFolderScreen() {
         ) : isCardMode ? (
           <FlatList
             data={cardSlots}
-            numColumns={NUM_COLUMNS}
+            numColumns={CARD_NUM_COLUMNS}
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
             columnWrapperStyle={styles.row}
             contentContainerStyle={[styles.gridContent, styles.cardGridContent]}
             renderItem={({ item: slot }) =>
               slot.kind === 'placeholder' ? (
                 <CacheCasePlaceholderShell
-                  width={thumbWidth}
+                  width={cardThumbWidth}
                   aspectRatio={PREVIEW_CARD_ASPECT_RATIO}
                   borderRadius={PREVIEW_CARD_RADIUS}
                   accessibilityLabel="Empty card slot"
                 />
               ) : (
                 <Pressable
-                  style={[styles.thumb, { width: thumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
                   onPress={() => openItem(slot.data)}>
                   {slot.data.image_url ? (
                     <Image
@@ -549,6 +777,15 @@ export default function CollectionFolderScreen() {
         folderTitle={folderTitle}
         currentUserId={currentUserId}
       />
+
+      <GalleryCommentsSheet
+        visible={galleryCommentsVisible}
+        onClose={() => setGalleryCommentsVisible(false)}
+        folderId={folderId}
+        playerKey={activePlayer}
+        galleryTitle={screenTitle}
+        currentUserId={currentUserId}
+      />
     </>
   );
 }
@@ -558,11 +795,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: PV2.bg,
   },
-  header: {
+  // Top row — back chevron on the left, management icons (add/menu) on the
+  // right. Title + its own action row (heart/comment/bookmark/share) live
+  // in a separate row below the search bar, not inline with back here.
+  headerTop: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingBottom: 10,
+  },
+  headerTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   iconBtn: {
     width: 36,
@@ -570,23 +815,56 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  titleArea: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 1,
-  },
-  title: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: PV2.textPrimary,
-  },
-  count: {
-    fontSize: 12,
-    color: PV2.textSecondary,
-  },
-  headerActions: {
+  titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  titleTextArea: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  titleInlineActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+  },
+  likeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 4,
+    height: 36,
+  },
+  likeCount: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+    minWidth: 10,
+  },
+  likeCountActive: {
+    color: PV2.accent,
+  },
+  titleActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: PV2.textPrimary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    flexShrink: 1,
   },
   privateIcon: {
     fontSize: 40,
@@ -636,9 +914,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: PV2.textSecondary,
   },
-  // Card-mode-only "cover" header — a large gray banner behind the title/
-  // count, with the back/add buttons floating above it as circles rather
-  // than living in a row (see the mockup this was built from).
+  // Card-mode-only "cover" — a large gray banner holding the title/count,
+  // sitting below its own headerTop row (back/add/menu) rather than having
+  // those buttons float on top of it.
   heroSection: {
     paddingHorizontal: 12,
   },
@@ -668,25 +946,44 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
     textTransform: 'uppercase',
   },
-  heroCircleBtn: {
+  heroCounterBadge: {
     position: 'absolute',
+    top: 12,
+    right: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  heroCounterText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.85)',
+  },
+  // Back button in card-mode's headerTop — same circular treatment the old
+  // floating-over-the-image button used, just inline in the row now.
+  heroBackCircleBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  heroBackCircle: {
-    left: 12,
+  // Like/comment on the left, search/bookmark/share on the right — layout
+  // only for now, see chat for which of these still need real handlers.
+  galleryActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
   },
-  heroAddCircle: {
-    right: 17,
-  },
-  // Empty on purpose — reserved for the like/search/bookmark/share row from
-  // the mockup, which isn't being built yet.
-  heroActionsGap: {
-    height: 44,
+  galleryActionsSide: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
   searchBar: {
     marginHorizontal: 12,

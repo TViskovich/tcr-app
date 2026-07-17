@@ -4,8 +4,8 @@ import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 type Props = {
   children: ReactNode;
   // Once measured (see profile.tsx), every section gets this same floor —
-  // shorter sections (posts/transfers/bookmarked) leave empty space below
-  // their content instead of shrinking the page, so switching between
+  // shorter sections (posts/collections) leave empty space below their
+  // content instead of shrinking the page, so switching between
   // ProfileV2Selector tabs doesn't change the screen's total height.
   minHeight?: number;
   onLayout?: (e: LayoutChangeEvent) => void;

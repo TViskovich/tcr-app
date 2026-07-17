@@ -19,11 +19,13 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from '@/components/profile-v2/profile-v2-collector-panel';
 import { ProfileV2Collections } from '@/components/profile-v2/profile-v2-collections';
 import { ProfileV2Grid } from '@/components/profile-v2/profile-v2-grid';
 import { ProfileV2Hero } from '@/components/profile-v2/profile-v2-hero';
 import { ProfileV2Identity } from '@/components/profile-v2/profile-v2-identity';
+import { ProfileV2Posts } from '@/components/profile-v2/profile-v2-posts';
 import { ProfileV2SectionPage } from '@/components/profile-v2/profile-v2-section-page';
 import { ProfileV2Selector, type ProfileV2Section } from '@/components/profile-v2/profile-v2-selector';
 import { ProfileV2Stats } from '@/components/profile-v2/profile-v2-stats';
@@ -60,6 +62,16 @@ export default function ProfileScreen() {
   const { grails, refresh: refreshGrails } = useGrails(userId);
   const { folders, refresh: refreshFolders } = useFolders(userId);
 
+  // Own post history for the "posts" section — chronological (posts.created_at
+  // DESC), scoped to this account's user_id, no feed ranking. Loaded the same
+  // way folders/grails already are (fetch-on-focus, always kept fresh
+  // regardless of which section is currently visible).
+  const [ownPosts, setOwnPosts] = useState<FeedPost[]>([]);
+  const refreshPosts = useCallback(async () => {
+    if (!userId) { setOwnPosts([]); return; }
+    setOwnPosts(await fetchUserPosts(userId, userId));
+  }, [userId]);
+
   const [section, setSection] = useState<ProfileV2Section>('cachecase');
   // Measured once off the cachecase section's real rendered height (see
   // ProfileV2SectionPage below) — cachecase is both the default tab and the
@@ -83,8 +95,45 @@ export default function ProfileScreen() {
       refresh();
       refreshGrails();
       refreshFolders();
-    }, [refresh, refreshGrails, refreshFolders]),
+      refreshPosts();
+    }, [refresh, refreshGrails, refreshFolders, refreshPosts]),
   );
+
+  async function handleOwnPostLike(postId: string) {
+    if (!userId) return;
+    const post = ownPosts.find((p) => p.id === postId);
+    if (!post) return;
+    const wasLiked = post.liked;
+
+    // Optimistic update first so the UI responds immediately — same pattern
+    // as app/(tabs)/index.tsx's handleLike.
+    setOwnPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId
+          ? { ...p, liked: !wasLiked, likeCount: wasLiked ? p.likeCount - 1 : p.likeCount + 1 }
+          : p,
+      ),
+    );
+
+    if (wasLiked) {
+      const { error } = await supabase.from('likes').delete().eq('user_id', userId).eq('post_id', postId);
+      if (error) {
+        console.error('Unlike failed:', error.message);
+      } else {
+        supabase.from('notifications').delete()
+          .eq('actor_id', userId).eq('post_id', postId).eq('type', 'like')
+          .then(({ error: e }) => { if (e) console.error('Like notif delete failed:', e.message); });
+      }
+    } else {
+      const { error } = await supabase.from('likes').insert({ user_id: userId, post_id: postId });
+      if (error) {
+        console.error('Like failed:', error.message);
+      }
+      // No like-notification insert here — post.user_id is always this
+      // account's own id on this screen, and the app never notifies a user
+      // about their own like.
+    }
+  }
 
   function enterEdit() {
     setEditForm({
@@ -486,9 +535,9 @@ export default function ProfileScreen() {
               {/* One shared, fixed-minHeight container for whichever section
                   is active — measured once off the cachecase section (the
                   tallest: collector panel + Grails grid), since that's the
-                  default/starting tab. Shorter sections (posts/transfers/
-                  bookmarked/collections) then hold the same floor instead of
-                  shrinking the page and shifting everything below it. */}
+                  default/starting tab. Shorter sections (posts/collections)
+                  then hold the same floor instead of shrinking the page and
+                  shifting everything below it. */}
               <ProfileV2SectionPage
                 minHeight={sectionMinHeight}
                 onLayout={(e) => {
@@ -497,9 +546,13 @@ export default function ProfileScreen() {
                   }
                 }}>
                 {section === 'posts' && (
-                  <View style={styles.sectionEmpty}>
-                    <Text style={styles.sectionEmptyText}>Posts coming soon.</Text>
-                  </View>
+                  <ProfileV2Posts
+                    posts={ownPosts}
+                    currentUserId={userId}
+                    onUserPress={(username) => router.push({ pathname: '/user/[username]', params: { username } })}
+                    onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
+                    onLike={handleOwnPostLike}
+                  />
                 )}
 
                 {section === 'cachecase' && (
@@ -536,17 +589,6 @@ export default function ProfileScreen() {
                   />
                 )}
 
-                {section === 'transfers' && (
-                  <View style={styles.sectionEmpty}>
-                    <Text style={styles.sectionEmptyText}>Transfers coming soon.</Text>
-                  </View>
-                )}
-
-                {section === 'bookmarked' && (
-                  <View style={styles.sectionEmpty}>
-                    <Text style={styles.sectionEmptyText}>Bookmarked coming soon.</Text>
-                  </View>
-                )}
               </ProfileV2SectionPage>
             </>
           )}
@@ -643,16 +685,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: PV2.textSecondary,
-  },
-  // Shared "coming soon" placeholder for sections with no real data source
-  // yet (posts, transfers, bookmarked) — cachecase/collections render real
-  // content instead.
-  sectionEmpty: {
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
-  sectionEmptyText: {
-    color: PV2.textTertiary,
-    fontSize: 14,
   },
 });

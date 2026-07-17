@@ -7,7 +7,11 @@ type Props = {
   username: string;
   bio: string | null;
   actionRow?: ReactNode;
-  animatedBioOpacity?: Animated.Value;
+  // Accepts both a plain Animated.Value and the AnimatedInterpolation
+  // returned by scrollY.interpolate(...) (see profile-hero.tsx's
+  // bioOpacity) — this prop only ever feeds a style's `opacity`, so it
+  // doesn't need Value-specific methods like setValue.
+  animatedBioOpacity?: Animated.Value | Animated.AnimatedInterpolation<number>;
   followable?: boolean;
   initiallyFollowing?: boolean;
   onFollowToggle?: (next: boolean) => void;

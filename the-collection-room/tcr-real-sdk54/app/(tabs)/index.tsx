@@ -1,9 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   FlatList,
-  Pressable,
   RefreshControl,
   StyleSheet,
   Text,
@@ -11,7 +9,6 @@ import {
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -23,72 +20,9 @@ import { supabase } from '@/lib/supabase';
 import { useTabVisibility } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
-import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { CreateMenu } from '@/components/create/create-menu';
+import { fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useGrailRating } from '@/hooks/use-grail-rating';
-import type { RateMyGrailCard } from '@/types';
-
-type FeedPost = {
-  id: string;
-  user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails';
-  image_url: string | null;
-  content: string | null;
-  caption: string | null;
-  created_at: string;
-  item_name: string | null;
-  username: string;
-  display_name: string | null;
-  avatar_url: string | null;
-  likeCount: number;
-  liked: boolean;
-  commentCount: number;
-  isFollowing: boolean;
-  grailCards: RateMyGrailCard[];
-  avgRating: number | null;
-  ratingCount: number;
-  myRating: number | null;
-};
-
-// Shared by queryFeed/queryFollowingFeed — batch-fetches the grail snapshot
-// rows + ratings for whichever of the given posts are Rate My Grails posts,
-// keyed by post_id, so both queries build FeedPost the same way.
-async function fetchGrailData(postIds: string[], currentUserId?: string) {
-  const [cardsRes, ratingsRes] = await Promise.all([
-    supabase
-      .from('rate_my_grail_cards')
-      .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
-      .in('post_id', postIds)
-      .order('display_order', { ascending: true }),
-    supabase.from('grail_ratings').select('post_id, rater_user_id, score').in('post_id', postIds),
-  ]);
-
-  const cardsMap = new Map<string, RateMyGrailCard[]>();
-  for (const row of (cardsRes.data ?? []) as any[]) {
-    const list = cardsMap.get(row.post_id) ?? [];
-    list.push(row as RateMyGrailCard);
-    cardsMap.set(row.post_id, list);
-  }
-
-  const ratingTotals = new Map<string, { sum: number; count: number; mine: number | null }>();
-  for (const row of (ratingsRes.data ?? []) as any[]) {
-    const entry = ratingTotals.get(row.post_id) ?? { sum: 0, count: 0, mine: null };
-    entry.sum += row.score;
-    entry.count += 1;
-    if (row.rater_user_id === currentUserId) entry.mine = row.score;
-    ratingTotals.set(row.post_id, entry);
-  }
-
-  return { cardsMap, ratingTotals };
-}
-
-function formatAge(iso: string) {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
 
 // Canonical feed chronology — every dataset this screen renders (initial
 // load, refresh, pagination merges) must end up sorted strictly by the post
@@ -549,132 +483,6 @@ export default function HomeScreen() {
   );
 }
 
-function PostCard({
-  post,
-  currentUserId,
-  onUserPress,
-  onPostPress,
-  onLike,
-}: {
-  post: FeedPost;
-  currentUserId: string | undefined;
-  onUserPress: () => void;
-  onPostPress: () => void;
-  onLike: () => void;
-}) {
-  const [imageError, setImageError] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const isTextPost = post.post_type === 'text';
-  const isRateMyGrails = post.post_type === 'rate_my_grails';
-
-  const rating = useGrailRating({
-    postId: post.id,
-    postOwnerId: post.user_id,
-    currentUserId,
-    initialAvg: post.avgRating,
-    initialCount: post.ratingCount,
-    initialMyRating: post.myRating,
-  });
-
-  function handleLikeTap() {
-    Animated.sequence([
-      Animated.timing(scaleAnim, { toValue: 1.4, duration: 80, useNativeDriver: true }),
-      Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 10 }),
-    ]).start();
-    onLike();
-  }
-
-  // Only hide on image error for item posts — text posts have no image to fail.
-  if (imageError && !isTextPost) return null;
-
-  const displayName = post.display_name || post.username;
-
-  return (
-    <View style={styles.card}>
-      {/* User row — tapping navigates to their public profile */}
-      <TouchableOpacity style={styles.cardHeader} onPress={onUserPress} activeOpacity={0.7}>
-        <View style={styles.cardAvatar}>
-          {post.avatar_url ? (
-            <Image
-              source={{ uri: post.avatar_url }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-              transition={200}
-            />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
-              <Text style={styles.cardAvatarInitial}>
-                {displayName.charAt(0).toUpperCase()}
-              </Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.cardUserInfo}>
-          <Text style={styles.cardDisplayName} numberOfLines={1}>
-            {displayName}
-          </Text>
-          <Text style={styles.cardUsername}>@{post.username}</Text>
-        </View>
-        <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
-      </TouchableOpacity>
-
-      {/* Post body — text block for text posts, grails grid for Rate My Grails, image otherwise */}
-      {isTextPost ? (
-        <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
-          <Text style={styles.cardTextContent}>{post.content}</Text>
-        </TouchableOpacity>
-      ) : isRateMyGrails ? (
-        <View style={styles.cardGrailsWrap}>
-          <GrailsPostBody
-            cards={post.grailCards}
-            caption={post.caption}
-            avg={rating.avg}
-            count={rating.count}
-            myRating={rating.myRating}
-            isOwner={rating.isOwner}
-            submitting={rating.submitting}
-            onRate={rating.submitRating}
-          />
-        </View>
-      ) : (
-        <TouchableOpacity style={styles.cardImageWrap} onPress={onPostPress} activeOpacity={0.95}>
-          <Image
-            source={{ uri: post.image_url! }}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            transition={200}
-            onError={() => setImageError(true)}
-          />
-        </TouchableOpacity>
-      )}
-
-      {/* Caption + actions — caption only shown for item posts (Rate My Grails
-          renders its own caption inside GrailsPostBody, above) */}
-      <View style={styles.cardBody}>
-        {!isTextPost && !isRateMyGrails && (post.caption || post.item_name) ? (
-          <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
-        ) : null}
-        <View style={styles.cardActions}>
-          <Pressable onPress={handleLikeTap} hitSlop={8} style={styles.likeBtn}>
-            <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-              <Text style={[styles.likeEmoji, !post.liked && styles.likeEmojiDim]}>🔥</Text>
-            </Animated.View>
-            <Text style={[styles.likeCount, post.liked && styles.likeCountActive]}>
-              {post.likeCount}
-            </Text>
-          </Pressable>
-
-          {/* Comment count — tapping also opens post detail */}
-          <TouchableOpacity onPress={onPostPress} hitSlop={8} style={styles.commentBtn}>
-            <Text style={styles.commentIcon}>💬</Text>
-            <Text style={styles.commentCount}>{post.commentCount}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -766,128 +574,5 @@ const styles = StyleSheet.create({
   footer: {
     paddingVertical: 24,
     alignItems: 'center',
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    gap: 10,
-    backgroundColor: '#1A1A1A',
-  },
-  cardAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    overflow: 'hidden',
-    backgroundColor: '#333333',
-    flexShrink: 0,
-  },
-  cardAvatarPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardAvatarInitial: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  cardUserInfo: {
-    flex: 1,
-    gap: 1,
-  },
-  cardDisplayName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  cardUsername: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.60)',
-  },
-  cardDate: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.45)',
-    flexShrink: 0,
-  },
-  cardImageWrap: {
-    aspectRatio: 5 / 7,
-    backgroundColor: '#e9ecef',
-  },
-  cardGrailsWrap: {
-    padding: 10,
-    backgroundColor: '#1A1A1A',
-  },
-  cardTextWrap: {
-    backgroundColor: '#1A1A1A',
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    minHeight: 80,
-  },
-  cardTextContent: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.90)',
-    lineHeight: 24,
-  },
-  cardBody: {
-    padding: 12,
-    gap: 8,
-    backgroundColor: '#1A1A1A',
-  },
-  cardCaption: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: 'rgba(255,255,255,0.85)',
-  },
-  cardActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  likeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 2,
-  },
-  likeEmoji: {
-    fontSize: 20,
-  },
-  likeEmojiDim: {
-    opacity: 0.25,
-  },
-  likeCount: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: 'rgba(255,255,255,0.50)',
-    minWidth: 16,
-  },
-  likeCountActive: {
-    color: '#FF7043',
-  },
-  commentBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 2,
-  },
-  commentIcon: {
-    fontSize: 18,
-    opacity: 0.55,
-  },
-  commentCount: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: 'rgba(255,255,255,0.50)',
-    minWidth: 16,
   },
 });

@@ -31,13 +31,18 @@ const PILL_WIDTH = 122;
 const PILL_HEIGHT = 44;
 const CACHECASE_BORDER_WIDTH = 1.5;
 
-export type ProfileV2Section = 'posts' | 'cachecase' | 'collections' | 'transfers' | 'bookmarked';
+// 'transfers' and 'bookmarked' were removed (no real ownership-transfer
+// system exists, and bookmarks are private to the account owner — see
+// app/(tabs)/profile.tsx) — this union is the source of truth for which
+// sections can ever be selected, so a removed key can't be reached through
+// stale state.
+export type ProfileV2Section = 'posts' | 'cachecase' | 'collections';
 
-// cachecase sits at index 2 (dead center of 5) deliberately — it's the
-// carousel's default/starting selection, and this ordering is what makes
-// both the carousel itself AND the dot rail below (which just maps over
-// this same array) show it as the center item.
-const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase', 'transfers', 'bookmarked'];
+// cachecase is the carousel's default/starting selection — its position in
+// this array only matters for which pill starts under the finger; the
+// carousel finds it via SECTIONS.indexOf(active), so no fixed "center index"
+// bookkeeping is required as sections are added or removed.
+const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase'];
 
 // Fixed per-item width, same idea as the Collection tab's FolderCarousel
 // (see app/(tabs)/collection.tsx) — a constant slot each pill centers

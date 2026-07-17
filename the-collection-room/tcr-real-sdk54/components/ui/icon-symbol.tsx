@@ -40,6 +40,9 @@ const MAPPING = {
   'message': 'chat-bubble-outline',
   'person': 'person-outline',
   'square.grid.2x2': 'grid-view',
+  'heart': 'favorite-border',
+  'heart.fill': 'favorite',
+  'line.3.horizontal': 'menu',
 } as IconMapping;
 
 /**
