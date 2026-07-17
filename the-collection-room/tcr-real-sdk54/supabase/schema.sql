@@ -283,3 +283,25 @@ CREATE POLICY "avatars_delete_own"
     bucket_id = 'avatars'
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
+
+-- folder_comments — see supabase/migrations/20260717_create_folder_comments.sql
+-- for the authoritative, run-it-yourself version of this table.
+
+CREATE TABLE IF NOT EXISTS public.folder_comments (
+  id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  folder_id  uuid        NOT NULL REFERENCES public.folders(id) ON DELETE CASCADE,
+  user_id    uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  body       text        NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.folder_comments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "folder_comments_select_public" ON public.folder_comments
+  FOR SELECT USING (true);
+
+CREATE POLICY "folder_comments_insert_own" ON public.folder_comments
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "folder_comments_delete_own" ON public.folder_comments
+  FOR DELETE USING (auth.uid() = user_id);

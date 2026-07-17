@@ -12,6 +12,7 @@ import {
   PREVIEW_CARD_RADIUS,
 } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -112,6 +113,7 @@ export default function CollectionFolderScreen() {
   const [folderLoading, setFolderLoading] = useState(true);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [editVisible, setEditVisible] = useState(false);
+  const [commentsVisible, setCommentsVisible] = useState(false);
 
   const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
 
@@ -363,6 +365,9 @@ export default function CollectionFolderScreen() {
                   />
                 </Pressable>
               )}
+              <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+              </Pressable>
               <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
                 <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
               </Pressable>
@@ -536,6 +541,14 @@ export default function CollectionFolderScreen() {
           onDeleted={() => router.back()}
         />
       )}
+
+      <FolderCommentsSheet
+        visible={commentsVisible}
+        onClose={() => setCommentsVisible(false)}
+        folderId={folderId}
+        folderTitle={folderTitle}
+        currentUserId={currentUserId}
+      />
     </>
   );
 }
