@@ -17,7 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from '@/components/profile-v2/profile-v2-collector-panel';
@@ -42,6 +42,7 @@ import { useGrails } from '@/hooks/use-grails';
 import { useAuth } from '@/lib/auth';
 import { uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 // Values with no corresponding column/table yet (see PrototypeCollectorStats
 // in profile-v2-collector-panel.tsx). Kept in exactly one place, clearly
@@ -58,6 +59,7 @@ export default function ProfileScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id;
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { profile, stats, loading, refresh } = useProfile(userId);
   const { grails, refresh: refreshGrails } = useGrails(userId);
   const { folders, refresh: refreshFolders } = useFolders(userId);
@@ -419,7 +421,7 @@ export default function ProfileScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           showsVerticalScrollIndicator={false}>
@@ -609,9 +611,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  scroll: {
-    paddingBottom: 120,
-  },
+  scroll: {},
   editSection: {
     padding: 16,
   },

@@ -12,11 +12,12 @@ import {
 
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 type Mode = 'users' | 'cards';
 
@@ -150,6 +151,8 @@ export default function SearchScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id ?? '';
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const listContentStyle = { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 };
 
   const [mode, setMode] = useState<Mode>('users');
   const [query, setQuery] = useState('');
@@ -287,6 +290,7 @@ export default function SearchScreen() {
           data={userResults}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
+          contentContainerStyle={listContentStyle}
           renderItem={({ item }) => (
             <UserRow
               profile={item}
@@ -304,6 +308,7 @@ export default function SearchScreen() {
           data={cardResults}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
+          contentContainerStyle={listContentStyle}
           renderItem={({ item }) => (
             <CardRow
               card={item}

@@ -11,13 +11,14 @@ import {
 
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 type ConversationItem = {
   id: string;
@@ -194,6 +195,7 @@ export default function MessagesScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const refreshMessageBadge = useMessageBadgeRefresh();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -265,6 +267,7 @@ export default function MessagesScreen() {
         <FlatList
           data={conversations}
           keyExtractor={(item) => item.id}
+          contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }}
           renderItem={({ item }) => (
             <ConversationRow
               item={item}

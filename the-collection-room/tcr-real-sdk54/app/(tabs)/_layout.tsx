@@ -10,19 +10,25 @@ import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
 import { MessageBadgeRefreshContext } from '@/lib/message-badge-context';
-import { TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-context';
+import { TAB_BAR_HEIGHT, TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
 const HIDDEN_TABS = new Set(['notifications']);
 
-const BAR_HEIGHT = 74;
-const BAR_BG = '#090A10';
+// Floating capsule shell — was a full-width bar flush with the screen
+// bottom, now an inset pill raised above the safe area. Height comes from
+// TAB_BAR_HEIGHT (lib/tab-visibility-context) — the single source of truth
+// screens also use to reserve enough bottom padding to clear it.
+const BAR_HEIGHT = TAB_BAR_HEIGHT;
+const BAR_HORIZONTAL_INSET = 18;
+const BAR_BOTTOM_GAP = 8;
+const BAR_RADIUS = BAR_HEIGHT / 2;
+// Same dark surface as before, fully opaque — no see-through content
+// behind the floating pill.
+const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';
-const BOTTOM_RADIUS = 56;
 const ICON_SIZE = 22;
 const INACTIVE_COLOR = '#555762';
-const TEAL_LINE_COLOR = 'rgba(45,140,130,0.5)';
-const TEAL_LINE_HEIGHT = 1;
 
 // Per-tab active accent, used both to tint the icon and to color its glow —
 // one distinct color per tab.
@@ -121,10 +127,16 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
   if (hideTabBar) return null;
 
   return (
-    <Animated.View style={[styles.rootWrap, animStyle]} pointerEvents="box-none">
-      <View style={[styles.tabBar, { height: BAR_HEIGHT + insets.bottom }]}>
-        <View style={styles.tabRow}>
-          {state.routes.map((route: any, index: number) => {
+    <Animated.View
+      style={[styles.rootWrap, { bottom: insets.bottom + BAR_BOTTOM_GAP }, animStyle]}
+      pointerEvents="box-none">
+      {/* Shadow lives on this outer wrapper (unclipped) and the rounded
+          background/border on the inner one (overflow:hidden) — combining
+          both on one view would clip the shadow along with the corners. */}
+      <View style={styles.tabBarShadow}>
+        <View style={styles.tabBarShell}>
+          <View style={styles.tabBarContent}>
+            {state.routes.map((route: any, index: number) => {
             if (HIDDEN_TABS.has(route.name)) return null;
 
             const { options } = descriptors[route.key];
@@ -159,9 +171,9 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
               />
             );
           })}
+          </View>
         </View>
       </View>
-      <View style={styles.tealLine} pointerEvents="none" />
     </Animated.View>
   );
 }
@@ -237,48 +249,42 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  // Full-width, attached to the true bottom of the screen — not a floating
-  // inset pill. Contains the bar itself plus the separate teal accent line
-  // beneath it, so both hide/show together with the existing scroll-driven
-  // translateY/opacity behavior from useTabVisibility.
+  // Floating pill — inset from both edges (was full-width), raised above
+  // the safe area via `bottom` (set inline with insets.bottom, since it
+  // depends on the device). box-none so taps outside the pill's own bounds
+  // (there's no full-width strip anymore) pass through to the screen below.
   rootWrap: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    left: BAR_HORIZONTAL_INSET,
+    right: BAR_HORIZONTAL_INSET,
   },
-  // Sits directly below the bar, full width, and stays visually distinct
-  // from the bar's own 1px outline border.
-  tealLine: {
-    height: TEAL_LINE_HEIGHT,
-    backgroundColor: TEAL_LINE_COLOR,
+  // Shadow only — unclipped, so it isn't cut off by tabBarShell's
+  // overflow:hidden (which it would be if both lived on the same view).
+  tabBarShadow: {
+    borderRadius: BAR_RADIUS,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
   },
-  tabBar: {
+  // The actual capsule surface — dark translucent CacheCase background,
+  // thin border, fully rounded (not just the bottom corners like the old
+  // full-width bar).
+  tabBarShell: {
+    height: BAR_HEIGHT,
+    borderRadius: BAR_RADIUS,
     backgroundColor: BAR_BG,
     borderWidth: 1,
     borderColor: BAR_BORDER,
-    // Bleeds 3px past each screen edge so the left/right border lines fall
-    // off-screen instead of rendering as a visible sliver at the edge.
-    marginHorizontal: -3,
-    // Top edge stays straight; only the bottom corners are rounded.
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderBottomLeftRadius: BOTTOM_RADIUS,
-    borderBottomRightRadius: BOTTOM_RADIUS,
     overflow: 'hidden',
   },
-  // The icon row is pinned to BAR_HEIGHT at the top of tabBar; the extra
-  // insets.bottom height below it is pure background, extending the bar's
-  // color through the home-indicator safe area instead of stopping short.
-  // `gap` adds real fixed space between the flex:1 columns (on top of
-  // whatever justifyContent contributes) without changing the row's own
-  // total width — that's what widens the spacing between icons.
-  tabRow: {
-    height: BAR_HEIGHT,
+  tabBarContent: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-evenly',
-    gap: 8,
+    justifyContent: 'space-around',
+    paddingHorizontal: 8,
   },
   tabItem: {
     flex: 1,

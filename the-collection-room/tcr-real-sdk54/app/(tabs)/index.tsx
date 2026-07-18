@@ -10,14 +10,14 @@ import {
 } from 'react-native';
 
 import { useFocusEffect, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useSharedValue, withSpring } from 'react-native-reanimated';
 
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
-import { useTabVisibility } from '@/lib/tab-visibility-context';
+import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
@@ -230,6 +230,7 @@ export default function HomeScreen() {
   const { count: notifCount } = useBadgeRefresh();
 
   const { translateY } = useTabVisibility();
+  const insets = useSafeAreaInsets();
   const lastScrollY = useRef(0);
   const tabBarHidden = useRef(false);
   const pullProgress = useSharedValue(0);
@@ -430,7 +431,7 @@ export default function HomeScreen() {
                 onLike={() => handleLike(item.id)}
               />
             )}
-            contentContainerStyle={styles.list}
+            contentContainerStyle={[styles.list, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             scrollEventThrottle={16}
             onScroll={(e) => {
               const y = e.nativeEvent.contentOffset.y;
@@ -568,7 +569,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   list: {
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
     gap: 12,
   },
   footer: {

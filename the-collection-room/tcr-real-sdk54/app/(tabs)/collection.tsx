@@ -13,7 +13,7 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -22,6 +22,7 @@ import { CollectionSearchBar } from '@/components/collection/collection-search-b
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { itemMatchesSearch, useFolders, type PlayerGroup } from '@/hooks/use-collection';
 import type { Folder } from '@/types';
@@ -210,6 +211,7 @@ export default function CollectionScreen() {
   const [search, setSearch] = useState('');
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const pagePadding = PAGE_PADDING;
   const { isExpanded, toggle } = useCollapsedSections();
 
@@ -311,7 +313,7 @@ export default function CollectionScreen() {
         <FlatList
           data={filteredFolders}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
           ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
           renderItem={({ item }) => (
             <CollectionPreviewSection
@@ -487,7 +489,6 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingTop: 28,
-    paddingBottom: 12,
   },
   // Clearly larger than CollectionHeaderRow's own ~10px title-to-preview
   // gap — otherwise the next section's title would read as belonging to
