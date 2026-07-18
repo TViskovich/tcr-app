@@ -1,4 +1,5 @@
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,14 +18,25 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 // as its own copy (same constants, same shell/glow styling) rather than
 // sharing code with the tabs-group version, so that working bar is left
 // untouched.
+const CacheCaseLogoNav = require('@/assets/icons/cachecase-logo-nav.png');
+
 const BAR_HEIGHT = TAB_BAR_HEIGHT;
 const BAR_HORIZONTAL_INSET = 18;
 const BAR_BOTTOM_GAP = 8;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';
-const ICON_SIZE = 22;
+const ICON_SIZE = 25;
 const INACTIVE_COLOR = '#555762';
+// The Collection tab ("CacheCase") gets a touch more default-state
+// prominence than the other four — matches app/(tabs)/_layout.tsx.
+const FEATURED_INACTIVE_COLOR = '#8A8DA0';
+const FEATURED_TAB: GlobalTabName = 'collection';
+// Matches app/(tabs)/_layout.tsx's CENTER_BADGE_WIDTH/HEIGHT — the
+// CacheCase tab has no label here either, so the logo gets the same
+// larger size.
+const CENTER_BADGE_WIDTH = 71;
+const CENTER_BADGE_HEIGHT = 53;
 
 type GlobalTabName = 'index' | 'collection' | 'search' | 'messages' | 'profile';
 
@@ -32,12 +44,13 @@ const TABS: {
   name: GlobalTabName;
   route: '/' | '/collection' | '/search' | '/messages' | '/profile';
   icon: 'house' | 'square.grid.2x2' | 'magnifyingglass' | 'message' | 'person';
+  label: string;
 }[] = [
-  { name: 'index', route: '/', icon: 'house' },
-  { name: 'collection', route: '/collection', icon: 'square.grid.2x2' },
-  { name: 'search', route: '/search', icon: 'magnifyingglass' },
-  { name: 'messages', route: '/messages', icon: 'message' },
-  { name: 'profile', route: '/profile', icon: 'person' },
+  { name: 'index', route: '/', icon: 'house', label: 'Feed' },
+  { name: 'search', route: '/search', icon: 'magnifyingglass', label: 'Discover' },
+  { name: 'collection', route: '/collection', icon: 'square.grid.2x2', label: 'CacheCase' },
+  { name: 'messages', route: '/messages', icon: 'message', label: 'Messages' },
+  { name: 'profile', route: '/profile', icon: 'person', label: 'Profile' },
 ];
 
 // Paths that already have the Tabs-navigator's own floating bar rendered —
@@ -67,22 +80,54 @@ export function GlobalFloatingTabBar() {
                 }
                 router.navigate(tab.route as any);
               };
+              const centered = tab.name === FEATURED_TAB;
               return (
                 <TouchableOpacity
                   key={tab.name}
                   onPress={onPress}
-                  style={styles.tabItem}
+                  style={centered ? styles.tabItemCenter : styles.tabItem}
                   activeOpacity={0.7}
-                  accessibilityRole="button">
-                  <View style={styles.iconWrap}>
-                    <View style={styles.iconLitWrap}>
-                      <IconSymbol size={ICON_SIZE} name={tab.icon} color={INACTIVE_COLOR} />
-                    </View>
-                    {tab.name === 'messages' && messageBadge != null ? (
-                      <View style={styles.badge}>
-                        <Text style={styles.badgeText}>{messageBadge}</Text>
+                  accessibilityRole="button"
+                  accessibilityLabel={centered ? 'CacheCase' : tab.label}>
+                  <View
+                    style={[
+                      centered ? styles.centerTabContent : styles.tabContent,
+                      tab.name === 'search'
+                        ? { transform: [{ translateX: -6 }] }
+                        : tab.name === 'messages'
+                          ? { transform: [{ translateX: 8 }] }
+                          : null,
+                    ]}>
+                    <View style={centered ? styles.iconWrapCenter : styles.iconWrap}>
+                      <View style={styles.iconLitWrap}>
+                        {centered ? (
+                          <Image
+                            source={CacheCaseLogoNav}
+                            contentFit="contain"
+                            tintColor={FEATURED_INACTIVE_COLOR}
+                            style={styles.cacheCaseLogo}
+                          />
+                        ) : (
+                          <IconSymbol size={ICON_SIZE} name={tab.icon} color={INACTIVE_COLOR} />
+                        )}
                       </View>
-                    ) : null}
+                      {tab.name === 'messages' && messageBadge != null ? (
+                        <View style={styles.badge}>
+                          <Text style={styles.badgeText}>{messageBadge}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {centered ? null : (
+                      <Text
+                        style={[
+                          styles.tabLabel,
+                          tab.name === FEATURED_TAB && styles.tabLabelFeatured,
+                          { color: tab.name === FEATURED_TAB ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR },
+                        ]}
+                        numberOfLines={1}>
+                        {tab.label}
+                      </Text>
+                    )}
                   </View>
                 </TouchableOpacity>
               );
@@ -127,8 +172,38 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
+  tabItemCenter: {
+    flex: 1,
+    alignSelf: 'stretch',
+  },
+  tabContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  centerTabContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    letterSpacing: 0.1,
+  },
+  tabLabelFeatured: {
+    fontWeight: '600',
+  },
   iconWrap: {
     position: 'relative',
+  },
+  iconWrapCenter: {
+    position: 'relative',
+    transform: [{ translateY: 1 }],
+  },
+  cacheCaseLogo: {
+    width: CENTER_BADGE_WIDTH,
+    height: CENTER_BADGE_HEIGHT,
   },
   iconLitWrap: {
     shadowOffset: { width: 0, height: 0 },

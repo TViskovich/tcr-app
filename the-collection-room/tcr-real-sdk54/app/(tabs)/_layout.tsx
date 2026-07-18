@@ -1,4 +1,5 @@
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
 import { Tabs, usePathname } from 'expo-router';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
@@ -15,6 +16,8 @@ import { TAB_BAR_HEIGHT, TabVisibilityProvider, useTabVisibility } from '@/lib/t
 // Routes that have href:null — don't render a visible tab button for these.
 const HIDDEN_TABS = new Set(['notifications']);
 
+const CacheCaseLogoNav = require('@/assets/icons/cachecase-logo-nav.png');
+
 // Floating capsule shell — was a full-width bar flush with the screen
 // bottom, now an inset pill raised above the safe area. Height comes from
 // TAB_BAR_HEIGHT (lib/tab-visibility-context) — the single source of truth
@@ -27,8 +30,12 @@ const BAR_RADIUS = BAR_HEIGHT / 2;
 // behind the floating pill.
 const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';
-const ICON_SIZE = 22;
+const ICON_SIZE = 25;
 const INACTIVE_COLOR = '#555762';
+// The Collection tab ("CacheCase") gets a touch more default-state
+// prominence than the other four — a brighter muted gray rather than the
+// standard inactive gray — so it draws the eye without changing size.
+const FEATURED_INACTIVE_COLOR = '#8A8DA0';
 
 // Per-tab active accent, used both to tint the icon and to color its glow —
 // one distinct color per tab.
@@ -40,6 +47,25 @@ const TAB_ACCENTS: Record<string, string> = {
   messages: '#FF5C5C', // Messages — red
   profile: '#FFD84D', // Profile — yellow
 };
+
+const TAB_LABELS: Record<string, string> = {
+  index: 'Feed',
+  collection: 'CacheCase',
+  search: 'Discover',
+  messages: 'Messages',
+  profile: 'Profile',
+};
+
+const FEATURED_TAB = 'collection';
+
+// The CacheCase logo replaces both the icon and label for the center tab,
+// so it renders substantially larger than the other four icons (which stay
+// at ICON_SIZE) — the vertical space the removed label used to occupy goes
+// to the logo instead. 71x53 matches the source PNG's own aspect ratio
+// (1447x1087 ≈ 1.33:1) so contentFit="contain" never letterboxes it.
+// Comfortably inside BAR_HEIGHT (78) with room to spare on both edges.
+const CENTER_BADGE_WIDTH = 71;
+const CENTER_BADGE_HEIGHT = 53;
 
 // Only used for the small Android glow assist now (see glowAssist below).
 function glowAssistColorFor(accent: string) {
@@ -67,45 +93,76 @@ function glowAssistColorFor(accent: string) {
 function TabBarItem({
   isFocused,
   icon,
+  label,
+  color,
   accent,
+  featured,
   badge,
   accessibilityLabel,
   onPress,
+  offsetX,
+  centered,
 }: {
   isFocused: boolean;
   icon: React.ReactNode;
+  // Omitted (the CacheCase center tab) means: no visible label — the badge
+  // itself is the destination's identity, so nothing renders underneath it.
+  label?: string;
+  color: string;
   accent: string;
+  featured?: boolean;
   badge?: string | number;
   accessibilityLabel?: string;
   onPress: () => void;
+  offsetX?: number;
+  // The CacheCase tab only: no label row, so its icon+content stretches to
+  // fill and center within the tab's full touch target instead of the
+  // shrink-wrapped icon-over-label column the other four tabs use.
+  centered?: boolean;
 }) {
   return (
     <TouchableOpacity
       onPress={onPress}
-      style={styles.tabItem}
+      style={centered ? styles.tabItemCenter : styles.tabItem}
       activeOpacity={0.7}
       accessibilityRole="button"
       accessibilityState={isFocused ? { selected: true } : {}}
       accessibilityLabel={accessibilityLabel}>
-      <View style={styles.iconWrap}>
-        {isFocused && Platform.OS !== 'ios' && (
+      <View
+        style={[
+          centered ? styles.centerTabContent : styles.tabContent,
+          offsetX ? { transform: [{ translateX: offsetX }] } : null,
+        ]}>
+        <View style={centered ? styles.iconWrapCenter : styles.iconWrap}>
+          {isFocused && Platform.OS !== 'ios' && (
+            <View
+              style={[
+                centered ? styles.glowAssistCenter : styles.glowAssist,
+                { backgroundColor: glowAssistColorFor(accent) },
+              ]}
+              pointerEvents="none"
+            />
+          )}
           <View
-            style={[styles.glowAssist, { backgroundColor: glowAssistColorFor(accent) }]}
-            pointerEvents="none"
-          />
-        )}
-        <View
-          style={
-            isFocused
-              ? [styles.iconLitWrap, styles.iconLit, { shadowColor: accent }]
-              : styles.iconLitWrap
-          }>
-          {icon}
-        </View>
-        {badge != null ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{badge}</Text>
+            style={
+              isFocused
+                ? [styles.iconLitWrap, styles.iconLit, { shadowColor: accent }]
+                : styles.iconLitWrap
+            }>
+            {icon}
           </View>
+          {badge != null ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{badge}</Text>
+            </View>
+          ) : null}
+        </View>
+        {label != null ? (
+          <Text
+            style={[styles.tabLabel, featured && styles.tabLabelFeatured, { color }]}
+            numberOfLines={1}>
+            {label}
+          </Text>
         ) : null}
       </View>
     </TouchableOpacity>
@@ -143,7 +200,8 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
             const isFocused = state.index === index;
             const badge = options.tabBarBadge;
             const accent = TAB_ACCENTS[route.name] ?? DEFAULT_ACCENT;
-            const color = isFocused ? accent : INACTIVE_COLOR;
+            const featured = route.name === FEATURED_TAB;
+            const color = isFocused ? accent : featured ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR;
 
             const onPress = () => {
               if (process.env.EXPO_OS === 'ios') {
@@ -164,10 +222,15 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
                 key={route.key}
                 isFocused={isFocused}
                 icon={options.tabBarIcon?.({ color, size: ICON_SIZE, focused: isFocused })}
+                label={featured ? undefined : (TAB_LABELS[route.name] ?? route.name)}
+                color={color}
                 accent={accent}
+                featured={featured}
                 badge={badge}
                 accessibilityLabel={options.tabBarAccessibilityLabel}
                 onPress={onPress}
+                offsetX={route.name === 'search' ? -6 : route.name === 'messages' ? 8 : undefined}
+                centered={featured}
               />
             );
           })}
@@ -207,19 +270,25 @@ export default function TabLayout() {
               }}
             />
             <Tabs.Screen
-              name="collection"
-              options={{
-                title: 'Collection',
-                tabBarIcon: ({ color }) => (
-                  <IconSymbol size={ICON_SIZE} name="square.grid.2x2" color={color} />
-                ),
-              }}
-            />
-            <Tabs.Screen
               name="search"
               options={{
                 title: 'Search',
                 tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
+              }}
+            />
+            <Tabs.Screen
+              name="collection"
+              options={{
+                title: 'Collection',
+                tabBarAccessibilityLabel: 'CacheCase',
+                tabBarIcon: ({ color }) => (
+                  <Image
+                    source={CacheCaseLogoNav}
+                    contentFit="contain"
+                    tintColor={color}
+                    style={styles.cacheCaseLogo}
+                  />
+                ),
               }}
             />
             <Tabs.Screen
@@ -290,8 +359,50 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
+  // CacheCase tab only — no label row underneath, so this stretches to the
+  // bar's full height (tabBarContent's cross-axis) instead of shrink-
+  // wrapping to its own content like the other four tabs.
+  tabItemCenter: {
+    flex: 1,
+    alignSelf: 'stretch',
+  },
+  // Vertical icon-over-label stack — centers as one unit within the taller
+  // bar, replacing the old icon-only layout.
+  tabContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  // CacheCase tab only — fills tabItemCenter and centers the (larger,
+  // label-less) badge within the tab's full touch target.
+  centerTabContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    letterSpacing: 0.1,
+  },
+  // CacheCase (Collection) tab only — a touch heavier so it reads with
+  // slightly more presence, same size/spacing as the other four.
+  tabLabelFeatured: {
+    fontWeight: '600',
+  },
   iconWrap: {
     position: 'relative',
+  },
+  // CacheCase tab only — same role as iconWrap, plus the small optical
+  // nudge the larger, asymmetric bracket mark needs to sit visually
+  // centered.
+  iconWrapCenter: {
+    position: 'relative',
+    transform: [{ translateY: 1 }],
+  },
+  cacheCaseLogo: {
+    width: CENTER_BADGE_WIDTH,
+    height: CENTER_BADGE_HEIGHT,
   },
   // shadowOffset/shadowRadius live in the base style always (harmless when
   // shadowOpacity is 0); iconLit only adds shadowOpacity, and shadowColor
@@ -311,9 +422,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: -5,
     left: -5,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: ICON_SIZE + 10,
+    height: ICON_SIZE + 10,
+    borderRadius: (ICON_SIZE + 10) / 2,
+  },
+  // CacheCase tab only — same restrained assist, sized up to match the
+  // larger badge footprint instead of the standard icon size.
+  glowAssistCenter: {
+    position: 'absolute',
+    top: -4,
+    left: -4,
+    width: CENTER_BADGE_WIDTH + 8,
+    height: CENTER_BADGE_HEIGHT + 8,
+    borderRadius: 14,
   },
   badge: {
     position: 'absolute',
