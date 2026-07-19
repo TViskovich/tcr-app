@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
@@ -131,6 +132,7 @@ export default function NotificationsScreen() {
   const currentUserId = session?.user?.id;
   const router = useRouter();
   const { refresh: refreshBadge } = useBadgeRefresh();
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -243,6 +245,8 @@ export default function NotificationsScreen() {
         <FlatList
           data={notifications}
           keyExtractor={(item) => item.id}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           renderItem={({ item }) => (
             <NotificationRow item={item} onPress={() => handlePress(item)} />
           )}

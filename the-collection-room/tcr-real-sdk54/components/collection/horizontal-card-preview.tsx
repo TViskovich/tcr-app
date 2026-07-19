@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
-import { FlatList, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { FlatList, useWindowDimensions, View } from 'react-native';
 
-import { SECTION_GUTTER } from '@/components/collection/collection-header-row';
+import { COMPACT_SECTION_GUTTER, SECTION_GUTTER } from '@/components/collection/collection-header-row';
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { CollectionPreviewPlaceholder } from '@/components/collection/collection-preview-placeholder';
 import { groupItemsByPlayer, type PlayerGroup } from '@/hooks/use-collection';
@@ -14,12 +14,23 @@ import type { CollectionItem } from '@/types';
 const CARDS_VISIBLE = 3.6;
 const CARD_GAP = 10;
 
+// Compact (variant="compact", see profile-v2-collections.tsx) shows more,
+// smaller tiles — same non-integer-on-purpose reasoning as CARDS_VISIBLE,
+// just scaled for a narrower row rather than the full-width carousel.
+const COMPACT_CARDS_VISIBLE = 4.6;
+const COMPACT_CARD_GAP = 8;
+
 // Folders with this many real groups or more fill the initial row on their
 // own — no placeholders. ceil(CARDS_VISIBLE): with ~3.6 cards visible, 3
 // real groups alone still left a trailing gap of empty space at the row's
 // end, so a folder needs a full 4 to be considered "complete" with no
 // placeholder needed.
 const MIN_VISIBLE_SLOTS = Math.ceil(CARDS_VISIBLE);
+
+// Compact (profile) rows never scroll and never show a 5th tile, real or
+// placeholder — real items and generated placeholders both count toward
+// this same cap, applied to whichever mix reaches it first.
+const PROFILE_COLLECTION_PREVIEW_LIMIT = 4;
 
 function groupSubtitle(group: PlayerGroup): string {
   return `${group.items.length} ${group.items.length === 1 ? 'card' : 'cards'}`;
@@ -40,6 +51,10 @@ type Props = {
   items: CollectionItem[];
   onOpenGroup: (group: PlayerGroup) => void;
   onAddItem: () => void;
+  // "compact" only shrinks tile size/spacing (see
+  // components/profile-v2/profile-v2-collections.tsx) — same slot-filling
+  // logic, same tap targets, same aspect ratio as "full" (the default).
+  variant?: 'full' | 'compact';
 };
 
 // A free-scrolling (no snap, indicator hidden) horizontal preview of one
@@ -53,31 +68,38 @@ type Props = {
 // Real groups always come first; generated placeholder slots (local-only,
 // never persisted) fill out the rest of the initial visible row so a sparse
 // or empty collection still reads as a complete, intentional row.
-export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem }: Props) {
+export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem, variant = 'full' }: Props) {
+  const compact = variant === 'compact';
   const { width: windowWidth } = useWindowDimensions();
-  const visibleWidth = windowWidth - SECTION_GUTTER;
-  const tileWidth = (visibleWidth - CARD_GAP * Math.floor(CARDS_VISIBLE)) / CARDS_VISIBLE;
+  const gutter = compact ? COMPACT_SECTION_GUTTER : SECTION_GUTTER;
+  const cardsVisible = compact ? COMPACT_CARDS_VISIBLE : CARDS_VISIBLE;
+  const cardGap = compact ? COMPACT_CARD_GAP : CARD_GAP;
+  const visibleWidth = windowWidth - gutter;
+  const tileWidth = (visibleWidth - cardGap * Math.floor(cardsVisible)) / cardsVisible;
 
   const groups = useMemo(() => groupItemsByPlayer(items), [items]);
 
   const slots = useMemo<PreviewSlot[]>(() => {
-    const real: PreviewSlot[] = groups.map((group) => ({ kind: 'group', group }));
-    const placeholderCount = Math.max(0, MIN_VISIBLE_SLOTS - groups.length);
+    const capacity = compact ? PROFILE_COLLECTION_PREVIEW_LIMIT : MIN_VISIBLE_SLOTS;
+    const realGroups = compact ? groups.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : groups;
+    const real: PreviewSlot[] = realGroups.map((group) => ({ kind: 'group', group }));
+    const placeholderCount = Math.max(0, capacity - realGroups.length);
     const placeholders: PreviewSlot[] = Array.from({ length: placeholderCount }, (_, i) => ({
       kind: 'placeholder',
       key: `placeholder-${folderId}-${i}`,
     }));
     return [...real, ...placeholders];
-  }, [groups, folderId]);
+  }, [compact, groups, folderId]);
 
   return (
     <FlatList
       data={slots}
       horizontal
+      scrollEnabled={!compact}
       showsHorizontalScrollIndicator={false}
       keyExtractor={(slot) => (slot.kind === 'group' ? slot.group.key : slot.key)}
-      contentContainerStyle={styles.content}
-      ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
+      contentContainerStyle={{ paddingHorizontal: gutter }}
+      ItemSeparatorComponent={() => <View style={{ width: cardGap }} />}
       renderItem={({ item: slot }) =>
         slot.kind === 'group' ? (
           <CollectionPreviewCard
@@ -85,6 +107,7 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem 
             title={slot.group.label}
             subtitle={groupSubtitle(slot.group)}
             tileWidth={tileWidth}
+            variant={variant}
             onPress={() => onOpenGroup(slot.group)}
           />
         ) : (
@@ -94,9 +117,3 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem 
     />
   );
 }
-
-const styles = StyleSheet.create({
-  content: {
-    paddingHorizontal: SECTION_GUTTER,
-  },
-});

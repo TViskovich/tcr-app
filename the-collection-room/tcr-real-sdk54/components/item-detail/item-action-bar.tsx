@@ -1,13 +1,21 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
+const IcLogo = require('@/assets/icons/ic-logo-transparent.png');
+
 // Layout only — see app/item/[id].tsx. None of these icons are wired to a
-// handler yet; this is the permanent slot future features (likes, comments,
-// ratings, search, bookmark, share) will plug into. The centered dots are a
-// placeholder for a future element, not a control.
+// handler yet except the CacheCase ID logo below; this is the permanent
+// slot future features (likes, comments, ratings, search, bookmark, share)
+// will plug into. The centered dots are a placeholder for a future
+// element, not a control.
 export function ItemActionBar() {
+  const router = useRouter();
+
   return (
     <View style={styles.row}>
       <View style={styles.side}>
@@ -17,9 +25,16 @@ export function ItemActionBar() {
         <View style={styles.iconBtn}>
           <IconSymbol name="message" size={21} color={PV2.textPrimary} />
         </View>
-        <View style={styles.iconBtn}>
-          <IconSymbol name="star" size={21} color={PV2.textPrimary} />
-        </View>
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={() => router.push('/cachecase-id')}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="CacheCase ID">
+          {/* Brand mark, not a tintable glyph — no color prop, kept exactly
+              as designed (metallic silver, own transparency). */}
+          <Image source={IcLogo} contentFit="contain" style={styles.icLogo} />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.center}>
@@ -71,5 +86,13 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Matches the 21px height of the surrounding icons; width follows the
+  // source PNG's own aspect ratio (563x350) rather than a hand-picked
+  // number, so it can't distort. iconBtn's own centering keeps it
+  // optically aligned with the rest of the row — same as every other icon.
+  icLogo: {
+    height: 21,
+    aspectRatio: 563 / 350,
   },
 });

@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { useGrailRating } from '@/hooks/use-grail-rating';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { RateMyGrailCard } from '@/types';
@@ -190,6 +191,9 @@ export default function PostDetailScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
+  // A single-post detail view, not a browsing list — no scroll-hide effect,
+  // but still resets the shared navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
 
   const [post, setPost] = useState<PostDetail | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);

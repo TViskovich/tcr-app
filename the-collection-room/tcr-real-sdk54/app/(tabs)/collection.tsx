@@ -25,6 +25,7 @@ import { useAuth } from '@/lib/auth';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { itemMatchesSearch, useFolders, type PlayerGroup } from '@/hooks/use-collection';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import type { Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
@@ -214,6 +215,7 @@ export default function CollectionScreen() {
   const insets = useSafeAreaInsets();
   const pagePadding = PAGE_PADDING;
   const { isExpanded, toggle } = useCollapsedSections();
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
@@ -314,6 +316,8 @@ export default function CollectionScreen() {
           data={filteredFolders}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
           renderItem={({ item }) => (
             <CollectionPreviewSection

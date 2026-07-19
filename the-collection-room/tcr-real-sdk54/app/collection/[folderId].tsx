@@ -39,6 +39,7 @@ import {
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { CollectionItem, Folder } from '@/types';
@@ -125,6 +126,7 @@ export default function CollectionFolderScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -663,6 +665,8 @@ export default function CollectionFolderScreen() {
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
             columnWrapperStyle={styles.row}
             contentContainerStyle={[styles.gridContent, styles.cardGridContent]}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
             renderItem={({ item: slot }) =>
               slot.kind === 'placeholder' ? (
                 <CacheCasePlaceholderShell
@@ -714,6 +718,8 @@ export default function CollectionFolderScreen() {
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.key : slot.key)}
             columnWrapperStyle={styles.row}
             contentContainerStyle={styles.gridContent}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
             renderItem={({ item: slot }) => {
               if (slot.kind === 'placeholder') {
                 return (

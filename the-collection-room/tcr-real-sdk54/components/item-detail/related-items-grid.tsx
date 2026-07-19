@@ -72,7 +72,7 @@ export function RelatedItemsGrid({ title = 'Related Items', items, onItemPress, 
 
 const styles = StyleSheet.create({
   wrap: {
-    marginTop: 28,
+    marginTop: 80,
   },
   header: {
     fontSize: 13,

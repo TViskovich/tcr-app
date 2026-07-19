@@ -8,6 +8,11 @@ import { Platform } from 'react-native';
 const tintColorLight = '#0a7ea4';
 const tintColorDark = '#fff';
 
+// Temporary light-theme page background (was pure white/`#f8f9fa`) — swap
+// back by changing this one value. Only for screens/components that
+// explicitly opt in; cards and content panels keep their own white.
+export const LIGHT_PAGE_BACKGROUND = '#D9D9DE';
+
 export const Colors = {
   light: {
     text: '#11181C',

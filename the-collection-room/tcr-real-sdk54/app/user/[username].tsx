@@ -20,6 +20,7 @@ import { ProfileHero } from '@/components/profile/profile-hero';
 import { resolveHeroCanvasTheme } from '@/components/profile/hero-canvas-themes';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useGrails } from '@/hooks/use-grails';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { Folder, Profile } from '@/types';
@@ -31,6 +32,7 @@ export default function UserProfileScreen() {
   const currentUserId = session?.user?.id;
 
   const scrollY = useRef(new Animated.Value(0)).current;
+  const { onScroll: navbarOnScroll } = useScrollResponsiveNavbar();
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -206,7 +208,7 @@ export default function UserProfileScreen() {
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: true },
+          { useNativeDriver: true, listener: navbarOnScroll },
         )}>
         <ProfileHero
           profile={profile}

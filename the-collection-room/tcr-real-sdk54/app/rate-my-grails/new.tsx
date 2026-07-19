@@ -16,6 +16,7 @@ import { Stack, useRouter } from 'expo-router';
 
 import { GrailsSlot } from '@/components/profile/grails-slot';
 import { useGrails } from '@/hooks/use-grails';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 
@@ -26,6 +27,9 @@ export default function NewRateMyGrailsScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const { grails, loading } = useGrails(currentUserId);
+  // A create form, not a scrollable browsing list — no scroll-hide effect,
+  // but still resets the shared navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
 
   const [caption, setCaption] = useState('');
   const [posting, setPosting] = useState(false);

@@ -16,6 +16,7 @@ import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
@@ -27,10 +28,12 @@ import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { useGrails } from '@/hooks/use-grails';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem } from '@/types';
 
 type EditForm = {
@@ -131,6 +134,9 @@ export default function ItemDetailScreen() {
   const { session } = useAuth();
   const router = useRouter();
   const currentUserId = session?.user?.id;
+  const insets = useSafeAreaInsets();
+  const { onScroll: navbarOnScroll, scrollEventThrottle: navbarScrollEventThrottle } =
+    useScrollResponsiveNavbar();
 
   const [item, setItem] = useState<CollectionItem | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
@@ -385,9 +391,14 @@ export default function ItemDetailScreen() {
         behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
+          ]}
           keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={navbarScrollEventThrottle}>
 
           {/* Hero — tap reserved for a future full-screen viewer in view
               mode; in edit mode it opens the existing photo picker. */}

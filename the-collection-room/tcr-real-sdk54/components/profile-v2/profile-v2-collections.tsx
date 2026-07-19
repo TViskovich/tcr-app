@@ -1,69 +1,130 @@
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { FolderCard } from '@/components/collection/folder-card';
-import type { Folder } from '@/types';
+import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
+import type { PlayerGroup } from '@/hooks/use-collection';
+import type { CollectionItem, Folder } from '@/types';
 import { PV2 } from './profile-v2-theme';
 
 type Props = {
   folders: Folder[];
-  onFolderPress: (folder: Folder) => void;
+  // Keyed by folder id — same shape hooks/use-collection.ts's useFolders()
+  // returns for app/(tabs)/collection.tsx, passed straight through by the
+  // caller rather than re-fetched here.
+  previewItems: Record<string, CollectionItem[]>;
+  onOpenFolder: (folder: Folder) => void;
+  onOpenGroup: (folder: Folder, group: PlayerGroup) => void;
+  onAddItem: (folder: Folder) => void;
   onCreatePress: () => void;
 };
 
-// Plain flex-wrap grid, not a FlatList — this renders inside the profile
-// screen's single outer ScrollView, and a nested scrollable list here would
-// fight that outer scroll.
-export function ProfileV2Collections({ folders, onFolderPress, onCreatePress }: Props) {
+// A compact, vertically-stacked preview of the same folder rows the main
+// Collection page renders (app/(tabs)/collection.tsx) — same
+// CollectionPreviewSection/CollectionHeaderRow/HorizontalCardPreview/
+// CollectionPreviewCard components, just in variant="compact" so
+// dimensions/typography shrink to fit beneath the profile tab selector.
+// No data fetching, no folder/item resolution, no separate navigation
+// logic of its own — folders/previewItems and every handler come from the
+// caller (app/(tabs)/profile.tsx), which already scopes them to whichever
+// profile is being viewed.
+//
+// Renders inside the profile screen's single outer ScrollView (not its own
+// FlatList) — a nested *vertical* list here would fight that outer scroll,
+// but each row's own HorizontalCardPreview is a horizontal FlatList, which
+// doesn't conflict.
+export function ProfileV2Collections({
+  folders,
+  previewItems,
+  onOpenFolder,
+  onOpenGroup,
+  onAddItem,
+  onCreatePress,
+}: Props) {
   if (folders.length === 0) {
     return (
-      <View style={styles.empty}>
-        <Text style={styles.emptyTitle}>No folders yet</Text>
-        <TouchableOpacity style={styles.emptyBtn} onPress={onCreatePress} activeOpacity={0.85}>
-          <Text style={styles.emptyBtnLabel}>Create First Folder</Text>
+      <View style={styles.emptyWrap}>
+        <CacheCaseLogo variant="icon" size="md" style={styles.emptyLogo} />
+        <Text style={styles.emptyTitle}>No collections yet</Text>
+        <Text style={styles.emptyBody}>
+          Start organizing your cards into folders — by set, player, team, or however you collect.
+        </Text>
+        <TouchableOpacity style={styles.emptyButton} onPress={onCreatePress} activeOpacity={0.85}>
+          <Text style={styles.emptyButtonText}>Create First Collection</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
   return (
-    <View style={styles.grid}>
-      {folders.map((folder) => (
-        <FolderCard key={folder.id} folder={folder} onPress={() => onFolderPress(folder)} />
+    <View style={styles.list}>
+      {folders.map((folder, index) => (
+        <View key={folder.id} style={index > 0 && styles.rowSeparator}>
+          <CollectionPreviewSection
+            folderId={folder.id}
+            title={folder.name}
+            items={previewItems[folder.id] ?? []}
+            isExpanded
+            onOpenFolder={() => onOpenFolder(folder)}
+            onOpenGroup={(group) => onOpenGroup(folder, group)}
+            onAddItem={() => onAddItem(folder)}
+            variant="compact"
+          />
+        </View>
       ))}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 14,
-    paddingHorizontal: 16,
+  list: {
     marginTop: 14,
   },
-  empty: {
+  // Tighter than app/(tabs)/collection.tsx's own 22px rowSeparator — this
+  // is the "tighten vertical spacing between entries" compaction, same
+  // idea, smaller value.
+  rowSeparator: {
+    marginTop: 14,
+  },
+  // Same restrained dark-panel language as the main Collection page's own
+  // empty state (app/(tabs)/collection.tsx), scaled down to sit inline in
+  // the profile tab rather than filling the whole screen.
+  emptyWrap: {
     alignItems: 'center',
-    paddingVertical: 40,
+    paddingVertical: 32,
     paddingHorizontal: 24,
   },
-  emptyTitle: {
-    color: PV2.textSecondary,
-    fontSize: 15,
-    marginBottom: 16,
+  emptyLogo: {
+    opacity: 0.85,
+    marginBottom: 14,
   },
-  emptyBtn: {
-    height: 44,
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+    textAlign: 'center',
+  },
+  emptyBody: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 18,
+    color: PV2.textSecondary,
+    textAlign: 'center',
+    maxWidth: 280,
+  },
+  emptyButton: {
+    marginTop: 18,
+    height: 42,
     paddingHorizontal: 22,
-    borderRadius: 22,
-    backgroundColor: PV2.accent,
+    borderRadius: 21,
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: PV2.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyBtnLabel: {
-    color: '#fff',
-    fontSize: 14,
+  emptyButtonText: {
+    fontSize: 13,
     fontWeight: '700',
+    color: '#fff',
   },
 });

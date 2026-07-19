@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
-import { Tabs, usePathname } from 'expo-router';
+import { Tabs, usePathname, useRouter } from 'expo-router';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,8 +10,9 @@ import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
+import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
 import { MessageBadgeRefreshContext } from '@/lib/message-badge-context';
-import { TAB_BAR_HEIGHT, TabVisibilityProvider, useTabVisibility } from '@/lib/tab-visibility-context';
+import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
 const HIDDEN_TABS = new Set(['notifications']);
@@ -171,6 +172,7 @@ function TabBarItem({
 
 function AnimatedTabBar({ state, descriptors, navigation }: any) {
   const pathname = usePathname();
+  const router = useRouter();
   const hideTabBar = pathname.startsWith('/user/');
   const insets = useSafeAreaInsets();
 
@@ -197,10 +199,17 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
             if (HIDDEN_TABS.has(route.name)) return null;
 
             const { options } = descriptors[route.key];
-            const isFocused = state.index === index;
+            const featured = route.name === FEATURED_TAB;
+            // The CacheCase tab also lights up for any screen belonging to
+            // the collection hierarchy (see lib/cachecase-navigation.ts) —
+            // in practice this bar is only ever visible when pathname is
+            // exactly one of the 5 tab routes (nested screens like
+            // /folder/[id] are pushed on top and cover it), so this is
+            // equivalent to state.index === index today, but keeps the
+            // logic centralized and correct if that ever changes.
+            const isFocused = state.index === index || (featured && isCacheCaseRoute(pathname));
             const badge = options.tabBarBadge;
             const accent = TAB_ACCENTS[route.name] ?? DEFAULT_ACCENT;
-            const featured = route.name === FEATURED_TAB;
             const color = isFocused ? accent : featured ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR;
 
             const onPress = () => {
@@ -212,7 +221,14 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
                 target: route.key,
                 canPreventDefault: true,
               });
-              if (!isFocused && !event.defaultPrevented) {
+              if (event.defaultPrevented) return;
+              if (featured) {
+                // Always land on the Collection root — never stacked on
+                // top of, and never preserving, a nested collection screen.
+                router.replace(COLLECTION_ROOT_ROUTE as any);
+                return;
+              }
+              if (!isFocused) {
                 navigation.navigate(route.name, route.params);
               }
             };
@@ -251,69 +267,64 @@ export default function TabLayout() {
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
 
   return (
-    <TabVisibilityProvider>
-      <BadgeRefreshContext.Provider value={{ count: unreadCount, refresh: refreshNotifBadge }}>
-        <MessageBadgeRefreshContext.Provider value={refreshMessageBadge}>
-          <Tabs
-            tabBar={(props) => <AnimatedTabBar {...props} />}
-            screenListeners={({ route }) => ({
-              focus: () => {
-                if (route.name === 'messages') refreshMessageBadge();
-              },
-            })}
-            screenOptions={{ headerShown: false }}>
-            <Tabs.Screen
-              name="index"
-              options={{
-                title: 'Home',
-                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
-              }}
-            />
-            <Tabs.Screen
-              name="search"
-              options={{
-                title: 'Search',
-                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
-              }}
-            />
-            <Tabs.Screen
-              name="collection"
-              options={{
-                title: 'Collection',
-                tabBarAccessibilityLabel: 'CacheCase',
-                tabBarIcon: ({ color }) => (
-                  <Image
-                    source={CacheCaseLogoNav}
-                    contentFit="contain"
-                    tintColor={color}
-                    style={styles.cacheCaseLogo}
-                  />
-                ),
-              }}
-            />
-            <Tabs.Screen
-              name="messages"
-              options={{
-                title: 'Messages',
-                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
-                tabBarBadge: messageBadge,
-              }}
-            />
-            <Tabs.Screen
-              name="notifications"
-              options={{ href: null }}
-            />
-            <Tabs.Screen
-              name="profile"
-              options={{
-                title: 'Profile',
-                tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
-              }}
-            />
-          </Tabs>
-        </MessageBadgeRefreshContext.Provider>
-      </BadgeRefreshContext.Provider>
-    </TabVisibilityProvider>
+    <BadgeRefreshContext.Provider value={{ count: unreadCount, refresh: refreshNotifBadge }}>
+      <MessageBadgeRefreshContext.Provider value={refreshMessageBadge}>
+        <Tabs
+          tabBar={(props) => <AnimatedTabBar {...props} />}
+          screenListeners={({ route }) => ({
+            focus: () => {
+              if (route.name === 'messages') refreshMessageBadge();
+            },
+          })}
+          screenOptions={{ headerShown: false }}>
+          <Tabs.Screen
+            name="index"
+            options={{
+              title: 'Home',
+              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
+            }}
+          />
+          <Tabs.Screen
+            name="search"
+            options={{
+              title: 'Search',
+              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
+            }}
+          />
+          <Tabs.Screen
+            name="collection"
+            options={{
+              title: 'Collection',
+              tabBarAccessibilityLabel: 'CacheCase',
+              tabBarIcon: ({ color }) => (
+                <Image
+                  source={CacheCaseLogoNav}
+                  contentFit="contain"
+                  tintColor={color}
+                  style={styles.cacheCaseLogo}
+                />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="messages"
+            options={{
+              title: 'Messages',
+              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
+              tabBarBadge: messageBadge,
+            }}
+          />
+          <Tabs.Screen name="notifications" options={{ href: null }} />
+          <Tabs.Screen
+            name="profile"
+            options={{
+              title: 'Profile',
+              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
+            }}
+          />
+        </Tabs>
+      </MessageBadgeRefreshContext.Provider>
+    </BadgeRefreshContext.Provider>
   );
 }
 

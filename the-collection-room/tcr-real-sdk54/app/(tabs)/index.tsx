@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -12,17 +12,19 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useSharedValue, withSpring } from 'react-native-reanimated';
+import { useSharedValue } from 'react-native-reanimated';
 
+import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
-import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
 import { fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 
 // Canonical feed chronology — every dataset this screen renders (initial
 // load, refresh, pagination merges) must end up sorted strictly by the post
@@ -229,10 +231,8 @@ export default function HomeScreen() {
   const currentUserId = session?.user?.id;
   const { count: notifCount } = useBadgeRefresh();
 
-  const { translateY } = useTabVisibility();
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   const insets = useSafeAreaInsets();
-  const lastScrollY = useRef(0);
-  const tabBarHidden = useRef(false);
   const pullProgress = useSharedValue(0);
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
@@ -432,22 +432,16 @@ export default function HomeScreen() {
               />
             )}
             contentContainerStyle={[styles.list, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
-            scrollEventThrottle={16}
+            scrollEventThrottle={scrollEventThrottle}
             onScroll={(e) => {
-              const y = e.nativeEvent.contentOffset.y;
-              const dy = y - lastScrollY.current;
-              // Hide on scroll down (past 80px), show on scroll up
-              if (dy > 6 && y > 80 && !tabBarHidden.current) {
-                tabBarHidden.current = true;
-                translateY.value = withSpring(102, { damping: 20, stiffness: 200 });
-              } else if (dy < -6 && tabBarHidden.current) {
-                tabBarHidden.current = false;
-                translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
-              }
-              lastScrollY.current = y;
+              // Shared navbar hide/show-on-scroll behavior (see
+              // hooks/use-scroll-responsive-navbar.ts — this screen is its
+              // source-of-truth implementation, now extracted there).
+              navbarOnScroll(e);
 
               // Overscroll-only (y < 0, iOS pull bounce) drives the custom
               // refresh icon below — purely visual, doesn't touch refresh logic.
+              const y = e.nativeEvent.contentOffset.y;
               pullProgress.value = y < 0 ? Math.min(1.15, -y / PULL_THRESHOLD) : 0;
             }}
             onEndReached={loadMore}
@@ -466,9 +460,9 @@ export default function HomeScreen() {
                 // True alpha-transparent tint is unreliable on iOS — UIRefreshControl
                 // can still paint its spinner glyph even at tintColor alpha 0. Camouflaging
                 // against the screen's real background color hides it completely instead.
-                tintColor="#f8f9fa"
-                colors={['#f8f9fa']}
-                progressBackgroundColor="#f8f9fa"
+                tintColor={LIGHT_PAGE_BACKGROUND}
+                colors={[LIGHT_PAGE_BACKGROUND]}
+                progressBackgroundColor={LIGHT_PAGE_BACKGROUND}
               />
             }
           />
@@ -487,7 +481,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
   },
   header: {
     flexDirection: 'row',
@@ -495,7 +489,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: '#fff',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e0e0e0',
   },

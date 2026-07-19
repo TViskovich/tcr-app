@@ -15,6 +15,7 @@ import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 
 export default function SavedScreen() {
@@ -24,6 +25,7 @@ export default function SavedScreen() {
 
   const { folders, cards, grails, loading, refresh } = useSavedAll(currentUserId);
   const [refreshing, setRefreshing] = useState(false);
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
@@ -55,6 +57,8 @@ export default function SavedScreen() {
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.content}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
           }>

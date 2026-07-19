@@ -10,10 +10,18 @@ type Props = {
   title: string;
   items: CollectionItem[];
   isExpanded: boolean;
-  onToggle: () => void;
+  // Only reachable via the "full" variant's collapse chevron — the
+  // "compact" variant never renders that control, so its callers don't
+  // need to pass this.
+  onToggle?: () => void;
   onOpenFolder?: () => void;
   onOpenGroup: (group: PlayerGroup) => void;
   onAddItem: () => void;
+  // "compact" shrinks dimensions/typography AND drops the collapse
+  // chevron entirely — its rows are always expanded (see
+  // components/profile-v2/profile-v2-collections.tsx). Same structure,
+  // same navigation behavior as "full" (the default) otherwise.
+  variant?: 'full' | 'compact';
 };
 
 // One collection's title/chevron row (CollectionHeaderRow) plus its
@@ -42,6 +50,7 @@ export function CollectionPreviewSection({
   onOpenFolder,
   onOpenGroup,
   onAddItem,
+  variant = 'full',
 }: Props) {
   return (
     <View style={styles.section}>
@@ -50,6 +59,7 @@ export function CollectionPreviewSection({
         isExpanded={isExpanded}
         onToggle={onToggle}
         onOpenFolder={onOpenFolder}
+        variant={variant}
       />
 
       {isExpanded && (
@@ -58,6 +68,7 @@ export function CollectionPreviewSection({
           items={items}
           onOpenGroup={onOpenGroup}
           onAddItem={onAddItem}
+          variant={variant}
         />
       )}
     </View>

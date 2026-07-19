@@ -15,6 +15,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
@@ -197,6 +199,7 @@ export default function MessagesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const refreshMessageBadge = useMessageBadgeRefresh();
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -268,6 +271,8 @@ export default function MessagesScreen() {
           data={conversations}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           renderItem={({ item }) => (
             <ConversationRow
               item={item}
@@ -332,12 +337,12 @@ function ConversationRow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
   },
   header: {
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#fff',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e0e0e0',
   },

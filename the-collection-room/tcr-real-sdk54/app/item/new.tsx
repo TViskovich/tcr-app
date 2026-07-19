@@ -19,6 +19,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -69,6 +70,9 @@ export default function AddItemScreen() {
   const { session } = useAuth();
   const { folderId, folderName } = useLocalSearchParams<{ folderId: string; folderName: string }>();
   const router = useRouter();
+  // A create/edit form, not a scrollable browsing list — no scroll-hide
+  // effect, but still resets the shared navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
 
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [pendingUri, setPendingUri] = useState<string | null>(null);

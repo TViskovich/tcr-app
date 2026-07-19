@@ -13,6 +13,7 @@ import {
 
 import { Stack, useRouter } from 'expo-router';
 
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 
@@ -21,6 +22,9 @@ const MAX_CHARS = 280;
 export default function NewPostScreen() {
   const router = useRouter();
   const { session } = useAuth();
+  // A create form, not a scrollable browsing list — no scroll-hide effect,
+  // but still resets the shared navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
   const [text, setText] = useState('');
   const [posting, setPosting] = useState(false);
 

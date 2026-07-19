@@ -15,6 +15,8 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -153,6 +155,7 @@ export default function SearchScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const listContentStyle = { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 };
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   const [mode, setMode] = useState<Mode>('users');
   const [query, setQuery] = useState('');
@@ -291,6 +294,8 @@ export default function SearchScreen() {
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={listContentStyle}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           renderItem={({ item }) => (
             <UserRow
               profile={item}
@@ -309,6 +314,8 @@ export default function SearchScreen() {
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={listContentStyle}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
           renderItem={({ item }) => (
             <CardRow
               card={item}
@@ -329,7 +336,7 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
   },
   header: {
     flexDirection: 'row',

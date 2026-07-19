@@ -17,6 +17,11 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 // PAGE_PADDING), matching this app's existing convention of a tighter,
 // separate inset for list content vs. the page header.
 export const SECTION_GUTTER = 18;
+// Used instead of SECTION_GUTTER when variant="compact" (see
+// components/profile-v2/profile-v2-collections.tsx) — the profile tab's
+// own established horizontal inset, slightly tighter than the full
+// Collection page's since it sits inside an already-padded section.
+export const COMPACT_SECTION_GUTTER = 16;
 
 // Shared with collection-preview-section.tsx's collapse animation so the
 // chevron rotation and the preview row's open/close stay in lockstep even
@@ -27,20 +32,39 @@ export const SECTION_TOGGLE_EASING = Easing.out(Easing.cubic);
 type Props = {
   title: string;
   isExpanded: boolean;
-  onToggle: () => void;
+  // Only used to drive the far-right collapse chevron, which the compact
+  // (profile) variant doesn't render — optional so compact callers don't
+  // need to wire a handler that would never be reachable.
+  onToggle?: () => void;
   // Tapping the title (or the solid arrow right beside it) opens the full
   // folder — a separate touch target from the collapse chevron, which sits
   // at the far right of the row.
   onOpenFolder?: () => void;
+  // "compact" only shrinks dimensions/typography EXCEPT for the far-right
+  // collapse chevron, which it omits entirely (see
+  // components/profile-v2/profile-v2-collections.tsx) — the profile
+  // version's category rows are always expanded and don't support
+  // collapsing. Everything else (title, left nav chevron, tap targets) is
+  // the same structure/interactions as "full" (the default).
+  variant?: 'full' | 'compact';
 };
 
 // The title row above each collection's horizontal preview. No enclosing
-// container — everything sits directly on the page background. Two
-// distinct arrows, two distinct jobs: a solid "chevron.right" glyph right
-// beside the title is part of the title's own tap target and opens the
-// full folder; the thin rotating '›' at the far right of the row toggles
-// the preview open/closed.
-export function CollectionHeaderRow({ title, isExpanded, onToggle, onOpenFolder }: Props) {
+// container — everything sits directly on the page background. In the
+// "full" variant there are two distinct arrows with two distinct jobs: a
+// solid "chevron.right" glyph right beside the title is part of the
+// title's own tap target and opens the full folder; the thin rotating '›'
+// at the far right of the row toggles the preview open/closed. The
+// "compact" variant renders only the first — its rows are always expanded,
+// so there's no collapse control to show.
+export function CollectionHeaderRow({
+  title,
+  isExpanded,
+  onToggle,
+  onOpenFolder,
+  variant = 'full',
+}: Props) {
+  const compact = variant === 'compact';
   const reducedMotion = useReducedMotion();
   const progress = useSharedValue(isExpanded ? 1 : 0);
 
@@ -58,30 +82,37 @@ export function CollectionHeaderRow({ title, isExpanded, onToggle, onOpenFolder 
   }));
 
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, compact && styles.rowCompact]}>
       <Pressable
         style={({ pressed }) => [styles.titleTouch, pressed && styles.pressed]}
         onPress={onOpenFolder}
         accessibilityRole="button"
         accessibilityLabel={`Open ${title} collection`}
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}>
-        <Text style={styles.title} numberOfLines={1}>
+        <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={1}>
           {title}
         </Text>
-        <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} style={styles.openIcon} />
+        <IconSymbol
+          name="chevron.right"
+          size={compact ? 14 : 16}
+          color={PV2.textSecondary}
+          style={styles.openIcon}
+        />
       </Pressable>
 
-      <Pressable
-        style={({ pressed }) => [styles.chevronTouch, pressed && styles.pressed]}
-        onPress={onToggle}
-        accessibilityRole="button"
-        accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} ${title}`}
-        accessibilityState={{ expanded: isExpanded }}
-        // Grows the touch target without visually enlarging the compact
-        // chevron glyph itself.
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-        <Animated.Text style={[styles.chevron, chevronStyle]}>{'›'}</Animated.Text>
-      </Pressable>
+      {!compact && (
+        <Pressable
+          style={({ pressed }) => [styles.chevronTouch, pressed && styles.pressed]}
+          onPress={onToggle}
+          accessibilityRole="button"
+          accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} ${title}`}
+          accessibilityState={{ expanded: isExpanded }}
+          // Grows the touch target without visually enlarging the compact
+          // chevron glyph itself.
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Animated.Text style={[styles.chevron, chevronStyle]}>{'›'}</Animated.Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -93,6 +124,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: SECTION_GUTTER,
     marginBottom: 10,
+  },
+  rowCompact: {
+    paddingHorizontal: COMPACT_SECTION_GUTTER,
+    marginBottom: 6,
   },
   pressed: {
     opacity: 0.7,
@@ -113,6 +148,9 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     fontSize: 20,
     fontWeight: '700',
+  },
+  titleCompact: {
+    fontSize: 16,
   },
   chevron: {
     color: PV2.textTertiary,

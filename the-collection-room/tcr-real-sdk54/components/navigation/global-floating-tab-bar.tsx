@@ -1,13 +1,15 @@
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { useAuth } from '@/lib/auth';
-import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
+import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // The same floating pill rendered inside the (tabs) group (see
 // app/(tabs)/_layout.tsx's AnimatedTabBar), but pathname-driven instead of
@@ -37,6 +39,18 @@ const FEATURED_TAB: GlobalTabName = 'collection';
 // larger size.
 const CENTER_BADGE_WIDTH = 71;
 const CENTER_BADGE_HEIGHT = 53;
+// Matches TAB_ACCENTS.collection in app/(tabs)/_layout.tsx — the CacheCase
+// tab's active color, used here when the current screen belongs to the
+// collection hierarchy (see lib/cachecase-navigation.ts).
+const CACHECASE_ACCENT = '#A97BFF';
+
+function glowAssistColorFor(accent: string) {
+  const hex = accent.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},0.18)`;
+}
 
 type GlobalTabName = 'index' | 'collection' | 'search' | 'messages' | 'profile';
 
@@ -63,24 +77,47 @@ export function GlobalFloatingTabBar() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const { unreadCount: unreadMessages } = useUnreadMessages(session?.user?.id);
+  // Same shared translateY/opacity the tabs-group bar animates — driven by
+  // useScrollResponsiveNavbar() on whichever screen is currently focused,
+  // so this bar (rendered on every screen outside the tabs group) hides
+  // and restores exactly like the Feed screen's original effect.
+  const { translateY, opacity } = useTabVisibility();
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+    opacity: opacity.value,
+  }));
 
   if (TAB_COVERED_PATHS.has(pathname)) return null;
 
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
+  // True on every screen pushed outside the tabs group that still belongs
+  // to the collection-browsing hierarchy (folder, item, gallery, etc.) —
+  // not just when the pathname literally equals the Collection tab route.
+  const cacheCaseActive = isCacheCaseRoute(pathname);
 
   return (
-    <View style={[styles.rootWrap, { bottom: insets.bottom + BAR_BOTTOM_GAP }]} pointerEvents="box-none">
+    <Animated.View
+      style={[styles.rootWrap, { bottom: insets.bottom + BAR_BOTTOM_GAP }, animStyle]}
+      pointerEvents="box-none">
       <View style={styles.tabBarShadow}>
         <View style={styles.tabBarShell}>
           <View style={styles.tabBarContent}>
             {TABS.map((tab) => {
+              const centered = tab.name === FEATURED_TAB;
               const onPress = () => {
                 if (process.env.EXPO_OS === 'ios') {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 }
+                if (centered) {
+                  // Always land on the Collection root — never the nested
+                  // screen the user happened to be on, and never stacked
+                  // on top of it.
+                  router.replace(COLLECTION_ROOT_ROUTE as any);
+                  return;
+                }
                 router.navigate(tab.route as any);
               };
-              const centered = tab.name === FEATURED_TAB;
+              const logoColor = cacheCaseActive ? CACHECASE_ACCENT : FEATURED_INACTIVE_COLOR;
               return (
                 <TouchableOpacity
                   key={tab.name}
@@ -88,6 +125,7 @@ export function GlobalFloatingTabBar() {
                   style={centered ? styles.tabItemCenter : styles.tabItem}
                   activeOpacity={0.7}
                   accessibilityRole="button"
+                  accessibilityState={centered && cacheCaseActive ? { selected: true } : {}}
                   accessibilityLabel={centered ? 'CacheCase' : tab.label}>
                   <View
                     style={[
@@ -99,12 +137,26 @@ export function GlobalFloatingTabBar() {
                           : null,
                     ]}>
                     <View style={centered ? styles.iconWrapCenter : styles.iconWrap}>
-                      <View style={styles.iconLitWrap}>
+                      {centered && cacheCaseActive && Platform.OS !== 'ios' && (
+                        <View
+                          style={[
+                            styles.glowAssistCenter,
+                            { backgroundColor: glowAssistColorFor(CACHECASE_ACCENT) },
+                          ]}
+                          pointerEvents="none"
+                        />
+                      )}
+                      <View
+                        style={
+                          centered && cacheCaseActive
+                            ? [styles.iconLitWrap, styles.iconLit, { shadowColor: CACHECASE_ACCENT }]
+                            : styles.iconLitWrap
+                        }>
                         {centered ? (
                           <Image
                             source={CacheCaseLogoNav}
                             contentFit="contain"
-                            tintColor={FEATURED_INACTIVE_COLOR}
+                            tintColor={logoColor}
                             style={styles.cacheCaseLogo}
                           />
                         ) : (
@@ -135,7 +187,7 @@ export function GlobalFloatingTabBar() {
           </View>
         </View>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -208,6 +260,19 @@ const styles = StyleSheet.create({
   iconLitWrap: {
     shadowOffset: { width: 0, height: 0 },
     shadowRadius: 8,
+  },
+  iconLit: {
+    shadowOpacity: 0.85,
+  },
+  // Android/web fallback only — matches app/(tabs)/_layout.tsx's
+  // glowAssistCenter, sized to the (larger) CacheCase logo.
+  glowAssistCenter: {
+    position: 'absolute',
+    top: -4,
+    left: -4,
+    width: CENTER_BADGE_WIDTH + 8,
+    height: CENTER_BADGE_HEIGHT + 8,
+    borderRadius: 14,
   },
   badge: {
     position: 'absolute',

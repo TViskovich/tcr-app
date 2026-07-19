@@ -3,6 +3,7 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 
 type Row = {
@@ -14,6 +15,9 @@ type Row = {
 export default function SettingsScreen() {
   const { signOut, session } = useAuth();
   const router = useRouter();
+  // Not scrollable — no scroll-hide effect, but still resets the shared
+  // navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
 
   // Activity = likes, comments, follows, messages, Grail ratings — exactly
   // what the Notifications screen already shows (also reachable via the

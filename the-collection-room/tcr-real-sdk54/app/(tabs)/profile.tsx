@@ -36,13 +36,15 @@ import {
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
-import { useFolders } from '@/hooks/use-collection';
+import { useFolders, type PlayerGroup } from '@/hooks/use-collection';
 import { useProfile } from '@/hooks/use-profile';
 import { useGrails } from '@/hooks/use-grails';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import type { Folder } from '@/types';
 
 // Values with no corresponding column/table yet (see PrototypeCollectorStats
 // in profile-v2-collector-panel.tsx). Kept in exactly one place, clearly
@@ -62,7 +64,8 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { profile, stats, loading, refresh } = useProfile(userId);
   const { grails, refresh: refreshGrails } = useGrails(userId);
-  const { folders, refresh: refreshFolders } = useFolders(userId);
+  const { folders, previewItems, refresh: refreshFolders } = useFolders(userId);
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   // Own post history for the "posts" section — chronological (posts.created_at
   // DESC), scoped to this account's user_id, no feed ranking. Loaded the same
@@ -135,6 +138,25 @@ export default function ProfileScreen() {
       // account's own id on this screen, and the app never notifies a user
       // about their own like.
     }
+  }
+
+  // Same destinations/params as app/(tabs)/collection.tsx's own
+  // openFolder/openGroup/addItem — the compact preview below must land on
+  // the exact same screens as the main Collection page, not a
+  // profile-only route.
+  function openFolder(folder: Folder) {
+    router.push({ pathname: '/collection/[folderId]', params: { folderId: folder.id, title: folder.name } });
+  }
+
+  function openFolderGroup(folder: Folder, group: PlayerGroup) {
+    router.push({
+      pathname: '/collection/[folderId]',
+      params: { folderId: folder.id, title: folder.name, player: group.key },
+    });
+  }
+
+  function addFolderItem(folder: Folder) {
+    router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
   }
 
   function enterEdit() {
@@ -424,7 +446,9 @@ export default function ProfileScreen() {
           contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-          showsVerticalScrollIndicator={false}>
+          showsVerticalScrollIndicator={false}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}>
 
           {profile && (
             <ProfileV2Hero
@@ -581,12 +605,10 @@ export default function ProfileScreen() {
                 {section === 'collections' && (
                   <ProfileV2Collections
                     folders={folders}
-                    onFolderPress={(folder) =>
-                      router.push({
-                        pathname: '/collection/[folderId]',
-                        params: { folderId: folder.id, title: folder.name },
-                      })
-                    }
+                    previewItems={previewItems}
+                    onOpenFolder={openFolder}
+                    onOpenGroup={openFolderGroup}
+                    onAddItem={addFolderItem}
                     onCreatePress={() => router.push('/(tabs)/collection' as any)}
                   />
                 )}

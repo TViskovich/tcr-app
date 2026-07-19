@@ -8,6 +8,7 @@ import 'react-native-reanimated';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { GlobalFloatingTabBar } from '@/components/navigation/global-floating-tab-bar';
+import { TabVisibilityProvider } from '@/lib/tab-visibility-context';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -32,11 +33,13 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      </Stack>
-      {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
+      <TabVisibilityProvider>
+        <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        </Stack>
+        {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
+      </TabVisibilityProvider>
       <StatusBar style="auto" />
     </ThemeProvider>
   );

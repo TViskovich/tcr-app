@@ -16,6 +16,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
@@ -63,6 +64,10 @@ export default function ConversationScreen() {
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
   const refreshMessageBadge = useMessageBadgeRefresh();
+  // A chat thread, not a browsing list — no scroll-hide effect (would
+  // fight the thread's own auto-scroll-to-bottom behavior), but still
+  // resets the shared navbar to visible on focus.
+  useScrollResponsiveNavbar({ enabled: false });
 
   const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);

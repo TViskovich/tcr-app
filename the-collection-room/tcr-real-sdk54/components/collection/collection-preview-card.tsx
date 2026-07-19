@@ -17,12 +17,26 @@ type Props = {
   subtitle?: string | null;
   tileWidth: number;
   onPress: () => void;
+  // "compact" only shrinks the caption typography (see
+  // components/profile-v2/profile-v2-collections.tsx) — corner radius,
+  // border, gradients/scrim, and the placeholder treatment are identical
+  // to "full" (the default) at any size, per the shared PREVIEW_CARD_*
+  // constants below, which never vary by variant.
+  variant?: 'full' | 'compact';
 };
 
 // Pure visual renderer — no data fetching, no folder/item resolution of its
 // own. The caller passes item.image_url straight through, the same field
 // item-card.tsx already uses for the folder-detail grid.
-export function CollectionPreviewCard({ imageUrl, title, subtitle, tileWidth, onPress }: Props) {
+export function CollectionPreviewCard({
+  imageUrl,
+  title,
+  subtitle,
+  tileWidth,
+  onPress,
+  variant = 'full',
+}: Props) {
+  const compact = variant === 'compact';
   return (
     <Pressable
       style={({ pressed }) => [{ width: tileWidth }, pressed && styles.pressed]}
@@ -50,12 +64,12 @@ export function CollectionPreviewCard({ imageUrl, title, subtitle, tileWidth, on
         {(title || subtitle) && (
           <View style={styles.captionBar}>
             {title && (
-              <Text style={styles.title} numberOfLines={1}>
+              <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={1}>
                 {title}
               </Text>
             )}
             {subtitle && (
-              <Text style={styles.subtitle} numberOfLines={1}>
+              <Text style={[styles.subtitle, compact && styles.subtitleCompact]} numberOfLines={1}>
                 {subtitle}
               </Text>
             )}
@@ -93,6 +107,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  titleCompact: {
+    fontSize: 11,
+  },
   subtitle: {
     marginTop: 1,
     // Brighter than PV2.textTertiary (0.36) — this now sits on a dark
@@ -100,5 +117,8 @@ const styles = StyleSheet.create({
     // and needs more contrast to stay legible against varied photo content.
     color: 'rgba(255,255,255,0.72)',
     fontSize: 11,
+  },
+  subtitleCompact: {
+    fontSize: 10,
   },
 });

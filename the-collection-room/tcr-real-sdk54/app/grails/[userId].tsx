@@ -8,6 +8,7 @@ import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { GrailsGrid } from '@/components/profile/grails-grid';
 import { useGrails } from '@/hooks/use-grails';
 import { useSavedGrails } from '@/hooks/use-saved';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 
 export default function GrailsShowcaseScreen() {
@@ -30,6 +31,7 @@ export default function GrailsShowcaseScreen() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const hasAnimated = useRef(false);
+  const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   useEffect(() => {
     if (!loading && grails.length > 0 && !hasAnimated.current) {
@@ -70,7 +72,9 @@ export default function GrailsShowcaseScreen() {
           <Animated.View style={{ flex: 1, opacity: fadeAnim }} pointerEvents="box-none">
             <ScrollView
               contentContainerStyle={styles.scroll}
-              showsVerticalScrollIndicator={false}>
+              showsVerticalScrollIndicator={false}
+              onScroll={navbarOnScroll}
+              scrollEventThrottle={scrollEventThrottle}>
               <GrailsGrid
                 grails={grails}
                 editable={false}

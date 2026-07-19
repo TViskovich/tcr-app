@@ -1,4 +1,4 @@
-import React, { createContext, useContext } from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
 import { useSharedValue } from 'react-native-reanimated';
 import type { SharedValue } from 'react-native-reanimated';
 
@@ -20,11 +20,13 @@ const TabVisibilityContext = createContext<TabVisibilityCtx | null>(null);
 export function TabVisibilityProvider({ children }: { children: React.ReactNode }) {
   const translateY = useSharedValue(0);
   const opacity = useSharedValue(1);
-  return (
-    <TabVisibilityContext.Provider value={{ translateY, opacity }}>
-      {children}
-    </TabVisibilityContext.Provider>
-  );
+  // Memoized so consumers only re-render when this provider itself
+  // actually re-mounts — an unmemoized object literal here would give
+  // every useContext(TabVisibilityContext) consumer a new value identity
+  // on every render of the root layout (e.g. on every navigation), even
+  // though translateY/opacity themselves are already stable.
+  const value = useMemo(() => ({ translateY, opacity }), [translateY, opacity]);
+  return <TabVisibilityContext.Provider value={value}>{children}</TabVisibilityContext.Provider>;
 }
 
 export function useTabVisibility() {
