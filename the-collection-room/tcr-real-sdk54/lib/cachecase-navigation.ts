@@ -18,9 +18,15 @@ const CACHECASE_ROUTE_PREFIXES = [
   '/item/', // app/item/[id].tsx, app/item/new.tsx — item detail/creation
 ];
 
+// app/cachecase-id.tsx — a flat, non-prefixed route (no trailing slash to
+// match against), so it's checked by exact equality alongside
+// COLLECTION_ROOT_ROUTE rather than added to the prefix list above.
+const CACHECASE_ID_ROUTE = '/cachecase-id';
+
 export function isCacheCaseRoute(pathname: string): boolean {
   return (
     pathname === COLLECTION_ROOT_ROUTE ||
+    pathname === CACHECASE_ID_ROUTE ||
     CACHECASE_ROUTE_PREFIXES.some((prefix) => pathname.startsWith(prefix))
   );
 }
