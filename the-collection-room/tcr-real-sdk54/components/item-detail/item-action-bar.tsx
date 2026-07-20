@@ -1,20 +1,27 @@
+import { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
 
+import { CacheCaseIdSheet } from '@/components/item-detail/cachecase-id-sheet';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const IcLogo = require('@/assets/icons/ic-logo-transparent.png');
+
+type Props = {
+  // This item's own hero image — passed through to the CacheCase ID
+  // sheet so it can show a thumbnail of the card the ID belongs to.
+  itemImageUrl?: string | null;
+};
 
 // Layout only — see app/item/[id].tsx. None of these icons are wired to a
 // handler yet except the CacheCase ID logo below; this is the permanent
 // slot future features (likes, comments, ratings, search, bookmark, share)
 // will plug into. The centered dots are a placeholder for a future
 // element, not a control.
-export function ItemActionBar() {
-  const router = useRouter();
+export function ItemActionBar({ itemImageUrl }: Props) {
+  const [isCacheCaseIdOpen, setIsCacheCaseIdOpen] = useState(false);
 
   return (
     <View style={styles.row}>
@@ -27,7 +34,7 @@ export function ItemActionBar() {
         </View>
         <TouchableOpacity
           style={styles.iconBtn}
-          onPress={() => router.push('/cachecase-id')}
+          onPress={() => setIsCacheCaseIdOpen(true)}
           activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="CacheCase ID">
@@ -52,6 +59,12 @@ export function ItemActionBar() {
           <IconSymbol name="square.and.arrow.up" size={21} color={PV2.textPrimary} />
         </View>
       </View>
+
+      <CacheCaseIdSheet
+        visible={isCacheCaseIdOpen}
+        onClose={() => setIsCacheCaseIdOpen(false)}
+        itemImageUrl={itemImageUrl}
+      />
     </View>
   );
 }

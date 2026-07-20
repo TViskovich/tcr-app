@@ -444,7 +444,7 @@ export default function ItemDetailScreen() {
           ) : (
             /* ── View Mode — the new permanent layout ── */
             <>
-              <ItemActionBar />
+              <ItemActionBar itemImageUrl={displayImage} />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
 
