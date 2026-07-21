@@ -27,8 +27,13 @@ type Props = {
   saving: boolean;
   onAvatarPress?: () => void;
   onHeroPress?: () => void;
-  onSettingsPress: () => void;
-  onSavedPress: () => void;
+  // Owner-only (this account's own settings/saved items) — omit both when
+  // viewing someone else's profile. onSettingsPress/onSavedPress are the
+  // owner-view top row; onBackPress is the public-view top row (a single
+  // back button instead) — pass exactly one pairing per call site.
+  onSettingsPress?: () => void;
+  onSavedPress?: () => void;
+  onBackPress?: () => void;
   onCancelPress: () => void;
   onSavePress: () => void;
 };
@@ -45,6 +50,7 @@ export function ProfileV2Hero({
   onHeroPress,
   onSettingsPress,
   onSavedPress,
+  onBackPress,
   onCancelPress,
   onSavePress,
 }: Props) {
@@ -88,8 +94,10 @@ export function ProfileV2Hero({
         <Pressable style={StyleSheet.absoluteFillObject} onPress={onHeroPress} />
       )}
 
-      {/* Top actions — settings/saved in view mode, cancel/save in edit mode.
-          Same navigation targets/handlers as before, just relocated. */}
+      {/* Top actions — settings/saved (owner) or a single back button
+          (public) in view mode, cancel/save in edit mode (edit mode is
+          never reachable on a public view, so onBackPress/onSettingsPress
+          are mutually exclusive in practice). */}
       <View style={styles.topRow} pointerEvents="box-none">
         {editMode ? (
           <>
@@ -104,6 +112,10 @@ export function ProfileV2Hero({
               )}
             </TouchableOpacity>
           </>
+        ) : onBackPress ? (
+          <TouchableOpacity onPress={onBackPress} hitSlop={10} style={styles.iconBtn} activeOpacity={0.75}>
+            <IconSymbol name="chevron.left" size={18} color="#fff" />
+          </TouchableOpacity>
         ) : (
           <>
             <TouchableOpacity onPress={onSettingsPress} hitSlop={10} style={styles.iconBtn} activeOpacity={0.75}>

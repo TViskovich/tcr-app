@@ -16,7 +16,12 @@ type Props = {
   // Grails are added from an item's detail screen, not picked into a slot.
   // Every empty slot reuses that same existing entry point (same one the
   // old zero-state CTA used) rather than inventing a new add-flow.
-  onAddPress: () => void;
+  //
+  // Owner-only — omitted entirely when viewing someone else's profile, so
+  // empty slots render as plain (non-tappable, no "+" glyph) rather than
+  // inviting a tap that would add to the *viewer's* own Grails while
+  // looking like it belongs to the profile being viewed.
+  onAddPress?: () => void;
 };
 
 export function ProfileV2Grid({ grails, onItemPress, onAddPress }: Props) {
@@ -40,13 +45,15 @@ export function ProfileV2Grid({ grails, onItemPress, onAddPress }: Props) {
                   <View style={styles.slotEmptyFill} />
                 )}
               </Pressable>
-            ) : (
+            ) : onAddPress ? (
               <Pressable
                 key={`empty-${rowIndex}-${colIndex}`}
                 style={[styles.slot, styles.slotEmpty]}
                 onPress={onAddPress}>
                 <IconSymbol name="plus" size={18} color="rgba(255,255,255,0.20)" />
               </Pressable>
+            ) : (
+              <View key={`empty-${rowIndex}-${colIndex}`} style={[styles.slot, styles.slotEmpty]} />
             ),
           )}
         </View>

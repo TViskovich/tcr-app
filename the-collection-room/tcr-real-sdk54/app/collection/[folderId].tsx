@@ -585,6 +585,42 @@ export default function CollectionFolderScreen() {
               />
             )}
 
+            {/* Compact identity row — non-owner viewing someone else's
+                folder only (public profiles, Saved). Sits above the title
+                row now, per the reorganized header order; a single
+                content-sized press target (not the full row width) opens
+                that user's profile. */}
+            {!isOwner && ownerProfile && (
+              <View style={styles.compactUserRow}>
+                <Pressable
+                  style={styles.compactUserPress}
+                  hitSlop={8}
+                  onPress={() =>
+                    router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
+                  }>
+                  <View style={styles.compactAvatar}>
+                    {ownerProfile.avatar_url ? (
+                      <Image
+                        source={{ uri: ownerProfile.avatar_url }}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="cover"
+                        transition={200}
+                      />
+                    ) : (
+                      <View style={[StyleSheet.absoluteFill, styles.compactAvatarPlaceholder]}>
+                        <Text style={styles.compactAvatarInitial}>
+                          {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.compactUsername} numberOfLines={1}>
+                    @{ownerProfile.username}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+
             <View style={styles.titleRow}>
               <View style={styles.titleTextArea}>
                 <Text style={styles.title} numberOfLines={1}>
@@ -621,36 +657,6 @@ export default function CollectionFolderScreen() {
                 </Pressable>
               </View>
             </View>
-
-            {!isOwner && ownerProfile && (
-              <Pressable
-                style={styles.ownerRow}
-                onPress={() =>
-                  router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
-                }>
-                <View style={styles.ownerAvatar}>
-                  {ownerProfile.avatar_url ? (
-                    <Image
-                      source={{ uri: ownerProfile.avatar_url }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="cover"
-                      transition={200}
-                    />
-                  ) : (
-                    <View style={[StyleSheet.absoluteFill, styles.ownerAvatarPlaceholder]}>
-                      <Text style={styles.ownerAvatarInitial}>
-                        {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <View style={styles.ownerInfo}>
-                  <Text style={styles.ownerName}>{ownerProfile.display_name || ownerProfile.username}</Text>
-                  <Text style={styles.ownerUsername}>@{ownerProfile.username}</Text>
-                </View>
-                <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
-              </Pressable>
-            )}
           </>
         )}
 
@@ -827,7 +833,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingTop: 4,
-    paddingBottom: 4,
+    // Bottom padding contributes to the title-row-to-grid gap alongside
+    // the grid's own top padding — together landing in the requested
+    // 18-24px range.
+    paddingBottom: 10,
     gap: 8,
   },
   titleTextArea: {
@@ -876,49 +885,51 @@ const styles = StyleSheet.create({
     fontSize: 40,
     marginBottom: 12,
   },
-  // Owner card — non-owner viewing someone else's folder only (public
-  // profiles, Saved). Migrated from the legacy app/folder/[id].tsx screen.
-  ownerRow: {
+  // Compact identity row — non-owner viewing someone else's folder only
+  // (public profiles, Saved). Lightweight on purpose: just avatar +
+  // @username, no name/border/background shell/chevron. The outer wrap
+  // carries the page's normal horizontal padding and the row-to-title-row
+  // gap; the press target itself is content-sized (alignSelf:'flex-start'),
+  // not the full row width.
+  compactUserRow: {
+    paddingHorizontal: 12,
+    // Combined with searchBar's own marginBottom (10, unchanged — so the
+    // owner's own view, which never renders this row, keeps its original
+    // search-to-title spacing untouched) this lands the search-to-row gap
+    // at 24px, within the requested 22-28px range.
+    marginTop: 14,
+    // Combined with titleRow's own paddingTop (4, unchanged) this lands
+    // the row-to-title gap at 16px, within the requested 14-18px range.
+    marginBottom: 12,
+  },
+  compactUserPress: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 12,
-    marginBottom: 10,
-    padding: 10,
-    backgroundColor: PV2.panel,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: PV2.panelBorder,
+    alignSelf: 'flex-start',
     gap: 10,
+    paddingVertical: 4,
   },
-  ownerAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  compactAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
-  ownerAvatarPlaceholder: {
+  compactAvatarPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ownerAvatarInitial: {
+  compactAvatarInitial: {
     fontSize: 14,
     fontWeight: '700',
     color: PV2.textPrimary,
   },
-  ownerInfo: {
-    flex: 1,
-    gap: 1,
-  },
-  ownerName: {
-    fontSize: 13,
+  compactUsername: {
+    fontSize: 16,
     fontWeight: '600',
     color: PV2.textPrimary,
-  },
-  ownerUsername: {
-    fontSize: 12,
-    color: PV2.textSecondary,
   },
   // Card-mode-only "cover" — a large gray banner holding the title/count,
   // sitting below its own headerTop row (back/add/menu) rather than having

@@ -14,8 +14,13 @@ type Props = {
   previewItems: Record<string, CollectionItem[]>;
   onOpenFolder: (folder: Folder) => void;
   onOpenGroup: (folder: Folder, group: PlayerGroup) => void;
-  onAddItem: (folder: Folder) => void;
-  onCreatePress: () => void;
+  // Owner-only — omitted when viewing someone else's profile. Folder
+  // navigation (above) always works either way; only the "add a card" /
+  // "create a folder" actions are gated, since those would otherwise add
+  // to the *viewer's* own collection while looking like they belong to
+  // the profile being viewed.
+  onAddItem?: (folder: Folder) => void;
+  onCreatePress?: () => void;
 };
 
 // A compact, vertically-stacked preview of the same folder rows the main
@@ -48,9 +53,11 @@ export function ProfileV2Collections({
         <Text style={styles.emptyBody}>
           Start organizing your cards into folders — by set, player, team, or however you collect.
         </Text>
-        <TouchableOpacity style={styles.emptyButton} onPress={onCreatePress} activeOpacity={0.85}>
-          <Text style={styles.emptyButtonText}>Create First Collection</Text>
-        </TouchableOpacity>
+        {onCreatePress && (
+          <TouchableOpacity style={styles.emptyButton} onPress={onCreatePress} activeOpacity={0.85}>
+            <Text style={styles.emptyButtonText}>Create First Collection</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -66,7 +73,7 @@ export function ProfileV2Collections({
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
             onOpenGroup={(group) => onOpenGroup(folder, group)}
-            onAddItem={() => onAddItem(folder)}
+            onAddItem={() => onAddItem?.(folder)}
             variant="compact"
           />
         </View>

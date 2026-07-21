@@ -1,4 +1,4 @@
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { PV2 } from './profile-v2-theme';
 
@@ -6,10 +6,9 @@ import { PV2 } from './profile-v2-theme';
 // profile-v2-hero.tsx) rather than here, per the reference — this component
 // only owns the action row, bio, and website now.
 //
-// mode is 'owner' today (this file only backs the authenticated profile
-// screen), but built to also take 'public' so a future public-profile pass
-// can reuse this exact component instead of forking it — per the request to
-// support Follow/Message without implementing that screen now.
+// mode is 'owner' for the signed-in user's own profile, 'public' when
+// viewing someone else's (components/profile-v2/profile-v2-screen.tsx,
+// shared by both app/(tabs)/profile.tsx and app/user/[username].tsx).
 type Props = {
   bio: string | null;
   // Omitted entirely when null/undefined — there's no website column on
@@ -21,6 +20,8 @@ type Props = {
   onFollowPress?: () => void;
   onMessagePress?: () => void;
   isFollowing?: boolean;
+  followLoading?: boolean;
+  messageLoading?: boolean;
 };
 
 export function ProfileV2Identity({
@@ -31,6 +32,8 @@ export function ProfileV2Identity({
   onFollowPress,
   onMessagePress,
   isFollowing,
+  followLoading,
+  messageLoading,
 }: Props) {
   return (
     <View style={styles.wrap}>
@@ -44,11 +47,24 @@ export function ProfileV2Identity({
             <TouchableOpacity
               style={[styles.followBtn, isFollowing && styles.followBtnActive]}
               onPress={onFollowPress}
+              disabled={followLoading}
               activeOpacity={0.85}>
-              <Text style={styles.followBtnLabel}>{isFollowing ? 'Following' : 'Follow'}</Text>
+              {followLoading ? (
+                <ActivityIndicator size="small" color={isFollowing ? PV2.textPrimary : '#fff'} />
+              ) : (
+                <Text style={styles.followBtnLabel}>{isFollowing ? 'Following' : 'Follow'}</Text>
+              )}
             </TouchableOpacity>
-            <TouchableOpacity style={styles.messageBtn} onPress={onMessagePress} activeOpacity={0.85}>
-              <Text style={styles.messageBtnLabel}>Message</Text>
+            <TouchableOpacity
+              style={styles.messageBtn}
+              onPress={onMessagePress}
+              disabled={messageLoading}
+              activeOpacity={0.85}>
+              {messageLoading ? (
+                <ActivityIndicator size="small" color={PV2.textPrimary} />
+              ) : (
+                <Text style={styles.messageBtnLabel}>Message</Text>
+              )}
             </TouchableOpacity>
           </>
         )}

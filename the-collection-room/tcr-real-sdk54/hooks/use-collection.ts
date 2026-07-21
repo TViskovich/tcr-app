@@ -54,7 +54,13 @@ async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, Co
   return byFolder;
 }
 
-export function useFolders(userId: string | undefined) {
+// publicOnly restricts the folder list (and everything derived from it —
+// item counts, preview items) to folders.is_public = true, for viewing
+// someone else's profile — the account owner still sees every folder,
+// public or private, so the default (false) preserves existing behavior
+// for every current call site.
+export function useFolders(userId: string | undefined, options?: { publicOnly?: boolean }) {
+  const publicOnly = options?.publicOnly ?? false;
   const [folders, setFolders] = useState<Folder[]>([]);
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
   const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>({});
@@ -66,11 +72,12 @@ export function useFolders(userId: string | undefined) {
       return;
     }
     setLoading(true);
-    const { data } = await supabase
+    let query = supabase
       .from('folders')
       .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .eq('user_id', userId);
+    if (publicOnly) query = query.eq('is_public', true);
+    const { data } = await query.order('created_at', { ascending: false });
 
     const resolved = await resolveCovers((data ?? []) as Folder[]);
     const sorted = resolved.sort((a, b) =>
@@ -98,7 +105,7 @@ export function useFolders(userId: string | undefined) {
     }
 
     setLoading(false);
-  }, [userId]);
+  }, [userId, publicOnly]);
 
   useEffect(() => {
     load();
