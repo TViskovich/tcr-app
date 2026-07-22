@@ -305,3 +305,41 @@ CREATE POLICY "folder_comments_insert_own" ON public.folder_comments
 
 CREATE POLICY "folder_comments_delete_own" ON public.folder_comments
   FOR DELETE USING (auth.uid() = user_id);
+
+-- collection_item_images — see
+-- supabase/migrations/20260721120000_create_collection_item_images.sql for
+-- the authoritative, run-it-yourself version of this table (including the
+-- backfill and the set_primary_item_image / remove_item_image /
+-- reorder_item_images RPC helpers, not reproduced here).
+
+CREATE TABLE IF NOT EXISTS public.collection_item_images (
+  id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id        uuid        NOT NULL REFERENCES public.collection_items(id) ON DELETE CASCADE,
+  user_id        uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  image_url      text        NOT NULL,
+  storage_path   text,
+  sort_order     integer     NOT NULL DEFAULT 0,
+  is_primary     boolean     NOT NULL DEFAULT false,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.collection_item_images ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "collection_item_images_select_public" ON public.collection_item_images
+  FOR SELECT USING (true);
+
+CREATE POLICY "collection_item_images_insert_own" ON public.collection_item_images
+  FOR INSERT WITH CHECK (
+    auth.uid() = user_id
+    AND EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
+  );
+
+CREATE POLICY "collection_item_images_update_own" ON public.collection_item_images
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
+  );
+
+CREATE POLICY "collection_item_images_delete_own" ON public.collection_item_images
+  FOR DELETE USING (
+    EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
+  );

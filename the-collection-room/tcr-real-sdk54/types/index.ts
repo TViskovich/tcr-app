@@ -27,6 +27,22 @@ export type CollectionItem = {
   created_at: string;
 };
 
+// One photo in an item's gallery (supabase/migrations/20260721120000_
+// create_collection_item_images.sql). collection_items.image_url stays in
+// sync with whichever row here has is_primary = true — it's the legacy
+// cached cover field every other screen (folder/feed/related-items
+// previews) still reads.
+export type CollectionItemImage = {
+  id: string;
+  item_id: string;
+  user_id: string;
+  image_url: string;
+  storage_path: string | null;
+  sort_order: number;
+  is_primary: boolean;
+  created_at: string;
+};
+
 export type Profile = {
   id: string;
   username: string;

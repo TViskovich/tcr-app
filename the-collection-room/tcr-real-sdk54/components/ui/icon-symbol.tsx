@@ -44,7 +44,9 @@ const MAPPING = {
   'heart.fill': 'favorite',
   'line.3.horizontal': 'menu',
   'star': 'star-border',
+  'star.fill': 'star',
   'ellipsis': 'more-horiz',
+  'xmark': 'close',
 } as IconMapping;
 
 /**

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,20 +18,21 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemDescription } from '@/components/item-detail/item-description';
-import { ItemHeroImage } from '@/components/item-detail/item-hero-image';
+import { buildItemImageList, ItemImageCarousel } from '@/components/item-detail/item-image-carousel';
+import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gallery-manager';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { useGrails } from '@/hooks/use-grails';
+import { useItemImages } from '@/hooks/use-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useAuth } from '@/lib/auth';
-import { uploadItemImage } from '@/lib/storage';
+import { MAX_ITEM_IMAGES, materializeLegacyItemImage } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem } from '@/types';
@@ -127,8 +128,8 @@ function EditField({
 // components/item-detail/*. Order: hero image → action bar (placeholder,
 // unwired) → identity → owner card (non-owners only) → description →
 // metadata → related items grid → owner-only management actions. Edit mode
-// keeps its existing form UI, just reusing ItemHeroImage for the "change
-// photo" tap instead of a separate renderer.
+// keeps its existing metadata form UI; the hero area swaps to
+// ItemImageGalleryManager (add/remove/reorder/set cover) instead.
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string; fromGrails?: string }>();
   const { session } = useAuth();
@@ -143,15 +144,21 @@ export default function ItemDetailScreen() {
   const [fetching, setFetching] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
-  const [newImageUri, setNewImageUri] = useState<string | null>(null);
-  const [pendingNewImageUri, setPendingNewImageUri] = useState<string | null>(null);
-  const [pendingNewWidth, setPendingNewWidth] = useState(0);
-  const [pendingNewHeight, setPendingNewHeight] = useState(0);
   const [saving, setSaving] = useState(false);
   const [grailsLoading, setGrailsLoading] = useState(false);
 
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
+  const {
+    images: galleryImages,
+    loading: galleryLoading,
+    mutating: galleryMutating,
+    refresh: refreshGalleryImages,
+    addImages: addGalleryImages,
+    removeImage: removeGalleryImage,
+    setPrimary: setPrimaryGalleryImage,
+    reorder: reorderGalleryImages,
+  } = useItemImages(item?.id);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
@@ -193,17 +200,29 @@ export default function ItemDetailScreen() {
     router.replace('/(tabs)');
   }
 
-  function enterEdit() {
+  // Legacy items (and, defensively, any item whose creation-time gallery
+  // row is somehow missing) predate this feature and only have
+  // collection_items.image_url — self-heal into a real gallery row on
+  // entering edit mode so the gallery manager always operates on real rows
+  // (the migration's backfill already does this in bulk for every item
+  // that existed at deploy time; this covers the rare gap).
+  async function enterEdit() {
     if (!isOwner) return;
     if (item) setForm(itemToForm(item));
-    setNewImageUri(null);
+    if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
+      try {
+        await materializeLegacyItemImage(item.id, currentUserId, item.image_url);
+        await refreshGalleryImages();
+      } catch {
+        // Best-effort — edit mode still opens; the gallery manager simply
+        // starts empty and the next successful add becomes primary.
+      }
+    }
     setEditMode(true);
   }
 
   function cancelEdit() {
     if (item) setForm(itemToForm(item));
-    setNewImageUri(null);
-    setPendingNewImageUri(null);
     setEditMode(false);
   }
 
@@ -212,7 +231,13 @@ export default function ItemDetailScreen() {
       setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
-  async function pickNewImage() {
+  async function handleAddPhotos() {
+    if (!item || !currentUserId) return;
+    const remaining = MAX_ITEM_IMAGES - galleryImages.length;
+    if (remaining <= 0) {
+      Alert.alert('Limit reached', `You can add up to ${MAX_ITEM_IMAGES} photos per item.`);
+      return;
+    }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission needed', 'Please allow access to your photo library.');
@@ -220,14 +245,47 @@ export default function ItemDetailScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false,
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
       quality: 0.85,
     });
-    if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
-      setPendingNewImageUri(asset.uri);
-      setPendingNewWidth(asset.width);
-      setPendingNewHeight(asset.height);
+    if (result.canceled || !result.assets.length) return;
+
+    const uris = result.assets.map((asset) => asset.uri);
+    try {
+      const { failed } = await addGalleryImages(currentUserId, uris);
+      if (failed > 0) {
+        Alert.alert(
+          'Some photos failed',
+          `${failed} of ${uris.length} photo${uris.length === 1 ? '' : 's'} could not be uploaded. The rest were added.`,
+        );
+      }
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    }
+  }
+
+  async function handleRemovePhoto(imageId: string) {
+    try {
+      await removeGalleryImage(imageId);
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not remove photo.');
+    }
+  }
+
+  async function handleSetPrimaryPhoto(imageId: string) {
+    try {
+      await setPrimaryGalleryImage(imageId);
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not update cover photo.');
+    }
+  }
+
+  async function handleReorderPhotos(orderedIds: string[]) {
+    try {
+      await reorderGalleryImages(orderedIds);
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not reorder photos.');
     }
   }
 
@@ -235,19 +293,13 @@ export default function ItemDetailScreen() {
     if (!item || !form || !currentUserId) return;
     setSaving(true);
     try {
-      let imageUrl = item.image_url;
-      if (newImageUri) {
-        try {
-          imageUrl = await uploadItemImage(newImageUri, currentUserId);
-        } catch {
-          throw new Error('Image upload failed. Check your connection and try again.');
-        }
-      }
-
+      // image_url is no longer written here — it's owned exclusively by the
+      // gallery helpers (lib/item-images.ts), which keep it synced to
+      // whichever photo is currently primary as soon as a gallery action
+      // happens, independent of this Save button.
       const { data: updated, error } = await supabase
         .from('collection_items')
         .update({
-          image_url: imageUrl,
           title: form.title.trim() || null,
           player: form.player.trim() || null,
           team: form.team.trim() || null,
@@ -268,7 +320,6 @@ export default function ItemDetailScreen() {
         setItem(updated);
         setForm(itemToForm(updated));
       }
-      setNewImageUri(null);
       setEditMode(false);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
@@ -319,7 +370,19 @@ export default function ItemDetailScreen() {
     setGrailsLoading(false);
   }
 
-  const displayImage = newImageUri ?? item?.image_url ?? null;
+  // Real per-item gallery, ordered primary-first (see useItemImages/
+  // lib/item-images.ts). Falls back to the legacy single image_url only
+  // when the gallery genuinely has no rows yet (a rare gap the migration's
+  // backfill — and enterEdit's self-heal — mostly close); buildItemImageList
+  // still runs over that fallback to drop null/duplicate values.
+  const galleryImageUrls = useMemo(
+    () =>
+      galleryImages.length > 0
+        ? galleryImages.map((img) => img.image_url)
+        : buildItemImageList([item?.image_url]),
+    [galleryImages, item?.image_url],
+  );
+  const primaryImageUrl = galleryImageUrls[0] ?? null;
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 
   if (fetching) {
@@ -400,13 +463,26 @@ export default function ItemDetailScreen() {
           onScroll={navbarOnScroll}
           scrollEventThrottle={navbarScrollEventThrottle}>
 
-          {/* Hero — tap reserved for a future full-screen viewer in view
-              mode; in edit mode it opens the existing photo picker. */}
-          <ItemHeroImage
-            imageUrl={displayImage}
-            editMode={editMode}
-            onPress={editMode ? pickNewImage : undefined}
-          />
+          {/* Hero — edit mode shows the editable gallery manager (add/
+              remove/reorder/set cover); view mode shows the swipeable
+              carousel. Both read from the same useItemImages data, so what
+              you arrange in edit mode is exactly what view mode swipes
+              through. The carousel's own tap is reserved for a future
+              full-screen viewer. */}
+          {editMode ? (
+            <ItemImageGalleryManager
+              images={galleryImages}
+              loading={galleryLoading}
+              mutating={galleryMutating}
+              maxImages={MAX_ITEM_IMAGES}
+              onAdd={handleAddPhotos}
+              onRemove={handleRemovePhoto}
+              onSetPrimary={handleSetPrimaryPhoto}
+              onReorder={handleReorderPhotos}
+            />
+          ) : (
+            <ItemImageCarousel images={galleryImageUrls} />
+          )}
 
           {editMode ? (
             /* ── Edit Mode (owner only) — unchanged existing form ── */
@@ -444,7 +520,7 @@ export default function ItemDetailScreen() {
           ) : (
             /* ── View Mode — the new permanent layout ── */
             <>
-              <ItemActionBar itemImageUrl={displayImage} />
+              <ItemActionBar itemImageUrl={primaryImageUrl} />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
 
@@ -529,19 +605,6 @@ export default function ItemDetailScreen() {
 
         </ScrollView>
       </KeyboardAvoidingView>
-
-      {pendingNewImageUri && (
-        <PhotoAdjuster
-          uri={pendingNewImageUri}
-          imageWidth={pendingNewWidth}
-          imageHeight={pendingNewHeight}
-          onUse={(uri) => {
-            setNewImageUri(uri);
-            setPendingNewImageUri(null);
-          }}
-          onCancel={() => setPendingNewImageUri(null)}
-        />
-      )}
     </>
   );
 }

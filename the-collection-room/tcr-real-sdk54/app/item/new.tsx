@@ -21,6 +21,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 
@@ -142,6 +143,26 @@ export default function AddItemScreen() {
         .single();
 
       if (itemError) throw new Error('Failed to save item. Please try again.');
+
+      // Seeds the new item's gallery with its cover photo as the primary
+      // row, so it's immediately a real gallery-backed item rather than
+      // relying on the edit page's legacy-materialization fallback the
+      // first time someone opens it. Best-effort — the item itself is
+      // already saved at this point, so a failure here shouldn't block
+      // the save; the fallback still covers this item if it happens.
+      if (item) {
+        const { error: galleryError } = await supabase.from('collection_item_images').insert({
+          item_id: item.id,
+          user_id: session.user.id,
+          image_url: imageUrl,
+          storage_path: deriveStoragePathFromPublicUrl(imageUrl, 'item-images'),
+          sort_order: 0,
+          is_primary: true,
+        });
+        if (galleryError) {
+          console.error('[handleSubmit] gallery row insert failed:', galleryError.message);
+        }
+      }
 
       if (shareToFeed && item) {
         const { error: postError } = await supabase.from('posts').insert({
