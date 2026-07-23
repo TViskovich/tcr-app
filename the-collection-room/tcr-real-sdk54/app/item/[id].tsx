@@ -335,25 +335,53 @@ export default function ItemDetailScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          const { error: postError } = await supabase
-            .from('posts')
+          if (!currentUserId) return;
+
+          // No manual posts cleanup here — posts.item_id is FK'd to
+          // collection_items(id) ON DELETE SET NULL (see supabase/
+          // schema.sql), so any post referencing this item is preserved
+          // (its own image_url/caption are already denormalized onto the
+          // post row at creation time) and just loses its "view original
+          // card" link, exactly like the card_share_items/
+          // rate_my_grail_cards snapshot pattern. A manual delete()...
+          // eq('item_id', id) here would be a second, non-atomic
+          // destructive operation — if it succeeded but the item delete
+          // below then failed, the user's feed post would be gone while
+          // the collection item survived.
+          console.log('[ItemDetail][DEBUG] delete: start', { itemId: id, currentUserId });
+
+          // .select('id') is what makes a silently-zero-row delete (e.g. an
+          // RLS/ownership mismatch) detectable at all — without it, a
+          // DELETE whose WHERE clause (id + the RLS USING policy) matches
+          // nothing still returns { error: null }, indistinguishable from
+          // success. The .eq('user_id', currentUserId) is a defense-in-
+          // depth client-side ownership check on top of RLS, not a
+          // replacement for it.
+          const { data: deletedRows, error: deleteError } = await supabase
+            .from('collection_items')
             .delete()
-            .eq('item_id', id);
-          if (postError) {
-            console.error('[handleDelete] post cleanup failed:', postError.message);
-            Alert.alert('Error', 'Could not remove feed post. Item was not deleted.');
+            .eq('id', id)
+            .eq('user_id', currentUserId)
+            .select('id');
+
+          if (deleteError) {
+            console.error('[ItemDetail] delete failed:', deleteError.message, deleteError);
+            Alert.alert('Delete failed', 'This item could not be deleted. Please try again.');
             return;
           }
 
-          const { error } = await supabase
-            .from('collection_items')
-            .delete()
-            .eq('id', id);
-          if (error) {
-            Alert.alert('Error', error.message);
-          } else {
-            router.back();
+          console.log('[ItemDetail][DEBUG] delete: returned rows', {
+            deletedIds: deletedRows?.map((r) => r.id) ?? [],
+          });
+
+          if (!deletedRows || deletedRows.length === 0) {
+            console.error('[ItemDetail] delete returned zero rows:', { itemId: id, currentUserId });
+            Alert.alert('Delete failed', 'No item was deleted. Check ownership and database permissions.');
+            return;
           }
+
+          console.log('[ItemDetail][DEBUG] delete: confirmed, navigating back', { itemId: id });
+          router.back();
         },
       },
     ]);
