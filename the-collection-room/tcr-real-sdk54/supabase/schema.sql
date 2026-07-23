@@ -377,3 +377,62 @@ CREATE POLICY "card_share_items_insert_own" ON public.card_share_items
     EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.user_id = auth.uid())
     AND (item_id IS NULL OR EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid()))
   );
+
+-- profile_grail_slots — see
+-- supabase/migrations/20260723_create_profile_grail_slots.sql for the
+-- authoritative, run-it-yourself version of this table (including the
+-- two partial unique indexes, the profile_showcase_items backfill, and
+-- the entry-shape CHECK constraint, not fully reproduced here).
+
+CREATE TABLE IF NOT EXISTS public.profile_grail_slots (
+  id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  slot_index     smallint    NOT NULL CHECK (slot_index BETWEEN 0 AND 8),
+  entry_type     text        NOT NULL CHECK (entry_type IN ('item', 'collection')),
+  item_id        uuid        REFERENCES public.collection_items(id) ON DELETE CASCADE,
+  collection_id  uuid        REFERENCES public.folders(id) ON DELETE CASCADE,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (user_id, slot_index),
+  CONSTRAINT profile_grail_slots_entry_shape CHECK (
+    (entry_type = 'item' AND item_id IS NOT NULL AND collection_id IS NULL)
+    OR
+    (entry_type = 'collection' AND collection_id IS NOT NULL AND item_id IS NULL)
+  )
+);
+
+ALTER TABLE public.profile_grail_slots ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "profile_grail_slots_select_public" ON public.profile_grail_slots
+  FOR SELECT USING (true);
+
+CREATE POLICY "profile_grail_slots_insert_own" ON public.profile_grail_slots
+  FOR INSERT WITH CHECK (
+    auth.uid() = user_id
+    AND (
+      (entry_type = 'item' AND EXISTS (
+        SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid()
+      ))
+      OR
+      (entry_type = 'collection' AND EXISTS (
+        SELECT 1 FROM public.folders f WHERE f.id = collection_id AND f.user_id = auth.uid()
+      ))
+    )
+  );
+
+CREATE POLICY "profile_grail_slots_update_own" ON public.profile_grail_slots
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (
+    auth.uid() = user_id
+    AND (
+      (entry_type = 'item' AND EXISTS (
+        SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid()
+      ))
+      OR
+      (entry_type = 'collection' AND EXISTS (
+        SELECT 1 FROM public.folders f WHERE f.id = collection_id AND f.user_id = auth.uid()
+      ))
+    )
+  );
+
+CREATE POLICY "profile_grail_slots_delete_own" ON public.profile_grail_slots
+  FOR DELETE USING (auth.uid() = user_id);

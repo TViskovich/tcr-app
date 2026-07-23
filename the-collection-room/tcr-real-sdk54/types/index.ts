@@ -115,3 +115,64 @@ export type GrailRating = {
   score: number;
   updated_at: string;
 };
+
+// The canonical, polymorphic backing for the profile tab's 3x3 "Grail"
+// grid (supabase/migrations/20260723_create_profile_grail_slots.sql).
+// hooks/use-grails.ts exposes an item-only compatibility view of this over
+// the legacy ShowcaseItem shape for the three pre-existing consumers
+// (Rate My Grails, the /grails/[userId] showcase page, and item-detail's
+// Add/Remove button) — components that need the full polymorphic slot
+// (the profile grid itself) use hooks/use-grail-slots.ts directly.
+export type GrailSlotEntryType = 'item' | 'collection';
+
+export type GrailSlot = {
+  id: string;
+  user_id: string;
+  slot_index: number;
+  entry_type: GrailSlotEntryType;
+  item_id: string | null;
+  collection_id: string | null;
+  created_at: string;
+  item?: CollectionItem | null; // joined via select('*, item:collection_items(*)')
+  collection?: Folder | null; // joined via select('*, collection:folders(*)')
+  // Hook-attached, non-DB fields for collection slots — populated once by
+  // hooks/use-grail-slots.ts's single batched preview query, never
+  // derived or re-queried per-render.
+  previewImages?: string[];
+  collectionItemCount?: number;
+};
+
+// Result of trying to write a profile_grail_slots row that hit a unique
+// violation (Postgres SQLSTATE 23505). Not every 23505 means the same
+// thing: profile_grail_slots_unique_item / _unique_collection means the
+// source is already assigned to a different slot; the table's own
+// UNIQUE(user_id, slot_index) means the exact slot was concurrently
+// claimed out from under this write. null covers both "no error" and "an
+// unrecognized 23505" — callers fall back to a generic save-failure
+// message in the latter case rather than guessing.
+export type GrailSlotConflict = 'duplicate_source' | 'slot_conflict' | null;
+
+export type GrailChooserMode = 'add' | 'replace';
+
+// The "Add to Grails" chooser's explicit intent for whichever slot it's
+// currently targeting — tracked as a discriminated union (not just a
+// bare slotIndex number) specifically so an intended empty-slot add can
+// never silently become a replacement (or vice versa) if the slot's
+// occupancy changes while the chooser/picker is open. An 'add' target
+// has nothing to verify against (it's supposed to be empty); a
+// 'replace' target carries the exact row identity + current source it
+// expects to still be there — hooks/use-grail-slots.ts's
+// replaceGrailSlot re-verifies all of it in one conditional UPDATE
+// immediately before writing.
+export type GrailChooserTarget =
+  | {
+      mode: 'add';
+      slotIndex: number;
+    }
+  | {
+      mode: 'replace';
+      slotIndex: number;
+      expectedSlotId: string;
+      expectedEntryType: GrailSlotEntryType;
+      expectedRefId: string;
+    };

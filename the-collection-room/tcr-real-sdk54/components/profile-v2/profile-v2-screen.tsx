@@ -27,15 +27,21 @@ import {
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
 import { useFolders, type PlayerGroup } from '@/hooks/use-collection';
+import {
+  expectedRefIdForSlot,
+  removeGrailSlot,
+  useGrailSlots,
+  type ExpectedGrailSlot,
+} from '@/hooks/use-grail-slots';
 import { useProfile } from '@/hooks/use-profile';
-import { useGrails } from '@/hooks/use-grails';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { Folder } from '@/types';
+import type { CollectionItem, Folder, GrailChooserTarget } from '@/types';
 
+import { GrailSlotChooser } from './grail-slot-chooser';
 import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from './profile-v2-collector-panel';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2Grid } from './profile-v2-grid';
@@ -79,7 +85,20 @@ export function ProfileV2Screen({ userId }: Props) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { profile, stats, loading, refresh } = useProfile(userId);
-  const { grails, refresh: refreshGrails } = useGrails(userId);
+  const {
+    slots: grailSlots,
+    loading: grailSlotsLoading,
+    error: grailSlotsError,
+    refresh: refreshGrailSlots,
+  } = useGrailSlots(userId);
+  // Explicit chooser intent, not a bare slotIndex — an 'add' can never
+  // silently become a 'replace' (or vice versa) if the target slot's
+  // occupancy changes while the chooser/picker is open. expectedSlotId/
+  // expectedEntryType/expectedRefId (replace only) are re-verified by
+  // replaceGrailSlot in one conditional UPDATE immediately before it
+  // writes — this state just carries what was true when Replace was
+  // chosen.
+  const [grailChooserTarget, setGrailChooserTarget] = useState<GrailChooserTarget | null>(null);
   // Someone else's private folders never load client-side at all — not
   // just hidden in the UI, per hooks/use-collection.ts's publicOnly.
   const { folders, previewItems, refresh: refreshFolders } = useFolders(userId, {
@@ -135,10 +154,10 @@ export function ProfileV2Screen({ userId }: Props) {
   useFocusEffect(
     useCallback(() => {
       refresh();
-      refreshGrails();
+      refreshGrailSlots();
       refreshFolders();
       refreshPosts();
-    }, [refresh, refreshGrails, refreshFolders, refreshPosts]),
+    }, [refresh, refreshGrailSlots, refreshFolders, refreshPosts]),
   );
 
   useFocusEffect(
@@ -259,6 +278,107 @@ export function ProfileV2Screen({ userId }: Props) {
   function addFolderItem(folder: Folder) {
     if (!isOwnProfile) return;
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
+  }
+
+  function openGrailAdd(slotIndex: number) {
+    if (!isOwnProfile) return;
+    setGrailChooserTarget({ mode: 'add', slotIndex });
+  }
+
+  // Long-press "Replace" only ever passes a slotIndex (GrailSlotPreview
+  // has no reason to hold a full GrailSlot reference) — the currently
+  // loaded slot is looked up here, from live grailSlots state, not
+  // trusted from whatever GrailSlotPreview last rendered. If it's already
+  // gone, or its ref id can't be resolved, refresh and tell the user
+  // rather than opening the chooser against a target that's already
+  // stale or invalid.
+  function openGrailReplace(slotIndex: number) {
+    if (!isOwnProfile) return;
+    const slot = grailSlots.find((s) => s.slot_index === slotIndex);
+    if (!slot) {
+      refreshGrailSlots();
+      Alert.alert('Try Again', 'That Grail slot changed. Please try again.');
+      return;
+    }
+    const expectedRefId = expectedRefIdForSlot(slot);
+    if (!expectedRefId) {
+      refreshGrailSlots();
+      Alert.alert('Unavailable', 'This Grail slot is no longer valid.');
+      return;
+    }
+    setGrailChooserTarget({
+      mode: 'replace',
+      slotIndex,
+      expectedSlotId: slot.id,
+      expectedEntryType: slot.entry_type,
+      expectedRefId,
+    });
+  }
+
+  function closeGrailChooser() {
+    setGrailChooserTarget(null);
+  }
+
+  function handleGrailItemPress(item: CollectionItem) {
+    router.push({ pathname: '/item/[id]', params: { id: item.id } });
+  }
+
+  function handleGrailCollectionPress(collection: Folder) {
+    router.push({ pathname: '/collection/[folderId]', params: { folderId: collection.id, title: collection.name } });
+  }
+
+  // Captures the exact row/source BEFORE the confirmation dialog opens,
+  // not just the slotIndex — the confirmation targets a specific row
+  // identity, and removeGrailSlot's conditional DELETE re-verifies that
+  // same identity still holds at the moment of the actual delete (the
+  // dialog can stay open arbitrarily long).
+  function handleRemoveGrailSlot(slotIndex: number) {
+    if (!isOwnProfile || !currentUserId || currentUserId !== userId) return;
+
+    const slot = grailSlots.find((s) => s.slot_index === slotIndex);
+    if (!slot) {
+      refreshGrailSlots();
+      Alert.alert('Try Again', 'That Grail slot changed. Please try again.');
+      return;
+    }
+    const expectedRefId = expectedRefIdForSlot(slot);
+    if (!expectedRefId) {
+      refreshGrailSlots();
+      Alert.alert('Unavailable', 'This Grail slot is no longer valid.');
+      return;
+    }
+    const expected: ExpectedGrailSlot = {
+      slotIndex: slot.slot_index,
+      expectedSlotId: slot.id,
+      expectedEntryType: slot.entry_type,
+      expectedRefId,
+    };
+
+    Alert.alert(
+      'Remove Grail Slot',
+      'This will remove it from your Grails. It will not delete the item or collection itself.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            const { error, conflict } = await removeGrailSlot(currentUserId, expected);
+            if (error) {
+              console.error('[ProfileV2Screen] removeGrailSlot failed:', error);
+              await refreshGrailSlots();
+              if (conflict === 'slot_conflict') {
+                Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
+              } else {
+                Alert.alert('Error', 'Could not remove this Grail slot. Please try again.');
+              }
+              return;
+            }
+            await refreshGrailSlots();
+          },
+        },
+      ],
+    );
   }
 
   function enterEdit() {
@@ -706,11 +826,16 @@ export function ProfileV2Screen({ userId }: Props) {
                       badgeUri={badgeUri}
                     />
                     <ProfileV2Grid
-                      grails={grails}
-                      onItemPress={(item) =>
-                        router.push({ pathname: '/item/[id]', params: { id: item.item_id, fromGrails: '1' } })
-                      }
-                      onAddPress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
+                      slots={grailSlots}
+                      loading={grailSlotsLoading}
+                      error={grailSlotsError}
+                      onRetry={refreshGrailSlots}
+                      isOwnProfile={isOwnProfile}
+                      onPressEmpty={openGrailAdd}
+                      onPressItem={handleGrailItemPress}
+                      onPressCollection={handleGrailCollectionPress}
+                      onReplace={openGrailReplace}
+                      onRemove={handleRemoveGrailSlot}
                     />
                   </>
                 )}
@@ -741,6 +866,8 @@ export function ProfileV2Screen({ userId }: Props) {
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <GrailSlotChooser target={grailChooserTarget} onClose={closeGrailChooser} />
     </SafeAreaView>
   );
 }

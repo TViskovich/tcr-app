@@ -1,61 +1,106 @@
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { Image } from 'expo-image';
+import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import type { ShowcaseItem } from '@/types';
+import { GrailSlotPreview } from './grail-slot-preview';
 import { PV2 } from './profile-v2-theme';
 
 const SLOT_COUNT = 9;
 const COLS = 3;
 
+const GRID_HORIZONTAL_MARGIN = 3;
+const GRID_GAP = 2;
+const GRID_WIDTH = Dimensions.get('window').width - GRID_HORIZONTAL_MARGIN * 2;
+
+// Three columns of square cells and two row gaps. Because three cells
+// span GRID_WIDTH across each row, the full 3-row grid height is
+// effectively GRID_WIDTH — used so the initial-error state reserves the
+// same approximate height as the normal loaded/loading grid, and Retry
+// succeeding doesn't visibly jump the rest of the profile layout.
+const GRID_HEIGHT = GRID_WIDTH;
+
 type Props = {
-  grails: ShowcaseItem[];
-  onItemPress: (item: ShowcaseItem) => void;
-  // There's no per-slot "add to this exact spot" flow in the app today —
-  // Grails are added from an item's detail screen, not picked into a slot.
-  // Every empty slot reuses that same existing entry point (same one the
-  // old zero-state CTA used) rather than inventing a new add-flow.
-  //
-  // Owner-only — omitted entirely when viewing someone else's profile, so
-  // empty slots render as plain (non-tappable, no "+" glyph) rather than
-  // inviting a tap that would add to the *viewer's* own Grails while
-  // looking like it belongs to the profile being viewed.
-  onAddPress?: () => void;
+  slots: GrailSlot[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  // Owner-only affordances (empty-slot "+", long-press Replace/Remove) are
+  // gated per-slot inside GrailSlotPreview itself — passed through here,
+  // not branched on at this level.
+  isOwnProfile: boolean;
+  onPressEmpty: (slotIndex: number) => void;
+  onPressItem: (item: CollectionItem) => void;
+  onPressCollection: (collection: Folder) => void;
+  onReplace: (slotIndex: number) => void;
+  onRemove: (slotIndex: number) => void;
 };
 
-export function ProfileV2Grid({ grails, onItemPress, onAddPress }: Props) {
-  const slots = Array.from({ length: SLOT_COUNT }, (_, i) => grails[i] ?? null);
-  const rows: (ShowcaseItem | null)[][] = [];
-  for (let i = 0; i < slots.length; i += COLS) rows.push(slots.slice(i, i + COLS));
+export function ProfileV2Grid({
+  slots,
+  loading,
+  error,
+  onRetry,
+  isOwnProfile,
+  onPressEmpty,
+  onPressItem,
+  onPressCollection,
+  onReplace,
+  onRemove,
+}: Props) {
+  // State: initial load failed, nothing loaded yet — never render 9 empty
+  // owner-editable "+" slots for a failed query, which would misrepresent
+  // an error as "you have no Grails."
+  if (!loading && error && slots.length === 0) {
+    return (
+      <View style={styles.errorState}>
+        <Text style={styles.errorTitle}>Couldn&apos;t load Grails</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={onRetry} activeOpacity={0.8}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // Slot-index-addressed, not positional — a user with only slots 0/3/7
+  // filled sees gaps exactly there, not compacted into the first three
+  // cells.
+  const bySlotIndex = new Map(slots.map((s) => [s.slot_index, s]));
+  const grid: (GrailSlot | null)[] = Array.from({ length: SLOT_COUNT }, (_, i) => bySlotIndex.get(i) ?? null);
+  const rows: (GrailSlot | null)[][] = [];
+  for (let i = 0; i < grid.length; i += COLS) rows.push(grid.slice(i, i + COLS));
 
   return (
     <View style={styles.grid}>
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
-          {row.map((item, colIndex) =>
-            item ? (
-              <Pressable
-                key={item.id}
-                style={styles.slot}
-                onPress={() => onItemPress(item)}>
-                {item.item.image_url ? (
-                  <Image source={{ uri: item.item.image_url }} style={styles.slotImage} contentFit="cover" transition={150} />
-                ) : (
-                  <View style={styles.slotEmptyFill} />
-                )}
-              </Pressable>
-            ) : onAddPress ? (
-              <Pressable
-                key={`empty-${rowIndex}-${colIndex}`}
-                style={[styles.slot, styles.slotEmpty]}
-                onPress={onAddPress}>
-                <IconSymbol name="plus" size={18} color="rgba(255,255,255,0.20)" />
-              </Pressable>
-            ) : (
-              <View key={`empty-${rowIndex}-${colIndex}`} style={[styles.slot, styles.slotEmpty]} />
-            ),
-          )}
+          {row.map((slot, colIndex) => {
+            const slotIndex = rowIndex * COLS + colIndex;
+            // State: loading — every cell renders as a plain,
+            // non-interactive box, no "+" at all, regardless of
+            // ownership, so nothing flashes "add a Grail" right before
+            // real data arrives.
+            if (loading) {
+              return <View key={`loading-${slotIndex}`} style={styles.loadingCell} />;
+            }
+            // Real empty state and stale-data-after-a-failed-refresh both
+            // fall through to this same render — the grid looks identical
+            // either way; a refresh failure only ever shows in the
+            // console (see useGrailSlots), never blocks or hides
+            // already-loaded slots.
+            return (
+              <GrailSlotPreview
+                key={slot?.id ?? `empty-${slotIndex}`}
+                slot={slot}
+                slotIndex={slotIndex}
+                isOwnProfile={isOwnProfile}
+                onPressEmpty={onPressEmpty}
+                onPressItem={onPressItem}
+                onPressCollection={onPressCollection}
+                onReplace={onReplace}
+                onRemove={onRemove}
+              />
+            );
+          })}
         </View>
       ))}
     </View>
@@ -64,34 +109,44 @@ export function ProfileV2Grid({ grails, onItemPress, onAddPress }: Props) {
 
 const styles = StyleSheet.create({
   grid: {
-    marginHorizontal: 3,
+    marginHorizontal: GRID_HORIZONTAL_MARGIN,
     marginTop: 2,
-    gap: 2,
+    gap: GRID_GAP,
   },
   row: {
     flexDirection: 'row',
-    gap: 2,
+    gap: GRID_GAP,
   },
-  slot: {
+  loadingCell: {
     flex: 1,
     aspectRatio: 1,
     borderRadius: 6,
-    overflow: 'hidden',
     backgroundColor: PV2.emptyCardBg,
   },
-  slotImage: {
-    width: '100%',
-    height: '100%',
-  },
-  slotEmptyFill: {
-    flex: 1,
-    backgroundColor: PV2.emptyCardBg,
-  },
-  slotEmpty: {
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.1)',
+  errorState: {
+    marginHorizontal: GRID_HORIZONTAL_MARGIN,
+    marginTop: 2,
+    minHeight: GRID_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 12,
+  },
+  errorTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+  },
+  retryButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 8,
+    backgroundColor: PV2.panel,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+  },
+  retryButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textPrimary,
   },
 });
