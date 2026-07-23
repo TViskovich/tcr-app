@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -22,7 +22,7 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
-import { fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
+import { fetchCardShareItems, fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 
@@ -52,25 +52,33 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   const sevenDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const from = page * PAGE_SIZE;
 
-  const { data: postRows } = await supabase
+  const { data: postRows, error: postsError } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text', 'rate_my_grails'])
+    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
 
+  if (postsError) {
+    console.error('[queryFeed] posts query failed:', postsError.message, postsError);
+    throw postsError;
+  }
+
   if (!postRows?.length) return [];
 
   const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  // Text/rate_my_grails posts have no item_id — filter nulls before querying collection_items.
+  // Text/rate_my_grails/card_share posts have no item_id — filter nulls before querying collection_items.
   const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
   const postIds = (postRows as any[]).map((p) => p.id as string);
   const grailPostIds = (postRows as any[])
     .filter((p) => p.post_type === 'rate_my_grails')
     .map((p) => p.id as string);
+  const cardSharePostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'card_share')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
@@ -83,6 +91,11 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     grailPostIds.length > 0
       ? fetchGrailData(grailPostIds, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
+    // Throws on failure (see fetchCardShareItems) — not caught here, same
+    // reasoning as fetchUserPosts: a card-share query failure should fail
+    // this fetch loudly rather than silently render posts with missing
+    // card data.
+    fetchCardShareItems(cardSharePostIds),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -113,7 +126,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -130,6 +143,7 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
       avgRating: rating ? rating.sum / rating.count : null,
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
+      cardShareItems: cardShareMap.get(post.id) ?? [],
     };
   });
 
@@ -149,13 +163,18 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
 
   const from = page * PAGE_SIZE;
 
-  const { data: postRows } = await supabase
+  const { data: postRows, error: postsError } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text', 'rate_my_grails'])
+    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
     .in('user_id', followedIds)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
+
+  if (postsError) {
+    console.error('[queryFollowingFeed] posts query failed:', postsError.message, postsError);
+    throw postsError;
+  }
 
   if (!postRows?.length) return [];
 
@@ -165,8 +184,11 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
   const grailPostIds = (postRows as any[])
     .filter((p) => p.post_type === 'rate_my_grails')
     .map((p) => p.id as string);
+  const cardSharePostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'card_share')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, grailData] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
@@ -176,6 +198,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
     grailPostIds.length > 0
       ? fetchGrailData(grailPostIds, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
+    fetchCardShareItems(cardSharePostIds),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -204,7 +227,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -221,6 +244,7 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
       avgRating: rating ? rating.sum / rating.count : null,
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
+      cardShareItems: cardShareMap.get(post.id) ?? [],
     };
   }));
 }
@@ -234,6 +258,11 @@ export default function HomeScreen() {
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   const insets = useSafeAreaInsets();
   const pullProgress = useSharedValue(0);
+  const listRef = useRef<FlatList<FeedPost>>(null);
+
+  function scrollToTop() {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
@@ -243,55 +272,86 @@ export default function HomeScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  // Distinct from "posts.length === 0" (the empty state below) — a failed
+  // query must never look identical to "you have no posts." queryFeed/
+  // queryFollowingFeed now throw on a genuine query failure (they used to
+  // silently swallow it), so this needs to be caught here rather than left
+  // as an unhandled rejection that would also leave loading/refreshing
+  // spinners stuck on forever.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
     setPage(0);
     setHasMore(true);
-    const data =
-      feedMode === 'for-you'
-        ? await queryFeed(currentUserId, 0)
-        : await queryFollowingFeed(currentUserId, 0);
-    setPosts(data);
-    setHasMore(data.length === PAGE_SIZE);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const data =
+        feedMode === 'for-you'
+          ? await queryFeed(currentUserId, 0)
+          : await queryFollowingFeed(currentUserId, 0);
+      setPosts(data);
+      setHasMore(data.length === PAGE_SIZE);
+    } catch (e) {
+      console.error('[loadFeed] failed:', e);
+      setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
+    } finally {
+      setLoading(false);
+    }
   }, [currentUserId, feedMode]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     setPage(0);
     setHasMore(true);
-    const data =
-      feedMode === 'for-you'
-        ? await queryFeed(currentUserId, 0)
-        : await queryFollowingFeed(currentUserId, 0);
-    setPosts(data);
-    setHasMore(data.length === PAGE_SIZE);
-    setRefreshing(false);
+    try {
+      const data =
+        feedMode === 'for-you'
+          ? await queryFeed(currentUserId, 0)
+          : await queryFollowingFeed(currentUserId, 0);
+      setPosts(data);
+      setHasMore(data.length === PAGE_SIZE);
+      setLoadError(null);
+    } catch (e) {
+      console.error('[onRefresh] failed:', e);
+      setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
+      // Keep whatever posts were already on screen rather than clearing
+      // them on a failed pull-to-refresh.
+    } finally {
+      setRefreshing(false);
+    }
   }, [currentUserId, feedMode]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || loading) return;
     setLoadingMore(true);
     const nextPage = page + 1;
-    const data =
-      feedMode === 'for-you'
-        ? await queryFeed(currentUserId, nextPage)
-        : await queryFollowingFeed(currentUserId, nextPage);
-    if (data.length > 0) {
-      // Merge, dedupe by post ID (a page boundary can shift if a new post
-      // lands mid-fetch), then re-sort globally — appending pages blindly
-      // would only be valid if both halves were already perfectly ordered
-      // and non-overlapping.
-      setPosts((prev) => {
-        const seenIds = new Set(prev.map((p) => p.id));
-        const merged = [...prev, ...data.filter((p) => !seenIds.has(p.id))];
-        return sortPostsByCreatedAtDesc(merged);
-      });
+    try {
+      const data =
+        feedMode === 'for-you'
+          ? await queryFeed(currentUserId, nextPage)
+          : await queryFollowingFeed(currentUserId, nextPage);
+      if (data.length > 0) {
+        // Merge, dedupe by post ID (a page boundary can shift if a new post
+        // lands mid-fetch), then re-sort globally — appending pages blindly
+        // would only be valid if both halves were already perfectly ordered
+        // and non-overlapping.
+        setPosts((prev) => {
+          const seenIds = new Set(prev.map((p) => p.id));
+          const merged = [...prev, ...data.filter((p) => !seenIds.has(p.id))];
+          return sortPostsByCreatedAtDesc(merged);
+        });
+      }
+      setPage(nextPage);
+      setHasMore(data.length === PAGE_SIZE);
+    } catch (e) {
+      // A failed next-page fetch shouldn't disturb the posts already
+      // loaded and visible — just log it and let the user retry by
+      // scrolling again (hasMore/page are untouched on failure).
+      console.error('[loadMore] failed:', e);
+    } finally {
+      setLoadingMore(false);
     }
-    setPage(nextPage);
-    setHasMore(data.length === PAGE_SIZE);
-    setLoadingMore(false);
   }, [loadingMore, hasMore, loading, page, feedMode, currentUserId]);
 
   // useFocusEffect re-runs whenever loadFeed changes identity (i.e. when feedMode or
@@ -380,7 +440,9 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          <CacheCaseLogo variant="dark" size={35} />
+          <TouchableOpacity onPress={scrollToTop} hitSlop={12} accessibilityRole="button" accessibilityLabel="Scroll to top">
+            <CacheCaseLogo variant="dark" size={35} />
+          </TouchableOpacity>
         )}
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
@@ -401,6 +463,14 @@ export default function HomeScreen() {
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
+      ) : loadError && posts.length === 0 ? (
+        <View style={styles.center}>
+          <Text style={styles.emptyTitle}>Couldn&apos;t load your feed</Text>
+          <Text style={styles.emptyBody}>{loadError}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={loadFeed}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
       ) : posts.length === 0 ? (
         <View style={styles.center}>
           <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
@@ -410,6 +480,7 @@ export default function HomeScreen() {
       ) : (
         <View style={styles.listWrap}>
           <FlatList
+            ref={listRef}
             data={posts}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
@@ -422,12 +493,19 @@ export default function HomeScreen() {
                     params: { username: item.username },
                   })
                 }
-                onPostPress={() =>
+                onPostPress={() => {
+                  // DEBUG (temporary — see post-detail nav/comment fix;
+                  // remove once verified against a running app).
+                  console.log('[Feed][DEBUG] onPostPress', {
+                    sourceScreen: 'app/(tabs)/index.tsx (main feed)',
+                    destinationRoute: '/post/[id]',
+                    postIdPassed: item.id,
+                  });
                   router.push({
                     pathname: '/post/[id]',
                     params: { id: item.id },
-                  })
-                }
+                  });
+                }}
                 onLike={() => handleLike(item.id)}
               />
             )}
@@ -558,6 +636,18 @@ const styles = StyleSheet.create({
     color: '#687076',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  retryButton: {
+    marginTop: 16,
+    backgroundColor: '#0a7ea4',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
   },
   listWrap: {
     flex: 1,

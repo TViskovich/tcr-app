@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,21 +15,37 @@ import {
   View,
 } from 'react-native';
 
+import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import type { RateMyGrailCard } from '@/types';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import type { CardShareItem, RateMyGrailCard } from '@/types';
+
+// Extra clearance so the comment input bar's "Post" button sits above the
+// globally-rendered floating tab bar (see components/navigation/
+// global-floating-tab-bar.tsx, rendered as a root-level sibling of every
+// screen outside app/(tabs) — it is NOT part of this screen's own view
+// tree, so it doesn't get pushed up by KeyboardAvoidingView). Without this,
+// the input bar sits underneath that bar's touch-absorbing surface
+// whenever the keyboard is closed, and taps meant for "Post" (or even
+// focusing the text field) land on the tab bar's inert background instead
+// — no error, no navigation, nothing happens. Applied only while the
+// keyboard is closed; once it's open the bar hugs the keyboard exactly as
+// before, with no dead gap.
+const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
 
 type PostDetail = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -43,6 +60,7 @@ type PostDetail = {
   avgRating: number | null;
   ratingCount: number;
   myRating: number | null;
+  cardShareItems: CardShareItem[];
 };
 
 type Comment = {
@@ -99,7 +117,8 @@ function PostHeader({
         <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
       </View>
 
-      {/* Post body — text for text posts, grails grid for Rate My Grails, image otherwise */}
+      {/* Post body — text for text posts, grails grid for Rate My Grails,
+          carousel for card_share, image otherwise */}
       {post.post_type === 'text' ? (
         <Text style={styles.textContent}>{post.content}</Text>
       ) : post.post_type === 'rate_my_grails' ? (
@@ -114,6 +133,22 @@ function PostHeader({
             submitting={rating.submitting}
             onRate={onRate}
           />
+        </View>
+      ) : post.post_type === 'card_share' ? (
+        // card_share posts have no top-level image_url (their images live
+        // in card_share_items instead) — must never fall through to the
+        // plain-image branch below, which would pass an undefined uri to
+        // Image. An empty cardShareItems list (query returned zero rows
+        // for this post, distinct from the whole fetch failing) gets a
+        // controlled fallback instead of silently rendering nothing.
+        <View style={styles.imageWrap}>
+          {post.cardShareItems.length > 0 ? (
+            <CardSharePostBody cards={post.cardShareItems} />
+          ) : (
+            <View style={styles.cardShareUnavailable}>
+              <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
+            </View>
+          )}
         </View>
       ) : (
         <View style={styles.imageWrap}>
@@ -188,6 +223,7 @@ function CommentRow({
 
 export default function PostDetailScreen() {
   const { id: postId } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
@@ -199,10 +235,57 @@ export default function PostDetailScreen() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Distinct from notFound — the post query itself failed (network/RLS/etc),
+  // as opposed to succeeding with zero rows. Conflating the two used to hide
+  // real failures behind a misleading "Post not found" message.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Set only when a comments query fails — never cleared to [] on failure,
+  // so a failed refresh can't wipe comments that are already on screen.
+  const [commentsError, setCommentsError] = useState<string | null>(null);
   const [newComment, setNewComment] = useState('');
   const [sending, setSending] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
+
+  // Tracks keyboard state purely to toggle TAB_BAR_CLEARANCE above — see
+  // that constant's comment. "Will" events on iOS (available there) avoid a
+  // one-frame lag/flash; Android only has "Did" events.
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // DEBUG (temporary — see task report; remove once verified against a
+  // running app). Confirms the id this screen actually received and
+  // whether the native stack has real history to pop to.
+  useEffect(() => {
+    console.log('[PostDetail][DEBUG] mounted', {
+      postIdReceived: postId,
+      canGoBack: router.canGoBack(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postId]);
+
+  // Prefer popping real history (preserves whatever screen/scroll position
+  // the user actually came from — feed, profile, notifications, etc. — per
+  // requirement). Only fall back to the main feed when there's genuinely no
+  // history to go back to (e.g. a cold deep link straight into this route).
+  function handleBack() {
+    const canGoBack = router.canGoBack();
+    console.log('[PostDetail][DEBUG] handleBack', { canGoBack });
+    if (canGoBack) {
+      router.back();
+      return;
+    }
+    router.replace('/(tabs)');
+  }
 
   const rating = useGrailRating({
     postId: post?.id ?? '',
@@ -213,24 +296,44 @@ export default function PostDetailScreen() {
     initialMyRating: post?.myRating ?? null,
   });
 
-  const fetchComments = useCallback(async (pid: string): Promise<Comment[]> => {
-    const { data: rows } = await supabase
+  // Returns { comments, error } instead of throwing or silently returning
+  // [] on failure — a failed query must never look identical to "this post
+  // genuinely has zero comments." Callers decide what to do with the
+  // error (show a banner, keep prior state, etc.) rather than this
+  // function silently deciding "empty" on their behalf.
+  const fetchComments = useCallback(async (pid: string): Promise<{ comments: Comment[]; error: string | null }> => {
+    console.log('[PostDetail][DEBUG] fetchComments: start', { postId: pid });
+
+    const { data: rows, error: rowsError } = await supabase
       .from('comments')
       .select('id, user_id, body, created_at')
       .eq('post_id', pid)
       .order('created_at', { ascending: true });
 
-    if (!rows?.length) return [];
+    if (rowsError) {
+      console.error('[PostDetail] fetchComments: comments query failed:', rowsError.message, rowsError);
+      return { comments: [], error: rowsError.message };
+    }
+
+    if (!rows?.length) {
+      console.log('[PostDetail][DEBUG] fetchComments: success, 0 comments');
+      return { comments: [], error: null };
+    }
 
     const userIds = [...new Set((rows as any[]).map((c) => c.user_id as string))];
-    const { data: profiles } = await supabase
+    const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url')
       .in('id', userIds);
 
+    if (profilesError) {
+      console.error('[PostDetail] fetchComments: profiles query failed:', profilesError.message, profilesError);
+      return { comments: [], error: profilesError.message };
+    }
+
     const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
 
-    return (rows as any[]).map((c) => {
+    const comments = (rows as any[]).map((c) => {
       const cp = profileMap.get(c.user_id) ?? {};
       return {
         id: c.id,
@@ -242,6 +345,9 @@ export default function PostDetailScreen() {
         avatar_url: cp.avatar_url ?? null,
       };
     });
+
+    console.log('[PostDetail][DEBUG] fetchComments: success', { count: comments.length });
+    return { comments, error: null };
   }, []);
 
   useEffect(() => {
@@ -249,12 +355,23 @@ export default function PostDetailScreen() {
 
     async function load() {
       setLoading(true);
+      setLoadError(null);
+      setNotFound(false);
 
-      const { data: postRow } = await supabase
+      const { data: postRow, error: postError } = await supabase
         .from('posts')
         .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
         .eq('id', postId)
         .single();
+
+      if (postError) {
+        // A real query failure (network, RLS, etc.) — never presented as
+        // "not found," which would hide the actual cause.
+        console.error('[PostDetail] load: post query failed:', postError.message, postError);
+        setLoadError(postError.message);
+        setLoading(false);
+        return;
+      }
 
       if (!postRow) {
         setNotFound(true);
@@ -264,10 +381,11 @@ export default function PostDetailScreen() {
 
       const row = postRow as any;
       const isRateMyGrails = row.post_type === 'rate_my_grails';
+      const isCardShare = row.post_type === 'card_share';
 
-      const [profileRes, itemRes, likesRes, fetchedComments, cardsRes, ratingsRes] = await Promise.all([
+      const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes] = await Promise.all([
         supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).single(),
-        // Text/rate_my_grails posts have no item_id — skip the items lookup to avoid a malformed query.
+        // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
         row.item_id
           ? supabase.from('collection_items').select('name').eq('id', row.item_id).maybeSingle()
           : Promise.resolve({ data: null }),
@@ -283,7 +401,26 @@ export default function PostDetailScreen() {
         isRateMyGrails
           ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', postId)
           : Promise.resolve({ data: [] }),
+        isCardShare
+          ? supabase
+              .from('card_share_items')
+              .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+              .eq('post_id', postId)
+              .order('display_order', { ascending: true })
+          : Promise.resolve({ data: [], error: null }),
       ]);
+
+      // Same manual pattern as the postError check above (load() has no
+      // surrounding try/catch to throw into) — a card_share post whose own
+      // cards failed to load can't be meaningfully shown, same severity as
+      // the post row itself failing. Never treated as "zero cards" — that's
+      // only true when the query actually succeeds with an empty result.
+      if (cardShareItemsRes.error) {
+        console.error('[PostDetail] load: card_share_items query failed:', cardShareItemsRes.error.message, cardShareItemsRes.error);
+        setLoadError(cardShareItemsRes.error.message);
+        setLoading(false);
+        return;
+      }
 
       const likeRows = (likesRes.data ?? []) as any[];
       const p = profileRes.data as any;
@@ -293,7 +430,7 @@ export default function PostDetailScreen() {
       setPost({
         id: row.id,
         user_id: row.user_id,
-        post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
+        post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
         image_url: row.image_url ?? null,
         content: row.content ?? null,
         caption: row.caption ?? null,
@@ -310,9 +447,11 @@ export default function PostDetailScreen() {
           : null,
         ratingCount: ratingRows.length,
         myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
+        cardShareItems: (cardShareItemsRes.data ?? []) as CardShareItem[],
       });
 
-      setComments(fetchedComments);
+      setComments(commentsResult.comments);
+      setCommentsError(commentsResult.error);
       setLoading(false);
     }
 
@@ -362,21 +501,36 @@ export default function PostDetailScreen() {
   }
 
   async function handleAddComment() {
+    // sending is checked and set synchronously (no await before it), so a
+    // second tap/return-key-press dispatched while the first is still in
+    // flight is rejected here rather than racing it.
     if (!currentUserId || !newComment.trim() || !post || sending) return;
     setSending(true);
     const body = newComment.trim();
-    setNewComment('');
 
-    const { error } = await supabase
+    console.log('[PostDetail][DEBUG] handleAddComment: inserting', {
+      postId: post.id,
+      userId: currentUserId,
+      bodyLength: body.length,
+    });
+
+    const { data: inserted, error } = await supabase
       .from('comments')
-      .insert({ user_id: currentUserId, post_id: post.id, body });
+      .insert({ user_id: currentUserId, post_id: post.id, body })
+      .select('id, user_id, body, created_at')
+      .single();
 
-    if (error) {
-      console.error('Comment failed:', error.message);
-      setNewComment(body);
+    if (error || !inserted) {
+      console.error('[PostDetail] handleAddComment: insert failed:', error?.message, error);
+      Alert.alert('Comment failed', error?.message ?? 'Could not post your comment. Please try again.');
       setSending(false);
       return;
     }
+
+    console.log('[PostDetail][DEBUG] handleAddComment: insert succeeded', { commentId: inserted.id });
+
+    // Only clear the input once the insert is confirmed successful.
+    setNewComment('');
 
     if (post.user_id !== currentUserId) {
       supabase.from('notifications').insert({
@@ -387,10 +541,44 @@ export default function PostDetailScreen() {
       }).then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
     }
 
-    const fresh = await fetchComments(post.id);
-    setComments(fresh);
+    const result = await fetchComments(post.id);
+    if (result.error) {
+      // The comment is already saved server-side — don't let a failed
+      // refresh wipe the list back to whatever was there before. Append
+      // the row we just got back from the insert instead, so it's still
+      // visible immediately.
+      console.error('[PostDetail] handleAddComment: refresh after insert failed:', result.error);
+      setCommentsError(result.error);
+      setComments((prev) => [
+        ...prev,
+        {
+          id: inserted.id,
+          user_id: inserted.user_id,
+          body: inserted.body,
+          created_at: inserted.created_at,
+          username: 'you',
+          display_name: null,
+          avatar_url: null,
+        },
+      ]);
+    } else {
+      setComments(result.comments);
+      setCommentsError(null);
+    }
+
     setSending(false);
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+  }
+
+  async function retryLoadComments() {
+    if (!post) return;
+    const result = await fetchComments(post.id);
+    if (result.error) {
+      setCommentsError(result.error);
+    } else {
+      setComments(result.comments);
+      setCommentsError(null);
+    }
   }
 
   function handleDeleteComment(commentId: string) {
@@ -402,7 +590,8 @@ export default function PostDetailScreen() {
         onPress: async () => {
           const { error } = await supabase.from('comments').delete().eq('id', commentId);
           if (error) {
-            console.error('Delete comment failed:', error.message);
+            console.error('[PostDetail] handleDeleteComment failed:', error.message, error);
+            Alert.alert('Error', 'Could not delete comment. Please try again.');
           } else {
             setComments((prev) => prev.filter((c) => c.id !== commentId));
           }
@@ -411,12 +600,26 @@ export default function PostDetailScreen() {
     ]);
   }
 
+  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+
   if (loading && !post) {
     return (
       <>
-        <Stack.Screen options={{ title: 'Post' }} />
+        <Stack.Screen options={{ title: 'Post', headerLeft: headerBackLeft }} />
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
+        </View>
+      </>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <>
+        <Stack.Screen options={{ title: 'Post', headerLeft: headerBackLeft }} />
+        <View style={styles.center}>
+          <Text style={styles.errorText}>Could not load this post.</Text>
+          <Text style={styles.errorDetail}>{loadError}</Text>
         </View>
       </>
     );
@@ -425,7 +628,7 @@ export default function PostDetailScreen() {
   if (notFound || !post) {
     return (
       <>
-        <Stack.Screen options={{ title: 'Post' }} />
+        <Stack.Screen options={{ title: 'Post', headerLeft: headerBackLeft }} />
         <View style={styles.center}>
           <Text style={styles.errorText}>Post not found.</Text>
         </View>
@@ -435,7 +638,9 @@ export default function PostDetailScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: `@${post.username}`, headerBackTitle: '' }} />
+      <Stack.Screen
+        options={{ title: `@${post.username}`, headerBackTitle: '', headerLeft: headerBackLeft }}
+      />
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -469,8 +674,30 @@ export default function PostDetailScreen() {
           contentContainerStyle={{ flexGrow: 1 }}
         />
 
-        {/* Comment input bar */}
-        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        {commentsError && (
+          <View style={styles.commentsErrorBanner}>
+            <Text style={styles.commentsErrorText} numberOfLines={2}>
+              Comments could not load: {commentsError}
+            </Text>
+            <TouchableOpacity onPress={retryLoadComments} hitSlop={8}>
+              <Text style={styles.commentsErrorRetry}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Comment input bar — extra bottom clearance (TAB_BAR_CLEARANCE)
+            only while the keyboard is closed, so the "Post" button sits
+            above the floating tab bar instead of underneath its
+            touch-absorbing surface. See TAB_BAR_CLEARANCE's comment. */}
+        <View
+          style={[
+            styles.inputBar,
+            {
+              paddingBottom: keyboardVisible
+                ? Math.max(insets.bottom, 8)
+                : Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE,
+            },
+          ]}>
           <TextInput
             style={styles.input}
             value={newComment}
@@ -516,10 +743,48 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#687076',
   },
+  errorDetail: {
+    fontSize: 13,
+    color: '#aaa',
+    marginTop: 6,
+    paddingHorizontal: 24,
+    textAlign: 'center',
+  },
+  commentsErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#FDECEA',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#f5c6c2',
+  },
+  commentsErrorText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#B3261E',
+  },
+  commentsErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#B3261E',
+  },
   // Post header
   imageWrap: {
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
+    overflow: 'hidden',
+  },
+  cardShareUnavailable: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardShareUnavailableText: {
+    fontSize: 13,
+    color: '#687076',
   },
   grailsWrap: {
     padding: 12,

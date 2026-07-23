@@ -23,14 +23,9 @@ export function CreateMenu({ visible, onClose }: Props) {
     router.push('/post/new');
   }
 
-  // TODO: Share Card — no card-picker or per-card share entry point exists yet
-  // (app/item/[id].tsx has no share action). Real implementation needs a card
-  // picker, then a Share.share() call — see handleShareFolder below for the
-  // exact pattern to reuse (app/collection/[folderId].tsx already does this
-  // for folders).
   function handleShareCard() {
     onClose();
-    Alert.alert('Card sharing', "Shareable card links aren't available yet.");
+    router.push('/share-card/new');
   }
 
   // TODO: Share Folder — app/collection/[folderId].tsx already has a working

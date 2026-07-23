@@ -190,3 +190,43 @@ export function useItems(folderId: string | undefined) {
 
   return { items, loading, refresh: load };
 }
+
+// Flat, all-folders view of a user's own collection_items — unlike
+// useItems above, not scoped to one folder. Powers the Share Card picker
+// (app/share-card/new.tsx), which needs to offer every card the user owns
+// regardless of which folder it's filed under. Captures and surfaces
+// `error` (unlike a plain `{ data }` destructure) so a failed query is
+// never indistinguishable from "you have zero cards."
+export function useAllItems(userId: string | undefined) {
+  const [items, setItems] = useState<CollectionItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const { data, error: queryError } = await supabase
+      .from('collection_items')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (queryError) {
+      console.error('[useAllItems] query failed:', queryError.message, queryError);
+      setError(queryError.message);
+      setLoading(false);
+      return;
+    }
+    setItems(data ?? []);
+    setLoading(false);
+  }, [userId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return { items, loading, error, refresh: load };
+}

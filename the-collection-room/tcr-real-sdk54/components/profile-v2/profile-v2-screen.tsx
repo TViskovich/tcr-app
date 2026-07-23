@@ -92,8 +92,20 @@ export function ProfileV2Screen({ userId }: Props) {
   // (`userId`), not the viewer. currentUserId is passed separately only
   // for like-state/ownership within each post — see fetchUserPosts.
   const [profilePosts, setProfilePosts] = useState<FeedPost[]>([]);
+  // Distinct from "profilePosts.length === 0" — fetchUserPosts now throws
+  // on a genuine query failure (it used to silently swallow it), which
+  // must never be presented identically to "this user has no posts."
+  const [profilePostsError, setProfilePostsError] = useState<string | null>(null);
   const refreshPosts = useCallback(async () => {
-    setProfilePosts(await fetchUserPosts(userId, currentUserId));
+    setProfilePostsError(null);
+    try {
+      const nextPosts = await fetchUserPosts(userId, currentUserId);
+      setProfilePosts(nextPosts);
+    } catch (e) {
+      console.error('[refreshPosts] failed:', e);
+      setProfilePostsError(e instanceof Error ? e.message : 'Failed to load posts.');
+      // Preserve any posts already loaded rather than clearing them.
+    }
   }, [userId, currentUserId]);
 
   const [section, setSection] = useState<ProfileV2Section>('cachecase');
@@ -677,6 +689,8 @@ export function ProfileV2Screen({ userId }: Props) {
                     onUserPress={(username) => router.push({ pathname: '/user/[username]', params: { username } })}
                     onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
                     onLike={handleLike}
+                    error={profilePostsError}
+                    onRetry={refreshPosts}
                   />
                 )}
 

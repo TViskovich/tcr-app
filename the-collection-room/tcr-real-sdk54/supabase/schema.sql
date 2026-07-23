@@ -50,11 +50,16 @@ CREATE TABLE public.collection_items (
   created_at       timestamptz   DEFAULT now()
 );
 
+-- image_url was originally NOT NULL here, but post_type 'text' and
+-- 'rate_my_grails' rows have never set it (their content lives in
+-- `content`/related tables instead) — the live column has been nullable
+-- for a while, undocumented; supabase/migrations/20260722_create_card_share_items.sql
+-- makes that explicit with an idempotent ALTER COLUMN DROP NOT NULL.
 CREATE TABLE public.posts (
   id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id          uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   item_id          uuid        REFERENCES public.collection_items(id) ON DELETE SET NULL,
-  image_url        text        NOT NULL,
+  image_url        text,
   caption          text,
   created_at       timestamptz DEFAULT now()
 );
@@ -188,11 +193,12 @@ ALTER TABLE public.notifications
 
 -- posts_post_type_check (a live constraint that predates this file and was
 -- never documented here) only allowed 'item'/'text' — extended to also allow
--- 'rate_my_grails'. See supabase/migrations/20260711193000_fix_posts_post_type_check.sql.
+-- 'rate_my_grails' (see supabase/migrations/20260711193000_fix_posts_post_type_check.sql),
+-- then 'card_share' (see supabase/migrations/20260722_create_card_share_items.sql).
 ALTER TABLE public.posts DROP CONSTRAINT IF EXISTS posts_post_type_check;
 ALTER TABLE public.posts
   ADD CONSTRAINT posts_post_type_check
-  CHECK (post_type IN ('item', 'text', 'rate_my_grails'));
+  CHECK (post_type IN ('item', 'text', 'rate_my_grails', 'card_share'));
 
 ALTER TABLE public.rate_my_grail_cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.grail_ratings       ENABLE ROW LEVEL SECURITY;
@@ -342,4 +348,32 @@ CREATE POLICY "collection_item_images_update_own" ON public.collection_item_imag
 CREATE POLICY "collection_item_images_delete_own" ON public.collection_item_images
   FOR DELETE USING (
     EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
+  );
+
+-- card_share_items — see
+-- supabase/migrations/20260722_create_card_share_items.sql for the
+-- authoritative, run-it-yourself version of this table (including the
+-- posts_post_type_check extension, the posts.image_url nullability fix,
+-- and the create_card_share_post RPC, not reproduced here).
+
+CREATE TABLE IF NOT EXISTS public.card_share_items (
+  id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id             uuid        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  item_id             uuid        REFERENCES public.collection_items(id) ON DELETE SET NULL,
+  snapshot_image_url  text,
+  snapshot_title      text,
+  snapshot_subtitle   text,
+  display_order       smallint    NOT NULL DEFAULT 0,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (post_id, item_id)
+);
+
+ALTER TABLE public.card_share_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "card_share_items_select_public" ON public.card_share_items FOR SELECT USING (true);
+
+CREATE POLICY "card_share_items_insert_own" ON public.card_share_items
+  FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.user_id = auth.uid())
+    AND (item_id IS NULL OR EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid()))
   );

@@ -3,15 +3,16 @@ import { Animated, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'r
 
 import { Image } from 'expo-image';
 
+import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { supabase } from '@/lib/supabase';
-import type { RateMyGrailCard } from '@/types';
+import type { CardShareItem, RateMyGrailCard } from '@/types';
 
 export type FeedPost = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -28,6 +29,7 @@ export type FeedPost = {
   avgRating: number | null;
   ratingCount: number;
   myRating: number | null;
+  cardShareItems: CardShareItem[];
 };
 
 // Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
@@ -63,17 +65,53 @@ export async function fetchGrailData(postIds: string[], currentUserId?: string) 
   return { cardsMap, ratingTotals };
 }
 
+// Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
+// fetchUserPosts below — batch-fetches card_share_items for whichever of
+// the given posts are 'card_share' posts, keyed by post_id, mirroring
+// fetchGrailData's shape above.
+export async function fetchCardShareItems(postIds: string[]): Promise<Map<string, CardShareItem[]>> {
+  const map = new Map<string, CardShareItem[]>();
+
+  if (postIds.length === 0) {
+    return map;
+  }
+
+  const { data, error } = await supabase
+    .from('card_share_items')
+    .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+    .in('post_id', postIds)
+    .order('display_order', { ascending: true });
+
+  if (error) {
+    console.error('[fetchCardShareItems] query failed:', error.message, error);
+    throw error;
+  }
+
+  for (const row of (data ?? []) as CardShareItem[]) {
+    const list = map.get(row.post_id) ?? [];
+    list.push(row);
+    map.set(row.post_id, list);
+  }
+
+  return map;
+}
+
 // One user's own post history, newest first — no date window, no engagement
 // ranking (unlike the main feed's queryFeed), since this powers a profile's
 // Posts tab rather than a ranked/windowed feed. Mirrors queryFeed's row
 // shaping so it can reuse the same PostCard renderer below.
 export async function fetchUserPosts(userId: string, currentUserId?: string): Promise<FeedPost[]> {
-  const { data: postRows } = await supabase
+  const { data: postRows, error: postsError } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
     .eq('user_id', userId)
-    .in('post_type', ['item', 'text', 'rate_my_grails'])
+    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
     .order('created_at', { ascending: false });
+
+  if (postsError) {
+    console.error('[fetchUserPosts] posts query failed:', postsError.message, postsError);
+    throw postsError;
+  }
 
   if (!postRows?.length) return [];
 
@@ -82,8 +120,11 @@ export async function fetchUserPosts(userId: string, currentUserId?: string): Pr
   const grailPostIds = (postRows as any[])
     .filter((p) => p.post_type === 'rate_my_grails')
     .map((p) => p.id as string);
+  const cardSharePostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'card_share')
+    .map((p) => p.id as string);
 
-  const [profileRes, itemsRes, likesRes, commentsRes, grailData] = await Promise.all([
+  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
     supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', userId).single(),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
@@ -93,6 +134,11 @@ export async function fetchUserPosts(userId: string, currentUserId?: string): Pr
     grailPostIds.length > 0
       ? fetchGrailData(grailPostIds, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
+    // fetchCardShareItems throws on failure (logging its own error first) —
+    // deliberately not caught here, so a card-share query failure fails
+    // this whole fetch loudly via the caller's own error handling, rather
+    // than silently rendering posts with missing card data.
+    fetchCardShareItems(cardSharePostIds),
   ]);
 
   const profile = (profileRes.data as any) ?? {};
@@ -118,7 +164,7 @@ export async function fetchUserPosts(userId: string, currentUserId?: string): Pr
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -135,6 +181,7 @@ export async function fetchUserPosts(userId: string, currentUserId?: string): Pr
       avgRating: rating ? rating.sum / rating.count : null,
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
+      cardShareItems: cardShareMap.get(post.id) ?? [],
     };
   });
 }
@@ -163,6 +210,7 @@ export function PostCard({
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
+  const isCardShare = post.post_type === 'card_share';
 
   const rating = useGrailRating({
     postId: post.id,
@@ -232,6 +280,23 @@ export function PostCard({
             submitting={rating.submitting}
             onRate={rating.submitRating}
           />
+        </View>
+      ) : isCardShare ? (
+        // card_share posts have no top-level image_url (their images live
+        // in card_share_items instead) — must never fall through to the
+        // plain-image branch above, which would pass an undefined uri to
+        // Image. An empty cardShareItems list (query returned zero rows
+        // for this specific post, distinct from the whole fetch failing —
+        // see fetchCardShareItems) gets a controlled fallback instead of
+        // silently rendering nothing.
+        <View style={styles.cardImageWrap}>
+          {post.cardShareItems.length > 0 ? (
+            <CardSharePostBody cards={post.cardShareItems} />
+          ) : (
+            <View style={styles.cardShareUnavailable}>
+              <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
+            </View>
+          )}
         </View>
       ) : (
         <TouchableOpacity style={styles.cardImageWrap} onPress={onPostPress} activeOpacity={0.95}>
@@ -328,6 +393,16 @@ const styles = StyleSheet.create({
   cardImageWrap: {
     aspectRatio: 5 / 7,
     backgroundColor: '#e9ecef',
+    overflow: 'hidden',
+  },
+  cardShareUnavailable: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardShareUnavailableText: {
+    fontSize: 13,
+    color: '#687076',
   },
   cardGrailsWrap: {
     padding: 10,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -15,7 +15,13 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, {
+  cancelAnimation,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
@@ -218,6 +224,16 @@ export default function CollectionFolderScreen() {
   // renders (and fades in) exactly when this is set, then disappears once
   // the transition commits and heroIndex catches up to it.
   const [heroPendingIndex, setHeroPendingIndex] = useState<number | null>(null);
+  // Tracks which item the hero is actually displaying, independent of its
+  // array position — heroIndex is re-derived from this id whenever
+  // heroItems changes (e.g. an item was deleted elsewhere and this screen
+  // refetched on refocus, see useFocusEffect above). Without this, a
+  // deletion of an unrelated, earlier item would silently swap the
+  // displayed card once positions shift, and a deletion of the displayed
+  // item itself would leave heroIndex stale (possibly out of bounds —
+  // this is what crashed: heroItems[heroIndex].image_url on an undefined
+  // element once heroItems shrank).
+  const heroItemIdRef = useRef<string | null>(null);
   const heroOverlayOpacity = useSharedValue(0);
   const [reduceMotionEnabled, setReduceMotionEnabled] = useState(false);
 
@@ -236,9 +252,55 @@ export default function CollectionFolderScreen() {
   useEffect(() => {
     setHeroIndex(0);
     setHeroPendingIndex(null);
+    // Cancel any in-flight crossfade before resetting — without this, a
+    // transition that was already animating could still resolve and
+    // commit a now-meaningless target after the folder/group has changed
+    // out from under it.
+    cancelAnimation(heroOverlayOpacity);
     heroOverlayOpacity.value = 0;
+    heroItemIdRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderId, activePlayer]);
+
+  // Re-syncs heroIndex whenever the underlying item list changes. If the
+  // item being viewed still exists, follow it to its new position (so an
+  // unrelated deletion elsewhere in the list doesn't swap what's on
+  // screen); if it's gone, fall back to the same numeric slot clamped to
+  // the new, possibly shorter array — "the next available item," per the
+  // requirement. setHeroIndex uses the functional form here so this
+  // correctly chains after the reset effect above when both fire in the
+  // same commit (e.g. navigating into a different player group).
+  useEffect(() => {
+    // Cancel any in-flight crossfade first — a pending transition's target
+    // may no longer exist (or may no longer be the right index) once
+    // heroItems has changed, so it must not be allowed to commit.
+    cancelAnimation(heroOverlayOpacity);
+
+    if (heroItems.length === 0) {
+      setHeroIndex(0);
+      setHeroPendingIndex(null);
+      heroOverlayOpacity.value = 0;
+      heroItemIdRef.current = null;
+      return;
+    }
+
+    const viewedId = heroItemIdRef.current;
+    const foundIndex = viewedId ? heroItems.findIndex((i) => i.id === viewedId) : -1;
+
+    if (foundIndex !== -1) {
+      setHeroIndex(foundIndex);
+      heroItemIdRef.current = heroItems[foundIndex].id;
+    } else {
+      setHeroIndex((prev) => {
+        const clamped = Math.max(0, Math.min(prev, heroItems.length - 1));
+        heroItemIdRef.current = heroItems[clamped]?.id ?? null;
+        return clamped;
+      });
+    }
+    setHeroPendingIndex(null);
+    heroOverlayOpacity.value = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heroItems]);
 
   // Warm the cache for every image in this gallery up front, so a swipe or
   // grid tap never has to wait on a network fetch mid-transition.
@@ -255,10 +317,28 @@ export default function CollectionFolderScreen() {
     if (targetIndex < 0 || targetIndex >= heroItems.length) return;
     if (targetIndex === heroIndex || heroPendingIndex !== null) return;
 
+    // Re-validated against heroItems here (not just at the top of
+    // goToHeroIndex) because commit runs asynchronously, after the
+    // prefetch/crossfade — by the time it actually fires, heroItems may
+    // have changed underneath the pending transition (e.g. a deletion
+    // elsewhere refetched mid-animation). The reconciliation effect above
+    // would eventually correct a bad index too, but this avoids ever
+    // committing one in the first place.
     const commit = () => {
-      setHeroIndex(targetIndex);
+      const safeTarget = Math.max(0, Math.min(targetIndex, heroItems.length - 1));
+
+      if (heroItems.length === 0) {
+        setHeroIndex(0);
+        setHeroPendingIndex(null);
+        heroItemIdRef.current = null;
+        heroOverlayOpacity.value = 0;
+        return;
+      }
+
+      setHeroIndex(safeTarget);
       setHeroPendingIndex(null);
       heroOverlayOpacity.value = 0;
+      heroItemIdRef.current = heroItems[safeTarget]?.id ?? null;
     };
 
     if (reduceMotionEnabled) {
@@ -333,6 +413,19 @@ export default function CollectionFolderScreen() {
   const isCardMode = !!activePlayer;
   const screenTitle = isCardMode ? (activePlayer === NO_PLAYER_KEY ? 'Other' : activePlayer!) : folderTitle;
   const visibleCount = isCardMode ? cardItems.length : items.length;
+
+  // Final defensive guard against the one-render-frame gap between
+  // heroItems shrinking (on refetch, e.g. after a deletion elsewhere) and
+  // the reconciliation effect above correcting heroIndex — clamped, never
+  // reads an out-of-bounds index. The effect is what fixes *which* item
+  // this settles on; this only guarantees the read itself can never crash.
+  const clampedHeroDisplayIndex = heroItems.length > 0 ? Math.min(heroIndex, heroItems.length - 1) : -1;
+  const activeHeroItem = clampedHeroDisplayIndex >= 0 ? heroItems[clampedHeroDisplayIndex] : null;
+  const clampedHeroPendingIndex =
+    heroPendingIndex !== null && heroPendingIndex >= 0 && heroPendingIndex < heroItems.length
+      ? heroPendingIndex
+      : null;
+  const pendingHeroItem = clampedHeroPendingIndex !== null ? heroItems[clampedHeroPendingIndex] : null;
 
   function openItem(item: CollectionItem) {
     const heroIdx = heroItems.findIndex((i) => i.id === item.id);
@@ -467,7 +560,7 @@ export default function CollectionFolderScreen() {
             <View style={styles.heroSection}>
               <GestureDetector gesture={heroPan}>
                 <View style={styles.heroBox}>
-                  {heroItems.length > 0 && (
+                  {activeHeroItem && (
                     <>
                       {/* Base layer — the committed, settled image. Never
                           animates itself; only the overlay below does.
@@ -475,7 +568,7 @@ export default function CollectionFolderScreen() {
                           own top edge (face/upper body) fully uncropped —
                           cover-fit trims the excess from the bottom instead. */}
                       <Image
-                        source={{ uri: heroItems[heroIndex].image_url! }}
+                        source={{ uri: activeHeroItem.image_url! }}
                         style={StyleSheet.absoluteFill}
                         contentFit="cover"
                         contentPosition={HERO_IMAGE_CONTENT_POSITION}
@@ -486,9 +579,9 @@ export default function CollectionFolderScreen() {
                           layer unmounts with no visible change. Same
                           contentPosition as the base layer so nothing jumps
                           vertically during the crossfade. */}
-                      {heroPendingIndex !== null && (
+                      {pendingHeroItem && (
                         <AnimatedExpoImage
-                          source={{ uri: heroItems[heroPendingIndex].image_url! }}
+                          source={{ uri: pendingHeroItem.image_url! }}
                           style={[StyleSheet.absoluteFill, heroOverlayStyle]}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}
@@ -502,7 +595,7 @@ export default function CollectionFolderScreen() {
                       {heroItems.length > 1 && (
                         <View style={styles.heroCounterBadge} pointerEvents="none">
                           <Text style={styles.heroCounterText}>
-                            {(heroPendingIndex ?? heroIndex) + 1} / {heroItems.length}
+                            {clampedHeroDisplayIndex + 1} / {heroItems.length}
                           </Text>
                         </View>
                       )}

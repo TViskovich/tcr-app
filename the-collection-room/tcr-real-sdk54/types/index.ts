@@ -59,7 +59,7 @@ export type Profile = {
 export type Post = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
   item_id: string | null;
   image_url: string | null;
   content: string | null;
@@ -87,6 +87,23 @@ export type RateMyGrailCard = {
   post_id: string;
   item_id: string | null;
   snapshot_image_url: string;
+  snapshot_title: string | null;
+  snapshot_subtitle: string | null;
+  display_order: number;
+};
+
+// Snapshot of one card in a "Share Card" carousel post (post_type
+// 'card_share', 2-5 items — a single shared card just uses post_type
+// 'item' directly, see app/item/new.tsx). Denormalized for the same reason
+// as RateMyGrailCard above: the carousel keeps rendering correctly even if
+// the source collection_item is later edited or deleted. item_id becomes
+// null (not the row deleted) when the source item is removed — snapshot
+// fields are the only thing a renderer should ever trust.
+export type CardShareItem = {
+  id: string;
+  post_id: string;
+  item_id: string | null;
+  snapshot_image_url: string | null;
   snapshot_title: string | null;
   snapshot_subtitle: string | null;
   display_order: number;
