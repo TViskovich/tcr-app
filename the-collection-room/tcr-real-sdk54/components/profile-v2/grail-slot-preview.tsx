@@ -23,8 +23,8 @@ const AnimatedExpoImage = Animated.createAnimatedComponent(Image);
 // ~5s hold, ~850ms crossfade — modeled on app/collection/[folderId].tsx's
 // own hero-carousel crossfade (prefetch-then-fade, cancelable), but
 // self-rescheduling instead of swipe-driven.
-const HOLD_DURATION_MS = 5000;
-const FADE_DURATION_MS = 850;
+const HOLD_DURATION_MS = 4200;
+const FADE_DURATION_MS = 700;
 // Deterministic initial-only stagger so adjacent collection slots don't
 // all crossfade in lockstep — applied once, on this component instance's
 // very first activation, never re-applied on a later focus/foreground
@@ -120,9 +120,36 @@ export function GrailSlotPreview({
   }, [activeUri]);
 
   const [incomingUri, setIncomingUri] = useState<string | null>(null);
+  const incomingUriRef = useRef<string | null>(null);
+  useEffect(() => {
+    incomingUriRef.current = incomingUri;
+  }, [incomingUri]);
+  // Guards a single mounted incoming-image instance from triggering the
+  // fade more than once — expo-image's onLoad can in principle fire again
+  // for the same mounted element, and without this a second onLoad would
+  // start a second withTiming on top of one already in flight.
+  const incomingLoadTriggeredRef = useRef(false);
+  // Set the instant the top layer finishes fading in and activeUri is
+  // switched to match it — cleared once the BOTTOM layer's own onLoad (or
+  // onError) resolves that switch, or on any pause/reset/unmount. While
+  // this is non-null, the top layer stays at full opacity (still covering
+  // the bottom layer) even though its own fade already finished, so the
+  // hand-off from top-layer-visible to bottom-layer-visible never exposes
+  // a not-yet-repainted (or still-previous-image) bottom layer. The next
+  // rotation tick is scheduled ONLY from wherever this gets cleared to a
+  // resolved state (revealCommittedActive / handleActiveError) — never
+  // independently from the fade-completion callback — so a new tick can
+  // structurally never start while a reveal is still pending.
+  const pendingRevealUriRef = useRef<string | null>(null);
+
   const topOpacity = useSharedValue(0);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasStartedRef = useRef(false);
+  const shouldAnimateRef = useRef(false);
+  // Set by the scheduling effect below on every run — lets the onLoad/
+  // onError handlers (bound in JSX, outside that effect) continue the
+  // self-rescheduling chain without duplicating scheduling logic.
+  const scheduleTickRef = useRef<((delay: number) => void) | null>(null);
 
   // React Strict Mode double-invokes effects (mount → cleanup → mount) in
   // dev — a ref that's only ever set false in a cleanup function starts
@@ -139,17 +166,6 @@ export function GrailSlotPreview({
     };
   }, []);
 
-  const commitSwap = useCallback(
-    (landedUri: string) => {
-      if (!mountedRef.current) return;
-      setActiveUri(landedUri);
-      setIncomingUri(null);
-      cancelAnimation(topOpacity);
-      topOpacity.value = 0;
-    },
-    [topOpacity],
-  );
-
   const shouldAnimate = isRouteFocused && isAppActive && !reducedMotion && usableImages.length > 1;
 
   // Single effect drives both reconciliation and scheduling, re-running
@@ -162,6 +178,8 @@ export function GrailSlotPreview({
   // activeUri: kept as-is if still present in the new list, otherwise
   // falls back to the new list's first image (or null).
   useEffect(() => {
+    shouldAnimateRef.current = shouldAnimate;
+
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -169,6 +187,7 @@ export function GrailSlotPreview({
     cancelAnimation(topOpacity);
     topOpacity.value = 0;
     setIncomingUri(null);
+    pendingRevealUriRef.current = null;
 
     setActiveUri((prevActive) => {
       if (prevActive && usableImages.includes(prevActive)) return prevActive;
@@ -176,12 +195,14 @@ export function GrailSlotPreview({
     });
 
     if (!shouldAnimate) {
+      scheduleTickRef.current = null;
       return;
     }
 
     function scheduleTick(delay: number) {
       timeoutRef.current = setTimeout(tick, delay);
     }
+    scheduleTickRef.current = scheduleTick;
 
     function tick() {
       const images = usableImagesRef.current;
@@ -198,17 +219,14 @@ export function GrailSlotPreview({
           // The list this tick was scheduled against may have already
           // been superseded by a newer effect run (which tears down and
           // reschedules independently) — re-check membership against the
-          // latest list before committing to a fade, so a stale tick can
-          // never display or commit an image the current list no longer
-          // considers usable.
+          // latest list before even mounting the incoming layer.
           if (!usableImagesRef.current.includes(upcomingUri)) return;
+          // Prefetch resolving only means the bytes are cached, not that
+          // a freshly-mounted AnimatedExpoImage layer has finished
+          // decoding and is ready to paint — the fade itself starts from
+          // that layer's own onLoad (handleIncomingLoad below), not here.
+          incomingLoadTriggeredRef.current = false;
           setIncomingUri(upcomingUri);
-          topOpacity.value = withTiming(1, { duration: FADE_DURATION_MS }, (finished) => {
-            if (finished) {
-              runOnJS(commitSwap)(upcomingUri);
-              runOnJS(scheduleTick)(HOLD_DURATION_MS);
-            }
-          });
         });
     }
 
@@ -226,11 +244,106 @@ export function GrailSlotPreview({
         timeoutRef.current = null;
       }
       cancelAnimation(topOpacity);
+      scheduleTickRef.current = null;
+      pendingRevealUriRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAnimate, usableImages]);
 
   const topAnimatedStyle = useAnimatedStyle(() => ({ opacity: topOpacity.value }));
+
+  // Step 1 of the hand-off, called once the top layer's own fade-in has
+  // finished: switches the bottom layer's source to the new image while
+  // the top layer is still at full opacity covering it. Nothing visually
+  // changes yet — the bottom layer repaints "for free" underneath an
+  // opaque top layer, so any repaint lag is invisible. Deliberately does
+  // NOT schedule the next tick — that only ever happens once the bottom
+  // layer confirms the hand-off (revealCommittedActive) or fails it
+  // (handleActiveError), never independently from here.
+  const beginReveal = useCallback((landedUri: string) => {
+    if (!mountedRef.current) return;
+    pendingRevealUriRef.current = landedUri;
+    setActiveUri(landedUri);
+  }, []);
+
+  // Step 2 of the hand-off, called from the BOTTOM layer's own onLoad —
+  // only once the bottom layer has actually repainted with the new image
+  // is the top layer dropped, and only then is the next rotation tick
+  // scheduled. Doing the reveal unconditionally in the same tick as
+  // beginReveal (rather than waiting for confirmation) was the cause of
+  // the "stutter after the photo settles": the top layer could disappear
+  // a frame before the bottom layer had actually finished repainting,
+  // briefly exposing the previous image underneath. Runs on the JS thread
+  // already (a normal onLoad prop, not a worklet callback), so no runOnJS
+  // wrapping is needed to reach scheduleTickRef here.
+  const revealCommittedActive = useCallback((uri: string) => {
+    if (!mountedRef.current) return;
+    if (pendingRevealUriRef.current !== uri) return; // superseded or already resolved
+    pendingRevealUriRef.current = null;
+    setIncomingUri(null);
+    cancelAnimation(topOpacity);
+    topOpacity.value = 0;
+    scheduleTickRef.current?.(HOLD_DURATION_MS);
+  }, [topOpacity]);
+
+  // Starts the crossfade only once the incoming layer has actually
+  // finished decoding and is ready to paint — Image.prefetch resolving
+  // (in tick(), above) only guarantees the bytes are cached, not that
+  // this specific mounted layer is visually ready.
+  const handleIncomingLoad = useCallback(
+    (uri: string) => {
+      if (incomingLoadTriggeredRef.current) return;
+      if (!mountedRef.current || !shouldAnimateRef.current) return;
+      if (incomingUriRef.current !== uri) return; // superseded by a newer/cleared incoming image
+      if (!usableImagesRef.current.includes(uri)) return; // gone broken/removed since it started loading
+      incomingLoadTriggeredRef.current = true;
+      topOpacity.value = withTiming(1, { duration: FADE_DURATION_MS }, (finished) => {
+        if (finished) {
+          runOnJS(beginReveal)(uri);
+        }
+      });
+    },
+    [beginReveal, topOpacity],
+  );
+
+  const handleIncomingError = useCallback(
+    (uri: string) => {
+      markBroken(uri);
+      if (incomingUriRef.current === uri) {
+        setIncomingUri(null);
+      }
+      cancelAnimation(topOpacity);
+      topOpacity.value = 0;
+      // No manual reschedule here — markBroken updates brokenUrls, which
+      // usableImages (and therefore the scheduling effect above) depends
+      // on, so that effect tears down and reschedules a fresh attempt on
+      // its own. The failed image is never committed as activeUri.
+    },
+    [markBroken, topOpacity],
+  );
+
+  // If the BOTTOM layer itself fails to load the image beginReveal just
+  // committed to it, the hand-off can never confirm via
+  // revealCommittedActive — without this, the top layer would stay
+  // opaque forever and the slideshow would never reschedule its next
+  // tick. Clears the pending reveal and the top layer immediately (not
+  // waiting on the effect rerun triggered by markBroken below) so nothing
+  // is left visibly stuck, and — like handleIncomingError — relies on the
+  // usableImages change from markBroken to retrigger the scheduling
+  // effect's own teardown-and-reschedule rather than scheduling here
+  // directly.
+  const handleActiveError = useCallback(
+    (uri: string) => {
+      markBroken(uri);
+      if (pendingRevealUriRef.current === uri) {
+        pendingRevealUriRef.current = null;
+        setIncomingUri(null);
+        cancelAnimation(topOpacity);
+        topOpacity.value = 0;
+      }
+    },
+    [markBroken, topOpacity],
+  );
 
   // Long-press-vs-tap suppression — see the SUPPRESS_WINDOW_MS comment above.
   const suppressPressUntilRef = useRef(0);
@@ -317,14 +430,18 @@ export function GrailSlotPreview({
                 source={{ uri: activeUri }}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
-                onError={() => markBroken(activeUri)}
+                cachePolicy="memory-disk"
+                onLoad={() => revealCommittedActive(activeUri)}
+                onError={() => handleActiveError(activeUri)}
               />
               {incomingUri && (
                 <AnimatedExpoImage
                   source={{ uri: incomingUri }}
                   style={[StyleSheet.absoluteFill, topAnimatedStyle]}
                   contentFit="cover"
-                  onError={() => markBroken(incomingUri)}
+                  cachePolicy="memory-disk"
+                  onLoad={() => handleIncomingLoad(incomingUri)}
+                  onError={() => handleIncomingError(incomingUri)}
                 />
               )}
             </>
