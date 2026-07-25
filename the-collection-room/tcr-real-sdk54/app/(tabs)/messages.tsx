@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
 
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
@@ -47,7 +49,11 @@ async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
   const { data: myRows } = await supabase
     .from('conversation_participants')
     .select('conversation_id')
-    .eq('user_id', currentUserId);
+    .eq('user_id', currentUserId)
+    // Conversations this user swipe-deleted from their own inbox — hidden
+    // here only; the other participant's own row/inbox is untouched, and a
+    // DB trigger clears this back to NULL the moment a new message lands.
+    .is('hidden_at', null);
 
   if (!myRows?.length) return [];
 
@@ -233,6 +239,45 @@ export default function MessagesScreen() {
     router.push('/(tabs)/search');
   }
 
+  // Hides the conversation from this user's inbox only — never a real
+  // delete (see the hidden_at migration's comment). Row is only removed
+  // from local state after the update is confirmed to have succeeded, so a
+  // failed request never silently drops a conversation the server still
+  // considers visible.
+  const handleDeleteConversation = useCallback(
+    async (item: ConversationItem) => {
+      if (!currentUserId) return;
+
+      const { error } = await supabase
+        .from('conversation_participants')
+        .update({ hidden_at: new Date().toISOString() })
+        .eq('conversation_id', item.id)
+        .eq('user_id', currentUserId);
+
+      if (error) {
+        if (__DEV__) {
+          console.error('[Messages] hide conversation failed:', { conversationId: item.id, code: error.code, message: error.message });
+        }
+        Alert.alert('Error', 'Could not remove this conversation. Please try again.');
+        return;
+      }
+
+      setConversations((prev) => prev.filter((c) => c.id !== item.id));
+    },
+    [currentUserId],
+  );
+
+  function handleDeletePress(item: ConversationItem) {
+    Alert.alert(
+      'Delete conversation?',
+      'This conversation will be removed from your inbox. It will remain available to the other person and will reappear if either of you sends a new message.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => handleDeleteConversation(item) },
+      ],
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -286,6 +331,7 @@ export default function MessagesScreen() {
                   },
                 })
               }
+              onDeletePress={() => handleDeletePress(item)}
             />
           )}
           refreshControl={
@@ -300,37 +346,61 @@ export default function MessagesScreen() {
 function ConversationRow({
   item,
   onPress,
+  onDeletePress,
 }: {
   item: ConversationItem;
   onPress: () => void;
+  onDeletePress: () => void;
 }) {
+  const swipeableRef = useRef<Swipeable>(null);
   const displayName = item.otherDisplayName || item.otherUsername;
+
+  function handleDeleteTap() {
+    // Close the swipe before the confirmation Alert appears, rather than
+    // leaving the row visibly stuck open underneath it.
+    swipeableRef.current?.close();
+    onDeletePress();
+  }
+
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
-      <View style={styles.avatar}>
-        {item.otherAvatarUrl ? (
-          <Image
-            source={{ uri: item.otherAvatarUrl }}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            transition={200}
-          />
-        ) : (
-          <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
-            <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
-          </View>
-        )}
-      </View>
+    <Swipeable
+      ref={swipeableRef}
+      renderRightActions={() => (
+        <TouchableOpacity
+          style={styles.deleteAction}
+          onPress={handleDeleteTap}
+          activeOpacity={0.85}>
+          <Text style={styles.deleteActionText}>Delete</Text>
+        </TouchableOpacity>
+      )}
+      overshootRight={false}
+      rightThreshold={40}>
+      <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
+        <View style={styles.avatar}>
+          {item.otherAvatarUrl ? (
+            <Image
+              source={{ uri: item.otherAvatarUrl }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={200}
+            />
+          ) : (
+            <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
+              <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
+            </View>
+          )}
+        </View>
 
-      <View style={styles.rowBody}>
-        <Text style={styles.rowName} numberOfLines={1}>{displayName}</Text>
-        <Text style={styles.rowPreview} numberOfLines={1}>
-          {item.lastMessageBody ?? 'New conversation'}
-        </Text>
-      </View>
+        <View style={styles.rowBody}>
+          <Text style={styles.rowName} numberOfLines={1}>{displayName}</Text>
+          <Text style={styles.rowPreview} numberOfLines={1}>
+            {item.lastMessageBody ?? 'New conversation'}
+          </Text>
+        </View>
 
-      <Text style={styles.rowTime}>{formatTime(item.lastMessageAt)}</Text>
-    </TouchableOpacity>
+        <Text style={styles.rowTime}>{formatTime(item.lastMessageAt)}</Text>
+      </TouchableOpacity>
+    </Swipeable>
   );
 }
 
@@ -410,6 +480,18 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: LIGHT_PAGE_BACKGROUND,
+  },
+  deleteAction: {
+    width: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e53935',
+  },
+  deleteActionText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
   },
   avatar: {
     width: 44,
