@@ -23,7 +23,6 @@ CREATE TABLE public.rate_my_grail_cards (
   display_order       smallint    NOT NULL DEFAULT 0,
   created_at          timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE TABLE public.grail_ratings (
   id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id        uuid        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
@@ -33,22 +32,18 @@ CREATE TABLE public.grail_ratings (
   updated_at     timestamptz NOT NULL DEFAULT now(),
   UNIQUE (post_id, rater_user_id)
 );
-
 -- Ratings are mutable and every change fires a fresh notification, so the
 -- score has to be frozen onto the notification row itself rather than
 -- looked up live (a later rating change must not silently rewrite the text
 -- of an earlier notification).
 ALTER TABLE public.notifications ADD COLUMN IF NOT EXISTS rating_score smallint;
-
 -- ROW LEVEL SECURITY -------------------------------------------
 
 ALTER TABLE public.rate_my_grail_cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.grail_ratings       ENABLE ROW LEVEL SECURITY;
-
 -- rate_my_grail_cards
 CREATE POLICY "rate_my_grail_cards_select_public" ON public.rate_my_grail_cards
   FOR SELECT USING (true);
-
 -- Post owner can only attach items they own, to a post they own.
 CREATE POLICY "rate_my_grail_cards_insert_own" ON public.rate_my_grail_cards
   FOR INSERT WITH CHECK (
@@ -58,11 +53,9 @@ CREATE POLICY "rate_my_grail_cards_insert_own" ON public.rate_my_grail_cards
       OR EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
     )
   );
-
 -- grail_ratings
 CREATE POLICY "grail_ratings_select_public" ON public.grail_ratings
   FOR SELECT USING (true);
-
 -- Can only insert as yourself, and never on your own post — DB-level
 -- self-rating block (the client also hides the control for the owner).
 CREATE POLICY "grail_ratings_insert_own" ON public.grail_ratings
@@ -70,6 +63,5 @@ CREATE POLICY "grail_ratings_insert_own" ON public.grail_ratings
     auth.uid() = rater_user_id
     AND NOT EXISTS (SELECT 1 FROM public.posts p WHERE p.id = post_id AND p.user_id = auth.uid())
   );
-
 CREATE POLICY "grail_ratings_update_own" ON public.grail_ratings
   FOR UPDATE USING (auth.uid() = rater_user_id) WITH CHECK (auth.uid() = rater_user_id);

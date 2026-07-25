@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS public.rate_my_grail_cards (
 -- leading column, so no separate index is needed.
 
 ALTER TABLE public.rate_my_grail_cards ENABLE ROW LEVEL SECURITY;
-
 -- Matches this app's existing convention exactly (posts_select_public,
 -- likes_select_public, etc. are all USING (true) — privacy, where it exists
 -- at all, is enforced in application queries, not at the RLS layer. There is
@@ -36,7 +35,6 @@ ALTER TABLE public.rate_my_grail_cards ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "rate_my_grail_cards_select_public" ON public.rate_my_grail_cards;
 CREATE POLICY "rate_my_grail_cards_select_public" ON public.rate_my_grail_cards
   FOR SELECT USING (true);
-
 -- Insert only for a post you own, and only snapshotting an item you own
 -- (item_id is only ever non-null at insert time — it's the source grail
 -- being snapshotted).
@@ -49,7 +47,6 @@ CREATE POLICY "rate_my_grail_cards_insert_own" ON public.rate_my_grail_cards
       OR EXISTS (SELECT 1 FROM public.collection_items ci WHERE ci.id = item_id AND ci.user_id = auth.uid())
     )
   );
-
 -- Supabase/PostgREST caches the schema and won't see a newly-created table
 -- until this fires (the SQL Editor usually does this for you, but it's not
 -- guaranteed for every execution path — explicit, to directly address the

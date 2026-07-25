@@ -11,7 +11,6 @@
 --    insert sends this; app/(tabs)/notifications.tsx's select and notifLabel
 --    both read it back.
 ALTER TABLE public.notifications ADD COLUMN IF NOT EXISTS rating_score smallint;
-
 -- 2. type CHECK constraint — UNCONFIRMED, included defensively. I have no
 --    live DB query access to confirm this constraint exists or its exact
 --    name. Written the same way the posts_post_type_check fix was: DROP ...
@@ -25,5 +24,4 @@ ALTER TABLE public.notifications DROP CONSTRAINT IF EXISTS notifications_type_ch
 ALTER TABLE public.notifications
   ADD CONSTRAINT notifications_type_check
   CHECK (type IN ('follow', 'like', 'comment', 'message', 'grail_rating'));
-
 NOTIFY pgrst, 'reload schema';

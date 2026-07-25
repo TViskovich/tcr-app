@@ -10,5 +10,4 @@
 -- the name-hash color) by leatherTone(), so this stays forward-compatible
 -- if the palette changes later.
 ALTER TABLE public.folders ADD COLUMN IF NOT EXISTS color text;
-
 NOTIFY pgrst, 'reload schema';
