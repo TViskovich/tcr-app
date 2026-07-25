@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
@@ -12,7 +13,8 @@ import {
   View,
 } from 'react-native';
 
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { HeaderBackButton } from '@react-navigation/elements';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -20,6 +22,20 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+
+// Extra clearance so the composer sits above the globally-rendered floating
+// tab bar (components/navigation/global-floating-tab-bar.tsx, rendered as a
+// root-level sibling of every screen outside app/(tabs) — it is NOT part of
+// this screen's own view tree, so it doesn't get pushed up by
+// KeyboardAvoidingView). Without this, the composer sits underneath that
+// bar's touch-absorbing surface whenever the keyboard is closed, and taps
+// meant for the input/Send button land on the tab bar's inert background
+// instead. Applied only while the keyboard is closed; once it's open the
+// composer hugs the keyboard exactly as before, with no dead gap. Same
+// TAB_BAR_CLEARANCE pattern already used by app/post/[id].tsx for its
+// comment input bar.
+const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
 
 type Message = {
   id: string;
@@ -63,6 +79,7 @@ export default function ConversationScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const refreshMessageBadge = useMessageBadgeRefresh();
   // A chat thread, not a browsing list — no scroll-hide effect (would
   // fight the thread's own auto-scroll-to-bottom behavior), but still
@@ -75,7 +92,35 @@ export default function ConversationScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList<Message>>(null);
+
+  // Tracks keyboard state purely to toggle TAB_BAR_CLEARANCE above — see
+  // that constant's comment. "Will" events on iOS (available there) avoid a
+  // one-frame lag/flash; Android only has "Did" events.
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // Fallback pattern: canGoBack() is false when this screen was reached via
+  // a deep link or otherwise has no real navigation history to pop —
+  // replacing onto the inbox keeps the back action reliable either way.
+  function handleBack() {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/(tabs)/messages');
+  }
+
+  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
   const loadMessages = useCallback(async () => {
     if (!convId) return;
@@ -215,6 +260,7 @@ export default function ConversationScreen() {
           options={{
             title: (paramDisplayName || paramUsername) ? String(paramDisplayName || paramUsername) : 'Conversation',
             headerBackTitle: '',
+            headerLeft: headerBackLeft,
           }}
         />
         <View style={styles.center}>
@@ -226,13 +272,14 @@ export default function ConversationScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: displayTitle, headerBackTitle: '' }} />
+      <Stack.Screen options={{ title: displayTitle, headerBackTitle: '', headerLeft: headerBackLeft }} />
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}>
         <FlatList
           ref={flatListRef}
+          style={styles.list}
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
@@ -250,7 +297,19 @@ export default function ConversationScreen() {
           }
         />
 
-        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        {/* Composer — extra bottom clearance (TAB_BAR_CLEARANCE) only while
+            the keyboard is closed, so it sits above the floating tab bar
+            instead of underneath its touch-absorbing surface. See
+            TAB_BAR_CLEARANCE's comment. */}
+        <View
+          style={[
+            styles.inputBar,
+            {
+              paddingBottom: keyboardVisible
+                ? Math.max(insets.bottom, 8)
+                : Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE,
+            },
+          ]}>
           <TextInput
             style={styles.input}
             value={newMessage}
@@ -291,6 +350,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#f8f9fa',
+  },
+  list: {
+    flex: 1,
   },
   messageList: {
     flexGrow: 1,
