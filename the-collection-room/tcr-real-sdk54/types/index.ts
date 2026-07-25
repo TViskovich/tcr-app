@@ -176,3 +176,81 @@ export type GrailChooserTarget =
       expectedEntryType: GrailSlotEntryType;
       expectedRefId: string;
     };
+
+// ============================================================================
+// CacheCase Registry (supabase/migrations/20260725150000_
+// create_card_registry_foundation.sql) — Phase 2A, database foundation
+// only. No route/UI code reads these yet; added so the schema and the app's
+// type layer stay in sync from the start.
+// ============================================================================
+
+// Catalog-level description shared by many physical copies (e.g. "2024
+// Topps Chrome #1 Shohei Ohtani"). Not itself a registry identity — see
+// RegisteredCard. No dedup is attempted yet; two rows can describe the same
+// real-world card type.
+export type CardType = {
+  id: string;
+  year: number | null;
+  manufacturer: string | null;
+  product: string | null;
+  player: string | null;
+  card_number: string | null;
+  parallel: string | null;
+  sport: string | null;
+  serial_denominator: number | null;
+  created_at: string;
+  created_by: string | null;
+};
+
+export type RegisteredCardStatus = 'active' | 'inactive' | 'owner_account_deleted';
+export type RegisteredCardVisibility = 'public' | 'unlisted' | 'private';
+
+// The permanent identity for ONE physical card. public_code is the stable,
+// stored, unhyphenated 8-character canonical form (e.g. "7M4K92PX") — any
+// "CC-7M4K-92PX" grouping is a display-only formatting concern, never
+// stored. Every write to this table goes through register_card() /
+// link_registered_card_collection_item() / unlink_registered_card_
+// collection_item() — there is no direct-INSERT or direct-UPDATE RLS
+// policy, so a plain .from('registered_cards').update(...) client call
+// will always be rejected regardless of auth state.
+export type RegisteredCard = {
+  id: string;
+  public_code: string;
+  card_type_id: string | null;
+  current_owner_id: string | null;
+  created_by: string | null;
+  collection_item_id: string | null;
+  serial_numerator: number | null;
+  grading_company: string | null;
+  certification_number: string | null;
+  status: RegisteredCardStatus;
+  visibility: RegisteredCardVisibility;
+  registered_at: string;
+  updated_at: string;
+  card_type?: CardType | null; // joined via select('*, card_type:card_types(*)')
+};
+
+// Ownership-transfer event types are deliberately not included yet — no
+// transfer workflow exists in this phase (see registry_events_event_type_check
+// in the migration above).
+export type RegistryEventType =
+  | 'registered'
+  | 'item_linked'
+  | 'item_unlinked'
+  | 'status_changed'
+  | 'grading_updated';
+
+// Append-only provenance timeline row. Never updated or deleted by ordinary
+// users — RLS on registry_events has no UPDATE/DELETE policy, and no
+// direct-INSERT policy either (every row is written by one of the three
+// registered_cards RPCs above).
+export type RegistryEvent = {
+  id: string;
+  registered_card_id: string;
+  event_type: RegistryEventType;
+  actor_id: string | null;
+  from_owner_id: string | null;
+  to_owner_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
