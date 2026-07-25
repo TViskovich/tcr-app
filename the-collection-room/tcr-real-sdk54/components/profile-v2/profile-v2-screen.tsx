@@ -84,7 +84,7 @@ export function ProfileV2Screen({ userId }: Props) {
   const isOwnProfile = currentUserId === userId;
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { profile, stats, loading, refresh } = useProfile(userId);
+  const { profile, stats, loading, refresh, adjustFollowerCount } = useProfile(userId);
   const {
     slots: grailSlots,
     loading: grailSlotsLoading,
@@ -174,24 +174,55 @@ export function ProfileV2Screen({ userId }: Props) {
   );
 
   async function toggleFollow() {
-    if (!currentUserId || isOwnProfile) return;
+    if (!currentUserId || !userId || isOwnProfile || followLoading) return;
     setFollowLoading(true);
-    if (isFollowing) {
-      await supabase.from('follows').delete().eq('follower_id', currentUserId).eq('following_id', userId);
-      setIsFollowing(false);
-    } else {
-      await supabase.from('follows').insert({ follower_id: currentUserId, following_id: userId });
-      setIsFollowing(true);
-      // Notify the followed user (unique index makes this idempotent on re-follow)
-      supabase.from('notifications').insert({
-        user_id: userId,
-        actor_id: currentUserId,
-        type: 'follow',
-      }).then(({ error }) => {
-        if (error && error.code !== '23505') console.error('Follow notif failed:', error.message);
-      });
+    try {
+      if (isFollowing) {
+        const { error } = await supabase
+          .from('follows')
+          .delete()
+          .eq('follower_id', currentUserId)
+          .eq('following_id', userId);
+        if (error) {
+          console.error('[toggleFollow] unfollow failed:', {
+            follower_id: currentUserId,
+            following_id: userId,
+            code: error.code,
+            message: error.message,
+          });
+          Alert.alert('Error', 'Unable to unfollow this user. Please try again.');
+          return;
+        }
+        setIsFollowing(false);
+        adjustFollowerCount(-1);
+      } else {
+        const { error } = await supabase
+          .from('follows')
+          .insert({ follower_id: currentUserId, following_id: userId });
+        if (error) {
+          console.error('[toggleFollow] follow failed:', {
+            follower_id: currentUserId,
+            following_id: userId,
+            code: error.code,
+            message: error.message,
+          });
+          Alert.alert('Error', 'Unable to follow this user. Please try again.');
+          return;
+        }
+        setIsFollowing(true);
+        adjustFollowerCount(1);
+        // Notify the followed user (unique index makes this idempotent on re-follow)
+        supabase.from('notifications').insert({
+          user_id: userId,
+          actor_id: currentUserId,
+          type: 'follow',
+        }).then(({ error: notifError }) => {
+          if (notifError && notifError.code !== '23505') console.error('Follow notif failed:', notifError.message);
+        });
+      }
+    } finally {
+      setFollowLoading(false);
     }
-    setFollowLoading(false);
   }
 
   async function handleMessage() {

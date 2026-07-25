@@ -53,5 +53,20 @@ export function useProfile(userId: string | undefined) {
     load();
   }, [load]);
 
-  return { profile, stats, loading, refresh: load };
+  // Adjusts the locally-held follower count without a full profile
+  // refetch — used by follow/unfollow (profile-v2-screen.tsx's
+  // toggleFollow) right after a confirmed successful Supabase write, so
+  // the visible count updates immediately instead of waiting for the
+  // next focus-triggered refresh(). Clamped at 0 — a follower count can
+  // never go negative. Purely additive to this hook's existing state;
+  // refresh()/load() still replace `stats` wholesale on the next focus,
+  // which self-corrects any drift rather than compounding with it.
+  const adjustFollowerCount = useCallback((delta: number) => {
+    setStats((prev) => ({
+      ...prev,
+      followerCount: Math.max(0, prev.followerCount + delta),
+    }));
+  }, []);
+
+  return { profile, stats, loading, refresh: load, adjustFollowerCount };
 }
