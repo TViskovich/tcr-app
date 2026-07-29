@@ -20,19 +20,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemDescription } from '@/components/item-detail/item-description';
+import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { buildItemImageList, ItemImageCarousel } from '@/components/item-detail/item-image-carousel';
 import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gallery-manager';
-import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
-import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useSavedCard } from '@/hooks/use-saved';
+import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { MAX_ITEM_IMAGES, materializeLegacyItemImage } from '@/lib/item-images';
+import { materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem } from '@/types';
@@ -147,8 +148,16 @@ export default function ItemDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [grailsLoading, setGrailsLoading] = useState(false);
 
+  const isOwner = !!currentUserId && item?.user_id === currentUserId;
+
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
+  const {
+    registeredCard,
+    loading: registryLoading,
+    registering,
+    registerItem,
+  } = useRegisteredCardForItem(isOwner ? item?.id : undefined);
   const {
     images: galleryImages,
     loading: galleryLoading,
@@ -159,8 +168,6 @@ export default function ItemDetailScreen() {
     setPrimary: setPrimaryGalleryImage,
     reorder: reorderGalleryImages,
   } = useItemImages(item?.id);
-
-  const isOwner = !!currentUserId && item?.user_id === currentUserId;
 
   useEffect(() => {
     async function fetchItem() {
@@ -387,6 +394,35 @@ export default function ItemDetailScreen() {
     ]);
   }
 
+  function handleRegisterPress() {
+    if (!item || !isOwner || registering) return;
+    Alert.alert(
+      'Register with CacheCase?',
+      'Registration creates a permanent CacheCase identity and provenance record for this physical card.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Register',
+          onPress: async () => {
+            const { error } = await registerItem({
+              serialNumber: item.serial_number,
+              gradeCompany: item.grading_company,
+              grade: item.grade,
+            });
+            if (error) {
+              Alert.alert('Registration failed', error);
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  function handleViewRegistry() {
+    if (!registeredCard) return;
+    router.push({ pathname: '/registry/[id]', params: { id: registeredCard.id } });
+  }
+
   async function handleGrailsToggle() {
     if (!item) return;
     setGrailsLoading(true);
@@ -595,6 +631,46 @@ export default function ItemDetailScreen() {
 
               {isOwner && (
                 <View style={styles.ownerActions}>
+                  {registryLoading ? (
+                    <View style={styles.registryLoadingWrap}>
+                      <ActivityIndicator size="small" color={PV2.textTertiary} />
+                    </View>
+                  ) : registeredCard ? (
+                    <View style={styles.registryStatusCard}>
+                      <View style={styles.registryStatusRow}>
+                        <View style={styles.registryStatusDot} />
+                        <Text style={styles.registryStatusText}>CacheCase Registry</Text>
+                      </View>
+                      <Text style={styles.registryCcId}>{registeredCard.cc_id}</Text>
+                      <TouchableOpacity
+                        style={styles.registryViewButton}
+                        onPress={handleViewRegistry}
+                        activeOpacity={0.8}>
+                        <Text style={styles.registryViewButtonText}>View Registry</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.registerButton}
+                      onPress={handleRegisterPress}
+                      disabled={registering}
+                      activeOpacity={0.8}>
+                      {registering ? (
+                        <>
+                          <ActivityIndicator color="#fff" />
+                          <Text style={styles.registerButtonText}>Registering…</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.registerButtonText}>Register with CacheCase</Text>
+                          <Text style={styles.registerButtonSubtext}>
+                            Create a permanent CacheCase identity and provenance record for this physical card.
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
+
                   {(() => {
                     const inGrails = isInGrails(item.id);
                     const disabled = !inGrails && isFull;
@@ -740,6 +816,83 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     gap: 12,
   },
+  registryLoadingWrap: {
+  minHeight: 104,
+  paddingVertical: 18,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+registerButton: {
+  backgroundColor: '#A08CDC',
+  borderRadius: 12,
+  paddingVertical: 15,
+  paddingHorizontal: 18,
+  alignItems: 'center',
+  gap: 5,
+},
+registerButtonText: {
+  color: '#fff',
+  fontSize: 16,
+  fontWeight: '700',
+},
+registerButtonSubtext: {
+  color: 'rgba(255,255,255,0.82)',
+  fontSize: 12,
+  textAlign: 'center',
+  lineHeight: 17,
+  maxWidth: 290,
+},
+registryStatusCard: {
+  borderRadius: 12,
+  borderWidth: 1,
+  borderColor: 'rgba(160,140,220,0.38)',
+  backgroundColor: 'rgba(160,140,220,0.10)',
+  paddingVertical: 16,
+  paddingHorizontal: 18,
+  alignItems: 'center',
+  gap: 9,
+},
+registryStatusRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 7,
+},
+registryStatusDot: {
+  width: 8,
+  height: 8,
+  borderRadius: 4,
+  backgroundColor: '#34C759',
+},
+registryStatusText: {
+  color: 'rgba(255,255,255,0.86)',
+  fontSize: 13,
+  fontWeight: '700',
+  letterSpacing: 0.3,
+  textTransform: 'uppercase',
+},
+registryCcId: {
+  color: '#fff',
+  fontSize: 20,
+  fontWeight: '800',
+  letterSpacing: 1.2,
+},
+registryViewButton: {
+  marginTop: 5,
+  minHeight: 40,
+  paddingVertical: 10,
+  paddingHorizontal: 20,
+  borderRadius: 20,
+  borderWidth: 1,
+  borderColor: 'rgba(255,255,255,0.24)',
+  backgroundColor: 'rgba(255,255,255,0.07)',
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+registryViewButtonText: {
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: '700',
+},
   grailsButton: {
     backgroundColor: '#0a7ea4',
     borderRadius: 10,
