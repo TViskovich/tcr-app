@@ -37,6 +37,12 @@ function RootLayoutNav() {
         <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
           <Stack.Screen name="(auth)" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          {/* CacheCase ID button (ItemActionBar) opens this as a slide-up
+              modal instead of a normal push — the same route/component,
+              app/registry/[id].tsx, still owns its own header/title via its
+              own inline Stack.Screen options; this only attaches the
+              presentation transition. */}
+          <Stack.Screen name="registry/[id]" options={{ presentation: 'modal' }} />
         </Stack>
         {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
       </TabVisibilityProvider>

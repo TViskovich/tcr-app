@@ -4,12 +4,14 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-nat
 import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { getRegistryPublicUrl } from '@/lib/registry-links';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, RegisteredCard } from '@/types';
+import type { CollectionItem, RegisteredCard, RegisteredCardStatus } from '@/types';
 
 type RegisteredCardWithItem = RegisteredCard & {
   collection_item: CollectionItem | null;
@@ -26,6 +28,29 @@ type OwnerProfile = {
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+const STATUS_LABEL: Record<RegisteredCardStatus, string> = {
+  owner_registered: 'Active',
+  active: 'Active',
+  inactive: 'Inactive',
+  owner_account_deleted: 'Owner account deleted',
+};
+
+// Status-only — the owner/date facts already live in the info panel above,
+// this describes the health of the registry ID itself, not who owns it or
+// when it was registered.
+function buildStatusSentence(status: RegisteredCardStatus): string {
+  if (status === 'owner_registered' || status === 'active') {
+    return 'This Registry ID is active and in good standing.';
+  }
+  if (status === 'inactive') {
+    return 'This Registry ID is currently inactive.';
+  }
+  if (status === 'owner_account_deleted') {
+    return 'This Registry ID remains valid, but the owning account has been deleted.';
+  }
+  return `This Registry ID's status is ${STATUS_LABEL[status]}.`;
 }
 
 // Same identity logic as app/item/[id].tsx's buildIdentity — player is the
@@ -184,6 +209,17 @@ export default function RegistryDetailScreen() {
   const title = item ? buildTitle(item) : null;
   const subtitle = item ? buildSubtitle(item) : null;
   const ownerName = ownerProfile?.display_name || ownerProfile?.username || 'Unavailable';
+  const yearValue = item?.year ?? null;
+  const teamValue = item?.team?.trim() || null;
+  const hasYear = yearValue != null;
+  const hasTeam = !!teamValue;
+  const statusLabel = STATUS_LABEL[record.status];
+  const statusSentence = buildStatusSentence(record.status);
+  // Public QR payload — built only from the public cc_id, never
+  // record.id/collection_item_id/current_owner_id. null whenever no real
+  // base URL is configured or cc_id is somehow blank; see
+  // lib/registry-links.ts for why no fallback domain is used.
+  const registryPublicUrl = getRegistryPublicUrl(record.cc_id);
 
   return (
     <>
@@ -223,12 +259,49 @@ export default function RegistryDetailScreen() {
             <Text style={styles.infoLabel}>Registered</Text>
             <Text style={styles.infoValue}>{formatDate(record.created_at)}</Text>
           </View>
-          <View style={[styles.infoRow, styles.infoRowLast]}>
+          <View style={[styles.infoRow, !hasYear && !hasTeam && styles.infoRowLast]}>
             <Text style={styles.infoLabel}>Current owner</Text>
             <Text style={styles.infoValue} numberOfLines={1}>
               {ownerName}
             </Text>
           </View>
+          {hasYear && (
+            <View style={[styles.infoRow, !hasTeam && styles.infoRowLast]}>
+              <Text style={styles.infoLabel}>Year</Text>
+              <Text style={styles.infoValue}>{yearValue}</Text>
+            </View>
+          )}
+          {hasTeam && (
+            <View style={[styles.infoRow, styles.infoRowLast]}>
+              <Text style={styles.infoLabel}>Team</Text>
+              <Text style={styles.infoValue}>{teamValue}</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.statusPanel}>
+          <Text style={styles.statusPanelHeader}>Registry Status</Text>
+          <View style={styles.statusPanelRow}>
+            <View style={styles.statusPanelDot} />
+            <Text style={styles.statusPanelLabel}>{statusLabel}</Text>
+          </View>
+          <Text style={styles.statusPanelSentence}>{statusSentence}</Text>
+        </View>
+
+        <View style={styles.qrPanel}>
+          <Text style={styles.qrPanelHeader}>Public Registry Link</Text>
+          {registryPublicUrl ? (
+            <>
+              <View style={styles.qrCard}>
+                <QRCode value={registryPublicUrl} size={160} color="#000000" backgroundColor="#FFFFFF" />
+              </View>
+              <Text style={styles.qrCcIdLabel}>{record.cc_id}</Text>
+            </>
+          ) : (
+            <View style={styles.qrUnavailable}>
+              <Text style={styles.qrUnavailableText}>Public registry link unavailable</Text>
+            </View>
+          )}
         </View>
       </ScrollView>
     </>
@@ -365,5 +438,90 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  statusPanel: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  statusPanelHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: PV2.textTertiary,
+  },
+  statusPanelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  statusPanelDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#34C759',
+  },
+  statusPanelLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  statusPanelSentence: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 18,
+    color: PV2.textSecondary,
+  },
+  qrPanel: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  qrPanelHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: PV2.textTertiary,
+  },
+  // White card so the QR keeps full black-on-white contrast regardless of
+  // the surrounding dark theme — required for the code to stay reliably
+  // scannable.
+  qrCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  qrCcIdLabel: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    color: PV2.textSecondary,
+  },
+  qrUnavailable: {
+    marginTop: 12,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  qrUnavailableText: {
+    fontSize: 13,
+    color: PV2.textTertiary,
+    textAlign: 'center',
   },
 });

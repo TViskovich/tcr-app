@@ -1,18 +1,20 @@
-import { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
-import { CacheCaseIdSheet } from '@/components/item-detail/cachecase-id-sheet';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const IcLogo = require('@/assets/icons/ic-logo-transparent.png');
 
 type Props = {
-  // This item's own hero image — passed through to the CacheCase ID
-  // sheet so it can show a thumbnail of the card the ID belongs to.
-  itemImageUrl?: string | null;
+  // Opens the consolidated CacheCase Registry page (app/registry/[id].tsx)
+  // when this item is registered, or a short "Not Registered" notice
+  // otherwise — see app/item/[id].tsx's handleCacheCaseIdPress. Previously
+  // opened a local placeholder bottom sheet (components/item-detail/
+  // cachecase-id-sheet.tsx, removed) with no real data; this button now
+  // leads to the one real registry screen instead of a second, fake one.
+  onPressCacheCaseId: () => void;
 };
 
 // Layout only — see app/item/[id].tsx. None of these icons are wired to a
@@ -20,9 +22,7 @@ type Props = {
 // slot future features (likes, comments, ratings, search, bookmark, share)
 // will plug into. The centered dots are a placeholder for a future
 // element, not a control.
-export function ItemActionBar({ itemImageUrl }: Props) {
-  const [isCacheCaseIdOpen, setIsCacheCaseIdOpen] = useState(false);
-
+export function ItemActionBar({ onPressCacheCaseId }: Props) {
   return (
     <View style={styles.row}>
       <View style={styles.side}>
@@ -34,7 +34,7 @@ export function ItemActionBar({ itemImageUrl }: Props) {
         </View>
         <TouchableOpacity
           style={styles.iconBtn}
-          onPress={() => setIsCacheCaseIdOpen(true)}
+          onPress={onPressCacheCaseId}
           activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="CacheCase ID">
@@ -59,12 +59,6 @@ export function ItemActionBar({ itemImageUrl }: Props) {
           <IconSymbol name="square.and.arrow.up" size={21} color={PV2.textPrimary} />
         </View>
       </View>
-
-      <CacheCaseIdSheet
-        visible={isCacheCaseIdOpen}
-        onClose={() => setIsCacheCaseIdOpen(false)}
-        itemImageUrl={itemImageUrl}
-      />
     </View>
   );
 }

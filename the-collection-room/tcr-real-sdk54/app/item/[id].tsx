@@ -152,12 +152,21 @@ export default function ItemDetailScreen() {
 
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
+  // Not gated on isOwner — RLS (registered_cards_select_visible) already
+  // restricts what a non-owner can read (public rows, or their own), so
+  // this only lets an already-permitted read happen. It has to run for
+  // every viewer because the CacheCase ID button in ItemActionBar (below)
+  // is visible to everyone, not just the owner; the owner-only register/
+  // edit UI stays gated separately, at the JSX level (see isOwner &&
+  // below), unaffected by this. The hook's own automatic effect only ever
+  // performs a SELECT (see hooks/use-registered-card.ts) — registerItem()
+  // is a separate function, never auto-invoked.
   const {
     registeredCard,
     loading: registryLoading,
     registering,
     registerItem,
-  } = useRegisteredCardForItem(isOwner ? item?.id : undefined);
+  } = useRegisteredCardForItem(item?.id);
   const {
     images: galleryImages,
     loading: galleryLoading,
@@ -423,6 +432,18 @@ export default function ItemDetailScreen() {
     router.push({ pathname: '/registry/[id]', params: { id: registeredCard.id } });
   }
 
+  // Consolidated CacheCase ID entry point — replaces the old ItemActionBar
+  // logo button's placeholder sheet. Reuses handleViewRegistry rather than
+  // duplicating the navigation call.
+  function handleCacheCaseIdPress() {
+    if (registryLoading) return;
+    if (registeredCard) {
+      handleViewRegistry();
+      return;
+    }
+    Alert.alert('Not Registered', 'This card has not been registered with CacheCase yet.');
+  }
+
   async function handleGrailsToggle() {
     if (!item) return;
     setGrailsLoading(true);
@@ -446,7 +467,6 @@ export default function ItemDetailScreen() {
         : buildItemImageList([item?.image_url]),
     [galleryImages, item?.image_url],
   );
-  const primaryImageUrl = galleryImageUrls[0] ?? null;
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 
   if (fetching) {
@@ -584,7 +604,7 @@ export default function ItemDetailScreen() {
           ) : (
             /* ── View Mode — the new permanent layout ── */
             <>
-              <ItemActionBar itemImageUrl={primaryImageUrl} />
+              <ItemActionBar onPressCacheCaseId={handleCacheCaseIdPress} />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
 
@@ -635,21 +655,7 @@ export default function ItemDetailScreen() {
                     <View style={styles.registryLoadingWrap}>
                       <ActivityIndicator size="small" color={PV2.textTertiary} />
                     </View>
-                  ) : registeredCard ? (
-                    <View style={styles.registryStatusCard}>
-                      <View style={styles.registryStatusRow}>
-                        <View style={styles.registryStatusDot} />
-                        <Text style={styles.registryStatusText}>CacheCase Registry</Text>
-                      </View>
-                      <Text style={styles.registryCcId}>{registeredCard.cc_id}</Text>
-                      <TouchableOpacity
-                        style={styles.registryViewButton}
-                        onPress={handleViewRegistry}
-                        activeOpacity={0.8}>
-                        <Text style={styles.registryViewButtonText}>View Registry</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
+                  ) : registeredCard ? null : (
                     <TouchableOpacity
                       style={styles.registerButton}
                       onPress={handleRegisterPress}
