@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 
 import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
@@ -8,6 +18,7 @@ import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getRegistryPublicUrl } from '@/lib/registry-links';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -82,8 +93,8 @@ function buildSubtitle(item: CollectionItem): string | null {
 
 // Minimal registry detail screen — Phase 2B1 scope. Reached from the item-
 // detail "View Registry" action once a card is registered. Deliberately
-// bare: no QR, no ownership/provenance history, no verification scoring,
-// no transfer controls, no edit — those are later CacheCase Registry
+// bare: no ownership/provenance history, no verification scoring, no
+// transfer controls, no edit — those are later CacheCase Registry
 // sub-phases. Fetches fresh by id (same convention as every other detail
 // route in this app — item/[id].tsx, collection/[folderId].tsx,
 // post/[id].tsx, conversation/[id].tsx all re-fetch by id rather than
@@ -93,6 +104,7 @@ export default function RegistryDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
 
   const [record, setRecord] = useState<RegisteredCardWithItem | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
@@ -102,6 +114,26 @@ export default function RegistryDetailScreen() {
   // must never be presented as "this record doesn't exist," which would
   // hide the actual cause.
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isQrModalVisible, setIsQrModalVisible] = useState(false);
+
+  // Public QR payload — built only from the public cc_id, never
+  // record.id/collection_item_id/current_owner_id. null whenever no real
+  // base URL is configured or cc_id is somehow blank; see
+  // lib/registry-links.ts for why no fallback domain is used. Computed
+  // here (not after the early returns below) so the guard effect right
+  // after it can reference it unconditionally, per the rules of hooks —
+  // every hook in this component runs on every render, regardless of
+  // loading/error/not-found state.
+  const registryPublicUrl = record ? getRegistryPublicUrl(record.cc_id) : null;
+
+  // Guards against the modal staying open if the public URL becomes
+  // unavailable out from under it (e.g. the record reloads for a
+  // different id while the modal happened to still be open).
+  useEffect(() => {
+    if (!registryPublicUrl && isQrModalVisible) {
+      setIsQrModalVisible(false);
+    }
+  }, [registryPublicUrl, isQrModalVisible]);
 
   useEffect(() => {
     if (!id) {
@@ -170,6 +202,15 @@ export default function RegistryDetailScreen() {
     router.replace('/(tabs)');
   }
 
+  function handleQrPanelPress() {
+    if (!registryPublicUrl) return;
+    setIsQrModalVisible(true);
+  }
+
+  function closeQrModal() {
+    setIsQrModalVisible(false);
+  }
+
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
   if (loading) {
@@ -215,11 +256,10 @@ export default function RegistryDetailScreen() {
   const hasTeam = !!teamValue;
   const statusLabel = STATUS_LABEL[record.status];
   const statusSentence = buildStatusSentence(record.status);
-  // Public QR payload — built only from the public cc_id, never
-  // record.id/collection_item_id/current_owner_id. null whenever no real
-  // base URL is configured or cc_id is somehow blank; see
-  // lib/registry-links.ts for why no fallback domain is used.
-  const registryPublicUrl = getRegistryPublicUrl(record.cc_id);
+  // 70% of window width, capped so it stays reasonable on tablets; large
+  // enough for comfortable phone-to-phone scanning without hardcoding an
+  // oversized fixed value.
+  const modalQrSize = Math.min(windowWidth * 0.62, 250);
 
   return (
     <>
@@ -292,9 +332,13 @@ export default function RegistryDetailScreen() {
           <Text style={styles.qrPanelHeader}>Public Registry Link</Text>
           {registryPublicUrl ? (
             <>
-              <View style={styles.qrCard}>
+              <Pressable
+                style={({ pressed }) => [styles.qrCard, pressed && styles.qrCardPressed]}
+                onPress={handleQrPanelPress}
+                accessibilityRole="button"
+                accessibilityLabel="Open large QR code for scanning">
                 <QRCode value={registryPublicUrl} size={160} color="#000000" backgroundColor="#FFFFFF" />
-              </View>
+              </Pressable>
               <Text style={styles.qrCcIdLabel}>{record.cc_id}</Text>
             </>
           ) : (
@@ -304,6 +348,43 @@ export default function RegistryDetailScreen() {
           )}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={isQrModalVisible && !!registryPublicUrl}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeQrModal}>
+        <View style={styles.qrModalRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closeQrModal}
+            accessibilityRole="button"
+            accessibilityLabel="Close QR code"
+          />
+
+          <View style={[styles.qrModalCard, { marginBottom: Math.max(insets.bottom, 12) }]}>
+            <TouchableOpacity
+              style={styles.qrModalCloseButton}
+              onPress={closeQrModal}
+              accessibilityRole="button"
+              accessibilityLabel="Close">
+              <IconSymbol name="xmark" size={18} color="#11181C" />
+            </TouchableOpacity>
+
+            {registryPublicUrl && (
+              <QRCode value={registryPublicUrl} size={modalQrSize} color="#000000" backgroundColor="#FFFFFF" />
+            )}
+            <Text style={styles.qrModalCcId}>{record.cc_id}</Text>
+            {title && (
+              <Text style={styles.qrModalTitle} numberOfLines={2}>
+                {title}
+              </Text>
+            )}
+            <Text style={styles.qrModalInstruction}>Scan to view this CacheCase registry record.</Text>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -506,6 +587,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: '#FFFFFF',
   },
+  qrCardPressed: {
+    opacity: 0.85,
+  },
   qrCcIdLabel: {
     marginTop: 10,
     fontSize: 13,
@@ -523,5 +607,53 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: PV2.textTertiary,
     textAlign: 'center',
+  },
+  qrModalRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  qrModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    paddingTop: 12,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+  },
+  qrModalCloseButton: {
+    alignSelf: 'flex-end',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  qrModalCcId: {
+    marginTop: 18,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: '#11181C',
+  },
+  qrModalTitle: {
+    marginTop: 6,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#3A3A3C',
+    textAlign: 'center',
+  },
+  qrModalInstruction: {
+    marginTop: 14,
+    fontSize: 12,
+    color: '#687076',
+    textAlign: 'center',
+    lineHeight: 17,
   },
 });
