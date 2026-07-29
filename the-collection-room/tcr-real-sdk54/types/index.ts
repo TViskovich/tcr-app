@@ -246,20 +246,24 @@ export type RegisteredCard = {
   card_type?: CardType | null; // joined via select('*, card_type:card_types(*)')
 };
 
-// Ownership-transfer event types are deliberately not included yet — no
-// transfer workflow exists in this phase (see registry_events_event_type_check
-// in the migration above).
+// Ownership-transfer event types added by supabase/migrations/
+// 20260729120000_create_ownership_transfers.sql. No ownership_transfer_accepted
+// event exists — acceptance and the completed transfer happen atomically
+// via accept_ownership_transfer, recorded as a single ownership_transferred
+// event.
 export type RegistryEventType =
   | 'registered'
   | 'item_linked'
   | 'item_unlinked'
   | 'status_changed'
-  | 'grading_updated';
+  | 'grading_updated'
+  | 'ownership_transferred';
 
 // Append-only provenance timeline row. Never updated or deleted by ordinary
 // users — RLS on registry_events has no UPDATE/DELETE policy, and no
 // direct-INSERT policy either (every row is written by one of the three
-// registered_cards RPCs above).
+// registered_cards RPCs above, or by one of the four ownership_transfers
+// RPCs below).
 export type RegistryEvent = {
   id: string;
   registered_card_id: string;
@@ -269,4 +273,33 @@ export type RegistryEvent = {
   to_owner_id: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
+};
+
+// ============================================================================
+// Ownership transfer (supabase/migrations/20260729120000_
+// create_ownership_transfers.sql) — Phase A, schema + RPCs only. No route/UI
+// code reads or writes this yet.
+// ============================================================================
+
+export type OwnershipTransferStatus = 'pending' | 'accepted' | 'declined' | 'cancelled';
+export type OwnershipTransferReason = 'sale' | 'trade' | 'gift' | 'other';
+
+// A transfer proposal for one registered card. Unlike RegisteredCard/
+// RegistryEvent, this is NOT publicly readable — RLS restricts SELECT to
+// from_owner_id/to_owner_id only. Every write goes through
+// initiate_ownership_transfer() / accept_ownership_transfer() /
+// decline_ownership_transfer() / cancel_ownership_transfer() — no direct
+// client INSERT/UPDATE/DELETE policy exists. `accepted` is the terminal
+// state of this private proposal row; it is distinct from the public
+// `ownership_transferred` registry_events entry produced atomically
+// alongside it.
+export type OwnershipTransfer = {
+  id: string;
+  registered_card_id: string;
+  from_owner_id: string;
+  to_owner_id: string;
+  status: OwnershipTransferStatus;
+  reason: OwnershipTransferReason | null;
+  created_at: string;
+  resolved_at: string | null;
 };
