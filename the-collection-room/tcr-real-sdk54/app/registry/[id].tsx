@@ -91,15 +91,42 @@ function buildSubtitle(item: CollectionItem): string | null {
   return parts.filter(Boolean).join(' ') || null;
 }
 
+// Canonical certificate identity (registered_cards.snapshot_* — set once by
+// register_card at registration, never touched by later collection_item
+// edits or by ownership-transfer's collection_item_id clearing). A linked
+// collection_item is an owner-specific organizational connection, not the
+// source of truth — buildTitle/buildSubtitle above remain purely as the
+// legacy fallback for records with no snapshot data, never consulted when
+// a snapshot value already exists.
+function buildSnapshotTitle(record: RegisteredCard): string | null {
+  return record.snapshot_player?.trim() || record.snapshot_title?.trim() || null;
+}
+
+function buildSnapshotSubtitle(record: RegisteredCard): string | null {
+  const mainTitle = buildSnapshotTitle(record);
+  const brand = record.snapshot_brand?.trim() || null;
+  const snapshotTitle = record.snapshot_title?.trim() || null;
+
+  if (record.snapshot_year == null && !brand && !snapshotTitle) {
+    return null;
+  }
+
+  const parts: (string | null)[] = [record.snapshot_year != null ? String(record.snapshot_year) : null, brand];
+  if (snapshotTitle && snapshotTitle !== mainTitle) {
+    parts.push(snapshotTitle);
+  }
+
+  return parts.filter(Boolean).join(' ') || null;
+}
+
 // Minimal registry detail screen — Phase 2B1 scope. Reached from the item-
 // detail "View Registry" action once a card is registered. Deliberately
-// bare: no ownership/provenance history, no verification scoring, no
-// transfer controls, no edit — those are later CacheCase Registry
-// sub-phases. Fetches fresh by id (same convention as every other detail
-// route in this app — item/[id].tsx, collection/[folderId].tsx,
-// post/[id].tsx, conversation/[id].tsx all re-fetch by id rather than
-// trusting only passed params) so it also works if reached via a future
-// direct link, not just via in-app navigation.
+// bare: no verification scoring, no transfer controls, no edit — those are
+// later CacheCase Registry sub-phases. Fetches fresh by id (same
+// convention as every other detail route in this app — item/[id].tsx,
+// collection/[folderId].tsx, post/[id].tsx, conversation/[id].tsx all
+// re-fetch by id rather than trusting only passed params) so it also works
+// if reached via a future direct link, not just via in-app navigation.
 export default function RegistryDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -247,11 +274,29 @@ export default function RegistryDetailScreen() {
   }
 
   const item = record.collection_item;
-  const title = item ? buildTitle(item) : null;
-  const subtitle = item ? buildSubtitle(item) : null;
+  // Snapshot-first: only falls back to the linked collection_item when no
+  // snapshot identity field exists at all (legacy records registered
+  // before Phase S2, or a card with no linked item) — never the reverse.
+  // hasSnapshotIdentity gates the subtitle fallback specifically, since
+  // buildSnapshotSubtitle() can legitimately return null (e.g. only
+  // snapshot_player is set) even though canonical snapshot identity does
+  // exist — that case must still not fall through to the owner-specific
+  // linked item's subtitle.
+  const hasSnapshotIdentity =
+    !!record.snapshot_player?.trim() ||
+    !!record.snapshot_title?.trim() ||
+    record.snapshot_year != null ||
+    !!record.snapshot_brand?.trim() ||
+    !!record.snapshot_team?.trim() ||
+    !!record.snapshot_image_url;
+  const snapshotTitle = buildSnapshotTitle(record);
+  const snapshotSubtitle = buildSnapshotSubtitle(record);
+  const image = record.snapshot_image_url ?? item?.image_url ?? null;
+  const title = snapshotTitle || (item ? buildTitle(item) : null);
+  const subtitle = hasSnapshotIdentity ? snapshotSubtitle : item ? buildSubtitle(item) : null;
   const ownerName = ownerProfile?.display_name || ownerProfile?.username || 'Unavailable';
-  const yearValue = item?.year ?? null;
-  const teamValue = item?.team?.trim() || null;
+  const yearValue = record.snapshot_year ?? item?.year ?? null;
+  const teamValue = record.snapshot_team?.trim() || item?.team?.trim() || null;
   const hasYear = yearValue != null;
   const hasTeam = !!teamValue;
   const statusLabel = STATUS_LABEL[record.status];
@@ -267,9 +312,9 @@ export default function RegistryDetailScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.content, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}>
-        {item?.image_url && (
+        {image && (
           <View style={styles.imageWrap}>
-            <Image source={{ uri: item.image_url }} style={styles.image} contentFit="cover" />
+            <Image source={{ uri: image }} style={styles.image} contentFit="cover" />
           </View>
         )}
 
@@ -327,6 +372,15 @@ export default function RegistryDetailScreen() {
           </View>
           <Text style={styles.statusPanelSentence}>{statusSentence}</Text>
         </View>
+
+        <Pressable
+          style={({ pressed }) => [styles.historyButton, pressed && styles.historyButtonPressed]}
+          onPress={() => router.push({ pathname: '/registry-history/[id]', params: { id: record.id } })}
+          accessibilityRole="button"
+          accessibilityLabel="View Registry History">
+          <Text style={styles.historyButtonText}>View Registry History</Text>
+          <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} />
+        </Pressable>
 
         <View style={styles.qrPanel}>
           <Text style={styles.qrPanelHeader}>Public Registry Link</Text>
@@ -559,6 +613,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: PV2.textSecondary,
+  },
+  historyButton: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  historyButtonPressed: {
+    opacity: 0.8,
+  },
+  historyButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PV2.textPrimary,
   },
   qrPanel: {
     width: '100%',

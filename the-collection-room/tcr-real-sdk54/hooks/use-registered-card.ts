@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { copyRegistrySnapshotImage } from '@/lib/registry-images';
 import { supabase } from '@/lib/supabase';
 import type { RegisteredCard } from '@/types';
 
@@ -112,6 +113,34 @@ export function useRegisteredCardForItem(collectionItemId: string | undefined) {
         }
 
         setRegisteredCard(data as RegisteredCard);
+
+        // Best-effort durable-image preservation — fired after
+        // registration has already succeeded, never awaited, and never
+        // allowed to affect this function's own result. copyRegistry
+        // SnapshotImage already resolves (never throws) on every outcome
+        // including a network failure, but this is wrapped defensively
+        // anyway: registration must never fail, and the certificate
+        // already has a working provisional image via
+        // snapshot_image_url regardless of whether this succeeds. Logs
+        // only a status/operation/id shape — never a raw exception,
+        // token, or URL.
+        copyRegistrySnapshotImage(data.id)
+          .then((result) => {
+            if (result.status !== 'ready') {
+              console.warn('[useRegisteredCardForItem] snapshot image copy did not complete:', {
+                operation: 'copy_registry_snapshot_image',
+                registeredCardId: data.id,
+                status: result.status,
+              });
+            }
+          })
+          .catch(() => {
+            console.warn('[useRegisteredCardForItem] snapshot image copy threw:', {
+              operation: 'copy_registry_snapshot_image',
+              registeredCardId: data.id,
+            });
+          });
+
         return { error: null };
       } finally {
         setRegistering(false);

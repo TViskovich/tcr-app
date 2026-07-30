@@ -243,8 +243,58 @@ export type RegisteredCard = {
   visibility: RegisteredCardVisibility;
   created_at: string;
   updated_at: string;
+  // Registry-owned certificate identity (supabase/migrations/20260729130000_
+  // add_registered_cards_snapshot_fields.sql / 20260729131000_
+  // populate_snapshot_in_register_card.sql) — set once by register_card at
+  // registration time, never touched by collection_item edits or by
+  // ownership transfer's collection_item_id clearing. Canonical for display;
+  // a linked collection_item is an owner-specific organizational
+  // connection, not the source of truth. Not directly owner-editable — a
+  // future correction flow would use a separate audited RPC/event. null on
+  // cards registered without a linked collection item, and on any card
+  // registered before this migration whose collection_item_id was already
+  // null at backfill time (no source data existed to backfill from).
+  snapshot_image_url: string | null;
+  snapshot_title: string | null;
+  snapshot_player: string | null;
+  snapshot_year: number | null;
+  snapshot_brand: string | null;
+  snapshot_set_name: string | null;
+  snapshot_team: string | null;
+  snapshot_card_number: string | null;
+  snapshot_variation: string | null;
+  // Durable snapshot image tracking (supabase/migrations/20260729140000_
+  // add_registry_snapshot_image_tracking.sql / 20260729141000_
+  // set_snapshot_image_status_in_register_card.sql). snapshot_image_url
+  // above remains a provisional/legacy value (from the still-public
+  // item-images bucket) — once snapshot_image_status is 'ready',
+  // snapshot_image_storage_path identifies the durable copy in the
+  // private registry-images bucket, fetched only via a short-lived signed
+  // URL from the get-registry-snapshot-image-url Edge Function. A signed
+  // URL is never persisted here or anywhere else.
+  snapshot_image_status: RegistrySnapshotImageStatus | null;
+  snapshot_image_storage_path: string | null;
+  snapshot_image_error_code: RegistrySnapshotImageErrorCode | null;
+  snapshot_image_updated_at: string | null;
   card_type?: CardType | null; // joined via select('*, card_type:card_types(*)')
 };
+
+export type RegistrySnapshotImageStatus = 'pending' | 'ready' | 'failed' | 'unavailable';
+
+// Mirrors supabase/functions/_shared/registry-image.ts's
+// SnapshotImageErrorCode exactly — kept in sync deliberately rather than
+// shared (Deno Edge Function code and the Expo app don't share a build
+// step). Never a raw exception message, URL, token, or Storage SDK
+// response — only ever one of these fixed codes.
+export type RegistrySnapshotImageErrorCode =
+  | 'source_missing'
+  | 'source_unauthorized'
+  | 'invalid_type'
+  | 'file_too_large'
+  | 'download_failed'
+  | 'upload_failed'
+  | 'database_update_failed'
+  | 'state_changed';
 
 // Ownership-transfer event types added by supabase/migrations/
 // 20260729120000_create_ownership_transfers.sql. No ownership_transfer_accepted
