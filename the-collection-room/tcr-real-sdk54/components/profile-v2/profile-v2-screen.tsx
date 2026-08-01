@@ -48,6 +48,7 @@ import { ProfileV2Grid } from './profile-v2-grid';
 import { ProfileV2Hero } from './profile-v2-hero';
 import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2Posts } from './profile-v2-posts';
+import { ProfileV2Preferences } from './profile-v2-preferences';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Selector, type ProfileV2Section } from './profile-v2-selector';
 import { ProfileV2Stats } from './profile-v2-stats';
@@ -68,49 +69,70 @@ const prototypeCollectorStats: PrototypeCollectorStats = {
 const TAGLINE_MAX_LENGTH = 80;
 const LOCATION_MAX_LENGTH = 80;
 
-// The only normalization requested for website: trim, and prepend https://
-// only when NO scheme is present. hasScheme deliberately requires "://"
-// (not just any "letters-then-colon" prefix) — an earlier version matched
-// bare "word:" prefixes, which misclassified plain "hostname:port" input
-// like "example.com:8080" as if "example.com" were a custom URI scheme.
-// Requiring "://" fixes that while still correctly detecting http://,
-// https://, and file:// (which then gets rejected by the protocol check
-// below, not by scheme detection). Schemes that never use "//" at all
-// (javascript:, data:) are deliberately NOT specially detected — the
-// https:// prefix gets added in front of them, which then fails to parse
-// or fails the protocol check either way, so they're still rejected either
-// way (see the empirical test in the PR description / audit).
+// Deliberately does NOT use `new URL(...)` as the validator. React
+// Native's actual global URL (node_modules/react-native/Libraries/Blob/URL.js,
+// registered by Libraries/Core/setUpXHR.js) is a small regex-based shim,
+// not a spec-compliant WHATWG implementation — its constructor never
+// throws for malformed input when called without a `base` argument, so a
+// try/catch-around-`new URL()` pattern is silently dead code on the actual
+// app runtime (the same issue was found and fixed the same way in
+// profile-v2-identity.tsx's getSafeWebsiteUrl). These two plain, fully
+// anchored regexes replace it — deterministic, and their behavior is
+// identical between Node (where they're easy to test) and Hermes (where
+// the app actually runs), since both are just standard ECMAScript regex.
+//
+// WEBSITE_SCHEME_PATTERN detects whether input already has a real scheme.
+// It requires "://" specifically (not just any "letters-then-colon"
+// prefix) — matching only "letters-then-colon" would misclassify a bare
+// "hostname:port" value like "example.com:8080" as if "example.com" were
+// a custom URI scheme, which is exactly the bug an earlier version of
+// this function had.
+//
+// WEBSITE_URL_PATTERN validates the final candidate end-to-end: required
+// http/https scheme, then a host made of one-or-more characters that are
+// never whitespace/"/"/":"/"?"/"#" (so "javascript:alert(1)",
+// "not a valid url", and "https:// example.com" all fail here — an empty
+// or space-containing or colon-containing "host" can't match), an
+// optional :port (digits only), and optional /path, ?query, #hash. This
+// is deliberately not full RFC 3986 URL validation — just enough
+// structure to accept the shapes this field needs to accept and reject
+// the ones it needs to reject.
+const WEBSITE_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//;
+const WEBSITE_URL_PATTERN = /^https?:\/\/[^\s/:?#]+(:\d+)?(\/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?$/i;
+
 type WebsiteNormalizeResult = { ok: true; value: string | null } | { ok: false; message: string };
 
 function normalizeWebsiteInput(raw: string): WebsiteNormalizeResult {
   const trimmed = raw.trim();
   if (!trimmed) return { ok: true, value: null };
 
-  const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed);
+  const hasScheme = WEBSITE_SCHEME_PATTERN.test(trimmed);
   const candidate = hasScheme ? trimmed : `https://${trimmed}`;
 
-  let parsed: URL;
-  try {
-    parsed = new URL(candidate);
-  } catch {
-    return {
-      ok: false,
-      message: 'Website must be a valid URL, like cachecase.app or https://cachecase.app.',
-    };
-  }
-
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  // A real (non-http/https) scheme was present before any https://
+  // prepending happened — reject with the specific "wrong protocol"
+  // message (ftp://, file://, etc.).
+  if (hasScheme && !/^https?:\/\//i.test(candidate)) {
     return {
       ok: false,
       message: "Website must use http or https — links like javascript: or data: aren't allowed.",
     };
   }
 
-  // Stores the trimmed/scheme-prepended candidate itself, NOT
-  // parsed.toString() — the URL object's own serialization would silently
-  // add a trailing slash, lowercase the scheme, etc., which is more
-  // rewriting than was asked for. Only trim + conditional https://
-  // prepending are the requested normalizations.
+  // Structural check — catches everything else: empty host ("https://"),
+  // whitespace in the host ("https:// example.com", "not a valid url"
+  // once https:// is prepended), a missing/garbled scheme ("://example.com"),
+  // and any candidate that isn't cleanly scheme+host(+port)(+path)(+query)(+hash).
+  if (!WEBSITE_URL_PATTERN.test(candidate)) {
+    return {
+      ok: false,
+      message: 'Website must be a valid URL, like cachecase.app or https://cachecase.app.',
+    };
+  }
+
+  // Stores the trimmed/scheme-prepended candidate itself, not a
+  // re-serialized/re-cased version — only trim + conditional https://
+  // prepending are the requested normalizations, nothing more.
   return { ok: true, value: candidate };
 }
 
@@ -1031,7 +1053,10 @@ export function ProfileV2Screen({ userId }: Props) {
             /* ── View Mode ── */
             <>
               <ProfileV2Identity
+                tagline={profile?.tagline ?? null}
                 bio={profile?.bio ?? null}
+                location={profile?.location ?? null}
+                website={profile?.website ?? null}
                 mode={isOwnProfile ? 'owner' : 'public'}
                 onEditPress={isOwnProfile ? enterEdit : undefined}
                 onFollowPress={isOwnProfile ? undefined : toggleFollow}
@@ -1042,6 +1067,18 @@ export function ProfileV2Screen({ userId }: Props) {
               />
 
               <ProfileV2Stats followers={stats.followerCount} following={stats.followingCount} />
+
+              {/* Own read-only Collector Profile section — same data for
+                  owner and visitor, positioned after identity/stats and
+                  before the selector/tab content per the requested layout.
+                  Renders nothing at all (including its own header) when
+                  every preference array is empty. */}
+              <ProfileV2Preferences
+                favoriteSports={profile?.favorite_sports ?? []}
+                favoriteTeams={profile?.favorite_teams ?? []}
+                collectingCategories={profile?.collecting_categories ?? []}
+                collectorTags={profile?.collector_tags ?? []}
+              />
 
               <ProfileV2Selector active={section} onChange={setSection} />
 
