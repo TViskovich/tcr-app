@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -19,10 +20,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useAuth } from '@/lib/auth';
+import { formatCustodyStatus, updateRegistryCustodyStatus } from '@/lib/registry-custody-status';
 import { getRegistryPublicUrl } from '@/lib/registry-links';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, RegisteredCard, RegisteredCardStatus } from '@/types';
+import type { CollectionItem, CustodyStatus, RegisteredCard, RegisteredCardStatus } from '@/types';
 
 type RegisteredCardWithItem = RegisteredCard & {
   collection_item: CollectionItem | null;
@@ -119,19 +122,48 @@ function buildSnapshotSubtitle(record: RegisteredCard): string | null {
   return parts.filter(Boolean).join(' ') || null;
 }
 
+// Registry Custody Status v1 — full option list in a fixed, deliberate
+// order (not derived from the CustodyStatus union's declaration order,
+// though it happens to match) so the picker's layout never silently
+// reorders if the type's declaration order ever changes.
+const CUSTODY_STATUS_OPTIONS: CustodyStatus[] = [
+  'owned',
+  'in_transfer',
+  'on_loan',
+  'submitted_for_grading',
+  'missing',
+  'stolen',
+  'destroyed',
+  'archived',
+];
+
+// Requires an Alert.alert confirmation before applying — matches the
+// approved product spec exactly.
+const CUSTODY_STATUS_REQUIRES_CONFIRMATION = new Set<CustodyStatus>(['missing', 'stolen', 'destroyed', 'archived']);
+
+// Rendered with PV2.accent in the picker — this app's design system
+// (components/profile-v2/profile-v2-theme.ts) has no separate warning/
+// error token distinct from its one existing accent red, so this reuses
+// that rather than introducing a new color. Deliberately a narrower set
+// than CUSTODY_STATUS_REQUIRES_CONFIRMATION (excludes 'archived', which is
+// a routine/expected end state, not a severe one).
+const CUSTODY_STATUS_SEVERE = new Set<CustodyStatus>(['missing', 'stolen', 'destroyed']);
+
 // Minimal registry detail screen — Phase 2B1 scope. Reached from the item-
-// detail "View Registry" action once a card is registered. Deliberately
-// bare: no verification scoring, no transfer controls, no edit — those are
-// later CacheCase Registry sub-phases. Fetches fresh by id (same
-// convention as every other detail route in this app — item/[id].tsx,
-// collection/[folderId].tsx, post/[id].tsx, conversation/[id].tsx all
-// re-fetch by id rather than trusting only passed params) so it also works
-// if reached via a future direct link, not just via in-app navigation.
+// detail "View Registry" action once a card is registered. No verification
+// scoring, no transfer controls — those are later CacheCase Registry
+// sub-phases. Fetches fresh by id (same convention as every other detail
+// route in this app — item/[id].tsx, collection/[folderId].tsx,
+// post/[id].tsx, conversation/[id].tsx all re-fetch by id rather than
+// trusting only passed params) so it also works if reached via a future
+// direct link, not just via in-app navigation.
 export default function RegistryDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
 
   const [record, setRecord] = useState<RegisteredCardWithItem | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
@@ -142,6 +174,8 @@ export default function RegistryDetailScreen() {
   // hide the actual cause.
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [isQrModalVisible, setIsQrModalVisible] = useState(false);
+  const [isCustodyModalVisible, setIsCustodyModalVisible] = useState(false);
+  const [updatingCustodyStatus, setUpdatingCustodyStatus] = useState(false);
 
   // Public QR payload — built only from the public cc_id, never
   // record.id/collection_item_id/current_owner_id. null whenever no real
@@ -238,6 +272,74 @@ export default function RegistryDetailScreen() {
     setIsQrModalVisible(false);
   }
 
+  // Owner-only entry point — the row this opens from is itself only
+  // rendered as pressable when isOwner is true (see the JSX below), so
+  // this guard is defense in depth, not the only gate.
+  function handleCustodyStatusPress() {
+    if (!record || !isOwner) return;
+    setIsCustodyModalVisible(true);
+  }
+
+  function closeCustodyModal() {
+    // Don't allow dismissing mid-request — avoids the sheet closing while
+    // a submission is still in flight, which would strand the loading
+    // indicator with no way to see its outcome.
+    if (updatingCustodyStatus) return;
+    setIsCustodyModalVisible(false);
+  }
+
+  // The only function that actually calls the RPC. Never called directly
+  // from a row's onPress — always through handleSelectCustodyStatus below,
+  // so the confirmation gate can never be bypassed.
+  async function applyCustodyStatus(newStatus: CustodyStatus) {
+    if (!record || updatingCustodyStatus || newStatus === record.custody_status) return;
+
+    setUpdatingCustodyStatus(true);
+    try {
+      const { data, error } = await updateRegistryCustodyStatus(record.id, newStatus);
+      if (error) {
+        Alert.alert('Update failed', error);
+        return;
+      }
+      // Not an optimistic update — this only runs after the RPC has
+      // already confirmed success, using its own RETURNING row as the
+      // authoritative source. Merged onto the existing joined record
+      // (which also carries collection_item, not returned by the RPC)
+      // rather than re-running the full load() query, avoiding a second
+      // network round-trip and a full-page loading-state flash for what
+      // is otherwise a small, already-confirmed field change.
+      setRecord((prev) => (prev ? { ...prev, ...data } : prev));
+      setIsCustodyModalVisible(false);
+    } catch (e) {
+      Alert.alert('Update failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    } finally {
+      setUpdatingCustodyStatus(false);
+    }
+  }
+
+  // Confirmation gate. Missing/Stolen/Destroyed/Archived require an
+  // explicit Alert.alert confirmation (matching this app's existing
+  // Alert.alert confirmation pattern, e.g. app/item/[id].tsx's delete and
+  // register-with-CacheCase flows) before applyCustodyStatus ever runs;
+  // every other status applies immediately on tap.
+  function handleSelectCustodyStatus(newStatus: CustodyStatus) {
+    if (!record || updatingCustodyStatus || newStatus === record.custody_status) return;
+
+    if (CUSTODY_STATUS_REQUIRES_CONFIRMATION.has(newStatus)) {
+      Alert.alert(
+        `Change custody status to ${formatCustodyStatus(newStatus)}?`,
+        'This action will be permanently recorded in the registry history.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Change', style: 'destructive', onPress: () => applyCustodyStatus(newStatus) },
+        ],
+      );
+      return;
+    }
+
+    applyCustodyStatus(newStatus);
+  }
+
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
   if (loading) {
@@ -301,6 +403,11 @@ export default function RegistryDetailScreen() {
   const hasTeam = !!teamValue;
   const statusLabel = STATUS_LABEL[record.status];
   const statusSentence = buildStatusSentence(record.status);
+  // Only the current owner may change custody status — same ownership
+  // check shape as app/item/[id].tsx's isOwner (session-derived id
+  // compared directly against the record's own owner id field).
+  const isOwner = !!currentUserId && record.current_owner_id === currentUserId;
+  const custodyStatusLabel = formatCustodyStatus(record.custody_status);
   // 70% of window width, capped so it stays reasonable on tablets; large
   // enough for comfortable phone-to-phone scanning without hardcoding an
   // oversized fixed value.
@@ -344,11 +451,27 @@ export default function RegistryDetailScreen() {
             <Text style={styles.infoLabel}>Registered</Text>
             <Text style={styles.infoValue}>{formatDate(record.created_at)}</Text>
           </View>
-          <View style={[styles.infoRow, !hasYear && !hasTeam && styles.infoRowLast]}>
+          <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Current owner</Text>
             <Text style={styles.infoValue} numberOfLines={1}>
               {ownerName}
             </Text>
+          </View>
+          <View style={[styles.infoRow, !hasYear && !hasTeam && styles.infoRowLast]}>
+            <Text style={styles.infoLabel}>Custody Status</Text>
+            {isOwner ? (
+              <Pressable
+                onPress={handleCustodyStatusPress}
+                hitSlop={8}
+                style={({ pressed }) => [styles.custodyValueRow, pressed && styles.custodyValueRowPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={`Custody status: ${custodyStatusLabel}. Change custody status.`}>
+                <Text style={styles.infoValue}>{custodyStatusLabel}</Text>
+                <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              </Pressable>
+            ) : (
+              <Text style={styles.infoValue}>{custodyStatusLabel}</Text>
+            )}
           </View>
           {hasYear && (
             <View style={[styles.infoRow, !hasTeam && styles.infoRowLast]}>
@@ -436,6 +559,68 @@ export default function RegistryDetailScreen() {
               </Text>
             )}
             <Text style={styles.qrModalInstruction}>Scan to view this CacheCase registry record.</Text>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Custody status picker — same bottom-sheet shell shape as
+          components/create/create-menu.tsx (backdrop dismiss, drag handle,
+          divided rows), styled with this screen's own PV2 tokens rather
+          than that component's separate hardcoded palette, so it reads as
+          native to this screen. Only ever opened via handleCustodyStatusPress,
+          which is itself only reachable through the owner-gated row above. */}
+      <Modal
+        visible={isCustodyModalVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={closeCustodyModal}>
+        <View style={styles.custodyModalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closeCustodyModal}
+            accessibilityRole="button"
+            accessibilityLabel="Close custody status picker"
+          />
+
+          <View style={[styles.custodySheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={styles.custodySheetHandle} />
+            <Text style={styles.custodySheetTitle}>Custody Status</Text>
+
+            {CUSTODY_STATUS_OPTIONS.map((option, index) => {
+              const isCurrent = option === record.custody_status;
+              const isSevere = CUSTODY_STATUS_SEVERE.has(option);
+              return (
+                <View key={option}>
+                  {index > 0 && <View style={styles.custodySheetDivider} />}
+                  <Pressable
+                    disabled={isCurrent || updatingCustodyStatus}
+                    onPress={() => handleSelectCustodyStatus(option)}
+                    style={({ pressed }) => [
+                      styles.custodySheetRow,
+                      pressed && !isCurrent && styles.custodySheetRowPressed,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: isCurrent || updatingCustodyStatus, selected: isCurrent }}>
+                    <Text
+                      style={[
+                        styles.custodySheetRowText,
+                        isSevere && styles.custodySheetRowTextSevere,
+                        isCurrent && styles.custodySheetRowTextCurrent,
+                      ]}>
+                      {formatCustodyStatus(option)}
+                    </Text>
+                    {isCurrent && <Text style={styles.custodySheetCurrentLabel}>Current</Text>}
+                  </Pressable>
+                </View>
+              );
+            })}
+
+            {updatingCustodyStatus && (
+              <View style={styles.custodySheetLoadingWrap}>
+                <ActivityIndicator size="small" color={PV2.link} />
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -573,6 +758,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  custodyValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  custodyValueRowPressed: {
+    opacity: 0.6,
   },
   statusPanel: {
     width: '100%',
@@ -730,5 +923,70 @@ const styles = StyleSheet.create({
     color: '#687076',
     textAlign: 'center',
     lineHeight: 17,
+  },
+  custodyModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  custodySheet: {
+    backgroundColor: PV2.panel,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    borderBottomWidth: 0,
+    paddingTop: 12,
+    paddingHorizontal: 20,
+  },
+  custodySheetHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: PV2.dividerColor,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  custodySheetTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: PV2.textTertiary,
+    marginBottom: 4,
+  },
+  custodySheetDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: PV2.dividerColor,
+  },
+  custodySheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  custodySheetRowPressed: {
+    opacity: 0.6,
+  },
+  custodySheetRowText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+  },
+  custodySheetRowTextSevere: {
+    color: PV2.accent,
+  },
+  custodySheetRowTextCurrent: {
+    color: PV2.textPrimary,
+    fontWeight: '700',
+  },
+  custodySheetCurrentLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: PV2.textTertiary,
+  },
+  custodySheetLoadingWrap: {
+    paddingVertical: 16,
+    alignItems: 'center',
   },
 });
