@@ -34,17 +34,39 @@ function getEventLabel(eventType: string): string {
   return EVENT_LABEL[eventType as RegistryEventType] ?? 'Registry record updated';
 }
 
-// Only ever built from actor_id/to_owner_id — never from metadata (which,
-// for item_linked/item_unlinked, contains only an internal
-// collection_item_id and must never be surfaced here) and never a raw
-// UUID. registered is the only event type any current RPC writes with
-// to_owner_id set, so it gets its own phrasing; everything else falls back
-// to a plain "By <name>" when the actor resolves.
+// Only ever built from actor_id/from_owner_id/to_owner_id — never from
+// metadata (which, for item_linked/item_unlinked, contains only an
+// internal collection_item_id and must never be surfaced here) and never
+// a raw UUID (resolveName returns null rather than the id itself, so a
+// failed lookup silently omits the detail line instead of leaking a raw
+// UUID). registered, ownership_transferred, item_linked, and item_unlinked
+// each get their own phrasing; everything else falls back to a plain
+// "By <name>" when the actor resolves.
 function getEventDetail(event: RegistryEvent, resolveName: (id: string | null) => string | null): string | null {
   if (event.event_type === 'registered') {
     const name = resolveName(event.actor_id) ?? resolveName(event.to_owner_id);
     return name ? `Registered by ${name}` : null;
   }
+
+  if (event.event_type === 'ownership_transferred') {
+    const fromName = resolveName(event.from_owner_id);
+    const toName = resolveName(event.to_owner_id);
+    if (fromName && toName) return `From ${fromName} → ${toName}`;
+    if (toName) return `To ${toName}`;
+    if (fromName) return `From ${fromName}`;
+    return null;
+  }
+
+  if (event.event_type === 'item_linked') {
+    const actorName = resolveName(event.actor_id);
+    return actorName ? `Linked by ${actorName}` : null;
+  }
+
+  if (event.event_type === 'item_unlinked') {
+    const actorName = resolveName(event.actor_id);
+    return actorName ? `Unlinked by ${actorName}` : null;
+  }
+
   const actorName = resolveName(event.actor_id);
   return actorName ? `By ${actorName}` : null;
 }
@@ -111,9 +133,10 @@ function buildSnapshotSubtitle(record: RegisteredCard): string | null {
 // Full-page provenance timeline for one registered card — Phase: registry
 // history foundation. Reached from app/registry/[id].tsx's "View Registry
 // History" action. Renders only real registry_events rows in ascending
-// (oldest-first) order; never fabricates or synthesizes an entry. No
-// transfer controls of any kind — the ownership-transfer workflow doesn't
-// exist yet, so nothing here claims otherwise.
+// (oldest-first) order; never fabricates or synthesizes an entry. Read-only
+// — no transfer controls live on this screen (initiating/accepting a
+// transfer happens elsewhere); it only displays the resulting
+// ownership_transferred events once they exist.
 export default function RegistryHistoryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -237,6 +260,7 @@ export default function RegistryHistoryScreen() {
   const image = record.snapshot_image_url ?? item?.image_url ?? null;
   const title = snapshotTitle || (item ? buildTitle(item) : null);
   const subtitle = hasSnapshotIdentity ? snapshotSubtitle : item ? buildSubtitle(item) : null;
+  const ownerName = resolveName(record.current_owner_id);
 
   return (
     <>
@@ -256,6 +280,12 @@ export default function RegistryHistoryScreen() {
             {subtitle && (
               <Text style={styles.identitySubtitle} numberOfLines={1}>
                 {subtitle}
+              </Text>
+            )}
+            {ownerName && (
+              <Text style={styles.identityOwnerLine} numberOfLines={1}>
+                <Text style={styles.identityOwnerLabel}>Current owner: </Text>
+                <Text style={styles.identityOwnerValue}>{ownerName}</Text>
               </Text>
             )}
           </View>
@@ -350,6 +380,18 @@ const styles = StyleSheet.create({
     marginTop: 1,
     fontSize: 12,
     color: PV2.textTertiary,
+  },
+  identityOwnerLine: {
+    marginTop: 1,
+  },
+  identityOwnerLabel: {
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  identityOwnerValue: {
+    fontSize: 12,
+    color: PV2.textSecondary,
+    fontWeight: '600',
   },
   sectionHeader: {
     marginTop: 28,
