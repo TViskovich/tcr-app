@@ -32,19 +32,21 @@ const PILL_HEIGHT = 44;
 const CACHECASE_BORDER_WIDTH = 1.5;
 
 // 'bookmarked' stays removed (bookmarks are private to the account owner
-// — see app/(tabs)/profile.tsx). 'transfers' is back as of this pass,
-// backed by a placeholder-only data source (no real ownership-transfer
-// table/query exists yet — see components/profile-v2/transfers-preview.tsx
-// and lib/placeholder-transactions.ts). This union is still the source of
-// truth for which sections can ever be selected, so a removed key can't
-// be reached through stale state.
-export type ProfileV2Section = 'posts' | 'cachecase' | 'collections' | 'transfers';
+// — see app/(tabs)/profile.tsx). 'transfers' was removed again (P0 fix):
+// it only ever rendered fabricated data from lib/placeholder-transactions.ts,
+// indistinguishable from real data to a viewer — see
+// components/profile-v2/transfers-preview.tsx, which stays in the repo but
+// is no longer imported by Profile V2. Re-add 'transfers' here (and in
+// SECTIONS below) once it's backed by real ownership-transfer data. This
+// union is still the source of truth for which sections can ever be
+// selected, so a removed key can't be reached through stale state.
+export type ProfileV2Section = 'posts' | 'cachecase' | 'collections';
 
 // cachecase is the carousel's default/starting selection — its position in
 // this array only matters for which pill starts under the finger; the
 // carousel finds it via SECTIONS.indexOf(active), so no fixed "center index"
 // bookkeeping is required as sections are added or removed.
-const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase', 'transfers'];
+const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase'];
 
 // Fixed per-item width, same idea as the Collection tab's FolderCarousel
 // (see app/(tabs)/collection.tsx) — a constant slot each pill centers

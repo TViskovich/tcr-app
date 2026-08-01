@@ -52,7 +52,6 @@ import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Selector, type ProfileV2Section } from './profile-v2-selector';
 import { ProfileV2Stats } from './profile-v2-stats';
 import { PV2 } from './profile-v2-theme';
-import { TransfersPreview } from './transfers-preview';
 
 // Values with no corresponding column/table yet (see PrototypeCollectorStats
 // in profile-v2-collector-panel.tsx). Kept in exactly one place, clearly
@@ -880,15 +879,6 @@ export function ProfileV2Screen({ userId }: Props) {
                     onAddItem={isOwnProfile ? addFolderItem : undefined}
                     onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
                   />
-                )}
-
-                {/* Placeholder data on both the owner's own profile and a
-                    public one, since there's no real transfer data or
-                    ownership logic yet to scope by viewer — but userId/
-                    isOwnProfile are threaded through correctly so this is
-                    a straight swap once that data exists. */}
-                {section === 'transfers' && (
-                  <TransfersPreview userId={userId} isOwnProfile={isOwnProfile} />
                 )}
 
               </ProfileV2SectionPage>
