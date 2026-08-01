@@ -36,7 +36,7 @@ import {
 import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
+import { deleteProfileImage, uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget } from '@/types';
@@ -257,6 +257,11 @@ export function ProfileV2Screen({ userId }: Props) {
   const [collectingCategories, setCollectingCategories] = useState<string[]>([]);
   const [collectorTags, setCollectorTags] = useState<string[]>([]);
   const [newAvatarUri, setNewAvatarUri] = useState<string | null>(null);
+  // Explicit removal, distinct from "no new avatar selected" (newAvatarUri
+  // stays null in both cases) — same three-state model already used for
+  // banner/badge below (newXUri = replacement picked, removeX = explicit
+  // removal, neither set = unchanged).
+  const [removeAvatar, setRemoveAvatar] = useState(false);
   const [newHeroUri, setNewHeroUri] = useState<string | null>(null);
   const [removeHero, setRemoveHero] = useState(false);
   const [newBadgeUri, setNewBadgeUri] = useState<string | null>(null);
@@ -554,6 +559,7 @@ export function ProfileV2Screen({ userId }: Props) {
     if (!isOwnProfile) return;
     resetTextAndPreferenceDraftsFromProfile();
     setNewAvatarUri(null);
+    setRemoveAvatar(false);
     setNewHeroUri(null);
     setRemoveHero(false);
     setNewBadgeUri(null);
@@ -566,9 +572,12 @@ export function ProfileV2Screen({ userId }: Props) {
     // Explicitly restores every text/array draft from the persisted
     // profile (not just relying on the next enterEdit() to do it) — makes
     // "Cancel restores persisted values" true immediately, not just true
-    // the next time edit mode happens to be entered.
+    // the next time edit mode happens to be entered. No Storage operation
+    // ever happens here — removeAvatar/removeHero/removeBadge are only
+    // ever acted on inside handleSave.
     resetTextAndPreferenceDraftsFromProfile();
     setNewAvatarUri(null);
+    setRemoveAvatar(false);
     setNewHeroUri(null);
     setRemoveHero(false);
     setNewBadgeUri(null);
@@ -589,6 +598,7 @@ export function ProfileV2Screen({ userId }: Props) {
     });
     if (!result.canceled && result.assets[0]) {
       setNewAvatarUri(result.assets[0].uri);
+      setRemoveAvatar(false);
     }
   }
 
@@ -606,15 +616,28 @@ export function ProfileV2Screen({ userId }: Props) {
     });
     if (!result.canceled && result.assets[0]) {
       setNewAvatarUri(result.assets[0].uri);
+      setRemoveAvatar(false);
     }
   }
 
   function pickAvatar() {
-    Alert.alert('Change Photo', undefined, [
+    const canRemove = !!(profile?.avatar_url || newAvatarUri);
+    const options: AlertButton[] = [
       { text: 'Take Photo', onPress: launchCamera },
       { text: 'Choose from Library', onPress: launchLibrary },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    ];
+    if (canRemove) {
+      options.push({
+        text: 'Remove Avatar',
+        style: 'destructive',
+        onPress: () => {
+          setNewAvatarUri(null);
+          setRemoveAvatar(true);
+        },
+      });
+    }
+    options.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert('Change Photo', undefined, options);
   }
 
   async function pickHeroFromLibrary() {
@@ -757,9 +780,16 @@ export function ProfileV2Screen({ userId }: Props) {
       return;
     }
 
+    // Captured BEFORE any upload/state change below — these are what
+    // cleanup compares the final saved URLs against once the row update
+    // has actually succeeded. Never mutated after this point.
+    const oldAvatarUrl = profile?.avatar_url ?? null;
+    const oldHeroUrl = profile?.hero_image_url ?? null;
+    const oldBadgeUrl = profile?.showcase_badge_url ?? null;
+
     setSaving(true);
     try {
-      let avatarUrl = profile?.avatar_url ?? null;
+      let avatarUrl: string | null;
       if (newAvatarUri) {
         try {
           avatarUrl = await uploadAvatar(newAvatarUri, userId);
@@ -767,6 +797,10 @@ export function ProfileV2Screen({ userId }: Props) {
           const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
           throw new Error(`Avatar upload failed: ${detail}`);
         }
+      } else if (removeAvatar) {
+        avatarUrl = null;
+      } else {
+        avatarUrl = profile?.avatar_url ?? null;
       }
 
       let heroUrl: string | null;
@@ -826,6 +860,19 @@ export function ProfileV2Screen({ userId }: Props) {
             hint: error.hint,
           });
         }
+        // The row update failed, so the OLD images are still exactly what
+        // the (unchanged) row points to — never touch those. Any image
+        // freshly uploaded in THIS attempt, though, is now unreferenced by
+        // any row — best-effort clean it up so it doesn't linger as an
+        // orphan. deleteProfileImage never throws, so this can't mask or
+        // replace the real error below, and a failure here (e.g. the
+        // storage bucket has no delete permission configured yet) simply
+        // leaves an orphaned file rather than causing any further problem.
+        await Promise.all([
+          newAvatarUri && avatarUrl ? deleteProfileImage(avatarUrl, userId, 'avatar') : Promise.resolve(),
+          newHeroUri && heroUrl ? deleteProfileImage(heroUrl, userId, 'hero') : Promise.resolve(),
+          newBadgeUri && badgeUrl ? deleteProfileImage(badgeUrl, userId, 'badge') : Promise.resolve(),
+        ]);
         throw new Error(
           __DEV__
             ? `Failed to save profile: ${error.message}${error.code ? ` (${error.code})` : ''}`
@@ -833,8 +880,22 @@ export function ProfileV2Screen({ userId }: Props) {
         );
       }
 
+      // The row update above succeeded — only NOW is it safe to clean up
+      // whichever old Storage objects are no longer referenced by this
+      // profile. Skipped entirely when the URL didn't actually change
+      // (unchanged image) or when there was nothing to clean up (no old
+      // image). Never deletes the newly uploaded image — only the old one.
+      // Best-effort only: deleteProfileImage never throws, so a cleanup
+      // failure here can never be mistaken for the save itself failing.
+      await Promise.all([
+        oldAvatarUrl && oldAvatarUrl !== avatarUrl ? deleteProfileImage(oldAvatarUrl, userId, 'avatar') : Promise.resolve(),
+        oldHeroUrl && oldHeroUrl !== heroUrl ? deleteProfileImage(oldHeroUrl, userId, 'hero') : Promise.resolve(),
+        oldBadgeUrl && oldBadgeUrl !== badgeUrl ? deleteProfileImage(oldBadgeUrl, userId, 'badge') : Promise.resolve(),
+      ]);
+
       await refresh();
       setNewAvatarUri(null);
+      setRemoveAvatar(false);
       setNewHeroUri(null);
       setRemoveHero(false);
       setNewBadgeUri(null);
@@ -847,7 +908,7 @@ export function ProfileV2Screen({ userId }: Props) {
     }
   }
 
-  const avatarUri = newAvatarUri ?? profile?.avatar_url ?? null;
+  const avatarUri = removeAvatar ? null : (newAvatarUri ?? profile?.avatar_url ?? null);
   const heroUri = removeHero ? null : (newHeroUri ?? profile?.hero_image_url ?? null);
   const badgeUri = removeBadge ? null : (newBadgeUri ?? profile?.showcase_badge_url ?? null);
   const heroTheme = editMode ? selectedTheme : resolveHeroCanvasTheme(profile?.hero_theme);
