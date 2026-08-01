@@ -1,0 +1,33 @@
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.primary,
+.secondary {
+  flex: 1 1 200px;
+  text-align: center;
+  padding: 0.875rem 1.25rem;
+  border-radius: 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.primary {
+  background: var(--pv2-empty-card-bg);
+  border: 1px solid var(--pv2-border);
+  color: var(--pv2-text-tertiary);
+  cursor: not-allowed;
+}
+
+.secondary {
+  background: transparent;
+  border: 1px solid var(--pv2-border-strong);
+  color: var(--pv2-text-primary);
+  transition: border-color 0.15s ease;
+}
+
+.secondary:hover {
+  border-color: var(--pv2-link);
+}

@@ -1,0 +1,23 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--pv2-empty-card-bg);
+  border: 1px solid var(--pv2-border);
+  color: var(--pv2-text-primary);
+}
+
+/* Reuses PV2's one general brand-red accent for severe statuses, same
+   restrained "no dedicated warning token exists" tradeoff already
+   documented and accepted in app/registry/[id].tsx's custody-status UI —
+   this web project mirrors that decision rather than inventing a new
+   warning color the mobile app doesn't have. */
+.severe {
+  background: var(--pv2-accent-soft);
+  border-color: var(--pv2-accent);
+  color: var(--pv2-accent);
+}
