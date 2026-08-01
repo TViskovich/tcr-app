@@ -51,6 +51,7 @@ import { ProfileV2Posts } from './profile-v2-posts';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Selector, type ProfileV2Section } from './profile-v2-selector';
 import { ProfileV2Stats } from './profile-v2-stats';
+import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
 import { PV2 } from './profile-v2-theme';
 
 // Values with no corresponding column/table yet (see PrototypeCollectorStats
@@ -63,6 +64,88 @@ const prototypeCollectorStats: PrototypeCollectorStats = {
   transferred: 0,
   collectorId: 'CCA #1',
 };
+
+const TAGLINE_MAX_LENGTH = 80;
+const LOCATION_MAX_LENGTH = 80;
+
+// The only normalization requested for website: trim, and prepend https://
+// only when NO scheme is present. hasScheme deliberately requires "://"
+// (not just any "letters-then-colon" prefix) — an earlier version matched
+// bare "word:" prefixes, which misclassified plain "hostname:port" input
+// like "example.com:8080" as if "example.com" were a custom URI scheme.
+// Requiring "://" fixes that while still correctly detecting http://,
+// https://, and file:// (which then gets rejected by the protocol check
+// below, not by scheme detection). Schemes that never use "//" at all
+// (javascript:, data:) are deliberately NOT specially detected — the
+// https:// prefix gets added in front of them, which then fails to parse
+// or fails the protocol check either way, so they're still rejected either
+// way (see the empirical test in the PR description / audit).
+type WebsiteNormalizeResult = { ok: true; value: string | null } | { ok: false; message: string };
+
+function normalizeWebsiteInput(raw: string): WebsiteNormalizeResult {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed);
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return {
+      ok: false,
+      message: 'Website must be a valid URL, like cachecase.app or https://cachecase.app.',
+    };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      ok: false,
+      message: "Website must use http or https — links like javascript: or data: aren't allowed.",
+    };
+  }
+
+  // Stores the trimmed/scheme-prepended candidate itself, NOT
+  // parsed.toString() — the URL object's own serialization would silently
+  // add a trailing slash, lowercase the scheme, etc., which is more
+  // rewriting than was asked for. Only trim + conditional https://
+  // prepending are the requested normalizations.
+  return { ok: true, value: candidate };
+}
+
+type ArraySection = {
+  label: string;
+  values: string[];
+};
+
+// Defensive re-validation of the four array fields at save time — the
+// ProfileV2TagEditor already enforces these same limits at the point of
+// entry (add is refused with its own Alert before it ever reaches state),
+// so this should never actually trip in normal use. It exists as a second
+// layer for the same reason RPCs in this codebase re-verify things the UI
+// already gates.
+function findArraySectionIssue(sections: ArraySection[]): string | null {
+  for (const section of sections) {
+    if (section.values.length > TAG_EDITOR_MAX_ITEMS) {
+      return `${section.label} can have up to ${TAG_EDITOR_MAX_ITEMS} values.`;
+    }
+    for (const value of section.values) {
+      if (value.length > TAG_EDITOR_MAX_ITEM_LENGTH) {
+        return `${section.label} values must be ${TAG_EDITOR_MAX_ITEM_LENGTH} characters or fewer.`;
+      }
+    }
+    const seen = new Set<string>();
+    for (const value of section.values) {
+      const key = value.toLowerCase();
+      if (seen.has(key)) {
+        return `${section.label} can't contain duplicate values.`;
+      }
+      seen.add(key);
+    }
+  }
+  return null;
+}
 
 type Props = {
   // The profile being VIEWED — the signed-in user's own id when opened
@@ -135,7 +218,22 @@ export function ProfileV2Screen({ userId }: Props) {
   const [sectionMinHeight, setSectionMinHeight] = useState<number | undefined>(undefined);
 
   const [editMode, setEditMode] = useState(false);
-  const [editForm, setEditForm] = useState({ heroName: '', displayName: '', bio: '' });
+  const [editForm, setEditForm] = useState({
+    heroName: '',
+    displayName: '',
+    bio: '',
+    tagline: '',
+    location: '',
+    website: '',
+  });
+  // Profile 2.0 collector-preference arrays — local draft only, exactly
+  // like editForm above; never written to `profile` until a successful
+  // Save, and re-initialized from the persisted profile every time edit
+  // mode is (re-)entered.
+  const [favoriteSports, setFavoriteSports] = useState<string[]>([]);
+  const [favoriteTeams, setFavoriteTeams] = useState<string[]>([]);
+  const [collectingCategories, setCollectingCategories] = useState<string[]>([]);
+  const [collectorTags, setCollectorTags] = useState<string[]>([]);
   const [newAvatarUri, setNewAvatarUri] = useState<string | null>(null);
   const [newHeroUri, setNewHeroUri] = useState<string | null>(null);
   const [removeHero, setRemoveHero] = useState(false);
@@ -411,13 +509,28 @@ export function ProfileV2Screen({ userId }: Props) {
     );
   }
 
-  function enterEdit() {
-    if (!isOwnProfile) return;
+  // Shared by enterEdit (initial open) and cancelEdit (explicit restore) —
+  // both must produce identical draft state from the same persisted
+  // profile, so Cancel behaves correctly even if a caller relies on it
+  // directly rather than on the next enterEdit() re-initializing things.
+  function resetTextAndPreferenceDraftsFromProfile() {
     setEditForm({
       heroName: profile?.hero_display_name ?? '',
       displayName: profile?.display_name ?? '',
       bio: profile?.bio ?? '',
+      tagline: profile?.tagline ?? '',
+      location: profile?.location ?? '',
+      website: profile?.website ?? '',
     });
+    setFavoriteSports(profile?.favorite_sports ?? []);
+    setFavoriteTeams(profile?.favorite_teams ?? []);
+    setCollectingCategories(profile?.collecting_categories ?? []);
+    setCollectorTags(profile?.collector_tags ?? []);
+  }
+
+  function enterEdit() {
+    if (!isOwnProfile) return;
+    resetTextAndPreferenceDraftsFromProfile();
     setNewAvatarUri(null);
     setNewHeroUri(null);
     setRemoveHero(false);
@@ -428,6 +541,11 @@ export function ProfileV2Screen({ userId }: Props) {
   }
 
   function cancelEdit() {
+    // Explicitly restores every text/array draft from the persisted
+    // profile (not just relying on the next enterEdit() to do it) — makes
+    // "Cancel restores persisted values" true immediately, not just true
+    // the next time edit mode happens to be entered.
+    resetTextAndPreferenceDraftsFromProfile();
     setNewAvatarUri(null);
     setNewHeroUri(null);
     setRemoveHero(false);
@@ -589,6 +707,34 @@ export function ProfileV2Screen({ userId }: Props) {
 
   async function handleSave() {
     if (!isOwnProfile) return;
+
+    // Full validation pass BEFORE setSaving/any upload/any DB write, in the
+    // exact order requested: tagline length, website, array counts, array
+    // item lengths, array duplicates. Stops at the first failure with one
+    // Alert; edit mode stays open, nothing is uploaded or saved.
+    const trimmedTagline = editForm.tagline.trim();
+    if (trimmedTagline.length > TAGLINE_MAX_LENGTH) {
+      Alert.alert('Tagline Too Long', `Tagline must be ${TAGLINE_MAX_LENGTH} characters or fewer.`);
+      return;
+    }
+
+    const websiteResult = normalizeWebsiteInput(editForm.website);
+    if (!websiteResult.ok) {
+      Alert.alert('Invalid Website', websiteResult.message);
+      return;
+    }
+
+    const arraySectionIssue = findArraySectionIssue([
+      { label: 'Favorite Sports', values: favoriteSports },
+      { label: 'Favorite Teams', values: favoriteTeams },
+      { label: 'Collecting Categories', values: collectingCategories },
+      { label: 'Collector Tags', values: collectorTags },
+    ]);
+    if (arraySectionIssue) {
+      Alert.alert('Check Collector Preferences', arraySectionIssue);
+      return;
+    }
+
     setSaving(true);
     try {
       let avatarUrl = profile?.avatar_url ?? null;
@@ -635,6 +781,13 @@ export function ProfileV2Screen({ userId }: Props) {
           hero_display_name: editForm.heroName.trim() || null,
           display_name: editForm.displayName.trim() || null,
           bio: editForm.bio.trim() || null,
+          tagline: trimmedTagline || null,
+          location: editForm.location.trim() || null,
+          website: websiteResult.value,
+          favorite_sports: favoriteSports,
+          favorite_teams: favoriteTeams,
+          collecting_categories: collectingCategories,
+          collector_tags: collectorTags,
           avatar_url: avatarUrl,
           hero_image_url: heroUrl,
           hero_theme: selectedTheme,
@@ -727,18 +880,6 @@ export function ProfileV2Screen({ userId }: Props) {
                  enterEdit early-returns and nothing renders the trigger
                  for a public view) ── */
             <View style={styles.editSection}>
-              <Text style={styles.fieldLabel}>Hero Name</Text>
-              <TextInput
-                style={styles.fieldInput}
-                value={editForm.heroName}
-                onChangeText={(v) => setEditForm((p) => ({ ...p, heroName: v }))}
-                placeholder="Knicks Vault, Griffey Guy, The Ruler…"
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                maxLength={40}
-              />
-              <Text style={styles.fieldHint}>
-                Shown large on your profile. Leave blank to use your display name.
-              </Text>
               <Text style={styles.fieldLabel}>Display Name</Text>
               <TextInput
                 style={styles.fieldInput}
@@ -747,7 +888,39 @@ export function ProfileV2Screen({ userId }: Props) {
                 placeholder="Display name"
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={50}
+                accessibilityLabel="Display name"
               />
+
+              <Text style={styles.fieldLabel}>Hero Name</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={editForm.heroName}
+                onChangeText={(v) => setEditForm((p) => ({ ...p, heroName: v }))}
+                placeholder="Knicks Vault, Griffey Guy, The Ruler…"
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                maxLength={40}
+                accessibilityLabel="Hero display name"
+              />
+              <Text style={styles.fieldHint}>
+                Shown large on your profile. Leave blank to use your display name.
+              </Text>
+
+              <View style={styles.fieldLabelRow}>
+                <Text style={styles.fieldLabelInRow}>Tagline</Text>
+                <Text style={styles.charCounter}>
+                  {editForm.tagline.length}/{TAGLINE_MAX_LENGTH}
+                </Text>
+              </View>
+              <TextInput
+                style={styles.fieldInput}
+                value={editForm.tagline}
+                onChangeText={(v) => setEditForm((p) => ({ ...p, tagline: v }))}
+                placeholder="Vintage hoops. Modern grails."
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                maxLength={TAGLINE_MAX_LENGTH}
+                accessibilityLabel="Tagline"
+              />
+
               <Text style={styles.fieldLabel}>Bio</Text>
               <TextInput
                 style={[styles.fieldInput, styles.bioInput]}
@@ -759,7 +932,34 @@ export function ProfileV2Screen({ userId }: Props) {
                 numberOfLines={4}
                 textAlignVertical="top"
                 maxLength={160}
+                accessibilityLabel="Bio"
               />
+
+              <Text style={styles.fieldLabel}>Location</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={editForm.location}
+                onChangeText={(v) => setEditForm((p) => ({ ...p, location: v }))}
+                placeholder="Las Vegas, NV"
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                maxLength={LOCATION_MAX_LENGTH}
+                accessibilityLabel="Location"
+              />
+              <Text style={styles.fieldHint}>City/region only — never precise coordinates.</Text>
+
+              <Text style={styles.fieldLabel}>Website</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={editForm.website}
+                onChangeText={(v) => setEditForm((p) => ({ ...p, website: v }))}
+                placeholder="cachecase.app"
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                accessibilityLabel="Website"
+              />
+
               <TouchableOpacity style={styles.badgeEditRow} onPress={pickBadge} activeOpacity={0.8}>
                 <View style={styles.badgeEditPreview}>
                   {badgeUri ? (
@@ -800,6 +1000,32 @@ export function ProfileV2Screen({ userId }: Props) {
                   </TouchableOpacity>
                 ))}
               </View>
+
+              <Text style={styles.sectionHeader}>Collector Preferences</Text>
+              <ProfileV2TagEditor
+                label="Favorite Sports"
+                values={favoriteSports}
+                onChange={setFavoriteSports}
+                placeholder="Basketball"
+              />
+              <ProfileV2TagEditor
+                label="Favorite Teams"
+                values={favoriteTeams}
+                onChange={setFavoriteTeams}
+                placeholder="Lakers"
+              />
+              <ProfileV2TagEditor
+                label="Collecting Categories"
+                values={collectingCategories}
+                onChange={setCollectingCategories}
+                placeholder="Rookie Cards"
+              />
+              <ProfileV2TagEditor
+                label="Collector Tags"
+                values={collectorTags}
+                onChange={setCollectorTags}
+                placeholder="Grader, Vintage, PC Only"
+              />
             </View>
           ) : (
             /* ── View Mode ── */
@@ -913,6 +1139,32 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
     marginTop: 16,
     marginBottom: 6,
+  },
+  fieldLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    marginBottom: 6,
+  },
+  fieldLabelInRow: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: PV2.textSecondary,
+  },
+  charCounter: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: PV2.textTertiary,
+  },
+  sectionHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    color: PV2.textSecondary,
+    marginTop: 28,
+    marginBottom: 4,
   },
   fieldHint: {
     fontSize: 12,
