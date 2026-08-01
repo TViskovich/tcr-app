@@ -54,6 +54,17 @@ export type Profile = {
   hero_theme: string | null;
   showcase_badge_url: string | null;
   created_at: string;
+  // Profile 2.0 — collector identity + preferences (infrastructure only;
+  // no editing UI yet). tagline/website/location are nullable free text;
+  // the four array fields are NOT NULL with an empty-array default in the
+  // database, so they're always a real array here too, never null.
+  tagline: string | null;
+  website: string | null;
+  location: string | null;
+  favorite_sports: string[];
+  favorite_teams: string[];
+  collecting_categories: string[];
+  collector_tags: string[];
 };
 
 export type Post = {
