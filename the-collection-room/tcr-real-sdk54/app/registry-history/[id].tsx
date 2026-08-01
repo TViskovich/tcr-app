@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 
 import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useRegistryEvents } from '@/hooks/use-registry-events';
+import { formatCustodyStatus } from '@/lib/registry-custody-status';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, RegisteredCard, RegistryEvent, RegistryEventType } from '@/types';
@@ -34,41 +35,120 @@ function getEventLabel(eventType: string): string {
   return EVENT_LABEL[eventType as RegistryEventType] ?? 'Registry record updated';
 }
 
-// Only ever built from actor_id/from_owner_id/to_owner_id — never from
+// Renders a resolved collector name as tappable inline text that opens
+// their public profile. Implemented as a nested <Text onPress> rather than
+// a Pressable/View — a View-based component does not reliably flow inline
+// inside a surrounding <Text> the way nested Text does, and sentences like
+// "From X → Y" need to stay visually continuous rather than breaking onto
+// their own line. Relies on the platform's native inline-text press
+// highlight for feedback rather than tracked pressed state (no
+// useState/onPressIn/onPressOut here). Only ever rendered by renderName
+// below when a real username has resolved — never for a bare display name
+// with no route-safe username, and never for a raw id.
+function ProfileNameLink({
+  name,
+  username,
+  onPress,
+  style,
+}: {
+  name: string;
+  username: string;
+  onPress: (username: string) => void;
+  style?: StyleProp<TextStyle>;
+}) {
+  return (
+    <Text style={[style, styles.profileNameLink]} onPress={() => onPress(username)}>
+      {name}
+    </Text>
+  );
+}
+
+// Shared by every getEventDetail branch below — a resolved name becomes
+// tappable only when its username also resolved; otherwise it renders as
+// plain, non-interactive text (same visible string either way, since the
+// displayed name always comes from resolveName, never from username).
+function renderName(name: string, username: string | null, onPress: (username: string) => void): ReactNode {
+  if (!username) return name;
+  return <ProfileNameLink name={name} username={username} onPress={onPress} />;
+}
+
+// Only ever built from actor_id/from_owner_id/to_owner_id (or, for
+// status_changed, old_custody_status/new_custody_status) — never from
 // metadata (which, for item_linked/item_unlinked, contains only an
 // internal collection_item_id and must never be surfaced here) and never
 // a raw UUID (resolveName returns null rather than the id itself, so a
 // failed lookup silently omits the detail line instead of leaking a raw
-// UUID). registered, ownership_transferred, item_linked, and item_unlinked
-// each get their own phrasing; everything else falls back to a plain
-// "By <name>" when the actor resolves.
-function getEventDetail(event: RegistryEvent, resolveName: (id: string | null) => string | null): string | null {
+// UUID). registered, ownership_transferred, item_linked, item_unlinked,
+// and status_changed each get their own phrasing; everything else falls
+// back to a plain "By <name>" when the actor resolves. Returns a ReactNode
+// (not a plain string) so the name portion can be an inline tappable link
+// — the wrapping <Text style={styles.timelineDetail}> at the call site is
+// unchanged, only what's inside it changes.
+function getEventDetail(
+  event: RegistryEvent,
+  resolveName: (id: string | null) => string | null,
+  resolveUsername: (id: string | null) => string | null,
+  onProfilePress: (username: string) => void,
+): ReactNode {
   if (event.event_type === 'registered') {
-    const name = resolveName(event.actor_id) ?? resolveName(event.to_owner_id);
-    return name ? `Registered by ${name}` : null;
+    const actorName = resolveName(event.actor_id);
+    const name = actorName ?? resolveName(event.to_owner_id);
+    if (!name) return null;
+    const resolvedId = actorName ? event.actor_id : event.to_owner_id;
+    return <>Registered by {renderName(name, resolveUsername(resolvedId), onProfilePress)}</>;
   }
 
   if (event.event_type === 'ownership_transferred') {
     const fromName = resolveName(event.from_owner_id);
     const toName = resolveName(event.to_owner_id);
-    if (fromName && toName) return `From ${fromName} → ${toName}`;
-    if (toName) return `To ${toName}`;
-    if (fromName) return `From ${fromName}`;
+    if (fromName && toName) {
+      return (
+        <>
+          From {renderName(fromName, resolveUsername(event.from_owner_id), onProfilePress)} →{' '}
+          {renderName(toName, resolveUsername(event.to_owner_id), onProfilePress)}
+        </>
+      );
+    }
+    if (toName) return <>To {renderName(toName, resolveUsername(event.to_owner_id), onProfilePress)}</>;
+    if (fromName) return <>From {renderName(fromName, resolveUsername(event.from_owner_id), onProfilePress)}</>;
     return null;
   }
 
   if (event.event_type === 'item_linked') {
     const actorName = resolveName(event.actor_id);
-    return actorName ? `Linked by ${actorName}` : null;
+    if (!actorName) return null;
+    return <>Linked by {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
   }
 
   if (event.event_type === 'item_unlinked') {
     const actorName = resolveName(event.actor_id);
-    return actorName ? `Unlinked by ${actorName}` : null;
+    if (!actorName) return null;
+    return <>Unlinked by {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
+  }
+
+  // Registry Status v1 — old_custody_status/new_custody_status only, never
+  // the existing registration-lifecycle `status` field. Populated only on
+  // status_changed rows (see hooks/use-registry-events.ts); both null for
+  // every other event type, which the earlier branches above already
+  // handle before reaching here.
+  if (event.event_type === 'status_changed') {
+    const oldLabel = event.old_custody_status ? formatCustodyStatus(event.old_custody_status) : null;
+    const newLabel = event.new_custody_status ? formatCustodyStatus(event.new_custody_status) : null;
+    if (oldLabel && newLabel) {
+      return (
+        <>
+          {oldLabel} → {newLabel}
+        </>
+      );
+    }
+    if (newLabel) return <>To {newLabel}</>;
+    if (oldLabel) return <>From {oldLabel}</>;
+    return null;
   }
 
   const actorName = resolveName(event.actor_id);
-  return actorName ? `By ${actorName}` : null;
+  if (!actorName) return null;
+  return <>By {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
 }
 
 function formatDateTime(iso: string) {
@@ -193,6 +273,7 @@ export default function RegistryHistoryScreen() {
     loading: eventsLoading,
     error: eventsError,
     resolveName,
+    resolveUsername,
   } = useRegistryEvents(record?.id);
 
   function handleBack() {
@@ -201,6 +282,13 @@ export default function RegistryHistoryScreen() {
       return;
     }
     router.replace('/(tabs)');
+  }
+
+  // Same route/pattern already used throughout the app (app/item/[id].tsx,
+  // app/collection/[folderId].tsx, app/(tabs)/index.tsx,
+  // app/(tabs)/search.tsx, app/(tabs)/notifications.tsx) — no new route.
+  function handleProfilePress(username: string) {
+    router.push({ pathname: '/user/[username]', params: { username } });
   }
 
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
@@ -261,6 +349,7 @@ export default function RegistryHistoryScreen() {
   const title = snapshotTitle || (item ? buildTitle(item) : null);
   const subtitle = hasSnapshotIdentity ? snapshotSubtitle : item ? buildSubtitle(item) : null;
   const ownerName = resolveName(record.current_owner_id);
+  const ownerUsername = resolveUsername(record.current_owner_id);
 
   return (
     <>
@@ -285,7 +374,16 @@ export default function RegistryHistoryScreen() {
             {ownerName && (
               <Text style={styles.identityOwnerLine} numberOfLines={1}>
                 <Text style={styles.identityOwnerLabel}>Current owner: </Text>
-                <Text style={styles.identityOwnerValue}>{ownerName}</Text>
+                {ownerUsername ? (
+                  <ProfileNameLink
+                    name={ownerName}
+                    username={ownerUsername}
+                    onPress={handleProfilePress}
+                    style={styles.identityOwnerValue}
+                  />
+                ) : (
+                  <Text style={styles.identityOwnerValue}>{ownerName}</Text>
+                )}
               </Text>
             )}
           </View>
@@ -309,7 +407,7 @@ export default function RegistryHistoryScreen() {
           <View style={styles.timeline}>
             {events.map((event, index) => {
               const isLast = index === events.length - 1;
-              const detail = getEventDetail(event, resolveName);
+              const detail = getEventDetail(event, resolveName, resolveUsername, handleProfilePress);
               return (
                 <View key={event.id} style={styles.timelineRow}>
                   <View style={styles.timelineMarkerCol}>
@@ -392,6 +490,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: PV2.textSecondary,
     fontWeight: '600',
+  },
+  // Matches the app's existing inline-link text treatment exactly — see
+  // components/profile-v2/profile-v2-identity.tsx's `website` style, the
+  // only other place PV2.link is used as plain text color rather than an
+  // icon/indicator tint. Deliberately just a color change (no underline,
+  // no weight override) so it composes correctly with whichever
+  // surrounding text style (identityOwnerValue, timelineDetail) it's
+  // layered on top of.
+  profileNameLink: {
+    color: PV2.link,
   },
   sectionHeader: {
     marginTop: 28,

@@ -276,10 +276,33 @@ export type RegisteredCard = {
   snapshot_image_storage_path: string | null;
   snapshot_image_error_code: RegistrySnapshotImageErrorCode | null;
   snapshot_image_updated_at: string | null;
+  // Registry Status v1 (supabase/migrations/20260731120000_
+  // add_registry_custody_status.sql). Independent of `status` above —
+  // `status` is the registration/account lifecycle field
+  // (owner_registered/active/inactive/owner_account_deleted), left
+  // completely unchanged by this feature. custody_status tracks where the
+  // physical card currently stands. Changed only via
+  // update_registered_card_custody_status, which also writes a
+  // 'status_changed' registry_events row — never editable directly.
+  custody_status: CustodyStatus;
   card_type?: CardType | null; // joined via select('*, card_type:card_types(*)')
 };
 
 export type RegistrySnapshotImageStatus = 'pending' | 'ready' | 'failed' | 'unavailable';
+
+// Physical custody/condition status — independent of RegisteredCardStatus
+// (registration lifecycle) above. Mirrors the live registry_custody_status
+// Postgres enum exactly. Default 'owned' at registration; every other
+// value is only ever reached via update_registered_card_custody_status.
+export type CustodyStatus =
+  | 'owned'
+  | 'in_transfer'
+  | 'on_loan'
+  | 'submitted_for_grading'
+  | 'missing'
+  | 'stolen'
+  | 'destroyed'
+  | 'archived';
 
 // Mirrors supabase/functions/_shared/registry-image.ts's
 // SnapshotImageErrorCode exactly — kept in sync deliberately rather than
@@ -323,6 +346,11 @@ export type RegistryEvent = {
   to_owner_id: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
+  // Registry Status v1 — populated only for status_changed events; both
+  // null for every other event type. First-class typed fields, not folded
+  // into metadata.
+  old_custody_status: CustodyStatus | null;
+  new_custody_status: CustodyStatus | null;
 };
 
 // ============================================================================

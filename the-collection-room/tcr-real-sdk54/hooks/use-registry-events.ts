@@ -137,9 +137,9 @@ export function useRegistryEvents(registeredCardId: string | undefined) {
     load();
   }, [load]);
 
-  // The only way the screen ever gets a name — never returns or exposes
-  // the raw id itself, so a caller can't accidentally render a UUID by
-  // falling back to the input.
+  // The only way the screen ever gets a display name — never returns or
+  // exposes the raw id itself, so a caller can't accidentally render a
+  // UUID by falling back to the input.
   const resolveName = useCallback(
     (userId: string | null): string | null => {
       if (!userId) return null;
@@ -150,5 +150,20 @@ export function useRegistryEvents(registeredCardId: string | undefined) {
     [profileNames],
   );
 
-  return { events, loading, error, resolveName, refresh: load };
+  // Route-safe counterpart to resolveName — resolveName prefers
+  // display_name (for showing), which is not necessarily the same string
+  // the /user/[username] route expects. Reuses the same already-fetched
+  // profileNames map (no additional query) so callers that need to
+  // navigate to a resolved person's profile have a real username to route
+  // with, never a display name or raw id. No fallback to display_name or
+  // userId — returns null rather than guessing.
+  const resolveUsername = useCallback(
+    (userId: string | null): string | null => {
+      if (!userId) return null;
+      return profileNames[userId]?.username ?? null;
+    },
+    [profileNames],
+  );
+
+  return { events, loading, error, resolveName, resolveUsername, refresh: load };
 }
