@@ -170,7 +170,10 @@ export function ProfileV2Identity({
 const styles = StyleSheet.create({
   wrap: {
     alignItems: 'center',
-    paddingHorizontal: 24,
+    // Matches ProfileV2Preferences/ProfileV2Posts/the edit-mode
+    // editSection's shared 16px inset (was 24 — the one section on this
+    // screen with a different edge from everything else).
+    paddingHorizontal: 16,
     marginTop: -2,
   },
   actionRow: {
@@ -246,7 +249,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   bio: {
-    color: 'rgba(255,255,255,0.35)',
+    // Was a hardcoded near-duplicate of PV2.textTertiary
+    // (rgba(255,255,255,0.35) vs the token's 0.36) — same token, no
+    // visual change, one fewer one-off color value in this file.
+    color: PV2.textTertiary,
     fontSize: 12,
     lineHeight: 17,
     textAlign: 'center',

@@ -73,7 +73,7 @@ export function ProfileV2TagEditor({ label, values, onChange, placeholder }: Pro
               <Text style={styles.chipText}>{value}</Text>
               <TouchableOpacity
                 onPress={() => removeValue(value)}
-                hitSlop={8}
+                hitSlop={14}
                 accessibilityRole="button"
                 accessibilityLabel={`Remove ${value} from ${label}`}>
                 <Text style={styles.chipRemove}>×</Text>
@@ -163,6 +163,11 @@ const styles = StyleSheet.create({
   },
   addBtn: {
     paddingHorizontal: 18,
+    // Explicit, matching `input`'s own paddingVertical exactly — previously
+    // relied on implicit flex-row stretch (inputRow has no explicit
+    // alignItems) to reach a comparable height, which worked but wasn't a
+    // reliable way to guarantee a real touch target.
+    paddingVertical: 12,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: PV2.panelBorder,

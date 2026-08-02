@@ -77,16 +77,24 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: 'center',
   },
+  // Was PV2.accent (solid red) — the same color this design system reserves
+  // for destructive/severe actions elsewhere (Remove Avatar, Stolen/Missing
+  // custody status, etc). Retrying a failed query isn't destructive, so
+  // this now matches ProfileV2Grid's retry button exactly (neutral panel
+  // style, same padding/radius/text treatment) rather than each empty/error
+  // state inventing its own button color.
   retryButton: {
     marginTop: 14,
-    backgroundColor: PV2.accent,
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 22,
+    backgroundColor: PV2.panel,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
   },
   retryButtonText: {
-    color: '#fff',
-    fontSize: 14,
+    color: PV2.textPrimary,
+    fontSize: 13,
     fontWeight: '600',
   },
 });
