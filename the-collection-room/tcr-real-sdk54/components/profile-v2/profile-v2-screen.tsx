@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   type AlertButton,
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -167,6 +168,21 @@ function findArraySectionIssue(sections: ArraySection[]): string | null {
     }
   }
   return null;
+}
+
+// Content-and-order comparison for the four preference arrays' dirty-state
+// check — deliberately a plain index walk, never .sort()/.join() on either
+// input (which would mutate a persisted array reference in place if it
+// were ever called with one directly) and never a reference-identity (===)
+// check on the arrays themselves, since a freshly-fetched `profile` after
+// a mid-edit refresh() is a new array instance even when its contents are
+// unchanged.
+function arraysEqualOrdered(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 type Props = {
@@ -568,13 +584,50 @@ export function ProfileV2Screen({ userId }: Props) {
     setEditMode(true);
   }
 
-  function cancelEdit() {
-    // Explicitly restores every text/array draft from the persisted
-    // profile (not just relying on the next enterEdit() to do it) — makes
-    // "Cancel restores persisted values" true immediately, not just true
-    // the next time edit mode happens to be entered. No Storage operation
-    // ever happens here — removeAvatar/removeHero/removeBadge are only
-    // ever acted on inside handleSave.
+  // Every editable field compared against the CURRENTLY persisted profile
+  // (not a snapshot captured when edit mode began) — matching
+  // resetTextAndPreferenceDraftsFromProfile's own `profile?.field ?? ''`
+  // normalization exactly, so a field reads as dirty precisely when it
+  // differs from what re-entering edit mode would load. Deliberately does
+  // NOT run normalizeWebsiteInput on editForm.website before comparing —
+  // a typed change must count as unsaved even if it would normalize to
+  // the same saved URL. Compared by value, never by object/array
+  // reference, so this stays correct even if `profile` is replaced by a
+  // new (but content-identical) object from a mid-edit refresh() — e.g.
+  // switching tabs and back on app/(tabs)/profile.tsx, which keeps this
+  // screen instance (and editMode) mounted and re-fires the focus effect.
+  // The one edge case this doesn't attempt to solve: if the PERSISTED
+  // profile genuinely changes mid-edit (a concurrent edit from another
+  // session), dirty-state reflects the draft against that new persisted
+  // truth, not against what the user originally saw — judged the more
+  // correct behavior for "discard" to mean "discard relative to what's
+  // actually saved now," not a stale snapshot.
+  const hasUnsavedProfileChanges =
+    editMode &&
+    (editForm.displayName !== (profile?.display_name ?? '') ||
+      editForm.heroName !== (profile?.hero_display_name ?? '') ||
+      editForm.tagline !== (profile?.tagline ?? '') ||
+      editForm.bio !== (profile?.bio ?? '') ||
+      editForm.location !== (profile?.location ?? '') ||
+      editForm.website !== (profile?.website ?? '') ||
+      !arraysEqualOrdered(favoriteSports, profile?.favorite_sports ?? []) ||
+      !arraysEqualOrdered(favoriteTeams, profile?.favorite_teams ?? []) ||
+      !arraysEqualOrdered(collectingCategories, profile?.collecting_categories ?? []) ||
+      !arraysEqualOrdered(collectorTags, profile?.collector_tags ?? []) ||
+      selectedTheme !== resolveHeroCanvasTheme(profile?.hero_theme) ||
+      newAvatarUri !== null ||
+      removeAvatar ||
+      newHeroUri !== null ||
+      removeHero ||
+      newBadgeUri !== null ||
+      removeBadge);
+
+  // The actual discard — identical to the old unconditional cancelEdit
+  // body. No Storage or database operation happens here; it only resets
+  // local draft state. Used by cancelEdit below (after confirmation, or
+  // immediately when nothing is dirty) and is the only path that ever
+  // clears editMode outside of a successful Save.
+  function discardEditsAndClose() {
     resetTextAndPreferenceDraftsFromProfile();
     setNewAvatarUri(null);
     setRemoveAvatar(false);
@@ -584,6 +637,58 @@ export function ProfileV2Screen({ userId }: Props) {
     setRemoveBadge(false);
     setEditMode(false);
   }
+
+  // Wired to both the explicit Cancel button (ProfileV2Hero's
+  // onCancelPress) and the Android hardware-back listener below — same
+  // function, same confirmation, same discard path either way. Never
+  // shows the prompt while a save is in flight (mirrors the existing
+  // Save-button saving guard, which this function didn't previously
+  // respect at all).
+  function cancelEdit() {
+    if (saving) return;
+    if (!hasUnsavedProfileChanges) {
+      discardEditsAndClose();
+      return;
+    }
+    Alert.alert(
+      'Discard changes?',
+      'Your unsaved profile changes will be lost.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        { text: 'Discard Changes', style: 'destructive', onPress: discardEditsAndClose },
+      ],
+    );
+  }
+
+  // Always holds the LATEST cancelEdit closure (fresh hasUnsavedProfileChanges/
+  // saving/draft values every render) without re-subscribing the listener
+  // on every keystroke — the effect below only re-runs when `editMode`
+  // itself toggles, not on every render.
+  const cancelEditRef = useRef(cancelEdit);
+  cancelEditRef.current = cancelEdit;
+
+  // Android hardware back only — this is a no-op on iOS (there is no
+  // hardwareBackPress event to fire there). Registered/removed purely by
+  // `editMode`, so re-entering edit mode never accumulates duplicate
+  // listeners, and it's a true no-op for visitors (editMode can only ever
+  // be true when isOwnProfile, since enterEdit() early-returns otherwise).
+  // Returning `true` swallows the back press only while actively editing —
+  // cancelEdit() itself decides immediate-exit vs. confirm vs. (while
+  // saving) do-nothing; returning `false` would let default back
+  // navigation proceed underneath the open Alert, which must never happen.
+  // Header/back-button and other owner controls were audited and found
+  // unreachable during edit mode (see the report accompanying this
+  // change) — this listener is the one system-navigation path this
+  // screen can safely intercept without a broader navigation refactor;
+  // tab-switch and stack swipe-back gestures are not covered here.
+  useEffect(() => {
+    if (!editMode) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      cancelEditRef.current();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [editMode]);
 
   async function launchCamera() {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
