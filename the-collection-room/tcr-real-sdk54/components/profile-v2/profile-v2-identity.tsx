@@ -4,7 +4,7 @@ import { PV2 } from './profile-v2-theme';
 
 // Name/username now render as an overlay on the hero itself (see
 // profile-v2-hero.tsx) rather than here, per the reference — this component
-// owns the action row, tagline, bio, location, and website.
+// owns the action row, tagline, bio, location, website, and member-since.
 //
 // mode is 'owner' for the signed-in user's own profile, 'public' when
 // viewing someone else's (components/profile-v2/profile-v2-screen.tsx,
@@ -20,6 +20,11 @@ type Props = {
   // rendered as tappable — defense in depth against a value that reached
   // the database some other way.
   website?: string | null;
+  // profile.created_at — same value for owner and visitor, no separate
+  // query. Rendered as "Member since <Month> <Year>" via
+  // formatMemberSince below; omitted entirely (never "Invalid Date") for
+  // a missing or unparseable value.
+  createdAt?: string | null;
   mode: 'owner' | 'public';
   onEditPress?: () => void;
   onFollowPress?: () => void;
@@ -72,11 +77,26 @@ async function openWebsite(url: string) {
   }
 }
 
+// Fixed 'en-US' locale, not the device locale — matches this app's own
+// existing convention (components/feed/post-card.tsx's formatAge already
+// formats post dates via toLocaleDateString('en-US', ...) rather than the
+// device locale), so profile dates and feed dates read consistently
+// regardless of the device's own locale setting. Parses defensively:
+// missing/empty/unparseable input returns null (never "Invalid Date").
+function formatMemberSince(createdAt: string | null | undefined): string | null {
+  if (!createdAt) return null;
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const monthYear = date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  return `Member since ${monthYear}`;
+}
+
 export function ProfileV2Identity({
   tagline,
   bio,
   location,
   website,
+  createdAt,
   mode,
   onEditPress,
   onFollowPress,
@@ -86,6 +106,7 @@ export function ProfileV2Identity({
   messageLoading,
 }: Props) {
   const safeWebsiteUrl = website ? getSafeWebsiteUrl(website) : null;
+  const memberSince = formatMemberSince(createdAt);
 
   return (
     <View style={styles.wrap}>
@@ -141,6 +162,7 @@ export function ProfileV2Identity({
           <Text style={styles.websiteInvalid}>{website}</Text>
         )
       ) : null}
+      {memberSince ? <Text style={styles.memberSince}>{memberSince}</Text> : null}
     </View>
   );
 }
@@ -255,6 +277,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
     textAlign: 'center',
+    paddingHorizontal: 12,
+  },
+  // Same quiet metadata treatment as location — no icon, no new color,
+  // never visually competes with tagline/bio above it.
+  memberSince: {
+    color: PV2.textTertiary,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
     paddingHorizontal: 12,
   },
 });

@@ -1118,6 +1118,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 bio={profile?.bio ?? null}
                 location={profile?.location ?? null}
                 website={profile?.website ?? null}
+                createdAt={profile?.created_at ?? null}
                 mode={isOwnProfile ? 'owner' : 'public'}
                 onEditPress={isOwnProfile ? enterEdit : undefined}
                 onFollowPress={isOwnProfile ? undefined : toggleFollow}
