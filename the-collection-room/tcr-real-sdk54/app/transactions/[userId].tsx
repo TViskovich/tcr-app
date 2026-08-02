@@ -1,18 +1,21 @@
-import { useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { TransactionRow } from '@/components/transactions/transaction-row';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import {
-  getPlaceholderTransactions,
-  getTransactionSummary,
-  type TransactionPreview,
-} from '@/lib/placeholder-transactions';
+import { useAuth } from '@/lib/auth';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import {
+  acceptOwnershipTransfer,
+  cancelOwnershipTransfer,
+  declineOwnershipTransfer,
+  fetchOwnershipTransfersForUser,
+  type OwnershipTransferView,
+} from '@/lib/ownership-transfer';
 
 type FilterKey = 'all' | 'sent' | 'received' | 'pending';
 
@@ -23,35 +26,69 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'pending', label: 'Pending' },
 ];
 
-function matchesFilter(transaction: TransactionPreview, filter: FilterKey): boolean {
+function matchesFilter(transfer: OwnershipTransferView, filter: FilterKey): boolean {
   switch (filter) {
     case 'sent':
-      return transaction.direction === 'sent';
+      return transfer.direction === 'sent';
     case 'received':
-      return transaction.direction === 'received';
+      return transfer.direction === 'received';
     case 'pending':
-      return transaction.status === 'pending';
+      return transfer.status === 'pending';
     default:
       return true;
   }
 }
 
-// Full transaction history for one user — reached from the profile rail's
-// Transfers preview (components/profile-v2/transfers-preview.tsx) via
-// "View all transactions". userId is whichever profile was being viewed
-// (own or someone else's), not necessarily the signed-in session — see
-// that component for how it's threaded through. Placeholder data only, via
-// lib/placeholder-transactions.ts — filters run locally over the fixed
-// list; no query/database exists yet.
+// Real ownership_transfers data — replaces the old placeholder-only screen
+// (lib/placeholder-transactions.ts). This is a genuinely private view: it
+// only shows the SIGNED-IN user's own transfers (sender or recipient),
+// enforced both by the query itself (fetchOwnershipTransfersForUser scopes
+// by the caller's own id, never the route param) and independently by
+// ownership_transfers' own participant-only RLS policy. The `userId` route
+// param is only ever used to confirm it matches the signed-in session —
+// never to fetch someone else's data — since real transfer history isn't
+// the kind of thing another user should be able to view via a URL, unlike
+// a public profile.
 export default function TransactionsScreen() {
   const { userId } = useLocalSearchParams<{ userId: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [filter, setFilter] = useState<FilterKey>('all');
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
 
-  const transactions = useMemo(() => getPlaceholderTransactions(userId), [userId]);
-  const { total, pending } = getTransactionSummary(transactions);
-  const filtered = useMemo(() => transactions.filter((t) => matchesFilter(t, filter)), [transactions, filter]);
+  const [filter, setFilter] = useState<FilterKey>('all');
+  const [transfers, setTransfers] = useState<OwnershipTransferView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Per-row action-in-flight guard, keyed by transfer id — never a single
+  // screen-wide flag, so acting on one row can't disable an unrelated row.
+  const [actionLoadingIds, setActionLoadingIds] = useState<Set<string>>(new Set());
+
+  const isOwnRoute = !!currentUserId && currentUserId === userId;
+
+  const loadTransfers = useCallback(async () => {
+    if (!currentUserId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const { error: fetchError, data } = await fetchOwnershipTransfersForUser(currentUserId);
+    if (fetchError) {
+      if (__DEV__) console.error('[TransactionsScreen] fetch failed:', fetchError);
+      setError(fetchError);
+      setLoading(false);
+      return;
+    }
+    setError(null);
+    setTransfers(data);
+    setLoading(false);
+  }, [currentUserId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isOwnRoute) loadTransfers();
+    }, [isOwnRoute, loadTransfers]),
+  );
 
   function handleBack() {
     if (router.canGoBack()) {
@@ -60,6 +97,94 @@ export default function TransactionsScreen() {
     }
     router.replace('/(tabs)');
   }
+
+  async function runAction(
+    transferId: string,
+    rpcCall: () => Promise<{ error: string | null; data: unknown }>,
+    failureMessage: string,
+  ) {
+    if (actionLoadingIds.has(transferId)) return;
+    setActionLoadingIds((prev) => new Set(prev).add(transferId));
+    try {
+      const { error: rpcError } = await rpcCall();
+      if (rpcError) {
+        if (__DEV__) console.error('[TransactionsScreen] action failed:', rpcError);
+        Alert.alert('Error', __DEV__ ? rpcError : failureMessage);
+        return;
+      }
+      // The RPC already performed the full state change atomically
+      // (including, for accept, the registered_cards ownership move,
+      // collection_item_id clear, and registry_events insert — none of
+      // that is duplicated here). A full refetch is what updates this
+      // screen's summary counts and re-renders every row (including the
+      // acted-on one) with its new, real status.
+      await loadTransfers();
+    } finally {
+      setActionLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(transferId);
+        return next;
+      });
+    }
+  }
+
+  function handleAccept(transfer: OwnershipTransferView) {
+    Alert.alert('Accept transfer?', 'You will become the owner of this card.', [
+      { text: 'Not Now', style: 'cancel' },
+      {
+        text: 'Accept',
+        onPress: () =>
+          runAction(transfer.id, () => acceptOwnershipTransfer(transfer.id), 'Unable to accept this transfer. Please try again.'),
+      },
+    ]);
+  }
+
+  function handleDecline(transfer: OwnershipTransferView) {
+    Alert.alert('Decline transfer?', 'This transfer will be declined and cannot be undone.', [
+      { text: 'Keep Pending', style: 'cancel' },
+      {
+        text: 'Decline',
+        style: 'destructive',
+        onPress: () =>
+          runAction(transfer.id, () => declineOwnershipTransfer(transfer.id), 'Unable to decline this transfer. Please try again.'),
+      },
+    ]);
+  }
+
+  function handleCancel(transfer: OwnershipTransferView) {
+    Alert.alert('Cancel this transfer?', 'This will cancel the pending transfer.', [
+      { text: 'Keep Transfer', style: 'cancel' },
+      {
+        text: 'Cancel Transfer',
+        style: 'destructive',
+        onPress: () =>
+          runAction(transfer.id, () => cancelOwnershipTransfer(transfer.id), 'Unable to cancel this transfer. Please try again.'),
+      },
+    ]);
+  }
+
+  if (!isOwnRoute) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <View style={styles.header}>
+          <Pressable style={styles.headerButton} onPress={handleBack} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
+            <IconSymbol name="chevron.left" size={20} color={PV2.textPrimary} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Transactions</Text>
+          <View style={styles.headerButton} />
+        </View>
+        <View style={styles.centerState}>
+          <Text style={styles.emptyTitle}>Not available</Text>
+          <Text style={styles.emptyBody}>You can only view your own transaction history.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const filtered = transfers.filter((t) => matchesFilter(t, filter));
+  const total = transfers.length;
+  const pendingCount = transfers.filter((t) => t.status === 'pending').length;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -77,57 +202,75 @@ export default function TransactionsScreen() {
         <View style={styles.headerButton} />
       </View>
 
-      <FlatList
-        data={filtered}
-        keyExtractor={(t) => t.id}
-        contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
-        showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <>
-            <View style={styles.summaryCard}>
-              <View style={styles.summaryStat}>
-                <Text style={styles.summaryValue}>{total}</Text>
-                <Text style={styles.summaryLabel}>Total</Text>
+      {loading ? (
+        <View style={styles.centerState}>
+          <ActivityIndicator size="large" color={PV2.accent} />
+        </View>
+      ) : error ? (
+        <View style={styles.centerState}>
+          <Text style={styles.emptyTitle}>Couldn&apos;t load transactions</Text>
+          <Pressable style={styles.retryButton} onPress={loadTransfers} accessibilityRole="button" accessibilityLabel="Retry">
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={(t) => t.id}
+          contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+          showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            <>
+              <View style={styles.summaryCard}>
+                <View style={styles.summaryStat}>
+                  <Text style={styles.summaryValue}>{total}</Text>
+                  <Text style={styles.summaryLabel}>Total</Text>
+                </View>
+                <View style={styles.summaryDivider} />
+                <View style={styles.summaryStat}>
+                  <Text style={styles.summaryValue}>{pendingCount}</Text>
+                  <Text style={styles.summaryLabel}>Pending</Text>
+                </View>
               </View>
-              <View style={styles.summaryDivider} />
-              <View style={styles.summaryStat}>
-                <Text style={styles.summaryValue}>{pending}</Text>
-                <Text style={styles.summaryLabel}>Pending</Text>
-              </View>
-            </View>
 
-            <View style={styles.filterRow}>
-              {FILTERS.map((f) => {
-                const active = f.key === filter;
-                return (
-                  <Pressable
-                    key={f.key}
-                    style={[styles.filterPill, active && styles.filterPillActive]}
-                    onPress={() => setFilter(f.key)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Filter: ${f.label}`}>
-                    <Text style={[styles.filterPillText, active && styles.filterPillTextActive]}>{f.label}</Text>
-                  </Pressable>
-                );
-              })}
+              <View style={styles.filterRow}>
+                {FILTERS.map((f) => {
+                  const active = f.key === filter;
+                  return (
+                    <Pressable
+                      key={f.key}
+                      style={[styles.filterPill, active && styles.filterPillActive]}
+                      onPress={() => setFilter(f.key)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Filter: ${f.label}`}>
+                      <Text style={[styles.filterPillText, active && styles.filterPillTextActive]}>{f.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          }
+          ItemSeparatorComponent={() => <View style={styles.divider} />}
+          renderItem={({ item }) => (
+            <TransactionRow
+              transfer={item}
+              currentUserId={currentUserId}
+              actionLoading={actionLoadingIds.has(item.id)}
+              onAccept={() => handleAccept(item)}
+              onDecline={() => handleDecline(item)}
+              onCancel={() => handleCancel(item)}
+            />
+          )}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>No transactions</Text>
+              <Text style={styles.emptyBody}>
+                {filter === 'all' ? 'Transfer activity will show up here.' : `No ${filter} transactions yet.`}
+              </Text>
             </View>
-          </>
-        }
-        ItemSeparatorComponent={() => <View style={styles.divider} />}
-        renderItem={({ item }) => (
-          <View style={styles.rowWrap}>
-            <TransactionRow transaction={item} variant="full" />
-          </View>
-        )}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No transactions</Text>
-            <Text style={styles.emptyBody}>
-              {filter === 'all' ? 'Transfer activity will show up here.' : `No ${filter} transactions yet.`}
-            </Text>
-          </View>
-        }
-      />
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -158,6 +301,29 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     fontSize: 16,
     fontWeight: '700',
+  },
+  centerState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  // Matches Profile V2's established neutral retry-button treatment
+  // (components/profile-v2/profile-v2-grid.tsx / profile-v2-posts.tsx) —
+  // same values, not a one-off style.
+  retryButton: {
+    backgroundColor: PV2.panel,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+  },
+  retryButtonText: {
+    color: PV2.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
   },
   listContent: {
     paddingHorizontal: 16,
@@ -224,11 +390,6 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: PV2.dividerColor,
   },
-  rowWrap: {
-    // TransactionRow owns no horizontal padding itself so it can also sit
-    // flush inside the profile rail's card (see transfers-preview.tsx) —
-    // this page supplies its own instead.
-  },
   emptyState: {
     alignItems: 'center',
     paddingTop: 48,
@@ -239,6 +400,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginBottom: 6,
+    textAlign: 'center',
   },
   emptyBody: {
     color: PV2.textTertiary,

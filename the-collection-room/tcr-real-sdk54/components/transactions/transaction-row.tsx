@@ -1,81 +1,169 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { formatTransactionDate, type TransactionPreview } from '@/lib/placeholder-transactions';
+import {
+  formatTransferParticipantLine,
+  formatTransferReason,
+  formatTransferStatus,
+  type OwnershipTransferView,
+} from '@/lib/ownership-transfer';
+
+function formatTransferDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 type Props = {
-  transaction: TransactionPreview;
-  // compact: profile-rail preview (transfers-preview.tsx) — date trailing,
-  // no status pill, no chevron. full: the dedicated Transactions page —
-  // larger thumbnail, date on its own line, status pill when pending, and
-  // a chevron reserved for future per-transaction detail navigation (not
-  // wired up yet).
-  variant?: 'compact' | 'full';
+  transfer: OwnershipTransferView;
+  currentUserId: string | undefined;
+  // True while THIS row's own action is in flight — gates all three
+  // buttons on this row only, never a screen-wide flag, so acting on one
+  // row never disables another.
+  actionLoading?: boolean;
+  onAccept?: () => void;
+  onDecline?: () => void;
+  onCancel?: () => void;
 };
 
-const DIRECTION_LABEL: Record<TransactionPreview['direction'], string> = {
-  sent: 'Transferred to',
-  received: 'Received from',
-};
+export function TransactionRow({ transfer, currentUserId, actionLoading, onAccept, onDecline, onCancel }: Props) {
+  const isPending = transfer.status === 'pending';
+  // Direction is already computed relative to whichever user this list was
+  // fetched for (see fetchOwnershipTransfersForUser) — but the actual
+  // button-gating below re-derives isSender/isRecipient from the raw
+  // participant ids rather than trusting `direction` alone, so a row never
+  // shows a mutation control to the wrong person even if this component
+  // were ever reused with a differently-scoped list.
+  const isSender = !!currentUserId && transfer.sender?.id === currentUserId;
+  const isRecipient = !!currentUserId && transfer.recipient?.id === currentUserId;
 
-export function TransactionRow({ transaction, variant = 'compact' }: Props) {
-  const isFull = variant === 'full';
-  const isPending = transaction.status === 'pending';
+  const participantLine = formatTransferParticipantLine(transfer);
+
+  const cardTitle = transfer.card?.title ?? 'Registry Card';
+  const reasonLabel = formatTransferReason(transfer.reason);
 
   return (
-    <View style={[styles.row, isFull && styles.rowFull]}>
-      <View style={[styles.thumb, isFull && styles.thumbFull]}>
-        {transaction.imageUrl ? (
-          <Image source={{ uri: transaction.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
-        ) : (
-          <IconSymbol name="rectangle.stack.fill" size={isFull ? 15 : 12} color={PV2.textTertiary} />
-        )}
-      </View>
+    <View style={styles.row}>
+      <View style={styles.mainRow}>
+        <View style={styles.thumb}>
+          {transfer.card?.imageUrl ? (
+            <Image source={{ uri: transfer.card.imageUrl }} style={styles.thumbImage} contentFit="cover" />
+          ) : (
+            <IconSymbol name="rectangle.stack.fill" size={15} color={PV2.textTertiary} />
+          )}
+        </View>
 
-      <View style={styles.body}>
-        <Text style={[styles.title, isFull && styles.titleFull]} numberOfLines={1}>
-          {transaction.itemTitle}
-        </Text>
-        <Text style={styles.direction} numberOfLines={1}>
-          {DIRECTION_LABEL[transaction.direction]} @{transaction.counterpartUsername}
-        </Text>
-        {isFull && <Text style={styles.date}>{formatTransactionDate(transaction.date)}</Text>}
-      </View>
-
-      <View style={styles.trailing}>
-        {!isFull && <Text style={styles.dateCompact}>{formatTransactionDate(transaction.date)}</Text>}
-        {isPending && (
-          <View style={styles.statusPill}>
-            <Text style={styles.statusPillText}>Pending</Text>
+        <View style={styles.body}>
+          <Text style={styles.title} numberOfLines={1}>
+            {cardTitle}
+          </Text>
+          {/* cc_id only ever shown when the card actually resolved — never
+              fabricated, and the raw registered_cards.id is never selected
+              by the query in the first place, let alone rendered here. */}
+          {transfer.card?.ccId && (
+            <Text style={styles.ccId} numberOfLines={1}>
+              {transfer.card.ccId}
+            </Text>
+          )}
+          {/* No numberOfLines cap here (unlike title/ccId above) — the
+              actor-clarifying suffix ("cancelled by you"/"cancelled by
+              sender") sits AFTER the interpolated @username, so a
+              tail-ellipsis truncation could hide exactly the disambiguating
+              text formatTransferParticipantLine exists to show, for a long
+              username (no app-enforced max length on username). Letting
+              this one line wrap is cheaper than that risk. */}
+          <Text style={styles.direction}>{participantLine}</Text>
+          <View style={styles.metaRow}>
+            <Text style={styles.date}>{formatTransferDate(transfer.createdAt)}</Text>
+            {reasonLabel && (
+              <>
+                <Text style={styles.metaDot}>·</Text>
+                <Text style={styles.reason}>{reasonLabel}</Text>
+              </>
+            )}
           </View>
-        )}
-        {isFull && <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />}
+        </View>
+
+        <View style={[styles.statusPill, !isPending && styles.statusPillResolved]}>
+          <Text style={[styles.statusPillText, !isPending && styles.statusPillTextResolved]}>
+            {formatTransferStatus(transfer.status)}
+          </Text>
+        </View>
       </View>
+
+      {/* Actions only ever render for a pending transfer, and only for the
+          one relevant participant — a non-participant (shouldn't be
+          possible, since the list itself is already scoped to
+          from/to_owner_id = the signed-in user) sees no buttons at all,
+          matching a resolved transfer's own no-buttons state. */}
+      {isPending && (isRecipient || isSender) && (
+        <View style={styles.actionsRow}>
+          {isRecipient && (
+            <>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.acceptBtn]}
+                onPress={onAccept}
+                disabled={actionLoading}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Accept transfer">
+                {actionLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.acceptBtnText}>Accept</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.declineBtn]}
+                onPress={onDecline}
+                disabled={actionLoading}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Decline transfer">
+                <Text style={styles.declineBtnText}>Decline</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          {isSender && (
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.declineBtn]}
+              onPress={onCancel}
+              disabled={actionLoading}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel transfer">
+              {actionLoading ? (
+                <ActivityIndicator size="small" color={PV2.accent} />
+              ) : (
+                <Text style={styles.declineBtnText}>Cancel</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </View>
   );
 }
 
-const THUMB_SIZE = 32;
-const THUMB_SIZE_FULL = 44;
+const THUMB_SIZE = 44;
 
 const styles = StyleSheet.create({
   row: {
+    paddingVertical: 12,
+    gap: 10,
+  },
+  mainRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-  },
-  rowFull: {
-    paddingVertical: 12,
     gap: 12,
   },
   thumb: {
     width: THUMB_SIZE,
     height: THUMB_SIZE,
-    borderRadius: 8,
+    borderRadius: 10,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,
     borderWidth: 1,
@@ -83,10 +171,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  thumbFull: {
-    width: THUMB_SIZE_FULL,
-    height: THUMB_SIZE_FULL,
-    borderRadius: 10,
+  thumbImage: {
+    width: '100%',
+    height: '100%',
   },
   body: {
     flex: 1,
@@ -94,37 +181,44 @@ const styles = StyleSheet.create({
   },
   title: {
     color: PV2.textPrimary,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
   },
-  titleFull: {
-    fontSize: 15,
+  ccId: {
+    color: PV2.textTertiary,
+    fontSize: 11,
   },
   direction: {
     color: PV2.textTertiary,
     fontSize: 12,
+    marginTop: 2,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
   },
   date: {
     color: PV2.textTertiary,
     fontSize: 11,
-    marginTop: 2,
   },
-  trailing: {
-    alignItems: 'flex-end',
-    gap: 6,
-  },
-  dateCompact: {
+  metaDot: {
     color: PV2.textTertiary,
     fontSize: 11,
   },
-  // Pending is the only status that gets accent color — a completed
-  // transaction shows no badge at all, matching "accent color only for
-  // meaningful status emphasis."
+  reason: {
+    color: PV2.textTertiary,
+    fontSize: 11,
+  },
   statusPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 6,
     backgroundColor: PV2.accentSoft,
+  },
+  statusPillResolved: {
+    backgroundColor: PV2.emptyCardBg,
   },
   statusPillText: {
     color: PV2.accent,
@@ -132,5 +226,38 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+  },
+  statusPillTextResolved: {
+    color: PV2.textTertiary,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingLeft: THUMB_SIZE + 12,
+  },
+  actionBtn: {
+    minHeight: 36,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acceptBtn: {
+    backgroundColor: PV2.accent,
+  },
+  acceptBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  declineBtn: {
+    borderWidth: 1,
+    borderColor: PV2.accent,
+    backgroundColor: 'transparent',
+  },
+  declineBtnText: {
+    color: PV2.accent,
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

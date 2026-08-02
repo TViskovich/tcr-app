@@ -385,6 +385,20 @@ export function ProfileV2Screen({ userId }: Props) {
     });
   }
 
+  // Temporary owner-only entry point for testing the real
+  // ownership-transfer management screen (app/transactions/[userId].tsx).
+  // Always the AUTHENTICATED user's own id — never the viewed profile's
+  // userId, a username, or any other caller-supplied value — matching
+  // that screen's own auth guard, which only ever renders real data when
+  // the route param equals the signed-in session's id.
+  function handleOpenTransfers() {
+    if (!isOwnProfile || !currentUserId) return;
+    router.push({
+      pathname: '/transactions/[userId]',
+      params: { userId: currentUserId },
+    });
+  }
+
   // Any signed-in viewer can like any visible post here — this is no
   // longer only ever "your own post" now that this screen also renders
   // someone else's profile, so (unlike the old owner-only version) this
@@ -1233,6 +1247,22 @@ export function ProfileV2Screen({ userId }: Props) {
                 messageLoading={msgLoading}
               />
 
+              {/* Temporary — testing-only entry point for the real
+                  ownership-transfer screen. Not a Profile V2 selector
+                  section, never shown to visitors. Reuses badgeEditLabel's
+                  exact link-text style (PV2.link, 14px, 600) rather than
+                  inventing a new "secondary owner action" treatment. */}
+              {isOwnProfile && currentUserId && (
+                <TouchableOpacity
+                  style={styles.transfersLink}
+                  onPress={handleOpenTransfers}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="View transfers">
+                  <Text style={styles.badgeEditLabel}>Transfers</Text>
+                </TouchableOpacity>
+              )}
+
               <ProfileV2Stats followers={stats.followerCount} following={stats.followingCount} />
 
               {/* Own read-only Collector Profile section — same data for
@@ -1408,6 +1438,16 @@ const styles = StyleSheet.create({
     color: PV2.link,
     fontSize: 14,
     fontWeight: '600',
+  },
+  // Layout only — badgeEditLabel above owns all the actual text styling,
+  // reused as-is. Centered, small tap padding, modest top margin matching
+  // this screen's existing small-gap conventions (e.g. ProfileV2Stats'
+  // own marginTop: 8) rather than a new spacing value.
+  transfersLink: {
+    alignSelf: 'center',
+    marginTop: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 12,
   },
   themeRow: {
     flexDirection: 'row',
