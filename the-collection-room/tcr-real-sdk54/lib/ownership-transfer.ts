@@ -51,6 +51,35 @@ export async function cancelOwnershipTransfer(
 }
 
 // ============================================================================
+// Card-scoped pending-transfer check — used by the registry detail screen to
+// decide between "Transfer Card" and "View Transfer" for the owner.
+// Deliberately NOT fetchOwnershipTransfersForUser below (that returns a
+// user's entire transfer history across every card, sent+received); the
+// registry screen only ever needs "does THIS card have a pending transfer,"
+// so this is its own narrow, single-row query rather than over-fetching.
+// maybeSingle() is safe (not just convenient) because
+// ownership_transfers_one_pending_per_card is a real partial unique index
+// (UNIQUE (registered_card_id) WHERE status = 'pending') — the same
+// constraint initiate_ownership_transfer's own unique-violation catch
+// relies on — so the database itself guarantees this query can never see
+// more than one row.
+// ============================================================================
+
+export async function fetchPendingTransferForCard(
+  registeredCardId: string,
+): Promise<{ error: string | null; data: { id: string } | null }> {
+  const { data, error } = await supabase
+    .from('ownership_transfers')
+    .select('id')
+    .eq('registered_card_id', registeredCardId)
+    .eq('status', 'pending')
+    .maybeSingle();
+
+  if (error) return { error: error.message, data: null };
+  return { error: null, data: data as { id: string } | null };
+}
+
+// ============================================================================
 // Read model — one transfer as the transactions screen needs to render it.
 // ============================================================================
 

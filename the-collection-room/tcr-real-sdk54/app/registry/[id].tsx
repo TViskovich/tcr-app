@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,12 +20,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import {
+  TransferRecipientPicker,
+  type TransferRecipientProfile,
+} from '@/components/registry/transfer-recipient-picker';
 import { useAuth } from '@/lib/auth';
 import { formatCustodyStatus, updateRegistryCustodyStatus } from '@/lib/registry-custody-status';
 import { getRegistryPublicUrl } from '@/lib/registry-links';
+import { fetchPendingTransferForCard, formatTransferReason, initiateOwnershipTransfer } from '@/lib/ownership-transfer';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, CustodyStatus, RegisteredCard, RegisteredCardStatus } from '@/types';
+import type { CollectionItem, CustodyStatus, OwnershipTransferReason, RegisteredCard, RegisteredCardStatus } from '@/types';
 
 type RegisteredCardWithItem = RegisteredCard & {
   collection_item: CollectionItem | null;
@@ -149,14 +154,20 @@ const CUSTODY_STATUS_REQUIRES_CONFIRMATION = new Set<CustodyStatus>(['missing', 
 // a routine/expected end state, not a severe one).
 const CUSTODY_STATUS_SEVERE = new Set<CustodyStatus>(['missing', 'stolen', 'destroyed']);
 
+// Ownership Transfer Phase 2 — fixed, deliberate order, same convention as
+// CUSTODY_STATUS_OPTIONS above. No value here that isn't already part of
+// the canonical OwnershipTransferReason union (types/index.ts) — this is a
+// picker over existing values, never a place that invents new ones.
+const TRANSFER_REASON_OPTIONS: OwnershipTransferReason[] = ['sale', 'trade', 'gift', 'other'];
+
 // Minimal registry detail screen — Phase 2B1 scope. Reached from the item-
 // detail "View Registry" action once a card is registered. No verification
-// scoring, no transfer controls — those are later CacheCase Registry
-// sub-phases. Fetches fresh by id (same convention as every other detail
-// route in this app — item/[id].tsx, collection/[folderId].tsx,
-// post/[id].tsx, conversation/[id].tsx all re-fetch by id rather than
-// trusting only passed params) so it also works if reached via a future
-// direct link, not just via in-app navigation.
+// scoring — those are later CacheCase Registry sub-phases. Fetches fresh by
+// id (same convention as every other detail route in this app —
+// item/[id].tsx, collection/[folderId].tsx, post/[id].tsx,
+// conversation/[id].tsx all re-fetch by id rather than trusting only
+// passed params) so it also works if reached via a future direct link, not
+// just via in-app navigation.
 export default function RegistryDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -177,6 +188,19 @@ export default function RegistryDetailScreen() {
   const [isCustodyModalVisible, setIsCustodyModalVisible] = useState(false);
   const [updatingCustodyStatus, setUpdatingCustodyStatus] = useState(false);
 
+  // Ownership Transfer Phase 2 state — all owner-only, all scoped to this
+  // one card. pendingTransferId is intentionally just an id, not a full
+  // OwnershipTransferView: this screen never displays transfer details
+  // (sender/recipient/reason/etc.) inline, only whether one exists, so it
+  // never needs more than fetchPendingTransferForCard already returns.
+  const [pendingTransferLoading, setPendingTransferLoading] = useState(false);
+  const [pendingTransferId, setPendingTransferId] = useState<string | null>(null);
+  const [pendingTransferError, setPendingTransferError] = useState<string | null>(null);
+  const [isTransferModalVisible, setIsTransferModalVisible] = useState(false);
+  const [selectedRecipient, setSelectedRecipient] = useState<TransferRecipientProfile | null>(null);
+  const [selectedReason, setSelectedReason] = useState<OwnershipTransferReason | null>(null);
+  const [submittingTransfer, setSubmittingTransfer] = useState(false);
+
   // Public QR payload — built only from the public cc_id, never
   // record.id/collection_item_id/current_owner_id. null whenever no real
   // base URL is configured or cc_id is somehow blank; see
@@ -186,6 +210,13 @@ export default function RegistryDetailScreen() {
   // every hook in this component runs on every render, regardless of
   // loading/error/not-found state.
   const registryPublicUrl = record ? getRegistryPublicUrl(record.cc_id) : null;
+
+  // Owner check, computed unconditionally (not after the loading/error/
+  // not-found early returns below) so the pending-transfer effect further
+  // down — which must also run on every render per the rules of hooks —
+  // can use it. Same shape as app/item/[id].tsx's isOwner: session id
+  // compared directly against the record's own current_owner_id.
+  const isOwner = !!record && !!currentUserId && record.current_owner_id === currentUserId;
 
   // Guards against the modal staying open if the public URL becomes
   // unavailable out from under it (e.g. the record reloads for a
@@ -254,6 +285,43 @@ export default function RegistryDetailScreen() {
 
     load();
   }, [id]);
+
+  // Ownership Transfer Phase 2 — owner-only pending-transfer check.
+  // Deliberately a separate effect/query from the record load above (see
+  // fetchPendingTransferForCard's own comment in lib/ownership-transfer.ts
+  // for why this is its own narrow query, not fetchOwnershipTransfersForUser).
+  // checkPendingTransfer is extracted as a stable callback so both this
+  // effect and the error state's "Retry" button below can call it.
+  const checkPendingTransfer = useCallback(async (registeredCardId: string) => {
+    setPendingTransferLoading(true);
+    setPendingTransferError(null);
+    const { error, data } = await fetchPendingTransferForCard(registeredCardId);
+    if (error) {
+      if (__DEV__) console.error('[RegistryDetail] pending-transfer check failed:', error);
+      setPendingTransferError(error);
+      setPendingTransferId(null);
+      setPendingTransferLoading(false);
+      return;
+    }
+    setPendingTransferId(data?.id ?? null);
+    setPendingTransferLoading(false);
+  }, []);
+
+  useEffect(() => {
+    // Non-owners never run this query at all — not just "don't show the
+    // button," the network call itself never happens. Also resets to a
+    // clean not-loaded state whenever the record or the ownership relationship
+    // changes (different card navigated to, or this viewer's ownership of
+    // the current card changed), so stale pending state from a previous
+    // card/owner can never leak into the new one.
+    if (!record || !isOwner) {
+      setPendingTransferLoading(false);
+      setPendingTransferId(null);
+      setPendingTransferError(null);
+      return;
+    }
+    checkPendingTransfer(record.id);
+  }, [record?.id, isOwner, checkPendingTransfer]);
 
   function handleBack() {
     if (router.canGoBack()) {
@@ -340,6 +408,103 @@ export default function RegistryDetailScreen() {
     applyCustodyStatus(newStatus);
   }
 
+  // Ownership Transfer Phase 2 — owner-only entry points. Gated the same
+  // defense-in-depth way as handleCustodyStatusPress: the row that opens
+  // this is itself only rendered when isOwner and the pending-transfer
+  // check has resolved cleanly with no pending transfer (see the JSX
+  // below) — this guard re-checks the same three pending-state fields
+  // explicitly rather than trusting only the render gate, matching this
+  // file's own established double-gating convention.
+  function handleOpenTransferModal() {
+    if (!record || !isOwner || pendingTransferLoading || pendingTransferError || pendingTransferId) return;
+    setSelectedRecipient(null);
+    setSelectedReason(null);
+    setIsTransferModalVisible(true);
+  }
+
+  function closeTransferModal() {
+    // Same "don't allow dismissing mid-request" rule as closeCustodyModal —
+    // covers both the backdrop tap and the hardware/gesture back action
+    // (onRequestClose), so neither can race a resolving RPC call.
+    if (submittingTransfer) return;
+    setIsTransferModalVisible(false);
+  }
+
+  // Deliberately does NOT navigate — the registry screen never duplicates
+  // transfer-management UI (accept/decline/cancel, transfer details, etc.);
+  // that all already exists on the Transactions screen. This just gets the
+  // owner there.
+  function handleViewTransfer() {
+    if (!currentUserId) return;
+    router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
+  }
+
+  async function handleSendTransfer() {
+    // Guards against a double-submit from a rapid double-tap: the button
+    // is also `disabled={submittingTransfer}`, but this is the actual
+    // enforcement point — a disabled prop alone doesn't stop a second
+    // onPress already queued before the first render update lands. The
+    // database's own partial unique index
+    // (ownership_transfers_one_pending_per_card) is the final backstop
+    // regardless: even if two calls somehow both reached the RPC, only
+    // one can succeed — the second surfaces as the ordinary "This card
+    // already has a pending transfer" error below, never a duplicate row.
+    if (!record || !selectedRecipient || submittingTransfer) return;
+
+    setSubmittingTransfer(true);
+    try {
+      // Kept as one result object (not destructured into separate
+      // `data`/`error` bindings) so the error check below narrows
+      // `result.data` via the OwnershipTransferRpcResult discriminated
+      // union — splitting it into two independent bindings loses that
+      // narrowing, since TS can't relate two separate variables back to
+      // the same union.
+      const result = await initiateOwnershipTransfer(record.id, selectedRecipient.username, selectedReason);
+
+      // Narrows via equality against the literal `null` discriminant, not
+      // truthiness — OwnershipTransferRpcResult's failure member types
+      // `error` as plain `string` (not a literal), so `if (result.error)`
+      // doesn't reliably eliminate that member for TS's discriminated-
+      // union narrowing, which is exactly what produced a "possibly null"
+      // error on result.data below on the first pass here.
+      if (result.error !== null) {
+        // initiate_ownership_transfer's own RAISE EXCEPTION messages
+        // (e.g. "This card already has a pending transfer", "Recipient
+        // not found", "Cannot transfer a card to yourself", "Only the
+        // current owner may initiate a transfer") are already
+        // hand-authored, user-safe strings — shown directly, unlike a
+        // raw query-failure message such as pendingTransferError above,
+        // which never reaches the UI.
+        Alert.alert('Unable to send transfer', result.error);
+        return;
+      }
+
+      const recipientUsername = selectedRecipient.username;
+      setIsTransferModalVisible(false);
+      setSelectedRecipient(null);
+      setSelectedReason(null);
+      // Merges the RPC's own returned row directly — same "no full
+      // refetch for an already-confirmed change" convention as
+      // applyCustodyStatus above. Flips the panel from "Transfer Card"
+      // to "View Transfer" immediately, without a second network
+      // round-trip. Does not touch ownership or insert any registry
+      // event — initiate_ownership_transfer only ever creates the
+      // pending row itself; both of those only happen later, inside
+      // accept_ownership_transfer.
+      setPendingTransferId(result.data.id);
+      Alert.alert('Transfer Sent', `Transfer request sent to @${recipientUsername}.`);
+    } catch (e) {
+      // initiateOwnershipTransfer never throws by its own convention (see
+      // lib/ownership-transfer.ts) — this is defense-in-depth against a
+      // genuinely unexpected exception, matching applyCustodyStatus's
+      // identical try/catch/finally shape above. No raw exception detail
+      // is ever shown to the user.
+      Alert.alert('Unable to send transfer', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    } finally {
+      setSubmittingTransfer(false);
+    }
+  }
+
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
   if (loading) {
@@ -403,10 +568,6 @@ export default function RegistryDetailScreen() {
   const hasTeam = !!teamValue;
   const statusLabel = STATUS_LABEL[record.status];
   const statusSentence = buildStatusSentence(record.status);
-  // Only the current owner may change custody status — same ownership
-  // check shape as app/item/[id].tsx's isOwner (session-derived id
-  // compared directly against the record's own owner id field).
-  const isOwner = !!currentUserId && record.current_owner_id === currentUserId;
   const custodyStatusLabel = formatCustodyStatus(record.custody_status);
   // 70% of window width, capped so it stays reasonable on tablets; large
   // enough for comfortable phone-to-phone scanning without hardcoding an
@@ -495,6 +656,53 @@ export default function RegistryDetailScreen() {
           </View>
           <Text style={styles.statusPanelSentence}>{statusSentence}</Text>
         </View>
+
+        {/* Ownership Transfer Phase 2 — owner-only, four distinct states.
+            Non-owners see none of this (matches the custody-status row's
+            own non-owner treatment). Loading shows a plain spinner with no
+            button underneath it, so there's never a flash of the wrong
+            action. An error never falls back to an active "Transfer Card"
+            button — initiation can't proceed from an unknown pending
+            state — only a generic retry, and the underlying query message
+            is never shown to the user, only logged in dev. */}
+        {isOwner && (
+          <>
+            {pendingTransferLoading ? (
+              <View style={styles.transferLoadingPanel}>
+                <ActivityIndicator size="small" color={PV2.textTertiary} />
+              </View>
+            ) : pendingTransferError ? (
+              <View style={styles.transferErrorPanel}>
+                <Text style={styles.transferErrorText}>Couldn&apos;t check transfer status.</Text>
+                <Pressable
+                  onPress={() => checkPendingTransfer(record.id)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry checking transfer status">
+                  <Text style={styles.transferErrorRetry}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : pendingTransferId ? (
+              <Pressable
+                style={({ pressed }) => [styles.historyButton, pressed && styles.historyButtonPressed]}
+                onPress={handleViewTransfer}
+                accessibilityRole="button"
+                accessibilityLabel="View pending transfer">
+                <Text style={styles.historyButtonText}>View Transfer</Text>
+                <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={({ pressed }) => [styles.historyButton, pressed && styles.historyButtonPressed]}
+                onPress={handleOpenTransferModal}
+                accessibilityRole="button"
+                accessibilityLabel="Transfer this card to another user">
+                <Text style={styles.historyButtonText}>Transfer Card</Text>
+                <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} />
+              </Pressable>
+            )}
+          </>
+        )}
 
         <Pressable
           style={({ pressed }) => [styles.historyButton, pressed && styles.historyButtonPressed]}
@@ -620,6 +828,94 @@ export default function RegistryDetailScreen() {
               <View style={styles.custodySheetLoadingWrap}>
                 <ActivityIndicator size="small" color={PV2.link} />
               </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Transfer Card sheet — same bottom-sheet shell as the custody
+          modal above. Two internal steps in one sheet (recipient search,
+          then reason + send) rather than two separate modals, since the
+          whole flow is short. Only ever opened via handleOpenTransferModal,
+          itself only reachable through the owner-gated, no-pending-transfer
+          panel button above. */}
+      <Modal
+        visible={isTransferModalVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={closeTransferModal}>
+        <View style={styles.custodyModalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closeTransferModal}
+            accessibilityRole="button"
+            accessibilityLabel="Close transfer sheet"
+          />
+
+          <View style={[styles.custodySheet, styles.transferSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={styles.custodySheetHandle} />
+            <Text style={styles.custodySheetTitle}>Transfer Card</Text>
+
+            {!selectedRecipient ? (
+              <TransferRecipientPicker excludeUserId={currentUserId ?? ''} onSelect={setSelectedRecipient} />
+            ) : (
+              <>
+                <View style={styles.selectedRecipientRow}>
+                  <View style={styles.selectedRecipientBody}>
+                    <Text style={styles.selectedRecipientName} numberOfLines={1}>
+                      {selectedRecipient.display_name || selectedRecipient.username}
+                    </Text>
+                    <Text style={styles.selectedRecipientUsername} numberOfLines={1}>
+                      @{selectedRecipient.username}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => setSelectedRecipient(null)}
+                    disabled={submittingTransfer}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Change recipient">
+                    <Text style={styles.changeRecipientText}>Change</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.reasonLabel}>Reason (optional)</Text>
+                <View style={styles.reasonPillRow}>
+                  {TRANSFER_REASON_OPTIONS.map((reason) => {
+                    const active = selectedReason === reason;
+                    return (
+                      <Pressable
+                        key={reason}
+                        disabled={submittingTransfer}
+                        onPress={() => setSelectedReason(active ? null : reason)}
+                        style={[styles.reasonPill, active && styles.reasonPillActive]}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}>
+                        <Text style={[styles.reasonPillText, active && styles.reasonPillTextActive]}>
+                          {formatTransferReason(reason)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.sendTransferBtn,
+                    pressed && !submittingTransfer && styles.sendTransferBtnPressed,
+                  ]}
+                  onPress={handleSendTransfer}
+                  disabled={submittingTransfer}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send transfer request">
+                  {submittingTransfer ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.sendTransferBtnText}>Send Transfer Request</Text>
+                  )}
+                </Pressable>
+              </>
             )}
           </View>
         </View>
@@ -828,6 +1124,40 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PV2.textPrimary,
   },
+  transferLoadingPanel: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  transferErrorPanel: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  transferErrorText: {
+    fontSize: 13,
+    color: PV2.textTertiary,
+    flex: 1,
+  },
+  transferErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: PV2.link,
+    marginLeft: 12,
+  },
   qrPanel: {
     width: '100%',
     marginTop: 16,
@@ -988,5 +1318,89 @@ const styles = StyleSheet.create({
   custodySheetLoadingWrap: {
     paddingVertical: 16,
     alignItems: 'center',
+  },
+  transferSheet: {
+    paddingBottom: 4,
+  },
+  selectedRecipientRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  selectedRecipientBody: {
+    flex: 1,
+    gap: 1,
+  },
+  selectedRecipientName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  selectedRecipientUsername: {
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  changeRecipientText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.link,
+    marginLeft: 12,
+  },
+  reasonLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: PV2.textTertiary,
+    marginBottom: 8,
+  },
+  reasonPillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 20,
+  },
+  reasonPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  reasonPillActive: {
+    backgroundColor: PV2.accent,
+    borderColor: PV2.accent,
+  },
+  reasonPillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+  },
+  reasonPillTextActive: {
+    color: '#fff',
+  },
+  sendTransferBtn: {
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: PV2.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  sendTransferBtnPressed: {
+    opacity: 0.85,
+  },
+  sendTransferBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
