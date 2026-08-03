@@ -14,7 +14,7 @@ import {
 
 import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -227,7 +227,15 @@ export default function RegistryDetailScreen() {
     }
   }, [registryPublicUrl, isQrModalVisible]);
 
-  useEffect(() => {
+  // Extracted as a stable callback (not a plain useEffect body) so it can
+  // be re-run from useFocusEffect below, not just on mount/id-change —
+  // needed so returning here from app/claim-card/[id].tsx after a
+  // successful claim always re-fetches record.collection_item_id and
+  // flips the panel below from "Add to My Collection" to "View in My
+  // Collection" without requiring a separate signal to be passed back.
+  // Same "reload on every focus" convention already used by
+  // app/transactions/[userId].tsx and app/(tabs)/notifications.tsx.
+  const load = useCallback(async () => {
     if (!id) {
       // No route parameter at all — nothing to query. Without this,
       // loading (which starts true) would never resolve.
@@ -236,55 +244,57 @@ export default function RegistryDetailScreen() {
       return;
     }
 
-    async function load() {
-      setLoading(true);
-      setNotFound(false);
-      setFetchError(null);
-      // Clears any previously loaded record so stale registry data can't
-      // remain visible while navigating from one registry page to another.
-      setRecord(null);
-      setOwnerProfile(null);
+    setLoading(true);
+    setNotFound(false);
+    setFetchError(null);
+    // Clears any previously loaded record so stale registry data can't
+    // remain visible while navigating from one registry page to another.
+    setRecord(null);
+    setOwnerProfile(null);
 
-      const { data, error } = await supabase
-        .from('registered_cards')
-        .select('*, collection_item:collection_items(*)')
-        .eq('id', id)
-        .maybeSingle();
+    const { data, error } = await supabase
+      .from('registered_cards')
+      .select('*, collection_item:collection_items(*)')
+      .eq('id', id)
+      .maybeSingle();
 
-      if (error) {
-        console.error('[RegistryDetail] load failed:', error.message, error);
-        setFetchError(error.message);
-        setLoading(false);
-        return;
-      }
-
-      if (!data) {
-        setNotFound(true);
-        setLoading(false);
-        return;
-      }
-
-      const row = data as unknown as RegisteredCardWithItem;
-      setRecord(row);
-
-      // Best-effort — a missing/failed owner lookup shouldn't block showing
-      // the registry record itself (e.g. current_owner_id is null when the
-      // owning account was deleted, per registered_cards' own SET NULL
-      // design).
-      if (row.current_owner_id) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('username, display_name')
-          .eq('id', row.current_owner_id)
-          .maybeSingle();
-        if (profile) setOwnerProfile(profile as OwnerProfile);
-      }
-
+    if (error) {
+      console.error('[RegistryDetail] load failed:', error.message, error);
+      setFetchError(error.message);
       setLoading(false);
+      return;
     }
 
-    load();
+    if (!data) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
+
+    const row = data as unknown as RegisteredCardWithItem;
+    setRecord(row);
+
+    // Best-effort — a missing/failed owner lookup shouldn't block showing
+    // the registry record itself (e.g. current_owner_id is null when the
+    // owning account was deleted, per registered_cards' own SET NULL
+    // design).
+    if (row.current_owner_id) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('username, display_name')
+        .eq('id', row.current_owner_id)
+        .maybeSingle();
+      if (profile) setOwnerProfile(profile as OwnerProfile);
+    }
+
+    setLoading(false);
   }, [id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   // Ownership Transfer Phase 2 — owner-only pending-transfer check.
   // Deliberately a separate effect/query from the record load above (see
@@ -437,6 +447,20 @@ export default function RegistryDetailScreen() {
   function handleViewTransfer() {
     if (!currentUserId) return;
     router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
+  }
+
+  // Recipient Claim / Add to Collection Flow — owner-only, unlinked-only
+  // entry into the dedicated claim route (app/claim-card/[id].tsx). Never
+  // navigates when already linked; the "View in My Collection" branch
+  // below goes straight to the linked item instead.
+  function handleOpenClaim() {
+    if (!record || !isOwner || record.collection_item_id) return;
+    router.push({ pathname: '/claim-card/[id]', params: { id: record.id } });
+  }
+
+  function handleViewInCollection() {
+    if (!record?.collection_item_id) return;
+    router.push({ pathname: '/item/[id]', params: { id: record.collection_item_id } });
   }
 
   async function handleSendTransfer() {
@@ -700,6 +724,37 @@ export default function RegistryDetailScreen() {
                 <Text style={styles.historyButtonText}>Transfer Card</Text>
                 <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} />
               </Pressable>
+            )}
+          </>
+        )}
+
+        {/* Recipient Claim / Add to Collection Flow — owner-only. Unlinked
+            shows the explicit "not linked yet" caption plus the action;
+            linked shows a plain "View in My Collection" shortcut. Both
+            reuse the historyButton visual family, same as the transfer
+            panel above. */}
+        {isOwner && (
+          <>
+            {record.collection_item_id ? (
+              <Pressable
+                style={({ pressed }) => [styles.historyButton, pressed && styles.historyButtonPressed]}
+                onPress={handleViewInCollection}
+                accessibilityRole="button"
+                accessibilityLabel="View in My Collection">
+                <Text style={styles.historyButtonText}>View in My Collection</Text>
+                <IconSymbol name="chevron.right" size={16} color={PV2.textSecondary} />
+              </Pressable>
+            ) : (
+              <View style={styles.claimPanel}>
+                <Text style={styles.claimPanelCaption}>This card is not linked to your collection yet.</Text>
+                <Pressable
+                  style={({ pressed }) => [styles.claimButton, pressed && styles.claimButtonPressed]}
+                  onPress={handleOpenClaim}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add to My Collection">
+                  <Text style={styles.claimButtonText}>Add to My Collection</Text>
+                </Pressable>
+              </View>
             )}
           </>
         )}
@@ -1157,6 +1212,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PV2.link,
     marginLeft: 12,
+  },
+  claimPanel: {
+    width: '100%',
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  claimPanelCaption: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+  },
+  claimButton: {
+    minHeight: 44,
+    borderRadius: 10,
+    backgroundColor: PV2.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  claimButtonPressed: {
+    opacity: 0.85,
+  },
+  claimButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   qrPanel: {
     width: '100%',

@@ -29,6 +29,66 @@ export async function uploadItemImage(uri: string, userId: string): Promise<stri
   return data.publicUrl;
 }
 
+const CONTENT_TYPE_TO_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+
+// Same 10 MB ceiling as MAX_IMAGE_BYTES in
+// supabase/functions/_shared/registry-image.ts — kept in sync deliberately
+// rather than shared (Edge Function/Deno code and this Expo app don't
+// share a build step), same convention already used for
+// RegistrySnapshotImageErrorCode in types/index.ts. The source object was
+// already validated against this same limit when it was first copied into
+// the registry-images bucket, so this is defense in depth, not the
+// primary enforcement point.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// Used by the recipient-claim registry-image copy (lib/registry-claim.ts) —
+// the source bytes come from a fetched signed URL, not a local picker
+// file, so there's no local file:// URI for expo-file-system's File class
+// to read the way uploadItemImage above does. Same bucket, same path
+// shape, same public-URL return convention as uploadItemImage; only the
+// input differs. Filename uses Date.now() alone, same as every other
+// upload helper in this file (uploadItemImage/uploadAvatar/uploadHeroImage/
+// uploadBadgeImage/uploadFolderCover) — kept consistent rather than
+// introducing a different uniqueness scheme for just this one function;
+// the claim flow only ever calls this once per claim, so it carries no
+// higher collision risk than those already-shipped paths.
+export async function uploadItemImageFromBytes(
+  bytes: ArrayBuffer,
+  rawContentType: string,
+  userId: string,
+): Promise<string> {
+  // Strict allowlist, normalized before lookup (lowercase, trimmed, any
+  // "; charset=..."-style parameter stripped) — an unrecognized or
+  // malformed Content-Type is rejected outright, never silently uploaded
+  // under a guessed .jpg extension.
+  const contentType = rawContentType.split(';')[0].trim().toLowerCase();
+  const ext = CONTENT_TYPE_TO_EXT[contentType];
+  if (!ext) {
+    throw new Error('Unsupported image type');
+  }
+  if (bytes.byteLength === 0) {
+    throw new Error('Image data is empty');
+  }
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error('Image is too large');
+  }
+
+  const path = `${userId}/${Date.now()}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from('item-images')
+    .upload(path, bytes, { contentType });
+
+  if (error) throw new Error(error.message);
+
+  const { data } = supabase.storage.from('item-images').getPublicUrl(path);
+  return data.publicUrl;
+}
+
 export async function uploadAvatar(uri: string, userId: string): Promise<string> {
   const ext = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
   const contentType = MIME[ext] ?? 'image/jpeg';
