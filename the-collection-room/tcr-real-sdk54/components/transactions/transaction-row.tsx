@@ -27,9 +27,24 @@ type Props = {
   onAccept?: () => void;
   onDecline?: () => void;
   onCancel?: () => void;
+  // Registry navigation — only ever invoked when transfer.card resolved
+  // (see the tappability gate below); the caller (app/transactions/
+  // [userId].tsx) owns the actual router.push, matching this component's
+  // existing convention of staying purely presentational and reporting
+  // intent via callback props (onAccept/onDecline/onCancel), never
+  // importing expo-router itself.
+  onPressCard?: () => void;
 };
 
-export function TransactionRow({ transfer, currentUserId, actionLoading, onAccept, onDecline, onCancel }: Props) {
+export function TransactionRow({
+  transfer,
+  currentUserId,
+  actionLoading,
+  onAccept,
+  onDecline,
+  onCancel,
+  onPressCard,
+}: Props) {
   const isPending = transfer.status === 'pending';
   // Direction is already computed relative to whichever user this list was
   // fetched for (see fetchOwnershipTransfersForUser) — but the actual
@@ -45,54 +60,86 @@ export function TransactionRow({ transfer, currentUserId, actionLoading, onAccep
   const cardTitle = transfer.card?.title ?? 'Registry Card';
   const reasonLabel = formatTransferReason(transfer.reason);
 
-  return (
-    <View style={styles.row}>
-      <View style={styles.mainRow}>
-        <View style={styles.thumb}>
-          {transfer.card?.imageUrl ? (
-            <Image source={{ uri: transfer.card.imageUrl }} style={styles.thumbImage} contentFit="cover" />
-          ) : (
-            <IconSymbol name="rectangle.stack.fill" size={15} color={PV2.textTertiary} />
-          )}
-        </View>
+  // Tappable exactly when the embedded registered_cards row resolved —
+  // i.e. transfer.card is non-null. This already covers every status
+  // (pending/accepted/declined/cancelled all become tappable the moment
+  // the card is visible) and correctly stays non-tappable for the
+  // documented RLS-embed-null case (see fetchOwnershipTransfersForUser's
+  // own long comment) without any separate check.
+  const registeredCardId = transfer.card?.registeredCardId ?? null;
 
-        <View style={styles.body}>
-          <Text style={styles.title} numberOfLines={1}>
-            {cardTitle}
-          </Text>
-          {/* cc_id only ever shown when the card actually resolved — never
-              fabricated, and the raw registered_cards.id is never selected
-              by the query in the first place, let alone rendered here. */}
-          {transfer.card?.ccId && (
-            <Text style={styles.ccId} numberOfLines={1}>
-              {transfer.card.ccId}
-            </Text>
-          )}
-          {/* No numberOfLines cap here (unlike title/ccId above) — the
-              actor-clarifying suffix ("cancelled by you"/"cancelled by
-              sender") sits AFTER the interpolated @username, so a
-              tail-ellipsis truncation could hide exactly the disambiguating
-              text formatTransferParticipantLine exists to show, for a long
-              username (no app-enforced max length on username). Letting
-              this one line wrap is cheaper than that risk. */}
-          <Text style={styles.direction}>{participantLine}</Text>
-          <View style={styles.metaRow}>
-            <Text style={styles.date}>{formatTransferDate(transfer.createdAt)}</Text>
-            {reasonLabel && (
-              <>
-                <Text style={styles.metaDot}>·</Text>
-                <Text style={styles.reason}>{reasonLabel}</Text>
-              </>
-            )}
-          </View>
-        </View>
+  const cardContent = (
+    <>
+      <View style={styles.thumb}>
+        {transfer.card?.imageUrl ? (
+          <Image source={{ uri: transfer.card.imageUrl }} style={styles.thumbImage} contentFit="cover" />
+        ) : (
+          <IconSymbol name="rectangle.stack.fill" size={15} color={PV2.textTertiary} />
+        )}
+      </View>
 
-        <View style={[styles.statusPill, !isPending && styles.statusPillResolved]}>
-          <Text style={[styles.statusPillText, !isPending && styles.statusPillTextResolved]}>
-            {formatTransferStatus(transfer.status)}
+      <View style={styles.body}>
+        <Text style={styles.title} numberOfLines={1}>
+          {cardTitle}
+        </Text>
+        {/* cc_id only ever shown when the card actually resolved — never
+            fabricated, and the raw registered_cards.id is never rendered
+            here (only ever used as a navigation param — see
+            OwnershipTransferCardSummary's own comment in
+            lib/ownership-transfer.ts). */}
+        {transfer.card?.ccId && (
+          <Text style={styles.ccId} numberOfLines={1}>
+            {transfer.card.ccId}
           </Text>
+        )}
+        {/* No numberOfLines cap here (unlike title/ccId above) — the
+            actor-clarifying suffix ("cancelled by you"/"cancelled by
+            sender") sits AFTER the interpolated @username, so a
+            tail-ellipsis truncation could hide exactly the disambiguating
+            text formatTransferParticipantLine exists to show, for a long
+            username (no app-enforced max length on username). Letting
+            this one line wrap is cheaper than that risk. */}
+        <Text style={styles.direction}>{participantLine}</Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.date}>{formatTransferDate(transfer.createdAt)}</Text>
+          {reasonLabel && (
+            <>
+              <Text style={styles.metaDot}>·</Text>
+              <Text style={styles.reason}>{reasonLabel}</Text>
+            </>
+          )}
         </View>
       </View>
+
+      <View style={[styles.statusPill, !isPending && styles.statusPillResolved]}>
+        <Text style={[styles.statusPillText, !isPending && styles.statusPillTextResolved]}>
+          {formatTransferStatus(transfer.status)}
+        </Text>
+      </View>
+    </>
+  );
+
+  return (
+    <View style={styles.row}>
+      {/* A separate pressable content area, not the whole row — the
+          actionsRow below is already a sibling, never nested inside this,
+          so there is no ambiguous Pressable-in-Pressable bubbling for
+          Accept/Decline/Cancel to fight with. When the card didn't
+          resolve (RLS-hidden), this renders as a plain, non-interactive
+          View with no button role advertised, rather than a dead-looking
+          button. */}
+      {registeredCardId ? (
+        <TouchableOpacity
+          style={styles.mainRow}
+          onPress={onPressCard}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Open registry card ${transfer.card?.ccId ?? ''}`}>
+          {cardContent}
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.mainRow}>{cardContent}</View>
+      )}
 
       {/* Actions only ever render for a pending transfer, and only for the
           one relevant participant — a non-participant (shouldn't be

@@ -94,6 +94,13 @@ export type OwnershipTransferParticipant = {
 // the long comment on fetchOwnershipTransfersForUser below for exactly
 // when this happens and why it's expected, not a bug.
 export type OwnershipTransferCardSummary = {
+  // registered_cards.id — the internal id app/registry/[id].tsx's route
+  // expects (never cc_id, which is a separate, deliberately public-facing
+  // identifier that screen does not accept as its route param). Never
+  // rendered as visible text anywhere — used only as a navigation param,
+  // same trust boundary as every other internal id already threaded
+  // through this file (e.g. transfer.id itself).
+  registeredCardId: string;
   ccId: string;
   title: string | null;
   subtitle: string | null;
@@ -123,6 +130,7 @@ type RawOwnershipTransferRow = {
   from_owner_id: string;
   to_owner_id: string;
   registered_card: {
+    id: string;
     cc_id: string;
     snapshot_title: string | null;
     snapshot_player: string | null;
@@ -139,6 +147,7 @@ function buildCardSummary(
   const title = card.snapshot_player || card.snapshot_title || null;
   const subtitleParts = [card.snapshot_year != null ? String(card.snapshot_year) : null, card.snapshot_brand];
   return {
+    registeredCardId: card.id,
     ccId: card.cc_id,
     title,
     subtitle: subtitleParts.filter(Boolean).join(' ') || null,
@@ -179,7 +188,7 @@ export async function fetchOwnershipTransfersForUser(
     .select(
       `id, status, reason, created_at, from_owner_id, to_owner_id,
        registered_card:registered_cards (
-         cc_id, snapshot_title, snapshot_player, snapshot_year, snapshot_brand, snapshot_image_url
+         id, cc_id, snapshot_title, snapshot_player, snapshot_year, snapshot_brand, snapshot_image_url
        )`,
     )
     .or(`from_owner_id.eq.${userId},to_owner_id.eq.${userId}`)

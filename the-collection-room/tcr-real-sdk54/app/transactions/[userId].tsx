@@ -163,6 +163,16 @@ export default function TransactionsScreen() {
     ]);
   }
 
+  // Registry navigation — TransactionRow itself already only ever calls
+  // this when transfer.card resolved (see its own tappability gate), but
+  // this guard stays regardless so nothing here ever navigates on a bare/
+  // absent id. Never uses cc_id as the route param — app/registry/[id].tsx
+  // expects registered_cards.id specifically.
+  function handleOpenRegistry(transfer: OwnershipTransferView) {
+    if (!transfer.card?.registeredCardId) return;
+    router.push({ pathname: '/registry/[id]', params: { id: transfer.card.registeredCardId } });
+  }
+
   if (!isOwnRoute) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -259,6 +269,7 @@ export default function TransactionsScreen() {
               onAccept={() => handleAccept(item)}
               onDecline={() => handleDecline(item)}
               onCancel={() => handleCancel(item)}
+              onPressCard={() => handleOpenRegistry(item)}
             />
           )}
           ListEmptyComponent={
