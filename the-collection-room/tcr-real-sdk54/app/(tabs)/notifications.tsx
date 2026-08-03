@@ -20,14 +20,41 @@ import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { supabase } from '@/lib/supabase';
 
+type NotificationType =
+  | 'follow'
+  | 'like'
+  | 'comment'
+  | 'message'
+  | 'grail_rating'
+  | 'ownership_transfer_requested'
+  | 'ownership_transfer_accepted'
+  | 'ownership_transfer_declined'
+  | 'ownership_transfer_cancelled';
+
+// Ownership Transfer Notifications Phase 1 — these four are always
+// server-inserted inside the transfer RPCs (never client-inserted, unlike
+// every other type above), and are the only types that use
+// transferId/registeredCardId for navigation instead of post_id/
+// conversation_id.
+function isTransferNotification(type: NotificationType): boolean {
+  return (
+    type === 'ownership_transfer_requested' ||
+    type === 'ownership_transfer_accepted' ||
+    type === 'ownership_transfer_declined' ||
+    type === 'ownership_transfer_cancelled'
+  );
+}
+
 type NotificationItem = {
   id: string;
-  type: 'follow' | 'like' | 'comment' | 'message' | 'grail_rating';
+  type: NotificationType;
   read: boolean;
   created_at: string;
   post_id: string | null;
   conversation_id: string | null;
   ratingScore: number | null;
+  transferId: string | null;
+  registeredCardId: string | null;
   actorId: string;
   actorUsername: string;
   actorDisplayName: string | null;
@@ -48,6 +75,16 @@ function notifLabel(item: NotificationItem): string {
     case 'comment':       return 'commented on your post.';
     case 'message':       return 'sent you a message.';
     case 'grail_rating':  return `rated your Grails ${item.ratingScore ?? '?'}/10.`;
+    // Ownership Transfer Notifications Phase 1 — deliberately generic
+    // Phase 1 copy: no CC ID, no transfer reason (both approved
+    // explicitly against including). Card identity isn't included because
+    // it can't be guaranteed safe/available for every participant in
+    // every status (see the RLS-embed-null edge case already documented
+    // on fetchOwnershipTransfersForUser in lib/ownership-transfer.ts).
+    case 'ownership_transfer_requested':  return 'wants to transfer a card to you.';
+    case 'ownership_transfer_accepted':   return 'accepted your card transfer.';
+    case 'ownership_transfer_declined':   return 'declined your card transfer.';
+    case 'ownership_transfer_cancelled':  return 'cancelled a card transfer.';
     default:               return 'interacted with you.';
   }
 }
@@ -55,7 +92,7 @@ function notifLabel(item: NotificationItem): string {
 async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
   const { data: rows } = await supabase
     .from('notifications')
-    .select('id, type, read, created_at, post_id, conversation_id, actor_id, rating_score')
+    .select('id, type, read, created_at, post_id, conversation_id, actor_id, rating_score, transfer_id, registered_card_id')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(100);
@@ -80,6 +117,8 @@ async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
       post_id: r.post_id ?? null,
       conversation_id: r.conversation_id ?? null,
       ratingScore: r.rating_score ?? null,
+      transferId: r.transfer_id ?? null,
+      registeredCardId: r.registered_card_id ?? null,
       actorId: r.actor_id,
       actorUsername: p.username ?? 'user',
       actorDisplayName: p.display_name ?? null,
@@ -96,6 +135,14 @@ function NotificationRow({
   onPress: () => void;
 }) {
   const displayName = item.actorDisplayName || item.actorUsername;
+  // Ownership Transfer Notifications Phase 1 — the approved copy shows the
+  // actor's @username (not their display name) for transfer rows, e.g.
+  // "@test2 wants to transfer a card to you." — every other notification
+  // type keeps its existing display-name-first convention unchanged.
+  // actorUsername already falls back to the literal string 'user' (never
+  // a raw id) when a profile lookup somehow doesn't resolve — see
+  // fetchNotifications above — so this can never render a UUID.
+  const actorLabel = isTransferNotification(item.type) ? `@${item.actorUsername}` : displayName;
   return (
     <TouchableOpacity
       style={[styles.row, !item.read && styles.rowUnread]}
@@ -117,7 +164,7 @@ function NotificationRow({
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowText} numberOfLines={2}>
-          <Text style={styles.rowActor}>{displayName}</Text>
+          <Text style={styles.rowActor}>{actorLabel}</Text>
           {' '}{notifLabel(item)}
         </Text>
         <Text style={styles.rowTime}>{formatAge(item.created_at)}</Text>
@@ -202,6 +249,27 @@ export default function NotificationsScreen() {
               otherDisplayName: notif.actorDisplayName ?? '',
             },
           });
+        }
+        break;
+      // Ownership Transfer Notifications Phase 1 — always the signed-in
+      // user's OWN session id for /transactions/[userId], never
+      // notif.user_id (not even present on NotificationItem — every row
+      // fetched here already belongs to the signed-in user by construction
+      // of fetchNotifications' own query, but the route itself still only
+      // ever trusts the live session, matching
+      // app/transactions/[userId].tsx's own isOwnRoute guard).
+      case 'ownership_transfer_requested':
+      case 'ownership_transfer_declined':
+      case 'ownership_transfer_cancelled':
+        if (currentUserId) {
+          router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
+        }
+        break;
+      case 'ownership_transfer_accepted':
+        if (notif.registeredCardId) {
+          router.push({ pathname: '/registry/[id]', params: { id: notif.registeredCardId } });
+        } else if (currentUserId) {
+          router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
         }
         break;
     }

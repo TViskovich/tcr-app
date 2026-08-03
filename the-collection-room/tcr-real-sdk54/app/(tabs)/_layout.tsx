@@ -274,6 +274,19 @@ export default function TabLayout() {
           screenListeners={({ route }) => ({
             focus: () => {
               if (route.name === 'messages') refreshMessageBadge();
+              // Ownership Transfer Notifications Phase 1 — same existing
+              // focus-refresh convention as messages above, just not
+              // previously applied to notifications. Not polling, not a
+              // new subscription: this only refetches the unread count
+              // when the user actually navigates to/focuses this screen
+              // (reached via router.push('/(tabs)/notifications') from
+              // the Home bell icon, which — since notifications is
+              // declared as a real Tabs.Screen, just hidden from the tab
+              // bar via href:null — fires this same navigator focus
+              // event). Does not make the badge update live while the
+              // user stays idle on another tab; no mechanism in this app
+              // does that for any notification type today.
+              if (route.name === 'notifications') refreshNotifBadge();
             },
           })}
           screenOptions={{ headerShown: false }}>
