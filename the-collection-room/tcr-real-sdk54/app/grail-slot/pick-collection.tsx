@@ -77,6 +77,7 @@ function useOwnFoldersForPicker(userId: string | undefined) {
         const { data: rows, error: countError } = await supabase
           .from('collection_items')
           .select('folder_id')
+          .eq('collection_status', 'active')
           .in('folder_id', folderIds);
         if (countError) throw countError;
         counts = {};

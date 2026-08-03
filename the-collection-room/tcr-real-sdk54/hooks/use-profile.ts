@@ -30,11 +30,11 @@ export function useProfile(userId: string | undefined) {
     const [profileRes, foldersRes, itemsRes, postsRes, followersRes, followingRes, gradedRes] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', userId).single(),
       supabase.from('folders').select('*', { count: 'exact', head: true }).eq('user_id', userId),
-      supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', userId),
+      supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('collection_status', 'active'),
       supabase.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', userId),
       supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', userId),
       supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', userId),
-      supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', userId).not('grade', 'is', null),
+      supabase.from('collection_items').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('collection_status', 'active').not('grade', 'is', null),
     ]);
 
     if (profileRes.data) setProfile(profileRes.data as Profile);

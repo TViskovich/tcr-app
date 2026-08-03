@@ -25,6 +25,16 @@ export type CollectionItem = {
   image_url: string | null;
   description: string | null;
   created_at: string;
+  // Sender Transferred-Out Item Lifecycle (supabase/migrations/
+  // 20260804120000_add_collection_item_transferred_out_state.sql). Set to
+  // 'transferred_out' exactly once, atomically, by accept_ownership_transfer —
+  // never client-writable (a dedicated column-privilege REVOKE blocks
+  // ordinary authenticated updates to all three of these fields; see that
+  // migration's own follow-up, 20260804120500_fix_collection_items_column_privileges.sql).
+  // Only two values in this pass — never widen to a plain string.
+  collection_status: 'active' | 'transferred_out';
+  transferred_out_at: string | null;
+  transferred_registered_card_id: string | null;
 };
 
 // One photo in an item's gallery (supabase/migrations/20260721120000_

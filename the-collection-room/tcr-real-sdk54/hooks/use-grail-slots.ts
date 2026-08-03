@@ -241,6 +241,7 @@ export function useGrailSlots(userId: string | undefined) {
       const { data: previewRows, error: previewError } = await supabase
         .from('collection_items')
         .select('folder_id, image_url, created_at')
+        .eq('collection_status', 'active')
         .in('folder_id', collectionIds)
         .order('created_at', { ascending: false });
 

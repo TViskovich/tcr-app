@@ -12,6 +12,7 @@ export async function resolveCovers(folders: Folder[]): Promise<Folder[]> {
   const { data: items } = await supabase
     .from('collection_items')
     .select('folder_id, image_url')
+    .eq('collection_status', 'active')
     .in('folder_id', firstCardIds)
     .order('created_at', { ascending: false });
 
@@ -43,6 +44,7 @@ async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, Co
         .from('collection_items')
         .select('*')
         .eq('folder_id', id)
+        .eq('collection_status', 'active')
         .order('created_at', { ascending: false })
         .limit(PREVIEW_ITEM_LIMIT),
     ),
@@ -91,6 +93,7 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
       const { data: rows } = await supabase
         .from('collection_items')
         .select('folder_id')
+        .eq('collection_status', 'active')
         .in('folder_id', folderIds);
       const counts: Record<string, number> = {};
       for (const row of (rows ?? []) as { folder_id: string }[]) {
@@ -179,6 +182,7 @@ export function useItems(folderId: string | undefined) {
       .from('collection_items')
       .select('*')
       .eq('folder_id', folderId)
+      .eq('collection_status', 'active')
       .order('created_at', { ascending: false });
     setItems(data ?? []);
     setLoading(false);
@@ -213,6 +217,7 @@ export function useAllItems(userId: string | undefined) {
       .from('collection_items')
       .select('*')
       .eq('user_id', userId)
+      .eq('collection_status', 'active')
       .order('created_at', { ascending: false });
     if (queryError) {
       console.error('[useAllItems] query failed:', queryError.message, queryError);

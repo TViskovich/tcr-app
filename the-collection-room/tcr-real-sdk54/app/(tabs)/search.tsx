@@ -62,6 +62,7 @@ async function queryCards(term: string): Promise<CardResult[]> {
     .from('collection_items')
     .select('id, title, player, team, year, brand, grade, image_url, user_id, folders!inner(name, is_public)')
     .eq('folders.is_public', true)
+    .eq('collection_status', 'active')
     .or(`title.ilike.%${term}%,player.ilike.%${term}%,team.ilike.%${term}%,brand.ilike.%${term}%,grade.ilike.%${term}%`)
     .order('created_at', { ascending: false })
     .limit(30);

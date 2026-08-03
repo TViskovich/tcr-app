@@ -76,6 +76,20 @@ function itemToForm(item: CollectionItem): EditForm {
 // a card); the item's own title/brand/year become supporting detail lines
 // instead. Falls back to the item's own title, then a generic label, if
 // there's no player set.
+// Same formatting convention already used for dates elsewhere in this
+// registry-adjacent screen family (e.g. app/registry/[id].tsx's own
+// formatDate) — not shared, since each is a small, standalone helper.
+// Accepts a possibly-missing/malformed value and never returns a
+// renderable "Invalid Date" string: null covers both "no timestamp" and
+// "unparseable timestamp" identically, so the call site can gate on one
+// simple truthiness check either way.
+function formatTransferredOutDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
 function buildIdentity(item: CollectionItem): { title: string; subtitleLines: (string | null)[] } {
   const title = item.player?.trim() || item.title?.trim() || 'Untitled Item';
   const yearAndSet = [item.year != null ? String(item.year) : null, item.brand]
@@ -149,6 +163,13 @@ export default function ItemDetailScreen() {
   const [grailsLoading, setGrailsLoading] = useState(false);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
+  // Sender Transferred-Out Item Lifecycle — a top-level derived flag, not
+  // a separate query: collection_status already comes back on the same
+  // row this screen fetches by id. Used both to gate the header Edit
+  // button below and to swap the entire view-mode action area for the
+  // historical state (see the single top-level conditional further down,
+  // rather than hiding many individual buttons).
+  const isTransferredOut = item?.collection_status === 'transferred_out';
 
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
@@ -345,7 +366,11 @@ export default function ItemDetailScreen() {
   }
 
   async function handleDelete() {
-    Alert.alert('Delete Item', 'Are you sure? This cannot be undone.', [
+    const title = isTransferredOut ? 'Remove from Collection?' : 'Delete Item';
+    const body = isTransferredOut
+      ? 'This permanently removes this historical item from your collection. It will not affect the transferred Cache ID or the recipient\'s ownership.'
+      : 'Are you sure? This cannot be undone.';
+    Alert.alert(title, body, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -493,6 +518,7 @@ export default function ItemDetailScreen() {
 
   const identity = buildIdentity(item);
   const metadataRows = buildMetadataRows(item);
+  const transferredOutDateLabel = formatTransferredOutDate(item.transferred_out_at);
 
   return (
     <>
@@ -500,7 +526,7 @@ export default function ItemDetailScreen() {
         options={{
           title: headerTitle,
           headerBackButtonDisplayMode: 'minimal',
-          headerRight: isOwner
+          headerRight: isOwner && !isTransferredOut
             ? () =>
                 editMode ? (
                   <TouchableOpacity
@@ -601,6 +627,63 @@ export default function ItemDetailScreen() {
                 />
               </View>
             </View>
+          ) : isTransferredOut ? (
+            /* ── Transferred Out — one top-level conditional replacing the
+                whole normal action area, rather than hiding many
+                individual controls. No edit, register, relink, custody,
+                transfer, or gallery-edit action exists in this branch at
+                all — only the three explicitly allowed actions below. The
+                item's own identity/description/metadata still render, as
+                historical information. */
+            <>
+              <View style={styles.transferredOutBanner}>
+                <Text style={styles.transferredOutTitle}>Transferred Out</Text>
+                <Text style={styles.transferredOutBody}>This card is no longer in your collection.</Text>
+                {transferredOutDateLabel && (
+                  <Text style={styles.transferredOutDate}>Transferred on {transferredOutDateLabel}</Text>
+                )}
+              </View>
+
+              <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
+
+              <ItemDescription description={item.description} />
+
+              <ItemMetadataSection rows={metadataRows} />
+
+              {isOwner && (
+                <View style={styles.ownerActions}>
+                  {item.transferred_registered_card_id && (
+                    <>
+                      <TouchableOpacity
+                        style={styles.transferredOutActionButton}
+                        onPress={() =>
+                          router.push({
+                            pathname: '/registry/[id]',
+                            params: { id: item.transferred_registered_card_id! },
+                          })
+                        }
+                        activeOpacity={0.8}>
+                        <Text style={styles.transferredOutActionText}>View Registry</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.transferredOutActionButton}
+                        onPress={() =>
+                          router.push({
+                            pathname: '/registry-history/[id]',
+                            params: { id: item.transferred_registered_card_id! },
+                          })
+                        }
+                        activeOpacity={0.8}>
+                        <Text style={styles.transferredOutActionText}>View Registry History</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+                    <Text style={styles.deleteText}>Remove from Collection</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
           ) : (
             /* ── View Mode — the new permanent layout ── */
             <>
@@ -934,6 +1017,45 @@ registryViewButtonText: {
   deleteText: {
     color: '#FF3B30',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  transferredOutBanner: {
+    marginHorizontal: 20,
+    marginTop: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.collectorPanelBorder,
+    backgroundColor: PV2.collectorPanelBg,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  transferredOutTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: PV2.accent,
+  },
+  transferredOutBody: {
+    marginTop: 4,
+    fontSize: 13,
+    color: PV2.textSecondary,
+  },
+  transferredOutDate: {
+    marginTop: 8,
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  transferredOutActionButton: {
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    backgroundColor: PV2.panel,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferredOutActionText: {
+    color: PV2.textPrimary,
+    fontSize: 15,
     fontWeight: '600',
   },
   editSection: {
