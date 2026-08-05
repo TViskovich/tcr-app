@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
@@ -22,6 +22,11 @@ type Props = {
   graded: number;
   prototype: PrototypeCollectorStats;
   badgeUri: string | null;
+  // Sole avatar-edit entry point for Profile V2 (see profile-v2-screen.tsx,
+  // which only passes this for the owner's own profile — pickAvatar).
+  // Omitted entirely for a visitor, leaving the avatar non-interactive,
+  // same as it always was.
+  onAvatarPress?: () => void;
 };
 
 function StatRow({ label, value }: { label: string; value: string }) {
@@ -41,12 +46,18 @@ export function ProfileV2CollectorPanel({
   graded,
   prototype,
   badgeUri,
+  onAvatarPress,
 }: Props) {
   return (
     <View style={styles.panel}>
       {/* Left — identity */}
       <View style={[styles.col, styles.leftCol]}>
-        <View style={styles.avatar}>
+        <Pressable
+          style={styles.avatar}
+          onPress={onAvatarPress}
+          disabled={!onAvatarPress}
+          accessibilityRole={onAvatarPress ? 'button' : undefined}
+          accessibilityLabel={onAvatarPress ? 'Change profile photo' : undefined}>
           {avatarUri ? (
             <Image source={{ uri: avatarUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
           ) : (
@@ -54,9 +65,11 @@ export function ProfileV2CollectorPanel({
               <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
             </View>
           )}
+        </Pressable>
+        <View style={styles.nameBlock}>
+          <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
+          <Text style={styles.username} numberOfLines={1}>@{username}</Text>
         </View>
-        <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
-        <Text style={styles.username} numberOfLines={1}>@{username}</Text>
       </View>
 
       <View style={styles.colDivider} />
@@ -148,6 +161,16 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 17,
     fontWeight: '700',
+  },
+  // Purely visual downward nudge for the name+username block — a
+  // transform (not marginTop) deliberately, so it's applied after layout
+  // and doesn't change leftCol's measured content height. leftCol centers
+  // its content via justifyContent:'center', so a marginTop here would
+  // have redistributed that centering and shifted the avatar too;
+  // transform leaves the avatar's position and leftCol's height exactly
+  // as they were.
+  nameBlock: {
+    transform: [{ translateY: 10 }],
   },
   name: {
     color: PV2.textPrimary,

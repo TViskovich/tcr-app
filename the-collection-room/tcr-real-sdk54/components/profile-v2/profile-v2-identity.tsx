@@ -2,9 +2,12 @@ import { ActivityIndicator, Alert, Linking, StyleSheet, Text, TouchableOpacity, 
 
 import { PV2 } from './profile-v2-theme';
 
-// Name/username now render as an overlay on the hero itself (see
-// profile-v2-hero.tsx) rather than here, per the reference — this component
-// owns the action row, tagline, bio, location, website, and member-since.
+// Identity Header — display name, username, action row, tagline, bio,
+// location, website, member-since. No longer renders an avatar: the
+// Collector Panel avatar (components/profile-v2/profile-v2-collector-
+// panel.tsx) is the profile's sole avatar and its owner-only tap target
+// (wired in profile-v2-screen.tsx via pickAvatar), so avatar
+// presentation/editing was removed from here rather than duplicated.
 //
 // mode is 'owner' for the signed-in user's own profile, 'public' when
 // viewing someone else's (components/profile-v2/profile-v2-screen.tsx,
@@ -12,6 +15,17 @@ import { PV2 } from './profile-v2-theme';
 // Identity/preference data itself is identical for owner and visitor —
 // only the action row (Edit vs. Follow/Message) differs by mode.
 type Props = {
+  displayName: string;
+  username: string;
+  // All three default true (full render). Each gates one independent
+  // block: showHeader is name/username only, showActions is the action
+  // row (Edit Profile / Follow+Message) only, showDetails is tagline
+  // through member-since. profile-v2-screen.tsx composes these
+  // differently per branch — see that file's ProfileV2HeroCanvas
+  // identityHeader wiring and the below-canvas call site.
+  showHeader?: boolean;
+  showActions?: boolean;
+  showDetails?: boolean;
   tagline?: string | null;
   bio: string | null;
   location?: string | null;
@@ -92,6 +106,11 @@ function formatMemberSince(createdAt: string | null | undefined): string | null 
 }
 
 export function ProfileV2Identity({
+  displayName,
+  username,
+  showHeader = true,
+  showActions = true,
+  showDetails = true,
   tagline,
   bio,
   location,
@@ -110,39 +129,52 @@ export function ProfileV2Identity({
 
   return (
     <View style={styles.wrap}>
-      <View style={styles.actionRow}>
-        {mode === 'owner' ? (
-          <TouchableOpacity style={styles.editBtn} onPress={onEditPress} activeOpacity={0.85}>
-            <Text style={styles.editBtnLabel}>Edit Profile</Text>
-          </TouchableOpacity>
-        ) : (
-          <>
-            <TouchableOpacity
-              style={[styles.followBtn, isFollowing && styles.followBtnActive]}
-              onPress={onFollowPress}
-              disabled={followLoading}
-              activeOpacity={0.85}>
-              {followLoading ? (
-                <ActivityIndicator size="small" color={isFollowing ? PV2.textPrimary : '#fff'} />
-              ) : (
-                <Text style={styles.followBtnLabel}>{isFollowing ? 'Following' : 'Follow'}</Text>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.messageBtn}
-              onPress={onMessagePress}
-              disabled={messageLoading}
-              activeOpacity={0.85}>
-              {messageLoading ? (
-                <ActivityIndicator size="small" color={PV2.textPrimary} />
-              ) : (
-                <Text style={styles.messageBtnLabel}>Message</Text>
-              )}
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
+      {showHeader && (
+        <>
+          {displayName ? (
+            <Text style={styles.nameText} numberOfLines={1}>{displayName}</Text>
+          ) : null}
+          <Text style={styles.usernameText}>@{username}</Text>
+        </>
+      )}
 
+      {showActions && (
+        <View style={styles.actionRow}>
+          {mode === 'owner' ? (
+            <TouchableOpacity style={styles.editBtn} onPress={onEditPress} activeOpacity={0.85}>
+              <Text style={styles.editBtnLabel}>Edit Profile</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={[styles.followBtn, isFollowing && styles.followBtnActive]}
+                onPress={onFollowPress}
+                disabled={followLoading}
+                activeOpacity={0.85}>
+                {followLoading ? (
+                  <ActivityIndicator size="small" color={isFollowing ? PV2.textPrimary : '#fff'} />
+                ) : (
+                  <Text style={styles.followBtnLabel}>{isFollowing ? 'Following' : 'Follow'}</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.messageBtn}
+                onPress={onMessagePress}
+                disabled={messageLoading}
+                activeOpacity={0.85}>
+                {messageLoading ? (
+                  <ActivityIndicator size="small" color={PV2.textPrimary} />
+                ) : (
+                  <Text style={styles.messageBtnLabel}>Message</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      )}
+
+      {showDetails && (
+        <>
       {tagline ? <Text style={styles.tagline}>{tagline}</Text> : null}
       {bio ? <Text style={styles.bio}>{bio}</Text> : null}
       {location ? <Text style={styles.location}>{location}</Text> : null}
@@ -163,6 +195,8 @@ export function ProfileV2Identity({
         )
       ) : null}
       {memberSince ? <Text style={styles.memberSince}>{memberSince}</Text> : null}
+        </>
+      )}
     </View>
   );
 }
@@ -175,6 +209,18 @@ const styles = StyleSheet.create({
     // screen with a different edge from everything else).
     paddingHorizontal: 16,
     marginTop: -2,
+  },
+  nameText: {
+    color: PV2.textPrimary,
+    fontSize: 20,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  usernameText: {
+    color: PV2.textTertiary,
+    fontSize: 13,
+    marginTop: 2,
+    marginBottom: 10,
   },
   actionRow: {
     flexDirection: 'row',

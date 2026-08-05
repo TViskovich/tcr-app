@@ -10,7 +10,7 @@ import type { ImageContentPosition, ImageSource } from 'expo-image';
 //    new render branch — HeroCanvasImage renders any 'image' theme generically.
 //    Adding one is: drop the PNG in assets/materials/<name>/, add the id to
 //    HeroCanvasThemeId, and add one object below.
-export type HeroCanvasThemeId = 'classic' | 'foil' | 'neonCosmic' | 'blackIce';
+export type HeroCanvasThemeId = 'classic' | 'foil' | 'neonCosmic' | 'blackIce' | 'base';
 
 export type HeroCanvasImageAsset = {
   // Local require()'d asset. Bundled statically, rendered at native resolution.
@@ -77,9 +77,25 @@ export const HERO_CANVAS_THEMES: HeroCanvasThemeDef[] = [
       // (the default) keeps that framing symmetric behind the identity stack.
     },
   },
+  // Default for first-time users (see DEFAULT_HERO_CANVAS_THEME below) —
+  // appended last, not reordered to the front, so no existing picker
+  // swatch shifts position. Its position here has no bearing on who gets
+  // it by default; resolveHeroCanvasTheme finds it by id, not array index.
+  {
+    id: 'base',
+    label: 'Base',
+    kind: 'image',
+    asset: {
+      source: require('../../assets/materials/base/cc-base.png'),
+      vignetteOpacity: 0.14,
+      // No focalPoint: a tall portrait source (4600x9000, verified via the
+      // actual file) with nothing indicating an off-center subject — a
+      // centered crop (the default) is the same reasoning as blackIce above.
+    },
+  },
 ];
 
-export const DEFAULT_HERO_CANVAS_THEME: HeroCanvasThemeId = 'classic';
+export const DEFAULT_HERO_CANVAS_THEME: HeroCanvasThemeId = 'base';
 
 export function resolveHeroCanvasTheme(theme: string | null | undefined): HeroCanvasThemeId {
   return HERO_CANVAS_THEMES.some((t) => t.id === theme)

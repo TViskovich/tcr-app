@@ -20,6 +20,12 @@ import { PV2 } from './profile-v2-theme';
 
 const AnimatedExpoImage = Animated.createAnimatedComponent(Image);
 
+// Standard trading-card proportion (2.5in x 3.5in), not a square — must
+// match profile-v2-grid.tsx's own CARD_ASPECT_RATIO (loadingCell)
+// exactly, so the loading placeholder and the real card never visibly
+// change shape when data arrives.
+const CARD_ASPECT_RATIO = 2.5 / 3.5;
+
 // ~5s hold, ~850ms crossfade — modeled on app/collection/[folderId].tsx's
 // own hero-carousel crossfade (prefetch-then-fade, cancelable), but
 // self-rescheduling instead of swipe-driven.
@@ -467,7 +473,7 @@ export function GrailSlotPreview({
 const styles = StyleSheet.create({
   slot: {
     flex: 1,
-    aspectRatio: 1,
+    aspectRatio: CARD_ASPECT_RATIO,
     borderRadius: 6,
     overflow: 'hidden',
     backgroundColor: PV2.emptyCardBg,

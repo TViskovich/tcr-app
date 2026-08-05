@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import {
   Animated,
   FlatList,
@@ -22,11 +22,12 @@ const IRIDESCENT_BORDER = ['#8FE3C0', '#F2A6C9', '#8FC7EA', '#B9E8B0'] as const;
 // inside the pill — width follows from CacheCaseLogo's own aspect ratio math.
 const CACHECASE_LOGO_HEIGHT = 30;
 
-// All three pills share this exact footprint now — "collections" being a
-// longer word than "posts" no longer widens its box; its Text instead
-// shrinks to fit via adjustsFontSizeToFit below. Widened from the initial
-// 108 to give the logo pill more breathing room around the wordmark, which
-// was crowding the gradient border closely enough to read as "cut off."
+// All three (now four, for the owner) pills share this exact footprint —
+// "collections" being a longer word than "posts" no longer widens its box;
+// its Text instead shrinks to fit via adjustsFontSizeToFit below. Widened
+// from the initial 108 to give the logo pill more breathing room around the
+// wordmark, which was crowding the gradient border closely enough to read
+// as "cut off."
 const PILL_WIDTH = 122;
 const PILL_HEIGHT = 44;
 const CACHECASE_BORDER_WIDTH = 1.5;
@@ -36,17 +37,18 @@ const CACHECASE_BORDER_WIDTH = 1.5;
 // it only ever rendered fabricated data from lib/placeholder-transactions.ts,
 // indistinguishable from real data to a viewer — see
 // components/profile-v2/transfers-preview.tsx, which stays in the repo but
-// is no longer imported by Profile V2. Re-add 'transfers' here (and in
-// SECTIONS below) once it's backed by real ownership-transfer data. This
-// union is still the source of truth for which sections can ever be
-// selected, so a removed key can't be reached through stale state.
-export type ProfileV2Section = 'posts' | 'cachecase' | 'collections';
-
-// cachecase is the carousel's default/starting selection — its position in
-// this array only matters for which pill starts under the finger; the
-// carousel finds it via SECTIONS.indexOf(active), so no fixed "center index"
-// bookkeeping is required as sections are added or removed.
-const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase'];
+// is no longer imported by Profile V2. This union is still the source of
+// truth for which sections can ever be selected, so a removed key can't be
+// reached through stale state.
+//
+// 'transfer' (singular — a real, safe, owner-only landing section, not the
+// removed 'transfers' preview above) was added for the rail's fourth,
+// owner-only destination. See ProfileV2Selector's `sections` useMemo below
+// for how it's excluded entirely from a visitor's rail, and
+// profile-v2-transfer-landing.tsx for what actually renders when it's
+// selected — a static "choose a card" prompt, never a direct transfer
+// action from this tap alone.
+export type ProfileV2Section = 'posts' | 'cachecase' | 'collections' | 'transfer';
 
 // Fixed per-item width, same idea as the Collection tab's FolderCarousel
 // (see app/(tabs)/collection.tsx) — a constant slot each pill centers
@@ -55,19 +57,23 @@ const SECTIONS: ProfileV2Section[] = ['posts', 'collections', 'cachecase'];
 const SLOT_WIDTH = 132;
 
 // A true mathematically-infinite loop isn't possible with a finite list, so
-// instead the FlatList's data is SECTIONS repeated many times over, with the
-// initial scroll position starting deep in the middle of that buffer. That
-// gives ~100 loops' worth of scroll room in either direction before hitting
-// a physical edge — far more than anyone will ever swipe through in one
-// sitting, so it reads as endless without any scroll-position-reset hack
-// (which risks a visible jump/flicker) to actually stitch the ends together.
+// instead the FlatList's data is `sections` repeated many times over, with
+// the initial scroll position starting deep in the middle of that buffer.
+// That gives ~100 loops' worth of scroll room in either direction before
+// hitting a physical edge — far more than anyone will ever swipe through in
+// one sitting, so it reads as endless without any scroll-position-reset
+// hack (which risks a visible jump/flicker) to actually stitch the ends
+// together.
 const LOOP_COUNT = 200;
-const LOOPED_SECTIONS: ProfileV2Section[] = Array.from({ length: LOOP_COUNT }, () => SECTIONS).flat();
-const LOOP_START = Math.floor(LOOP_COUNT / 2) * SECTIONS.length;
 
 type Props = {
   active: ProfileV2Section;
   onChange: (section: ProfileV2Section) => void;
+  // Gates the fourth 'transfer' pill entirely — a visitor's rail never
+  // includes it in `sections` below, so it can never be scrolled to,
+  // tapped, or landed on via the loop math. Public profile behavior is
+  // otherwise byte-identical to before this pill existed.
+  isOwnProfile: boolean;
 };
 
 // A horizontal, snap-to-center carousel — the exact same mechanics as
@@ -76,23 +82,38 @@ type Props = {
 // Tapping a pill scrolls it to center (which is what actually flips
 // `active`, via onMomentumScrollEnd) rather than switching state directly,
 // so there's a single source of truth for "what's selected."
-export function ProfileV2Selector({ active, onChange }: Props) {
+export function ProfileV2Selector({ active, onChange, isOwnProfile }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const sidePadding = (windowWidth - SLOT_WIDTH) / 2;
   const scrollX = useRef(new Animated.Value(0)).current;
   const listRef = useRef<FlatList<ProfileV2Section>>(null);
 
-  const initialIndex = LOOP_START + Math.max(0, SECTIONS.indexOf(active));
+  // cachecase is the carousel's default/starting selection — its position
+  // in this array only matters for which pill starts under the finger; the
+  // carousel finds it via sections.indexOf(active), so no fixed "center
+  // index" bookkeeping is required as sections are added or removed.
+  // Recomputed only when isOwnProfile changes (never mid-session for a
+  // given screen instance in practice), not on every render.
+  const { sections, loopedSections, loopStart } = useMemo(() => {
+    const sections: ProfileV2Section[] = isOwnProfile
+      ? ['posts', 'collections', 'cachecase', 'transfer']
+      : ['posts', 'collections', 'cachecase'];
+    const loopedSections: ProfileV2Section[] = Array.from({ length: LOOP_COUNT }, () => sections).flat();
+    const loopStart = Math.floor(LOOP_COUNT / 2) * sections.length;
+    return { sections, loopedSections, loopStart };
+  }, [isOwnProfile]);
+
+  const initialIndex = loopStart + Math.max(0, sections.indexOf(active));
 
   const goToIndex = (index: number) => {
-    onChange(LOOPED_SECTIONS[index]);
+    onChange(loopedSections[index]);
     listRef.current?.scrollToIndex({ index, animated: true });
   };
 
   const handleMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const index = Math.round(e.nativeEvent.contentOffset.x / SLOT_WIDTH);
-    const clamped = Math.min(LOOPED_SECTIONS.length - 1, Math.max(0, index));
-    const section = LOOPED_SECTIONS[clamped];
+    const clamped = Math.min(loopedSections.length - 1, Math.max(0, index));
+    const section = loopedSections[clamped];
     if (section !== active) onChange(section);
   };
 
@@ -100,7 +121,7 @@ export function ProfileV2Selector({ active, onChange }: Props) {
     <View style={styles.wrap}>
       <Animated.FlatList<ProfileV2Section>
         ref={listRef}
-        data={LOOPED_SECTIONS}
+        data={loopedSections}
         horizontal
         keyExtractor={(s, index) => `${s}-${index}`}
         showsHorizontalScrollIndicator={false}
@@ -160,7 +181,7 @@ export function ProfileV2Selector({ active, onChange }: Props) {
       />
 
       <View style={styles.dots}>
-        {SECTIONS.map((s) => (
+        {sections.map((s) => (
           <View key={s} style={[styles.dot, s === active && styles.dotActive]} />
         ))}
       </View>
@@ -178,9 +199,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // One constant pill size now (both across posts/collections AND matching
-  // the cachecase logo pill below) — the scroll-driven scale above is what
-  // makes the centered pill read as "active," not a per-pill size swap.
+  // One constant pill size now (both across posts/collections/transfer AND
+  // matching the cachecase logo pill below) — the scroll-driven scale above
+  // is what makes the centered pill read as "active," not a per-pill size
+  // swap.
   pill: {
     width: PILL_WIDTH,
     height: PILL_HEIGHT,

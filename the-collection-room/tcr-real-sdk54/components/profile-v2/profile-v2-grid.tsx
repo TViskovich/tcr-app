@@ -12,12 +12,23 @@ const GRID_HORIZONTAL_MARGIN = 3;
 const GRID_GAP = 2;
 const GRID_WIDTH = Dimensions.get('window').width - GRID_HORIZONTAL_MARGIN * 2;
 
-// Three columns of square cells and two row gaps. Because three cells
-// span GRID_WIDTH across each row, the full 3-row grid height is
-// effectively GRID_WIDTH — used so the initial-error state reserves the
-// same approximate height as the normal loaded/loading grid, and Retry
+// Standard trading-card proportion (2.5in x 3.5in), not a square — must
+// match grail-slot-preview.tsx's own CARD_ASPECT_RATIO (styles.slot)
+// exactly, since loadingCell (below) is this same grid's own loading-
+// state placeholder and needs to occupy the identical shape so nothing
+// visibly changes shape once real data replaces it.
+const CARD_ASPECT_RATIO = 2.5 / 3.5;
+
+// Three columns of CARD_ASPECT_RATIO cells and two row gaps. Each cell's
+// width is GRID_WIDTH's three-way flex split (minus the two horizontal
+// gaps between them); its height is that width divided by the card
+// ratio. Three such rows plus two row gaps gives the real grid's total
+// height — used so the initial-error state reserves the same
+// approximate height as the normal loaded/loading grid, and Retry
 // succeeding doesn't visibly jump the rest of the profile layout.
-const GRID_HEIGHT = GRID_WIDTH;
+const GRID_CELL_WIDTH = (GRID_WIDTH - GRID_GAP * 2) / COLS;
+const GRID_CELL_HEIGHT = GRID_CELL_WIDTH / CARD_ASPECT_RATIO;
+const GRID_HEIGHT = GRID_CELL_HEIGHT * 3 + GRID_GAP * 2;
 
 type Props = {
   slots: GrailSlot[];
@@ -119,7 +130,7 @@ const styles = StyleSheet.create({
   },
   loadingCell: {
     flex: 1,
-    aspectRatio: 1,
+    aspectRatio: CARD_ASPECT_RATIO,
     borderRadius: 6,
     backgroundColor: PV2.emptyCardBg,
   },

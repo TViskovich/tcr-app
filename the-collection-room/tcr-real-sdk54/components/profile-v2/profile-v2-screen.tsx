@@ -21,6 +21,8 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
+import { TransactionsList } from '@/components/transactions/transactions-list';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   getHeroCanvasPickerThemes,
   HERO_CANVAS_THEMES,
@@ -46,7 +48,7 @@ import { GrailSlotChooser } from './grail-slot-chooser';
 import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from './profile-v2-collector-panel';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2Grid } from './profile-v2-grid';
-import { ProfileV2Hero } from './profile-v2-hero';
+import { ProfileV2HeroCanvas } from './profile-v2-hero-canvas';
 import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2Posts } from './profile-v2-posts';
 import { ProfileV2Preferences } from './profile-v2-preferences';
@@ -282,7 +284,13 @@ export function ProfileV2Screen({ userId }: Props) {
   const [removeHero, setRemoveHero] = useState(false);
   const [newBadgeUri, setNewBadgeUri] = useState<string | null>(null);
   const [removeBadge, setRemoveBadge] = useState(false);
-  const [selectedTheme, setSelectedTheme] = useState<HeroCanvasThemeId>('classic');
+  // Placeholder only — always overwritten by enterEdit's own
+  // setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme)) before
+  // edit mode is ever reachable/visible (owner-only, profile already
+  // loaded by then), so this literal value never actually shows to a
+  // user. Kept in sync with DEFAULT_HERO_CANVAS_THEME for consistency,
+  // not because it's functionally reachable.
+  const [selectedTheme, setSelectedTheme] = useState<HeroCanvasThemeId>('base');
   const [saving, setSaving] = useState(false);
 
   // Follow/message state — only ever meaningful (and only ever loaded)
@@ -652,7 +660,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setEditMode(false);
   }
 
-  // Wired to both the explicit Cancel button (ProfileV2Hero's
+  // Wired to both the explicit Cancel button (ProfileV2HeroCanvas's
   // onCancelPress) and the Android hardware-back listener below — same
   // function, same confirmation, same discard path either way. Never
   // shows the prompt while a save is in flight (mirrors the existing
@@ -757,61 +765,6 @@ export function ProfileV2Screen({ userId }: Props) {
     }
     options.push({ text: 'Cancel', style: 'cancel' });
     Alert.alert('Change Photo', undefined, options);
-  }
-
-  async function pickHeroFromLibrary() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [16, 9],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setNewHeroUri(result.assets[0].uri);
-      setRemoveHero(false);
-    }
-  }
-
-  async function pickHeroFromCamera() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow camera access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [16, 9],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setNewHeroUri(result.assets[0].uri);
-      setRemoveHero(false);
-    }
-  }
-
-  function pickHero() {
-    const canRemove = !!(profile?.hero_image_url || newHeroUri);
-    const options: AlertButton[] = [
-      { text: 'Take Photo', onPress: pickHeroFromCamera },
-      { text: 'Choose from Library', onPress: pickHeroFromLibrary },
-    ];
-    if (canRemove) {
-      options.push({
-        text: 'Remove Banner',
-        style: 'destructive',
-        onPress: () => {
-          setNewHeroUri(null);
-          setRemoveHero(true);
-        },
-      });
-    }
-    options.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert('Change Banner', undefined, options);
   }
 
   async function pickBadgeFromLibrary() {
@@ -1028,7 +981,6 @@ export function ProfileV2Screen({ userId }: Props) {
   }
 
   const avatarUri = removeAvatar ? null : (newAvatarUri ?? profile?.avatar_url ?? null);
-  const heroUri = removeHero ? null : (newHeroUri ?? profile?.hero_image_url ?? null);
   const badgeUri = removeBadge ? null : (newBadgeUri ?? profile?.showcase_badge_url ?? null);
   const heroTheme = editMode ? selectedTheme : resolveHeroCanvasTheme(profile?.hero_theme);
   const themeDef = HERO_CANVAS_THEMES.find((t) => t.id === heroTheme);
@@ -1059,22 +1011,86 @@ export function ProfileV2Screen({ userId }: Props) {
           scrollEventThrottle={scrollEventThrottle}>
 
           {profile && (
-            <ProfileV2Hero
+            <ProfileV2CollectorPanel
               avatarUri={avatarUri}
-              heroImageUri={heroUri}
-              themeFallbackSwatch={themeFallbackSwatch}
               displayName={displayName}
               username={profile?.username ?? ''}
+              vaultTotal={stats.itemCount}
+              graded={stats.gradedCount}
+              prototype={prototypeCollectorStats}
+              badgeUri={badgeUri}
+              onAvatarPress={isOwnProfile ? pickAvatar : undefined}
+            />
+          )}
+
+          {profile && (
+            <View style={styles.heroCanvasWrap}>
+            <ProfileV2HeroCanvas
+              heroTheme={heroTheme}
+              themeFallbackSwatch={themeFallbackSwatch}
               editMode={editMode}
               saving={saving}
-              onAvatarPress={editMode ? pickAvatar : undefined}
-              onHeroPress={editMode ? pickHero : undefined}
-              onSettingsPress={isOwnProfile ? () => router.push('/settings') : undefined}
-              onSavedPress={isOwnProfile ? () => router.push('/saved') : undefined}
-              onBackPress={isOwnProfile ? undefined : () => router.back()}
               onCancelPress={cancelEdit}
-              onSavePress={handleSave}
-            />
+              onSavePress={handleSave}>
+              {!editMode && (
+                <ProfileV2Grid
+                  slots={grailSlots}
+                  loading={grailSlotsLoading}
+                  error={grailSlotsError}
+                  onRetry={refreshGrailSlots}
+                  isOwnProfile={isOwnProfile}
+                  onPressEmpty={openGrailAdd}
+                  onPressItem={handleGrailItemPress}
+                  onPressCollection={handleGrailCollectionPress}
+                  onReplace={openGrailReplace}
+                  onRemove={handleRemoveGrailSlot}
+                />
+              )}
+            </ProfileV2HeroCanvas>
+            </View>
+          )}
+
+          {/* Owner/public control row — moved out of ProfileV2HeroCanvas
+              so the canvas itself is dimensionally identical for owner
+              and public view mode (same gridStage 32/32 padding, no
+              action row inside either way). Owner sees Settings/Saved;
+              public sees Back. Both branches share styles.ownerActionRow/
+              ownerIconBtn (not two independently-maintained style
+              objects) so their outer spacing footprint is guaranteed
+              identical — identity content begins at the same vertical
+              offset below the canvas either way. Same handlers, icons,
+              size, hitSlop, and activeOpacity as when Back lived inside
+              the canvas. Hidden during edit mode — neither ever coexisted
+              with Cancel/Save when it lived inside the canvas either. */}
+          {profile && !editMode && (
+            <View style={styles.ownerActionRow}>
+              {isOwnProfile ? (
+                <>
+                  <TouchableOpacity
+                    onPress={() => router.push('/settings')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}>
+                    <IconSymbol name="gearshape.fill" size={18} color="#fff" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => router.push('/saved')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}>
+                    <IconSymbol name="bookmark" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => router.back()}
+                  hitSlop={10}
+                  style={styles.ownerIconBtn}
+                  activeOpacity={0.75}>
+                  <IconSymbol name="chevron.left" size={18} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
           )}
 
           {editMode ? (
@@ -1232,59 +1248,14 @@ export function ProfileV2Screen({ userId }: Props) {
           ) : (
             /* ── View Mode ── */
             <>
-              <ProfileV2Identity
-                tagline={profile?.tagline ?? null}
-                bio={profile?.bio ?? null}
-                location={profile?.location ?? null}
-                website={profile?.website ?? null}
-                createdAt={profile?.created_at ?? null}
-                mode={isOwnProfile ? 'owner' : 'public'}
-                onEditPress={isOwnProfile ? enterEdit : undefined}
-                onFollowPress={isOwnProfile ? undefined : toggleFollow}
-                onMessagePress={isOwnProfile ? undefined : handleMessage}
-                isFollowing={isFollowing}
-                followLoading={followLoading}
-                messageLoading={msgLoading}
-              />
-
-              {/* Temporary — testing-only entry point for the real
-                  ownership-transfer screen. Not a Profile V2 selector
-                  section, never shown to visitors. Reuses badgeEditLabel's
-                  exact link-text style (PV2.link, 14px, 600) rather than
-                  inventing a new "secondary owner action" treatment. */}
-              {isOwnProfile && currentUserId && (
-                <TouchableOpacity
-                  style={styles.transfersLink}
-                  onPress={handleOpenTransfers}
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityLabel="View transfers">
-                  <Text style={styles.badgeEditLabel}>Transfers</Text>
-                </TouchableOpacity>
-              )}
-
-              <ProfileV2Stats followers={stats.followerCount} following={stats.followingCount} />
-
-              {/* Own read-only Collector Profile section — same data for
-                  owner and visitor, positioned after identity/stats and
-                  before the selector/tab content per the requested layout.
-                  Renders nothing at all (including its own header) when
-                  every preference array is empty. */}
-              <ProfileV2Preferences
-                favoriteSports={profile?.favorite_sports ?? []}
-                favoriteTeams={profile?.favorite_teams ?? []}
-                collectingCategories={profile?.collecting_categories ?? []}
-                collectorTags={profile?.collector_tags ?? []}
-              />
-
-              <ProfileV2Selector active={section} onChange={setSection} />
+              <ProfileV2Selector active={section} onChange={setSection} isOwnProfile={isOwnProfile} />
 
               {/* One shared, fixed-minHeight container for whichever section
-                  is active — measured once off the cachecase section (the
-                  tallest: collector panel + Grails grid), since that's the
-                  default/starting tab. Shorter sections (posts/collections)
-                  then hold the same floor instead of shrinking the page and
-                  shifting everything below it. */}
+                  is active — measured once off the cachecase section (now
+                  the profile identity/stats overview), since cachecase is
+                  still the default/starting tab. Other sections then hold
+                  the same floor instead of shrinking the page and shifting
+                  everything below it. */}
               <ProfileV2SectionPage
                 minHeight={sectionMinHeight}
                 onLayout={(e) => {
@@ -1292,6 +1263,29 @@ export function ProfileV2Screen({ userId }: Props) {
                     setSectionMinHeight(e.nativeEvent.layout.height);
                   }
                 }}>
+                {section === 'cachecase' && (
+                  <>
+                    <ProfileV2Identity
+                      displayName={displayName}
+                      username={profile?.username ?? ''}
+                      tagline={profile?.tagline ?? null}
+                      bio={profile?.bio ?? null}
+                      location={profile?.location ?? null}
+                      website={profile?.website ?? null}
+                      createdAt={profile?.created_at ?? null}
+                      mode={isOwnProfile ? 'owner' : 'public'}
+                      onEditPress={isOwnProfile ? enterEdit : undefined}
+                      onFollowPress={isOwnProfile ? undefined : toggleFollow}
+                      onMessagePress={isOwnProfile ? undefined : handleMessage}
+                      isFollowing={isFollowing}
+                      followLoading={followLoading}
+                      messageLoading={msgLoading}
+                    />
+
+                    <ProfileV2Stats followers={stats.followerCount} following={stats.followingCount} />
+                  </>
+                )}
+
                 {section === 'posts' && (
                   <ProfileV2Posts
                     posts={profilePosts}
@@ -1302,32 +1296,6 @@ export function ProfileV2Screen({ userId }: Props) {
                     error={profilePostsError}
                     onRetry={refreshPosts}
                   />
-                )}
-
-                {section === 'cachecase' && (
-                  <>
-                    <ProfileV2CollectorPanel
-                      avatarUri={avatarUri}
-                      displayName={displayName}
-                      username={profile?.username ?? ''}
-                      vaultTotal={stats.itemCount}
-                      graded={stats.gradedCount}
-                      prototype={prototypeCollectorStats}
-                      badgeUri={badgeUri}
-                    />
-                    <ProfileV2Grid
-                      slots={grailSlots}
-                      loading={grailSlotsLoading}
-                      error={grailSlotsError}
-                      onRetry={refreshGrailSlots}
-                      isOwnProfile={isOwnProfile}
-                      onPressEmpty={openGrailAdd}
-                      onPressItem={handleGrailItemPress}
-                      onPressCollection={handleGrailCollectionPress}
-                      onReplace={openGrailReplace}
-                      onRemove={handleRemoveGrailSlot}
-                    />
-                  </>
                 )}
 
                 {section === 'collections' && (
@@ -1341,7 +1309,23 @@ export function ProfileV2Screen({ userId }: Props) {
                   />
                 )}
 
+                {section === 'transfer' && isOwnProfile && (
+                  <TransactionsList currentUserId={currentUserId} onViewAll={handleOpenTransfers} />
+                )}
+
               </ProfileV2SectionPage>
+
+              {/* Own read-only Collector Profile section — same data for
+                  owner and visitor. Moved to be the final profile section,
+                  below all selector/tab content, per the requested layout.
+                  Renders nothing at all (including its own header) when
+                  every preference array is empty. */}
+              <ProfileV2Preferences
+                favoriteSports={profile?.favorite_sports ?? []}
+                favoriteTeams={profile?.favorite_teams ?? []}
+                collectingCategories={profile?.collecting_categories ?? []}
+                collectorTags={profile?.collector_tags ?? []}
+              />
             </>
           )}
 
@@ -1364,6 +1348,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scroll: {},
+  // Shifts the whole ProfileV2HeroCanvas (theme background, Top 9, and
+  // its identityHeader/action rail) down as one unit, off the very top
+  // edge of the screen. Deliberately outside profile-v2-hero-canvas.tsx
+  // itself — the canvas has no padding/height changes here, only its
+  // position within the ScrollView moves.
+  heroCanvasWrap: {
+    marginTop: 12,
+  },
+  ownerActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  ownerIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   editSection: {
     padding: 16,
   },
@@ -1438,16 +1447,6 @@ const styles = StyleSheet.create({
     color: PV2.link,
     fontSize: 14,
     fontWeight: '600',
-  },
-  // Layout only — badgeEditLabel above owns all the actual text styling,
-  // reused as-is. Centered, small tap padding, modest top margin matching
-  // this screen's existing small-gap conventions (e.g. ProfileV2Stats'
-  // own marginTop: 8) rather than a new spacing value.
-  transfersLink: {
-    alignSelf: 'center',
-    marginTop: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 12,
   },
   themeRow: {
     flexDirection: 'row',
