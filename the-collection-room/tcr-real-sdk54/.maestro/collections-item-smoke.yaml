@@ -1,0 +1,42 @@
+appId: host.exp.exponent
+---
+- tapOn: "Profile"
+- assertVisible: "Profile"
+
+- runFlow:
+    when:
+      visible:
+        id: "profile-section-cachecase"
+    commands:
+      - tapOn:
+          id: "profile-section-cachecase"
+      - waitForAnimationToEnd
+
+- tapOn:
+    id: "profile-section-collections"
+- waitForAnimationToEnd
+
+- scrollUntilVisible:
+    element:
+      text: "Open .+ collection"
+    direction: DOWN
+
+- tapOn:
+    text: "Open .+ collection"
+- waitForAnimationToEnd
+
+- tapOn:
+    id: "collection-group-.+"
+- waitForAnimationToEnd
+
+- tapOn:
+    id: "collection-item-.+"
+- waitForAnimationToEnd
+
+- assertVisible: "Edit"
+
+- tapOn: "Go back"
+- waitForAnimationToEnd
+
+- tapOn: "Back"
+- assertVisible: "Profile"

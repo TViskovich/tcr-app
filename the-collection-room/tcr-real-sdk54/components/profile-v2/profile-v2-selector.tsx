@@ -152,7 +152,10 @@ export function ProfileV2Selector({ active, onChange, isOwnProfile }: Props) {
             <View style={styles.slot}>
               <Animated.View style={{ transform: [{ scale }], opacity }}>
                 {item === 'cachecase' ? (
-                  <TouchableOpacity onPress={() => goToIndex(index)} activeOpacity={0.85}>
+                  <TouchableOpacity
+                    testID={`profile-section-${item}`}
+                    onPress={() => goToIndex(index)}
+                    activeOpacity={0.85}>
                     <LinearGradient
                       colors={IRIDESCENT_BORDER}
                       start={{ x: 0, y: 0 }}
@@ -164,7 +167,11 @@ export function ProfileV2Selector({ active, onChange, isOwnProfile }: Props) {
                     </LinearGradient>
                   </TouchableOpacity>
                 ) : (
-                  <TouchableOpacity style={styles.pill} onPress={() => goToIndex(index)} activeOpacity={0.8}>
+                  <TouchableOpacity
+                    testID={`profile-section-${item}`}
+                    style={styles.pill}
+                    onPress={() => goToIndex(index)}
+                    activeOpacity={0.8}>
                     <Text
                       style={styles.pillLabel}
                       numberOfLines={1}

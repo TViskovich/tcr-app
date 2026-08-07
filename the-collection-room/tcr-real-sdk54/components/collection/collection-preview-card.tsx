@@ -23,6 +23,11 @@ type Props = {
   // to "full" (the default) at any size, per the shared PREVIEW_CARD_*
   // constants below, which never vary by variant.
   variant?: 'full' | 'compact';
+  // Optional — callers with a stable, deterministic key (e.g. the folder
+  // screen's grouping grid, see app/collection/[folderId].tsx) pass one
+  // through for automated-test selection; title/subtitle alone are
+  // dynamic, user-generated text with no fixed pattern to match against.
+  testID?: string;
 };
 
 // Pure visual renderer — no data fetching, no folder/item resolution of its
@@ -35,10 +40,12 @@ export function CollectionPreviewCard({
   tileWidth,
   onPress,
   variant = 'full',
+  testID,
 }: Props) {
   const compact = variant === 'compact';
   return (
     <Pressable
+      testID={testID}
       style={({ pressed }) => [{ width: tileWidth }, pressed && styles.pressed]}
       onPress={onPress}
       accessibilityRole="button"

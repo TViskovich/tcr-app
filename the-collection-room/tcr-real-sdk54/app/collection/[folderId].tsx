@@ -493,7 +493,12 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Back">
               <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
             </Pressable>
           </View>
@@ -511,7 +516,12 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Back">
               <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
             </Pressable>
           </View>
@@ -539,7 +549,12 @@ export default function CollectionFolderScreen() {
           // else reuses the folder-level actions already wired below.
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.heroBackCircleBtn}>
+              <Pressable
+                onPress={() => router.back()}
+                hitSlop={12}
+                style={styles.heroBackCircleBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Back">
                 <IconSymbol name="chevron.left" size={20} color="#fff" />
               </Pressable>
 
@@ -651,7 +666,12 @@ export default function CollectionFolderScreen() {
         ) : (
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+              <Pressable
+                onPress={() => router.back()}
+                hitSlop={12}
+                style={styles.iconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Back">
                 <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
               </Pressable>
 
@@ -776,6 +796,7 @@ export default function CollectionFolderScreen() {
                 />
               ) : (
                 <Pressable
+                  testID={`collection-item-${slot.data.id}`}
                   style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
                   onPress={() => openItem(slot.data)}>
                   {slot.data.image_url ? (
@@ -834,6 +855,7 @@ export default function CollectionFolderScreen() {
               const cover = group.items.find((i) => i.image_url)?.image_url ?? null;
               return (
                 <CollectionPreviewCard
+                  testID={`collection-group-${group.key}`}
                   imageUrl={cover}
                   title={group.label}
                   subtitle={`${group.items.length} ${group.items.length === 1 ? 'card' : 'cards'}`}
