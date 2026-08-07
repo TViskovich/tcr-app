@@ -6,3 +6,4 @@ appId: host.exp.exponent
 - runFlow: collections-item-smoke.yaml
 - runFlow: transfers-smoke.yaml
 - runFlow: search-functionality.yaml
+- runFlow: follow-unfollow-smoke.yaml

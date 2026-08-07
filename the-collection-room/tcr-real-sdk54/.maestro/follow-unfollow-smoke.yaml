@@ -1,0 +1,49 @@
+appId: host.exp.exponent
+---
+- tapOn: "Discover"
+- waitForAnimationToEnd
+
+- tapOn: "Users"
+- waitForAnimationToEnd
+
+- tapOn:
+    id: "discover-search-input"
+- eraseText
+- inputText: "avidcollecter1"
+- waitForAnimationToEnd
+
+- tapOn: "@avidcollecter1"
+- waitForAnimationToEnd
+
+- scrollUntilVisible:
+    element:
+      text: "Follow(ing)?"
+    direction: DOWN
+
+# Normalize to a known "Follow" starting state regardless of whatever the
+# real relationship currently is — unfollow first if already following.
+- runFlow:
+    when:
+      visible: "Following"
+    commands:
+      - tapOn: "Following"
+      - extendedWaitUntil:
+          visible: "Follow"
+          timeout: 10000
+
+- assertVisible: "Follow"
+
+- tapOn: "Follow"
+- extendedWaitUntil:
+    visible: "Following"
+    timeout: 10000
+- assertVisible: "Following"
+
+- tapOn: "Following"
+- extendedWaitUntil:
+    visible: "Follow"
+    timeout: 10000
+- assertVisible: "Follow"
+
+- tapOn: "Back"
+- assertVisible: "Discover"

@@ -1101,7 +1101,9 @@ export function ProfileV2Screen({ userId }: Props) {
                   onPress={() => router.back()}
                   hitSlop={10}
                   style={styles.ownerIconBtn}
-                  activeOpacity={0.75}>
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back">
                   <IconSymbol name="chevron.left" size={18} color="#fff" />
                 </TouchableOpacity>
               )}
