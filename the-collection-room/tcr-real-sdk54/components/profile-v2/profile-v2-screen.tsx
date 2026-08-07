@@ -237,15 +237,32 @@ export function ProfileV2Screen({ userId }: Props) {
   // on a genuine query failure (it used to silently swallow it), which
   // must never be presented identically to "this user has no posts."
   const [profilePostsError, setProfilePostsError] = useState<string | null>(null);
+  // An in-flight fetchUserPosts request left running past the point this
+  // screen loses focus (tab switch) or userId/currentUserId changes can
+  // have its underlying XHR connection torn down by the native networking
+  // layer and crash with whatwg-fetch's status-0 RangeError — see
+  // hooks/use-profile.ts for the full mechanism writeup. Aborted in the
+  // useFocusEffect cleanup below.
+  const postsControllerRef = useRef<AbortController | null>(null);
   const refreshPosts = useCallback(async () => {
+    postsControllerRef.current?.abort();
+    const controller = new AbortController();
+    postsControllerRef.current = controller;
+
     setProfilePostsError(null);
     try {
-      const nextPosts = await fetchUserPosts(userId, currentUserId);
+      const nextPosts = await fetchUserPosts(userId, controller.signal, currentUserId);
+      if (postsControllerRef.current !== controller || controller.signal.aborted) return;
       setProfilePosts(nextPosts);
     } catch (e) {
+      if (controller.signal.aborted || postsControllerRef.current !== controller) return;
       console.error('[refreshPosts] failed:', e);
       setProfilePostsError(e instanceof Error ? e.message : 'Failed to load posts.');
       // Preserve any posts already loaded rather than clearing them.
+    } finally {
+      if (postsControllerRef.current === controller) {
+        postsControllerRef.current = null;
+      }
     }
   }, [userId, currentUserId]);
 
@@ -305,6 +322,13 @@ export function ProfileV2Screen({ userId }: Props) {
       refreshGrailSlots();
       refreshFolders();
       refreshPosts();
+      return () => {
+        // Only cancels the fetchUserPosts batch owned by postsControllerRef
+        // — refresh/refreshGrailSlots/refreshFolders own their own
+        // cancellation internally (see their respective hooks) and are
+        // deliberately left untouched here.
+        postsControllerRef.current?.abort();
+      };
     }, [refresh, refreshGrailSlots, refreshFolders, refreshPosts]),
   );
 
@@ -1065,22 +1089,13 @@ export function ProfileV2Screen({ userId }: Props) {
           {profile && !editMode && (
             <View style={styles.ownerActionRow}>
               {isOwnProfile ? (
-                <>
-                  <TouchableOpacity
-                    onPress={() => router.push('/settings')}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}>
-                    <IconSymbol name="gearshape.fill" size={18} color="#fff" />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => router.push('/saved')}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}>
-                    <IconSymbol name="bookmark" size={18} color="#fff" />
-                  </TouchableOpacity>
-                </>
+                <TouchableOpacity
+                  onPress={() => router.push('/settings')}
+                  hitSlop={10}
+                  style={styles.ownerIconBtn}
+                  activeOpacity={0.75}>
+                  <IconSymbol name="gearshape.fill" size={18} color="#fff" />
+                </TouchableOpacity>
               ) : (
                 <TouchableOpacity
                   onPress={() => router.back()}

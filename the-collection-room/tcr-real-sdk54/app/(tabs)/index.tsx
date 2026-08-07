@@ -48,7 +48,12 @@ const SHOW_FEED_SEGMENT = false;
 
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
-async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
+// `signal` is required — this is always invoked from loadFeed/onRefresh/
+// loadMore below, each of which owns an AbortController tied to the
+// screen's focus lifecycle (see the useFocusEffect cleanup further down for
+// why an uncancelled request left running past a tab switch can crash with
+// whatwg-fetch's status-0 RangeError).
+async function queryFeed(currentUserId: string | undefined, page: number, signal: AbortSignal): Promise<FeedPost[]> {
   const sevenDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const from = page * PAGE_SIZE;
 
@@ -58,7 +63,8 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
-    .range(from, from + PAGE_SIZE - 1);
+    .range(from, from + PAGE_SIZE - 1)
+    .abortSignal(signal);
 
   if (postsError) {
     console.error('[queryFeed] posts query failed:', postsError.message, postsError);
@@ -79,23 +85,23 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
     .map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
+    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds).abortSignal(signal),
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
+      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
-    supabase.from('comments').select('post_id').in('post_id', postIds),
+    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
+    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
     currentUserId
-      ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId)
+      ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId).abortSignal(signal)
       : Promise.resolve({ data: [] }),
     grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, currentUserId)
+      ? fetchGrailData(grailPostIds, signal, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
     // Throws on failure (see fetchCardShareItems) — not caught here, same
     // reasoning as fetchUserPosts: a card-share query failure should fail
     // this fetch loudly rather than silently render posts with missing
     // card data.
-    fetchCardShareItems(cardSharePostIds),
+    fetchCardShareItems(cardSharePostIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -150,13 +156,15 @@ async function queryFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> 
   return sortPostsByCreatedAtDesc(posts);
 }
 
-async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<FeedPost[]> {
+// `signal` required — see queryFeed's comment above.
+async function queryFollowingFeed(currentUserId: string | undefined, page: number, signal: AbortSignal): Promise<FeedPost[]> {
   if (!currentUserId) return [];
 
   const { data: followRows } = await supabase
     .from('follows')
     .select('following_id')
-    .eq('follower_id', currentUserId);
+    .eq('follower_id', currentUserId)
+    .abortSignal(signal);
 
   const followedIds = ((followRows ?? []) as any[]).map((f) => f.following_id as string);
   if (!followedIds.length) return [];
@@ -169,7 +177,8 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
     .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
     .in('user_id', followedIds)
     .order('created_at', { ascending: false })
-    .range(from, from + PAGE_SIZE - 1);
+    .range(from, from + PAGE_SIZE - 1)
+    .abortSignal(signal);
 
   if (postsError) {
     console.error('[queryFollowingFeed] posts query failed:', postsError.message, postsError);
@@ -189,16 +198,16 @@ async function queryFollowingFeed(currentUserId?: string, page = 0): Promise<Fee
     .map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds),
+    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds).abortSignal(signal),
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
+      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
-    supabase.from('comments').select('post_id').in('post_id', postIds),
+    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
+    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
     grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, currentUserId)
+      ? fetchGrailData(grailPostIds, signal, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
-    fetchCardShareItems(cardSharePostIds),
+    fetchCardShareItems(cardSharePostIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -280,7 +289,28 @@ export default function HomeScreen() {
   // spinners stuck on forever.
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Three separate controllers, one per operation below — loadFeed,
+  // onRefresh, and loadMore each guard their own loading flag
+  // (loading/refreshing/loadingMore) and must each independently clear
+  // only their own flag when their own batch is still current, never a
+  // sibling's. All three are aborted together on focus-loss/unmount (see
+  // the useFocusEffect cleanup below) since nothing on screen needs any of
+  // them once the tab is no longer visible — an in-flight request left
+  // running past that point can have its underlying XHR connection torn
+  // down by the native networking layer, and whatwg-fetch's onload handler
+  // then reads xhr.status back as 0 and throws constructing a Response
+  // (RangeError, status outside [200,599]) synchronously inside a bare
+  // setTimeout callback, outside any promise chain — uncatchable. See
+  // hooks/use-profile.ts for the full mechanism writeup.
+  const loadFeedControllerRef = useRef<AbortController | null>(null);
+  const refreshControllerRef = useRef<AbortController | null>(null);
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
+
   const loadFeed = useCallback(async () => {
+    loadFeedControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadFeedControllerRef.current = controller;
+
     setLoading(true);
     setPage(0);
     setHasMore(true);
@@ -288,49 +318,71 @@ export default function HomeScreen() {
     try {
       const data =
         feedMode === 'for-you'
-          ? await queryFeed(currentUserId, 0)
-          : await queryFollowingFeed(currentUserId, 0);
+          ? await queryFeed(currentUserId, 0, controller.signal)
+          : await queryFollowingFeed(currentUserId, 0, controller.signal);
+      // Superseded (a newer loadFeed call, or the tab lost focus) — this
+      // batch's result is stale regardless of whether it actually finished
+      // or carries an abort error; never let it commit over newer state.
+      if (loadFeedControllerRef.current !== controller || controller.signal.aborted) return;
       setPosts(data);
       setHasMore(data.length === PAGE_SIZE);
     } catch (e) {
+      if (controller.signal.aborted || loadFeedControllerRef.current !== controller) return;
       console.error('[loadFeed] failed:', e);
       setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
     } finally {
-      setLoading(false);
+      if (loadFeedControllerRef.current === controller) {
+        loadFeedControllerRef.current = null;
+        setLoading(false);
+      }
     }
   }, [currentUserId, feedMode]);
 
   const onRefresh = useCallback(async () => {
+    refreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+
     setRefreshing(true);
     setPage(0);
     setHasMore(true);
     try {
       const data =
         feedMode === 'for-you'
-          ? await queryFeed(currentUserId, 0)
-          : await queryFollowingFeed(currentUserId, 0);
+          ? await queryFeed(currentUserId, 0, controller.signal)
+          : await queryFollowingFeed(currentUserId, 0, controller.signal);
+      if (refreshControllerRef.current !== controller || controller.signal.aborted) return;
       setPosts(data);
       setHasMore(data.length === PAGE_SIZE);
       setLoadError(null);
     } catch (e) {
+      if (controller.signal.aborted || refreshControllerRef.current !== controller) return;
       console.error('[onRefresh] failed:', e);
       setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
       // Keep whatever posts were already on screen rather than clearing
       // them on a failed pull-to-refresh.
     } finally {
-      setRefreshing(false);
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+        setRefreshing(false);
+      }
     }
   }, [currentUserId, feedMode]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || loading) return;
+    loadMoreControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreControllerRef.current = controller;
+
     setLoadingMore(true);
     const nextPage = page + 1;
     try {
       const data =
         feedMode === 'for-you'
-          ? await queryFeed(currentUserId, nextPage)
-          : await queryFollowingFeed(currentUserId, nextPage);
+          ? await queryFeed(currentUserId, nextPage, controller.signal)
+          : await queryFollowingFeed(currentUserId, nextPage, controller.signal);
+      if (loadMoreControllerRef.current !== controller || controller.signal.aborted) return;
       if (data.length > 0) {
         // Merge, dedupe by post ID (a page boundary can shift if a new post
         // lands mid-fetch), then re-sort globally — appending pages blindly
@@ -348,9 +400,13 @@ export default function HomeScreen() {
       // A failed next-page fetch shouldn't disturb the posts already
       // loaded and visible — just log it and let the user retry by
       // scrolling again (hasMore/page are untouched on failure).
+      if (controller.signal.aborted || loadMoreControllerRef.current !== controller) return;
       console.error('[loadMore] failed:', e);
     } finally {
-      setLoadingMore(false);
+      if (loadMoreControllerRef.current === controller) {
+        loadMoreControllerRef.current = null;
+        setLoadingMore(false);
+      }
     }
   }, [loadingMore, hasMore, loading, page, feedMode, currentUserId]);
 
@@ -359,6 +415,11 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       loadFeed();
+      return () => {
+        loadFeedControllerRef.current?.abort();
+        refreshControllerRef.current?.abort();
+        loadMoreControllerRef.current?.abort();
+      };
     }, [loadFeed]),
   );
 

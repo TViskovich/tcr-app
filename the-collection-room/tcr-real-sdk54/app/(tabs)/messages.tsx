@@ -45,7 +45,12 @@ function formatTime(iso: string) {
 //   1. my participation rows → convIds
 //   2. parallel: all participants + conversations + recent messages
 //   3. profiles for the other users
-async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
+// `signal` required — always called from load/onRefresh below, each of
+// which owns an AbortController tied to this screen's focus lifecycle (see
+// the useFocusEffect cleanup further down for why an uncancelled request
+// left running past a tab switch can crash with whatwg-fetch's status-0
+// RangeError — same mechanism as hooks/use-profile.ts).
+async function loadInbox(currentUserId: string, signal: AbortSignal): Promise<ConversationItem[]> {
   const { data: myRows } = await supabase
     .from('conversation_participants')
     .select('conversation_id')
@@ -53,7 +58,8 @@ async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
     // Conversations this user swipe-deleted from their own inbox — hidden
     // here only; the other participant's own row/inbox is untouched, and a
     // DB trigger clears this back to NULL the moment a new message lands.
-    .is('hidden_at', null);
+    .is('hidden_at', null)
+    .abortSignal(signal);
 
   if (!myRows?.length) return [];
 
@@ -63,17 +69,20 @@ async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
     supabase
       .from('conversation_participants')
       .select('conversation_id, user_id')
-      .in('conversation_id', convIds),
+      .in('conversation_id', convIds)
+      .abortSignal(signal),
     supabase
       .from('conversations')
       .select('id, last_message_at')
-      .in('id', convIds),
+      .in('id', convIds)
+      .abortSignal(signal),
     supabase
       .from('messages')
       .select('conversation_id, body, created_at')
       .in('conversation_id', convIds)
       .order('created_at', { ascending: false })
-      .limit(200),
+      .limit(200)
+      .abortSignal(signal),
   ]);
 
   // Map: conversation_id → other user_id
@@ -88,7 +97,8 @@ async function loadInbox(currentUserId: string): Promise<ConversationItem[]> {
   const { data: profilesData } = await supabase
     .from('profiles')
     .select('id, username, display_name, avatar_url')
-    .in('id', otherUserIds);
+    .in('id', otherUserIds)
+    .abortSignal(signal);
 
   const profileMap = new Map((profilesData ?? []).map((p: any) => [p.id, p]));
 
@@ -211,27 +221,69 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Separate controllers for load() and onRefresh() — they guard separate
+  // flags (loading/refreshing) so a stale one must never clear the other's
+  // flag. Both aborted together on focus-loss/unmount (see the
+  // useFocusEffect cleanup below); see hooks/use-profile.ts for the full
+  // whatwg-fetch status-0 crash mechanism this guards against.
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const refreshControllerRef = useRef<AbortController | null>(null);
+
   const load = useCallback(async () => {
     if (!currentUserId) {
       setLoading(false);
       return;
     }
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+
     setLoading(true);
-    setConversations(await loadInbox(currentUserId));
-    setLoading(false);
+    try {
+      const data = await loadInbox(currentUserId, controller.signal);
+      if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+      setConversations(data);
+    } catch (e) {
+      if (controller.signal.aborted || loadControllerRef.current !== controller) return;
+      if (__DEV__) console.error('[Messages] load failed:', e);
+    } finally {
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        setLoading(false);
+      }
+    }
   }, [currentUserId]);
 
   const onRefresh = useCallback(async () => {
     if (!currentUserId) return;
+    refreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+
     setRefreshing(true);
-    setConversations(await loadInbox(currentUserId));
-    refreshMessageBadge();
-    setRefreshing(false);
+    try {
+      const data = await loadInbox(currentUserId, controller.signal);
+      if (refreshControllerRef.current !== controller || controller.signal.aborted) return;
+      setConversations(data);
+      refreshMessageBadge();
+    } catch (e) {
+      if (controller.signal.aborted || refreshControllerRef.current !== controller) return;
+      if (__DEV__) console.error('[Messages] refresh failed:', e);
+    } finally {
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+        setRefreshing(false);
+      }
+    }
   }, [currentUserId, refreshMessageBadge]);
 
   useFocusEffect(
     useCallback(() => {
       load();
+      return () => {
+        loadControllerRef.current?.abort();
+        refreshControllerRef.current?.abort();
+      };
     }, [load]),
   );
 

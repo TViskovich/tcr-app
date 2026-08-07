@@ -255,6 +255,7 @@ export default function SearchScreen() {
 
       <View style={styles.searchRow}>
         <TextInput
+          testID="discover-search-input"
           style={styles.input}
           value={query}
           onChangeText={setQuery}

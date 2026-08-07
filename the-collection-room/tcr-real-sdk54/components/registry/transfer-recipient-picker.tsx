@@ -28,9 +28,16 @@ function escapeIlikePattern(raw: string): string {
   return raw.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
+// `signal` required — the only caller (the debounced effect below) always
+// owns an AbortController tied to this picker's lifecycle (superseded on
+// every new keystroke's search, cancelled outright if the picker/modal
+// unmounts mid-search). See hooks/use-profile.ts for why an in-flight
+// request left running past that point can crash with whatwg-fetch's
+// status-0 RangeError.
 async function searchRecipients(
   term: string,
   excludeUserId: string,
+  signal: AbortSignal,
 ): Promise<{ data: TransferRecipientProfile[]; error: string | null }> {
   const pattern = `%${escapeIlikePattern(term)}%`;
   // Two independent single-column queries, not one .or() built by
@@ -53,14 +60,16 @@ async function searchRecipients(
       .ilike('username', pattern)
       .neq('id', excludeUserId)
       .order('username')
-      .limit(RESULT_LIMIT),
+      .limit(RESULT_LIMIT)
+      .abortSignal(signal),
     supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url')
       .ilike('display_name', pattern)
       .neq('id', excludeUserId)
       .order('username')
-      .limit(RESULT_LIMIT),
+      .limit(RESULT_LIMIT)
+      .abortSignal(signal),
   ]);
 
   const firstError = byUsername.error ?? byDisplayName.error;
@@ -103,10 +112,17 @@ export function TransferRecipientPicker({ excludeUserId, onSelect }: Props) {
   // the unmount guard: bumping it one last time on unmount makes any
   // still-in-flight request's eventual resolution a permanent no-op.
   const requestSeqRef = useRef(0);
+  // Owns the in-flight search's actual request, so it can be cancelled
+  // outright — not just have its result ignored via requestSeqRef above —
+  // whenever a newer search supersedes it or this picker unmounts (the
+  // modal closes). See searchRecipients's comment for why an uncancelled
+  // request is a crash risk.
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
       requestSeqRef.current += 1;
+      abortControllerRef.current?.abort();
     };
   }, []);
 
@@ -119,6 +135,7 @@ export function TransferRecipientPicker({ excludeUserId, onSelect }: Props) {
       // result can't land after this and repopulate results the user just
       // cleared.
       requestSeqRef.current += 1;
+      abortControllerRef.current?.abort();
       setResults([]);
       setSearchError(null);
       setSearching(false);
@@ -129,7 +146,11 @@ export function TransferRecipientPicker({ excludeUserId, onSelect }: Props) {
     setSearching(true);
     setSearchError(null);
     debounceRef.current = setTimeout(async () => {
-      const { data, error } = await searchRecipients(term, excludeUserId);
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      const { data, error } = await searchRecipients(term, excludeUserId, controller.signal);
       // Only the latest scheduled request may commit — an older request
       // resolving late (or resolving after unmount) is silently discarded.
       if (seq !== requestSeqRef.current) return;

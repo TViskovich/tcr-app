@@ -248,6 +248,16 @@ export default function PostDetailScreen() {
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
 
+  // Owns the mount/postId-change load's request batch only — the
+  // Retry-comments and post-a-comment refresh paths below are user-
+  // triggered actions (not a mount/route effect), same classification as
+  // profile-v2-screen.tsx's handleSave, so they're intentionally left
+  // uncancelled. An in-flight request left running past the point this
+  // screen unmounts can have its underlying XHR connection torn down by
+  // the native networking layer and crash with whatwg-fetch's status-0
+  // RangeError — see hooks/use-profile.ts for the full mechanism writeup.
+  const loadControllerRef = useRef<AbortController | null>(null);
+
   // Tracks keyboard state purely to toggle TAB_BAR_CLEARANCE above — see
   // that constant's comment. "Will" events on iOS (available there) avoid a
   // one-frame lag/flash; Android only has "Did" events.
@@ -300,15 +310,19 @@ export default function PostDetailScreen() {
   // [] on failure — a failed query must never look identical to "this post
   // genuinely has zero comments." Callers decide what to do with the
   // error (show a banner, keep prior state, etc.) rather than this
-  // function silently deciding "empty" on their behalf.
-  const fetchComments = useCallback(async (pid: string): Promise<{ comments: Comment[]; error: string | null }> => {
+  // function silently deciding "empty" on their behalf. `signal` is
+  // optional — only the mount-effect load() below (an at-risk mount-driven
+  // load) supplies one; the retry-comments and post-a-comment refresh
+  // callers are user-triggered actions and intentionally don't cancel.
+  const fetchComments = useCallback(async (pid: string, signal?: AbortSignal): Promise<{ comments: Comment[]; error: string | null }> => {
     console.log('[PostDetail][DEBUG] fetchComments: start', { postId: pid });
 
-    const { data: rows, error: rowsError } = await supabase
+    const commentsQuery = supabase
       .from('comments')
       .select('id, user_id, body, created_at')
       .eq('post_id', pid)
       .order('created_at', { ascending: true });
+    const { data: rows, error: rowsError } = await (signal ? commentsQuery.abortSignal(signal) : commentsQuery);
 
     if (rowsError) {
       console.error('[PostDetail] fetchComments: comments query failed:', rowsError.message, rowsError);
@@ -321,10 +335,11 @@ export default function PostDetailScreen() {
     }
 
     const userIds = [...new Set((rows as any[]).map((c) => c.user_id as string))];
-    const { data: profiles, error: profilesError } = await supabase
+    const profilesQuery = supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url')
       .in('id', userIds);
+    const { data: profiles, error: profilesError } = await (signal ? profilesQuery.abortSignal(signal) : profilesQuery);
 
     if (profilesError) {
       console.error('[PostDetail] fetchComments: profiles query failed:', profilesError.message, profilesError);
@@ -353,109 +368,133 @@ export default function PostDetailScreen() {
   useEffect(() => {
     if (!postId) return;
 
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+
     async function load() {
       setLoading(true);
       setLoadError(null);
       setNotFound(false);
 
-      const { data: postRow, error: postError } = await supabase
-        .from('posts')
-        .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-        .eq('id', postId)
-        .single();
+      try {
+        const { data: postRow, error: postError } = await supabase
+          .from('posts')
+          .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
+          .eq('id', postId)
+          .abortSignal(controller.signal)
+          .single();
 
-      if (postError) {
-        // A real query failure (network, RLS, etc.) — never presented as
-        // "not found," which would hide the actual cause.
-        console.error('[PostDetail] load: post query failed:', postError.message, postError);
-        setLoadError(postError.message);
-        setLoading(false);
-        return;
+        if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+
+        if (postError) {
+          // A real query failure (network, RLS, etc.) — never presented as
+          // "not found," which would hide the actual cause.
+          console.error('[PostDetail] load: post query failed:', postError.message, postError);
+          setLoadError(postError.message);
+          return;
+        }
+
+        if (!postRow) {
+          setNotFound(true);
+          return;
+        }
+
+        const row = postRow as any;
+        const isRateMyGrails = row.post_type === 'rate_my_grails';
+        const isCardShare = row.post_type === 'card_share';
+
+        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes] = await Promise.all([
+          supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).abortSignal(controller.signal).single(),
+          // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
+          row.item_id
+            ? supabase.from('collection_items').select('name').eq('id', row.item_id).abortSignal(controller.signal).maybeSingle()
+            : Promise.resolve({ data: null }),
+          supabase.from('likes').select('user_id').eq('post_id', postId).abortSignal(controller.signal),
+          fetchComments(postId, controller.signal),
+          isRateMyGrails
+            ? supabase
+                .from('rate_my_grail_cards')
+                .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+                .eq('post_id', postId)
+                .order('display_order', { ascending: true })
+                .abortSignal(controller.signal)
+            : Promise.resolve({ data: [] }),
+          isRateMyGrails
+            ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', postId).abortSignal(controller.signal)
+            : Promise.resolve({ data: [] }),
+          isCardShare
+            ? supabase
+                .from('card_share_items')
+                .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
+                .eq('post_id', postId)
+                .order('display_order', { ascending: true })
+                .abortSignal(controller.signal)
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+
+        if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+
+        // Same manual pattern as the postError check above (this catch
+        // block only exists to guard the batch's staleness/abort state,
+        // not to convert thrown errors into this specific message) — a
+        // card_share post whose own cards failed to load can't be
+        // meaningfully shown, same severity as the post row itself
+        // failing. Never treated as "zero cards" — that's only true when
+        // the query actually succeeds with an empty result.
+        if (cardShareItemsRes.error) {
+          console.error('[PostDetail] load: card_share_items query failed:', cardShareItemsRes.error.message, cardShareItemsRes.error);
+          setLoadError(cardShareItemsRes.error.message);
+          return;
+        }
+
+        const likeRows = (likesRes.data ?? []) as any[];
+        const p = profileRes.data as any;
+        const item = itemRes.data as any;
+        const ratingRows = (ratingsRes.data ?? []) as any[];
+
+        setPost({
+          id: row.id,
+          user_id: row.user_id,
+          post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
+          image_url: row.image_url ?? null,
+          content: row.content ?? null,
+          caption: row.caption ?? null,
+          created_at: row.created_at,
+          item_name: item?.name ?? null,
+          username: p?.username ?? 'user',
+          display_name: p?.display_name ?? null,
+          avatar_url: p?.avatar_url ?? null,
+          likeCount: likeRows.length,
+          liked: likeRows.some((l: any) => l.user_id === currentUserId),
+          grailCards: (cardsRes.data ?? []) as any[],
+          avgRating: ratingRows.length
+            ? ratingRows.reduce((sum, r) => sum + r.score, 0) / ratingRows.length
+            : null,
+          ratingCount: ratingRows.length,
+          myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
+          cardShareItems: (cardShareItemsRes.data ?? []) as CardShareItem[],
+        });
+
+        setComments(commentsResult.comments);
+        setCommentsError(commentsResult.error);
+      } catch (e) {
+        if (controller.signal.aborted || loadControllerRef.current !== controller) return;
+        if (__DEV__) console.error('[PostDetail] load failed:', e);
+        setLoadError(e instanceof Error ? e.message : 'Failed to load post.');
+      } finally {
+        if (loadControllerRef.current === controller) {
+          loadControllerRef.current = null;
+          setLoading(false);
+        }
       }
-
-      if (!postRow) {
-        setNotFound(true);
-        setLoading(false);
-        return;
-      }
-
-      const row = postRow as any;
-      const isRateMyGrails = row.post_type === 'rate_my_grails';
-      const isCardShare = row.post_type === 'card_share';
-
-      const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes] = await Promise.all([
-        supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).single(),
-        // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
-        row.item_id
-          ? supabase.from('collection_items').select('name').eq('id', row.item_id).maybeSingle()
-          : Promise.resolve({ data: null }),
-        supabase.from('likes').select('user_id').eq('post_id', postId),
-        fetchComments(postId),
-        isRateMyGrails
-          ? supabase
-              .from('rate_my_grail_cards')
-              .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
-              .eq('post_id', postId)
-              .order('display_order', { ascending: true })
-          : Promise.resolve({ data: [] }),
-        isRateMyGrails
-          ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', postId)
-          : Promise.resolve({ data: [] }),
-        isCardShare
-          ? supabase
-              .from('card_share_items')
-              .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
-              .eq('post_id', postId)
-              .order('display_order', { ascending: true })
-          : Promise.resolve({ data: [], error: null }),
-      ]);
-
-      // Same manual pattern as the postError check above (load() has no
-      // surrounding try/catch to throw into) — a card_share post whose own
-      // cards failed to load can't be meaningfully shown, same severity as
-      // the post row itself failing. Never treated as "zero cards" — that's
-      // only true when the query actually succeeds with an empty result.
-      if (cardShareItemsRes.error) {
-        console.error('[PostDetail] load: card_share_items query failed:', cardShareItemsRes.error.message, cardShareItemsRes.error);
-        setLoadError(cardShareItemsRes.error.message);
-        setLoading(false);
-        return;
-      }
-
-      const likeRows = (likesRes.data ?? []) as any[];
-      const p = profileRes.data as any;
-      const item = itemRes.data as any;
-      const ratingRows = (ratingsRes.data ?? []) as any[];
-
-      setPost({
-        id: row.id,
-        user_id: row.user_id,
-        post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
-        image_url: row.image_url ?? null,
-        content: row.content ?? null,
-        caption: row.caption ?? null,
-        created_at: row.created_at,
-        item_name: item?.name ?? null,
-        username: p?.username ?? 'user',
-        display_name: p?.display_name ?? null,
-        avatar_url: p?.avatar_url ?? null,
-        likeCount: likeRows.length,
-        liked: likeRows.some((l: any) => l.user_id === currentUserId),
-        grailCards: (cardsRes.data ?? []) as any[],
-        avgRating: ratingRows.length
-          ? ratingRows.reduce((sum, r) => sum + r.score, 0) / ratingRows.length
-          : null,
-        ratingCount: ratingRows.length,
-        myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
-        cardShareItems: (cardShareItemsRes.data ?? []) as CardShareItem[],
-      });
-
-      setComments(commentsResult.comments);
-      setCommentsError(commentsResult.error);
-      setLoading(false);
     }
 
     load();
+
+    return () => {
+      controller.abort();
+    };
   }, [postId, currentUserId, fetchComments]);
 
   function handleLikeTap() {

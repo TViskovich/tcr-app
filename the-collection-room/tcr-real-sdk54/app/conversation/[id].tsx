@@ -95,6 +95,18 @@ export default function ConversationScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList<Message>>(null);
 
+  // Separate controllers for the mount-effect load and onRefresh — they
+  // guard separate flags (loading/refreshing). loadControllerRef belongs to
+  // the useEffect below (true unmount when this screen is popped, since
+  // it's a stack route, not a tab); refreshControllerRef belongs to
+  // pull-to-refresh. Both aborted together on unmount — an in-flight
+  // request left running past that point can have its underlying XHR
+  // connection torn down by the native networking layer and crash with
+  // whatwg-fetch's status-0 RangeError (see hooks/use-profile.ts for the
+  // full mechanism writeup).
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const refreshControllerRef = useRef<AbortController | null>(null);
+
   // Tracks keyboard state purely to toggle TAB_BAR_CLEARANCE above — see
   // that constant's comment. "Will" events on iOS (available there) avoid a
   // one-frame lag/flash; Android only has "Did" events.
@@ -122,72 +134,122 @@ export default function ConversationScreen() {
 
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
-  const loadMessages = useCallback(async () => {
+  // Only caller is onRefresh below, which always supplies a signal from its
+  // own controller — see that controller's comment for why.
+  const loadMessages = useCallback(async (signal: AbortSignal) => {
     if (!convId) return;
     const { data } = await supabase
       .from('messages')
       .select('id, sender_id, body, created_at')
       .eq('conversation_id', convId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .abortSignal(signal);
+    // Single caller/single controller here, so checking the signal directly
+    // (rather than comparing controller identity, as the multi-controller
+    // screens in this codebase do) is sufficient to discard a stale result.
+    if (signal.aborted) return;
     setMessages((data ?? []) as Message[]);
   }, [convId]);
 
   useEffect(() => {
     if (!convId || !currentUserId) return;
 
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+
     async function load() {
       setLoading(true);
 
-      // Parallel: find the other participant + load messages
-      const [participantRes, messagesRes] = await Promise.all([
+      try {
+        // Parallel: find the other participant + load messages
+        const [participantRes, messagesRes] = await Promise.all([
+          supabase
+            .from('conversation_participants')
+            .select('user_id')
+            .eq('conversation_id', convId)
+            .neq('user_id', currentUserId)
+            .abortSignal(controller.signal)
+            .single(),
+          supabase
+            .from('messages')
+            .select('id, sender_id, body, created_at')
+            .eq('conversation_id', convId)
+            .order('created_at', { ascending: true })
+            .abortSignal(controller.signal),
+        ]);
+
+        if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+
+        const otherUserId = (participantRes.data as any)?.user_id;
+        if (otherUserId) {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('id, username, display_name')
+            .eq('id', otherUserId)
+            .abortSignal(controller.signal)
+            .single();
+          if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+          if (profileData) setOtherUser(profileData as OtherUser);
+        }
+
+        const loadedMessages = (messagesRes.data ?? []) as Message[];
+        setMessages(loadedMessages);
+
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
+
+        // Mark this conversation as read and update the tab badge — tied
+        // to the same controller as the load itself: if the user
+        // navigates away before this settles, there's no reason to keep
+        // it running, and this closes the same crash risk as the rest of
+        // this effect.
         supabase
           .from('conversation_participants')
-          .select('user_id')
+          .update({ last_read_at: new Date().toISOString() })
           .eq('conversation_id', convId)
-          .neq('user_id', currentUserId)
-          .single(),
-        supabase
-          .from('messages')
-          .select('id, sender_id, body, created_at')
-          .eq('conversation_id', convId)
-          .order('created_at', { ascending: true }),
-      ]);
-
-      const otherUserId = (participantRes.data as any)?.user_id;
-      if (otherUserId) {
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('id, username, display_name')
-          .eq('id', otherUserId)
-          .single();
-        if (profileData) setOtherUser(profileData as OtherUser);
+          .eq('user_id', currentUserId)
+          .abortSignal(controller.signal)
+          .then(({ error: e }) => {
+            if (controller.signal.aborted || loadControllerRef.current !== controller) return;
+            if (e) console.error('last_read_at stamp failed:', e.message);
+            else refreshMessageBadge();
+          });
+      } catch (e) {
+        if (controller.signal.aborted || loadControllerRef.current !== controller) return;
+        if (__DEV__) console.error('[Conversation] load failed:', e);
+      } finally {
+        if (loadControllerRef.current === controller) {
+          loadControllerRef.current = null;
+          setLoading(false);
+        }
       }
-
-      const loadedMessages = (messagesRes.data ?? []) as Message[];
-      setMessages(loadedMessages);
-      setLoading(false);
-
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
-
-      // Mark this conversation as read and update the tab badge
-      supabase
-        .from('conversation_participants')
-        .update({ last_read_at: new Date().toISOString() })
-        .eq('conversation_id', convId)
-        .eq('user_id', currentUserId)
-        .then(({ error: e }) => {
-          if (e) console.error('last_read_at stamp failed:', e.message);
-          else refreshMessageBadge();
-        });
     }
 
     load();
-  }, [convId, currentUserId]);
+
+    return () => {
+      controller.abort();
+      refreshControllerRef.current?.abort();
+    };
+  }, [convId, currentUserId, refreshMessageBadge]);
 
   const onRefresh = useCallback(async () => {
+    refreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+
     setRefreshing(true);
-    await loadMessages();
-    setRefreshing(false);
+    try {
+      await loadMessages(controller.signal);
+    } catch (e) {
+      if (controller.signal.aborted || refreshControllerRef.current !== controller) return;
+      if (__DEV__) console.error('[Conversation] refresh failed:', e);
+    } finally {
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+        setRefreshing(false);
+      }
+    }
   }, [loadMessages]);
 
   async function handleSend() {

@@ -35,15 +35,20 @@ export type FeedPost = {
 // Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
 // fetchUserPosts below — batch-fetches the grail snapshot rows + ratings for
 // whichever of the given posts are Rate My Grails posts, keyed by post_id,
-// so every caller builds FeedPost the same way.
-export async function fetchGrailData(postIds: string[], currentUserId?: string) {
+// so every caller builds FeedPost the same way. `signal` is required, not
+// optional — every current caller is a mount/focus-driven load that owns an
+// AbortController (see hooks/use-profile.ts for why an in-flight request
+// left running past the point its caller unmounted or was superseded can
+// crash with whatwg-fetch's status-0 RangeError).
+export async function fetchGrailData(postIds: string[], signal: AbortSignal, currentUserId?: string) {
   const [cardsRes, ratingsRes] = await Promise.all([
     supabase
       .from('rate_my_grail_cards')
       .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
       .in('post_id', postIds)
-      .order('display_order', { ascending: true }),
-    supabase.from('grail_ratings').select('post_id, rater_user_id, score').in('post_id', postIds),
+      .order('display_order', { ascending: true })
+      .abortSignal(signal),
+    supabase.from('grail_ratings').select('post_id, rater_user_id, score').in('post_id', postIds).abortSignal(signal),
   ]);
 
   const cardsMap = new Map<string, RateMyGrailCard[]>();
@@ -68,8 +73,9 @@ export async function fetchGrailData(postIds: string[], currentUserId?: string) 
 // Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
 // fetchUserPosts below — batch-fetches card_share_items for whichever of
 // the given posts are 'card_share' posts, keyed by post_id, mirroring
-// fetchGrailData's shape above.
-export async function fetchCardShareItems(postIds: string[]): Promise<Map<string, CardShareItem[]>> {
+// fetchGrailData's shape above. `signal` required for the same reason as
+// fetchGrailData's.
+export async function fetchCardShareItems(postIds: string[], signal: AbortSignal): Promise<Map<string, CardShareItem[]>> {
   const map = new Map<string, CardShareItem[]>();
 
   if (postIds.length === 0) {
@@ -80,7 +86,8 @@ export async function fetchCardShareItems(postIds: string[]): Promise<Map<string
     .from('card_share_items')
     .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
     .in('post_id', postIds)
-    .order('display_order', { ascending: true });
+    .order('display_order', { ascending: true })
+    .abortSignal(signal);
 
   if (error) {
     console.error('[fetchCardShareItems] query failed:', error.message, error);
@@ -99,14 +106,16 @@ export async function fetchCardShareItems(postIds: string[]): Promise<Map<string
 // One user's own post history, newest first — no date window, no engagement
 // ranking (unlike the main feed's queryFeed), since this powers a profile's
 // Posts tab rather than a ranked/windowed feed. Mirrors queryFeed's row
-// shaping so it can reuse the same PostCard renderer below.
-export async function fetchUserPosts(userId: string, currentUserId?: string): Promise<FeedPost[]> {
+// shaping so it can reuse the same PostCard renderer below. `signal`
+// required — see fetchGrailData's comment above.
+export async function fetchUserPosts(userId: string, signal: AbortSignal, currentUserId?: string): Promise<FeedPost[]> {
   const { data: postRows, error: postsError } = await supabase
     .from('posts')
     .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
     .eq('user_id', userId)
     .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .abortSignal(signal);
 
   if (postsError) {
     console.error('[fetchUserPosts] posts query failed:', postsError.message, postsError);
@@ -125,20 +134,20 @@ export async function fetchUserPosts(userId: string, currentUserId?: string): Pr
     .map((p) => p.id as string);
 
   const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', userId).single(),
+    supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', userId).abortSignal(signal).single(),
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds)
+      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
-    supabase.from('comments').select('post_id').in('post_id', postIds),
+    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
+    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
     grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, currentUserId)
+      ? fetchGrailData(grailPostIds, signal, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
     // fetchCardShareItems throws on failure (logging its own error first) —
     // deliberately not caught here, so a card-share query failure fails
     // this whole fetch loudly via the caller's own error handling, rather
     // than silently rendering posts with missing card data.
-    fetchCardShareItems(cardSharePostIds),
+    fetchCardShareItems(cardSharePostIds, signal),
   ]);
 
   const profile = (profileRes.data as any) ?? {};
