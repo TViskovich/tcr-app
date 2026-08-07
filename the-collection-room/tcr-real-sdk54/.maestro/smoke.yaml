@@ -1,0 +1,6 @@
+appId: host.exp.exponent
+---
+- assertVisible: "Feed"
+- assertVisible: "Discover"
+- assertVisible: "Messages"
+- assertVisible: "Profile"

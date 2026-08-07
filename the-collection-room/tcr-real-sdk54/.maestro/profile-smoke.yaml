@@ -1,0 +1,5 @@
+appId: host.exp.exponent
+---
+- tapOn: "Profile"
+- waitForAnimationToEnd
+- assertVisible: "Profile"

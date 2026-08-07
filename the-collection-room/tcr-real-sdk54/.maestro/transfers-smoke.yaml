@@ -1,0 +1,19 @@
+appId: host.exp.exponent
+---
+- tapOn: "Profile"
+- assertVisible: "Profile"
+
+- tapOn: "transfer"
+- waitForAnimationToEnd
+
+- tapOn: "View All"
+- waitForAnimationToEnd
+
+- assertVisible: "Transactions"
+
+- assertVisible:
+    text: "Total"
+    optional: true
+
+- tapOn: "Back"
+- assertVisible: "Profile"

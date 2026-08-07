@@ -1,0 +1,29 @@
+appId: host.exp.exponent
+---
+- tapOn: "Discover"
+- waitForAnimationToEnd
+
+- tapOn: "Users"
+- waitForAnimationToEnd
+
+- tapOn:
+    id: discover-search-input
+
+- eraseText
+- inputText: "test"
+- waitForAnimationToEnd
+
+- assertVisible: "Users"
+
+- tapOn: "Cards"
+- waitForAnimationToEnd
+- assertVisible: "Cards"
+
+- tapOn: "Users"
+- waitForAnimationToEnd
+- assertVisible: "Users"
+
+- tapOn:
+    id: discover-search-input
+
+- eraseText

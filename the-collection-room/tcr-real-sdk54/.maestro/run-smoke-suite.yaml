@@ -1,0 +1,7 @@
+appId: host.exp.exponent
+---
+- runFlow: smoke.yaml
+- runFlow: tab-navigation.yaml
+- runFlow: profile-smoke.yaml
+- runFlow: transfers-smoke.yaml
+- runFlow: search-functionality.yaml
