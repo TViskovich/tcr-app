@@ -1,0 +1,46 @@
+appId: host.exp.exponent
+---
+# Part 1: ensure a conversation with a known counterpart exists, via the
+# already-proven profile → Message entry point (idempotent
+# get_or_create_conversation RPC — safe to run every time, never creates a
+# duplicate conversation or sends any message).
+- tapOn: "Discover"
+- waitForAnimationToEnd
+
+- tapOn: "Users"
+- waitForAnimationToEnd
+
+- tapOn:
+    id: "discover-search-input"
+- eraseText
+- inputText: "avidcollecter1"
+- waitForAnimationToEnd
+
+- tapOn: "@avidcollecter1"
+- waitForAnimationToEnd
+
+- scrollUntilVisible:
+    element:
+      text: "MESSAGE"
+    direction: DOWN
+
+- tapOn: "MESSAGE"
+- waitForAnimationToEnd
+
+- assertVisible: "ViskMoe"
+
+- tapOn: "Go back"
+- waitForAnimationToEnd
+
+# Part 2: the real inbox path — Messages tab → conversation row → back.
+- tapOn: "Messages"
+- waitForAnimationToEnd
+- assertVisible: "Messages"
+
+- tapOn: "ViskMoe"
+- waitForAnimationToEnd
+
+- assertVisible: "ViskMoe"
+
+- tapOn: "Go back"
+- assertVisible: "Messages"

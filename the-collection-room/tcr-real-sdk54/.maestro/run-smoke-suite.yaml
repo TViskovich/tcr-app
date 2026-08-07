@@ -7,3 +7,4 @@ appId: host.exp.exponent
 - runFlow: transfers-smoke.yaml
 - runFlow: search-functionality.yaml
 - runFlow: follow-unfollow-smoke.yaml
+- runFlow: messaging-smoke.yaml
