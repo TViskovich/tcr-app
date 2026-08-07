@@ -6,6 +6,11 @@ appId: host.exp.exponent
 - tapOn: "transfer"
 - waitForAnimationToEnd
 
+- scrollUntilVisible:
+    element:
+      text: "View All"
+    direction: DOWN
+
 - tapOn: "View All"
 - waitForAnimationToEnd
 
