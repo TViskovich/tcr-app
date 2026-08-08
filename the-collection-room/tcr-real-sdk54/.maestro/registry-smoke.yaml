@@ -1,0 +1,56 @@
+appId: host.exp.exponent
+---
+- tapOn: "Profile"
+- assertVisible: "Profile"
+
+- runFlow:
+    when:
+      visible:
+        id: "profile-section-cachecase"
+    commands:
+      - tapOn:
+          id: "profile-section-cachecase"
+      - waitForAnimationToEnd
+
+- tapOn:
+    id: "profile-section-collections"
+- waitForAnimationToEnd
+
+- scrollUntilVisible:
+    element:
+      text: "Open Baseball collection"
+    direction: DOWN
+
+- tapOn:
+    text: "Open Baseball collection"
+- waitForAnimationToEnd
+
+- tapOn: "Cal Ripken Jr."
+- waitForAnimationToEnd
+
+# Exactly one real card exists in this group (confirmed manually — "1
+# card"), so the existing collection-item testID wildcard is unambiguous
+# here, not a guess among several candidates.
+- tapOn:
+    id: "collection-item-.+"
+- waitForAnimationToEnd
+
+- tapOn: "CacheCase ID"
+- waitForAnimationToEnd
+- assertVisible: "CacheCase Registry"
+
+- scrollUntilVisible:
+    element:
+      text: "View Registry History"
+    direction: DOWN
+
+- tapOn: "View Registry History"
+- waitForAnimationToEnd
+- assertVisible: "Registry History"
+
+- tapOn: "Go back"
+- waitForAnimationToEnd
+- assertVisible: "CacheCase Registry"
+
+- tapOn: "Go back"
+- assertVisible: "Edit"
