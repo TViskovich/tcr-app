@@ -254,7 +254,7 @@ export default function RegistryDetailScreen() {
 
     const { data, error } = await supabase
       .from('registered_cards')
-      .select('*, collection_item:collection_items(*)')
+      .select('*, collection_item:collection_items!registered_cards_collection_item_id_fkey(*)')
       .eq('id', id)
       .maybeSingle();
 
