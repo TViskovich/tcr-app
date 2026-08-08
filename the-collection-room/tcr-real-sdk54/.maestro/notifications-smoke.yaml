@@ -1,0 +1,20 @@
+appId: host.exp.exponent
+---
+- tapOn: "Feed"
+- waitForAnimationToEnd
+
+- tapOn: "Notifications"
+- waitForAnimationToEnd
+- assertVisible: "Notifications"
+
+- tapOn:
+    text: ".*sent you a message\\..*"
+- waitForAnimationToEnd
+- assertVisible: "ViskMoe"
+
+- tapOn: "Go back"
+- waitForAnimationToEnd
+- assertVisible: "Notifications"
+
+- tapOn: "Back"
+- assertVisible: "Feed"
