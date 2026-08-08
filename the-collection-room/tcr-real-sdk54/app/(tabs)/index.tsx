@@ -508,7 +508,9 @@ export default function HomeScreen() {
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
           style={styles.bellBtn}
-          hitSlop={8}>
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Notifications">
           <IconSymbol name="bell.fill" size={24} color="#11181C" />
           {notifCount > 0 && (
             <View style={styles.bellBadge}>
