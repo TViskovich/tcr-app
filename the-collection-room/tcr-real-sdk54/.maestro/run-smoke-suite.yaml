@@ -10,3 +10,4 @@ appId: host.exp.exponent
 - runFlow: messaging-smoke.yaml
 - runFlow: registry-smoke.yaml
 - runFlow: notifications-smoke.yaml
+- runFlow: ownership-transfer-cancel-smoke.yaml

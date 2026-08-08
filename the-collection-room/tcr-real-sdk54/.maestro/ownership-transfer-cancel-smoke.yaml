@@ -1,0 +1,75 @@
+appId: host.exp.exponent
+---
+- tapOn: "Profile"
+- assertVisible: "Profile"
+
+- scrollUntilVisible:
+    element:
+      id: "profile-section-.+"
+    direction: DOWN
+
+- runFlow:
+    when:
+      visible:
+        id: "profile-section-cachecase"
+    commands:
+      - tapOn:
+          id: "profile-section-cachecase"
+      - waitForAnimationToEnd
+
+- tapOn:
+    id: "profile-section-collections"
+- waitForAnimationToEnd
+
+- scrollUntilVisible:
+    element:
+      text: "Open Baseball collection"
+    direction: DOWN
+
+- tapOn:
+    text: "Open Baseball collection"
+- waitForAnimationToEnd
+
+- tapOn: "Cal Ripken Jr."
+- waitForAnimationToEnd
+
+- tapOn:
+    id: "collection-item-.+"
+- waitForAnimationToEnd
+
+- tapOn: "CacheCase ID"
+- waitForAnimationToEnd
+- assertVisible: "CacheCase Registry"
+
+- scrollUntilVisible:
+    element:
+      text: "Transfer this card to another user"
+    direction: DOWN
+
+- tapOn: "Transfer this card to another user"
+- waitForAnimationToEnd
+
+- tapOn: "Search transfer recipients"
+- inputText: "avidcollecter1"
+- waitForAnimationToEnd
+
+- tapOn: "Select @avidcollecter1"
+- waitForAnimationToEnd
+
+- tapOn: "Send transfer request"
+- waitForAnimationToEnd
+- assertVisible: "Transfer Sent"
+
+- tapOn: "OK"
+- waitForAnimationToEnd
+
+- tapOn: "View pending transfer"
+- waitForAnimationToEnd
+- assertVisible: "Transactions"
+
+- tapOn: "Cancel transfer"
+- waitForAnimationToEnd
+
+- tapOn: "Cancel Transfer"
+- waitForAnimationToEnd
+- assertVisible: "Cancelled"
