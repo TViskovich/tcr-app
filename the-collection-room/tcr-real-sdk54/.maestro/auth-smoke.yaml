@@ -48,6 +48,8 @@ appId: host.exp.exponent
 - tapOn: "Sign out"
 
 - waitForAnimationToEnd
+- assertNotVisible: "Messages"
+- assertNotVisible: "Discover"
 - assertVisible:
     id: "login-email-input"
 
