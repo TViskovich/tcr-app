@@ -32,6 +32,14 @@ export default function LoginScreen() {
     setLoading(false);
   }
 
+  // Password field's onSubmitEditing bypasses the button's disabled={loading}
+  // guard — without this, hitting return while a request is in flight fires
+  // a second concurrent signIn().
+  function handleSubmitEditing() {
+    if (loading) return;
+    signIn();
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -40,6 +48,7 @@ export default function LoginScreen() {
         <CacheCaseLogo variant="dark" size="lg" style={styles.logo} />
 
         <TextInput
+          testID="login-email-input"
           style={styles.input}
           placeholder="Email"
           placeholderTextColor="#999"
@@ -51,6 +60,7 @@ export default function LoginScreen() {
           returnKeyType="next"
         />
         <TextInput
+          testID="login-password-input"
           style={styles.input}
           placeholder="Password"
           placeholderTextColor="#999"
@@ -59,7 +69,7 @@ export default function LoginScreen() {
           secureTextEntry
           autoComplete="password"
           returnKeyType="done"
-          onSubmitEditing={signIn}
+          onSubmitEditing={handleSubmitEditing}
         />
 
         <TouchableOpacity style={styles.button} onPress={signIn} disabled={loading}>
