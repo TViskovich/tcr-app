@@ -46,19 +46,20 @@ type CardResult = {
 };
 
 async function queryProfiles(term: string, excludeId: string): Promise<SearchProfile[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('profiles')
     .select('id, username, display_name, bio, avatar_url')
     .or(`username.ilike.%${term}%,display_name.ilike.%${term}%`)
     .neq('id', excludeId)
     .order('username')
     .limit(20);
+  if (error) throw new Error(error.message);
   return (data ?? []) as SearchProfile[];
 }
 
 async function queryCards(term: string): Promise<CardResult[]> {
   // year is smallint — ilike doesn't apply; text fields only
-  const { data: items } = await supabase
+  const { data: items, error: itemsError } = await supabase
     .from('collection_items')
     .select('id, title, player, team, year, brand, grade, image_url, user_id, folders!inner(name, is_public)')
     .eq('folders.is_public', true)
@@ -67,13 +68,24 @@ async function queryCards(term: string): Promise<CardResult[]> {
     .order('created_at', { ascending: false })
     .limit(30);
 
+  // Critical — this is the actual result set. A failure here must never be
+  // represented as "no matching cards," so it's thrown rather than
+  // swallowed into [].
+  if (itemsError) throw new Error(itemsError.message);
+
   if (!items?.length) return [];
 
   const userIds = [...new Set((items as any[]).map((i) => i.user_id as string))];
-  const { data: profiles } = await supabase
+  // Best-effort — the card results above are already valid on their own; a
+  // failure here only degrades the owner byline to the existing 'user'/null
+  // fallback below, it must never fail the whole card search.
+  const { data: profiles, error: profileError } = await supabase
     .from('profiles')
     .select('id, username, display_name')
     .in('id', userIds);
+  if (profileError) {
+    console.error('[Search] owner profile enrichment failed (best-effort):', profileError.message, profileError);
+  }
 
   const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
 
@@ -165,25 +177,67 @@ export default function SearchScreen() {
   const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Distinct from "hasSearched && zero results" — only a real query
+  // failure sets this, never a legitimate empty search.
+  const [searchError, setSearchError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Request-identity guard — plain incrementing counter, not
+  // AbortController: runSearch fires on every debounced keystroke and
+  // onRefresh fires on pull-to-refresh, both writing the same
+  // userResults/cardResults/searchError state, so a slower older call
+  // (e.g. typing "a" then quickly "ab", or a refresh racing a fresh
+  // search) must never win and overwrite a newer call's result. Shared
+  // between runSearch and onRefresh on purpose — either can supersede the
+  // other, they write the same state.
+  const searchRequestIdRef = useRef(0);
 
   const runSearch = useCallback(async (q: string) => {
     const term = q.trim();
     if (!term) {
+      // Invalidate any older in-flight request first — otherwise a slow
+      // request started before the query was cleared could still resolve
+      // afterward and repopulate results for a term that no longer exists.
+      searchRequestIdRef.current += 1;
       setUserResults([]);
       setCardResults([]);
       setHasSearched(false);
+      setSearchError(null);
       setLoading(false);
       return;
     }
+
+    const requestId = ++searchRequestIdRef.current;
+    const isCurrent = () => searchRequestIdRef.current === requestId;
+
     setLoading(true);
-    if (mode === 'users') {
-      setUserResults(await queryProfiles(term, currentUserId));
-    } else {
-      setCardResults(await queryCards(term));
+    try {
+      if (mode === 'users') {
+        const results = await queryProfiles(term, currentUserId);
+        if (!isCurrent()) return;
+        setUserResults(results);
+      } else {
+        const results = await queryCards(term);
+        if (!isCurrent()) return;
+        setCardResults(results);
+      }
+      if (!isCurrent()) return;
+      setSearchError(null);
+      setHasSearched(true);
+    } catch (e) {
+      if (!isCurrent()) return;
+      console.error('[Search] search failed:', e);
+      // Clear results for the NEW term — stale results from whatever term
+      // was previously displayed must never be shown as if they belong to
+      // this one.
+      if (mode === 'users') setUserResults([]);
+      else setCardResults([]);
+      setSearchError(e instanceof Error ? e.message : 'Something went wrong.');
+      setHasSearched(true);
+    } finally {
+      // A superseded request must never clear loading out from under
+      // whichever newer request is now responsible for it.
+      if (isCurrent()) setLoading(false);
     }
-    setHasSearched(true);
-    setLoading(false);
   }, [mode, currentUserId]);
 
   useEffect(() => {
@@ -196,26 +250,94 @@ export default function SearchScreen() {
   const onRefresh = useCallback(async () => {
     const term = query.trim();
     if (!term) return;
+
+    const requestId = ++searchRequestIdRef.current;
+    const isCurrent = () => searchRequestIdRef.current === requestId;
+
     setRefreshing(true);
-    if (mode === 'users') {
-      setUserResults(await queryProfiles(term, currentUserId));
-    } else {
-      setCardResults(await queryCards(term));
+    try {
+      if (mode === 'users') {
+        const results = await queryProfiles(term, currentUserId);
+        if (!isCurrent()) return;
+        setUserResults(results);
+      } else {
+        const results = await queryCards(term);
+        if (!isCurrent()) return;
+        setCardResults(results);
+      }
+      if (!isCurrent()) return;
+      setSearchError(null);
+    } catch (e) {
+      if (!isCurrent()) return;
+      console.error('[Search] refresh failed:', e);
+      // Existing results are deliberately left untouched — only a failed
+      // refresh's own error is surfaced, never a wiped list.
+      setSearchError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      if (isCurrent()) setRefreshing(false);
     }
-    setRefreshing(false);
   }, [query, mode, currentUserId]);
 
   function switchMode(next: Mode) {
     if (next === mode) return;
+    // Immediately supersede any in-flight request for the old mode — the
+    // debounce effect below will also claim a new request id once its
+    // 300ms timer elapses, but without this, a slow old-mode request could
+    // still resolve first and commit stale loading/hasSearched/searchError
+    // state (shared across both modes) out from under the new mode.
+    searchRequestIdRef.current += 1;
+    // Same render that switches mode must already be in loading state —
+    // otherwise the newly-selected mode's stored results (last known-good
+    // from whatever was previously searched there, now stale for the
+    // current query) can paint for a frame before the debounce effect's
+    // own setLoading(true) catches up, since that effect runs post-render,
+    // not synchronously with this handler. Batched into the same render as
+    // setMode below (React batches same-tick state updates), so the
+    // stale results never actually get painted. The stored arrays
+    // themselves are left untouched — this only gates whether they're
+    // shown, per the "don't clear just to hide" requirement.
+    if (query.trim()) setLoading(true);
     setMode(next);
     // hasSearched resets naturally via the useEffect re-firing with the new runSearch
   }
 
+  // Same reasoning as switchMode above — onChangeText alone updates the
+  // visible input text before the debounce effect's setLoading(true) runs
+  // (a post-render effect), so results for the previous term could briefly
+  // remain visible under the new term's text. Setting loading synchronously
+  // here, batched into the same render as setQuery, closes that gap.
+  const handleQueryChange = useCallback((value: string) => {
+    setQuery(value);
+    if (value.trim()) {
+      setLoading(true);
+    } else {
+      // Mirrors runSearch's own empty-term branch (and clearSearch below)
+      // synchronously — without this, old results/hasSearched/searchError
+      // from before the field was cleared could remain visible for up to
+      // 300ms, until the debounced runSearch('') this setQuery('') also
+      // triggers would otherwise be the only thing to perform this same
+      // reset. That later call still fires and is harmless/idempotent
+      // against the state this already settled into.
+      searchRequestIdRef.current += 1;
+      setUserResults([]);
+      setCardResults([]);
+      setHasSearched(false);
+      setSearchError(null);
+      setLoading(false);
+    }
+  }, []);
+
   function clearSearch() {
+    // Same reasoning as the empty-query branch inside runSearch — this is
+    // a manual reset outside that function, so it invalidates in-flight
+    // requests itself rather than waiting for the debounced runSearch('')
+    // that setQuery('') below will eventually trigger.
+    searchRequestIdRef.current += 1;
     setQuery('');
     setUserResults([]);
     setCardResults([]);
     setHasSearched(false);
+    setSearchError(null);
   }
 
   const currentResults: any[] = mode === 'users' ? userResults : cardResults;
@@ -223,6 +345,23 @@ export default function SearchScreen() {
   const emptyBody = mode === 'users'
     ? 'Find people by username or display name.'
     : 'Search by title, player, team, brand, or grade.';
+
+  // Failed refresh with results already on screen — kept visible below
+  // (never cleared/replaced), just flagged with this lightweight inline
+  // row above the active list. Same shape as the Collections-tab/
+  // Folder-detail refreshErrorRow pattern. Computed once, rendered in both
+  // the Users and Cards FlatList branches below rather than duplicated.
+  const searchErrorBanner =
+    searchError && currentResults.length > 0 ? (
+      <View style={styles.refreshErrorRow}>
+        <Text style={styles.refreshErrorText} numberOfLines={1}>
+          Couldn&apos;t refresh results
+        </Text>
+        <TouchableOpacity onPress={onRefresh} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.refreshErrorRetry}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    ) : null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -258,7 +397,7 @@ export default function SearchScreen() {
           testID="discover-search-input"
           style={styles.input}
           value={query}
-          onChangeText={setQuery}
+          onChangeText={handleQueryChange}
           placeholder={mode === 'users' ? 'Search collectors...' : 'Search cards, players, teams...'}
           placeholderTextColor="#999"
           autoCapitalize="none"
@@ -282,6 +421,18 @@ export default function SearchScreen() {
           <Text style={styles.emptyTitle}>Search for collectors or cards</Text>
           <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
+      ) : hasSearched && searchError && currentResults.length === 0 ? (
+        // Real query/network failure with nothing already on screen for
+        // this term — distinct from the legitimate zero-results state
+        // below. Retry re-runs the same search for the current query text.
+        <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size={44} placement="emptyState" style={styles.emptyLogoSpacing} />
+          <Text style={styles.emptyTitle}>Couldn&apos;t load search results</Text>
+          <Text style={styles.emptyBody}>Check your connection and try again.</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => runSearch(query)}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
       ) : currentResults.length === 0 ? (
         <View style={styles.center}>
           <CacheCaseLogo variant="icon" size={44} placement="emptyState" style={styles.emptyLogoSpacing} />
@@ -291,45 +442,51 @@ export default function SearchScreen() {
           <Text style={styles.emptyBody}>Try a different search term.</Text>
         </View>
       ) : mode === 'users' ? (
-        <FlatList
-          data={userResults}
-          keyExtractor={(item) => item.id}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={listContentStyle}
-          onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}
-          renderItem={({ item }) => (
-            <UserRow
-              profile={item}
-              onPress={() =>
-                router.push({ pathname: '/user/[username]', params: { username: item.username } })
-              }
-            />
-          )}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
-          }
-        />
+        <>
+          {searchErrorBanner}
+          <FlatList
+            data={userResults}
+            keyExtractor={(item) => item.id}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={listContentStyle}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
+            renderItem={({ item }) => (
+              <UserRow
+                profile={item}
+                onPress={() =>
+                  router.push({ pathname: '/user/[username]', params: { username: item.username } })
+                }
+              />
+            )}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            }
+          />
+        </>
       ) : (
-        <FlatList
-          data={cardResults}
-          keyExtractor={(item) => item.id}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={listContentStyle}
-          onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}
-          renderItem={({ item }) => (
-            <CardRow
-              card={item}
-              onPress={() =>
-                router.push({ pathname: '/item/[id]', params: { id: item.id } })
-              }
-            />
-          )}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
-          }
-        />
+        <>
+          {searchErrorBanner}
+          <FlatList
+            data={cardResults}
+            keyExtractor={(item) => item.id}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={listContentStyle}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
+            renderItem={({ item }) => (
+              <CardRow
+                card={item}
+                onPress={() =>
+                  router.push({ pathname: '/item/[id]', params: { id: item.id } })
+                }
+              />
+            )}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            }
+          />
+        </>
       )}
     </SafeAreaView>
   );
@@ -436,6 +593,48 @@ const styles = StyleSheet.create({
     color: '#687076',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  // Full-panel error-state Retry button — same convention as Feed's own
+  // retryButton (app/(tabs)/index.tsx).
+  retryButton: {
+    marginTop: 16,
+    backgroundColor: '#0a7ea4',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  // Inline banner for a failed refresh when results are already on
+  // screen — same shape as the Collections-tab/Folder-detail
+  // refreshErrorRow, adapted to this screen's light theme/accent.
+  refreshErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#fdecea',
+    borderWidth: 1,
+    borderColor: '#f5c6c0',
+  },
+  refreshErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#687076',
+    marginRight: 12,
+  },
+  refreshErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0a7ea4',
   },
   row: {
     flexDirection: 'row',
