@@ -1093,8 +1093,11 @@ export function ProfileV2Screen({ userId }: Props) {
                   onPress={() => router.push('/settings')}
                   hitSlop={10}
                   style={styles.ownerIconBtn}
-                  activeOpacity={0.75}>
-                  <IconSymbol name="gearshape.fill" size={18} color="#fff" />
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                  testID="profile-settings-button">
+                  <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity

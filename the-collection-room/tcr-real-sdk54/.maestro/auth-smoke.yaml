@@ -1,0 +1,70 @@
+appId: host.exp.exponent
+---
+# Phase 1 auth lifecycle smoke test — standalone. Not yet wired into
+# run-smoke-suite.yaml: unlike every other flow in this suite (which all
+# assume the app is already signed in), this one deliberately signs out
+# mid-flow, so it must not run ahead of the rest of the suite until proven
+# reliable on its own.
+#
+# Lifecycle covered: authenticated -> sign out -> logged-out login screen
+# -> sign back in -> authenticated tabs restored.
+#
+# Credentials: MAESTRO_TEST_EMAIL / MAESTRO_TEST_PASSWORD are read from the
+# environment only (e.g. `maestro test -e MAESTRO_TEST_EMAIL=... -e
+# MAESTRO_TEST_PASSWORD=... .maestro/auth-smoke.yaml`, or injected via CI
+# secrets). They must point at a dedicated, low-privilege Supabase test
+# account, never a real user. No credential is hardcoded here and none is
+# read from .env.
+#
+# Settings navigation: the Profile screen's Settings button
+# (components/profile-v2/profile-v2-screen.tsx) is an icon-only
+# TouchableOpacity. accessibilityLabel="Settings" alone was not reliably
+# exposed to Maestro on the Android/Expo Go runtime (tapOn: "Settings"
+# failed with "Element not found" twice from a clean state), so it also
+# carries testID="profile-settings-button", which is what this flow uses.
+# The button sits at the very bottom of the Profile screen, under the
+# floating bottom nav — scrollUntilVisible didn't clear it, so a small
+# fixed upward swipe moves the screen's content clear of the nav first.
+
+- assertVisible: "Feed"
+
+- tapOn: "Profile"
+- waitForAnimationToEnd
+- assertVisible: "Profile"
+
+- swipe:
+    direction: UP
+    duration: 300
+
+- tapOn:
+    id: "profile-settings-button"
+- waitForAnimationToEnd
+- assertVisible: "Settings"
+
+- assertVisible: "Sign Out"
+
+- tapOn: "Sign Out"
+- assertVisible: "Sign out"
+- tapOn: "Sign out"
+
+- waitForAnimationToEnd
+- assertVisible:
+    id: "login-email-input"
+
+- tapOn:
+    id: "login-email-input"
+- eraseText
+- inputText: ${MAESTRO_TEST_EMAIL}
+
+- tapOn:
+    id: "login-password-input"
+- eraseText
+- inputText: ${MAESTRO_TEST_PASSWORD}
+
+- tapOn: "Log In"
+- waitForAnimationToEnd
+
+- assertVisible: "Feed"
+- assertVisible: "Discover"
+- assertVisible: "Messages"
+- assertVisible: "Profile"

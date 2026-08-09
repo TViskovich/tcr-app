@@ -59,12 +59,26 @@ export function IconSymbol({
   size = 24,
   color,
   style,
+  accessible,
 }: {
   name: IconSymbolName;
   size?: number;
   color: string | OpaqueColorValue;
   style?: StyleProp<TextStyle>;
   weight?: SymbolWeight;
+  // Omitted by default (native RN default applies) — only pass this when a
+  // decorative icon's own glyph text would otherwise override its
+  // touchable parent's explicit accessibilityLabel/testID on Android. See
+  // components/profile-v2/profile-v2-screen.tsx's Settings gear for why.
+  accessible?: boolean;
 }) {
-  return <MaterialIcons color={color} size={size} name={MAPPING[name]} style={style} />;
+  return (
+    <MaterialIcons
+      color={color}
+      size={size}
+      name={MAPPING[name]}
+      style={style}
+      accessible={accessible}
+    />
+  );
 }

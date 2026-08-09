@@ -11,3 +11,9 @@ appId: host.exp.exponent
 - runFlow: registry-smoke.yaml
 - runFlow: notifications-smoke.yaml
 - runFlow: ownership-transfer-cancel-smoke.yaml
+# Runs last, deliberately: unlike every flow above, this one signs out
+# mid-flow and signs back in as MAESTRO_TEST_EMAIL/MAESTRO_TEST_PASSWORD
+# (not whatever account the suite started as). Placing it last means every
+# other flow still runs under the original session, unaffected — only the
+# device's logged-in account after the full suite finishes changes.
+- runFlow: auth-smoke.yaml
