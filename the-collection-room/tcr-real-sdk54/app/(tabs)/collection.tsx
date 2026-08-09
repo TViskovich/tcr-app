@@ -207,7 +207,7 @@ function CollectionAtmosphere({ width }: { width: number }) {
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, refresh, previewItems } = useFolders(userId);
+  const { folders, loading, error, refresh, previewItems } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const [search, setSearch] = useState('');
   const router = useRouter();
@@ -277,6 +277,42 @@ export default function CollectionScreen() {
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.accent} />
         </View>
+      ) : folders.length === 0 && error ? (
+        // Initial-load failure — a real query/network error with nothing
+        // already on screen. Deliberately distinct from the legitimate
+        // empty state below (same panel language, different copy/action)
+        // so a backend hiccup is never mistaken for "you have no
+        // collections." Retry calls the same refresh() pull-to-refresh/
+        // focus already use — no duplicate fetch logic here.
+        <View style={styles.emptyWrap}>
+          <View style={styles.emptyPanel}>
+            <View style={styles.emptyGlowWrap} pointerEvents="none">
+              <Svg width={180} height={180}>
+                <Defs>
+                  <RadialGradient id="collectionEmptyGlow" cx="50%" cy="50%" r="50%">
+                    <Stop offset="0%" stopColor="#FFFFFF" stopOpacity={0.09} />
+                    <Stop offset="100%" stopColor="#FFFFFF" stopOpacity={0} />
+                  </RadialGradient>
+                </Defs>
+                <Rect x={0} y={0} width={180} height={180} fill="url(#collectionEmptyGlow)" />
+              </Svg>
+            </View>
+
+            <CacheCaseLogo variant="icon" size="lg" style={styles.emptyLogo} />
+
+            <Text style={styles.emptyTitle}>Couldn&apos;t load collections</Text>
+            <Text style={styles.emptyBody}>
+              Check your connection and try again.
+            </Text>
+
+            <TouchableOpacity
+              style={styles.emptyButton}
+              onPress={() => refresh()}
+              activeOpacity={0.82}>
+              <Text style={styles.emptyButtonText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       ) : folders.length === 0 ? (
         <View style={styles.emptyWrap}>
           <View style={styles.emptyPanel}>
@@ -312,26 +348,44 @@ export default function CollectionScreen() {
           <Text style={styles.noResultsText}>No matches for &quot;{search}&quot;</Text>
         </View>
       ) : (
-        <FlatList
-          data={filteredFolders}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
-          onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}
-          ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
-          renderItem={({ item }) => (
-            <CollectionPreviewSection
-              folderId={item.id}
-              title={item.name}
-              items={previewItems[item.id] ?? []}
-              isExpanded={isExpanded(item.id)}
-              onToggle={() => toggle(item.id)}
-              onOpenFolder={() => openFolder(item)}
-              onOpenGroup={(group) => openGroup(item, group)}
-              onAddItem={() => addItem(item)}
-            />
+        <>
+          {error && (
+            // Failed refresh with folders already on screen — keep the
+            // existing list visible (never replaced/cleared) and surface
+            // just this lightweight inline row rather than the full-screen
+            // error panel above. Same refresh() as Retry everywhere else.
+            <View style={styles.refreshErrorRow}>
+              <Text style={styles.refreshErrorText} numberOfLines={1}>
+                Couldn&apos;t refresh collections
+              </Text>
+              <TouchableOpacity
+                onPress={() => refresh()}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={styles.refreshErrorRetry}>Retry</Text>
+              </TouchableOpacity>
+            </View>
           )}
-        />
+          <FlatList
+            data={filteredFolders}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
+            ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
+            renderItem={({ item }) => (
+              <CollectionPreviewSection
+                folderId={item.id}
+                title={item.name}
+                items={previewItems[item.id] ?? []}
+                isExpanded={isExpanded(item.id)}
+                onToggle={() => toggle(item.id)}
+                onOpenFolder={() => openFolder(item)}
+                onOpenGroup={(group) => openGroup(item, group)}
+                onAddItem={() => addItem(item)}
+              />
+            )}
+          />
+        </>
       )}
 
       {folders.length > 0 && (
@@ -431,6 +485,34 @@ const styles = StyleSheet.create({
   noResultsText: {
     fontSize: 14,
     color: PV2.textSecondary,
+  },
+  // Inline banner for a failed refresh when folders are already on screen —
+  // deliberately lightweight (no toast system), same accent/panel tokens as
+  // the rest of the page rather than a new color family.
+  refreshErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: PAGE_PADDING,
+    marginTop: 4,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(232,24,26,0.35)',
+  },
+  refreshErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: PV2.textSecondary,
+    marginRight: 12,
+  },
+  refreshErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: PV2.accent,
   },
   // ── Empty state — same restrained dark-panel language as the Profile
   // page's collector panel (reuses its exact bg/border tokens), not the

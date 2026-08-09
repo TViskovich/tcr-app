@@ -67,6 +67,15 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
   const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>({});
   const [loading, setLoading] = useState(true);
+  // Captures and surfaces `error` (unlike a plain `{ data }` destructure) so
+  // a failed query is never indistinguishable from "you have zero
+  // collections" — same convention as useAllItems below. Only the primary
+  // folders query can set this; on failure, `folders` is deliberately left
+  // untouched (never reset to []) so a refresh() that fails doesn't wipe an
+  // already-loaded list off screen. Callers should pair `error` with
+  // `folders.length > 0` to tell "still showing last known-good data" apart
+  // from "nothing to show yet."
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!userId) {
@@ -74,47 +83,81 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
       return;
     }
     setLoading(true);
-    let query = supabase
-      .from('folders')
-      .select('*')
-      .eq('user_id', userId);
-    if (publicOnly) query = query.eq('is_public', true);
-    const { data } = await query.order('created_at', { ascending: false });
+    try {
+      let query = supabase
+        .from('folders')
+        .select('*')
+        .eq('user_id', userId);
+      if (publicOnly) query = query.eq('is_public', true);
+      const { data, error: queryError } = await query.order('created_at', { ascending: false });
 
-    const resolved = await resolveCovers((data ?? []) as Folder[]);
-    const sorted = resolved.sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
-    );
-    setFolders(sorted);
-
-    // Batch item count for all folders in a single query
-    const folderIds = resolved.map(f => f.id);
-    if (folderIds.length) {
-      const { data: rows } = await supabase
-        .from('collection_items')
-        .select('folder_id')
-        .eq('collection_status', 'active')
-        .in('folder_id', folderIds);
-      const counts: Record<string, number> = {};
-      for (const row of (rows ?? []) as { folder_id: string }[]) {
-        counts[row.folder_id] = (counts[row.folder_id] ?? 0) + 1;
+      if (queryError) {
+        console.error('[useFolders] query failed:', queryError.message, queryError);
+        setError(queryError.message);
+        return;
       }
-      setItemCounts(counts);
 
-      setPreviewItems(await fetchPreviewItems(folderIds));
-    } else {
-      setItemCounts({});
-      setPreviewItems({});
+      const resolved = await resolveCovers((data ?? []) as Folder[]);
+      const sorted = resolved.sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      );
+      setFolders(sorted);
+      setError(null);
+
+      // Item counts + preview thumbnails are best-effort enrichment on top
+      // of an already-successful folder load, isolated in their own
+      // try/catch: a failure here must never flip the hook's main `error`
+      // (that would make a genuinely successful folder load look failed)
+      // and must never wipe previously-good counts/previews back to bogus
+      // zeros/empties — setItemCounts/setPreviewItems below are simply
+      // skipped on failure, so whatever was already there survives. Only a
+      // legitimately-empty folder list (folderIds.length === 0, the `else`
+      // below) clears them, which is correct — there's genuinely nothing
+      // left to enrich.
+      const folderIds = resolved.map(f => f.id);
+      if (folderIds.length) {
+        try {
+          const { data: rows, error: countsError } = await supabase
+            .from('collection_items')
+            .select('folder_id')
+            .eq('collection_status', 'active')
+            .in('folder_id', folderIds);
+
+          if (countsError) {
+            console.error('[useFolders] item-count query failed (best-effort):', countsError.message, countsError);
+          } else {
+            const counts: Record<string, number> = {};
+            for (const row of (rows ?? []) as { folder_id: string }[]) {
+              counts[row.folder_id] = (counts[row.folder_id] ?? 0) + 1;
+            }
+            setItemCounts(counts);
+          }
+
+          setPreviewItems(await fetchPreviewItems(folderIds));
+        } catch (enrichError) {
+          console.error('[useFolders] item-count/preview enrichment failed (best-effort):', enrichError);
+        }
+      } else {
+        setItemCounts({});
+        setPreviewItems({});
+      }
+    } catch (e) {
+      // A thrown exception from the primary folders query (as opposed to a
+      // {data, error}-shaped result) — same defensive shape as
+      // messages.tsx/use-profile.ts's load(). Never touches `folders`, so
+      // previously-loaded data survives a failed refresh here too.
+      console.error('[useFolders] load failed:', e);
+      setError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }, [userId, publicOnly]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  return { folders, loading, refresh: load, itemCounts, previewItems };
+  return { folders, loading, error, refresh: load, itemCounts, previewItems };
 }
 
 // Route-param sentinel for "no player set" — never shown to the user (mapped
