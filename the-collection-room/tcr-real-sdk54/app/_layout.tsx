@@ -2,6 +2,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -30,6 +31,15 @@ function RootLayoutNav() {
       router.replace('/(tabs)');
     }
   }, [session, loading, inAuthGroup, router]);
+
+  // Withhold the route tree until the initial session restore resolves —
+  // otherwise (auth) or (tabs) can paint for a frame before the redirect
+  // above runs. Plain view, not null: matches the native splash screen's
+  // backgroundColor (app.json expo-splash-screen config) so there's no
+  // color flash between splash and this holding frame.
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: '#000000' }} />;
+  }
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
