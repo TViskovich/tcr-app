@@ -140,7 +140,7 @@ export default function CollectionFolderScreen() {
   // Existing hook (hooks/use-collection.ts) — already filters
   // collection_items by folder_id and orders newest-first. Not duplicated,
   // and shared by both grouping mode and card mode below.
-  const { items, loading, refresh: refreshItems } = useItems(folderId);
+  const { items, loading, error: itemsError, refresh: refreshItems } = useItems(folderId);
 
   // Legacy app/folder/[id].tsx refreshed on focus so returning here after
   // adding a card (or from any other entry point) shows it immediately —
@@ -154,6 +154,9 @@ export default function CollectionFolderScreen() {
   // and privacy the same way that screen did.
   const [folder, setFolder] = useState<Folder | null>(null);
   const [folderLoading, setFolderLoading] = useState(true);
+  // Distinct from "folder is null because it genuinely doesn't exist" —
+  // see loadFolder below. Only a real request failure sets this.
+  const [folderError, setFolderError] = useState<string | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [editVisible, setEditVisible] = useState(false);
   const [commentsVisible, setCommentsVisible] = useState(false);
@@ -165,35 +168,102 @@ export default function CollectionFolderScreen() {
   const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
   const { likeCount, liked, toggle: toggleFolderLike } = useFolderLikes(folderId, currentUserId);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setFolderLoading(true);
-      const { data } = await supabase
+  // Request-identity guard — plain incrementing counter, not
+  // AbortController: loadFolder is called from two places (the mount/
+  // folderId-change effect below, and a Retry button), so a stale response
+  // from an older call (superseded by a folderId change or a manual Retry
+  // while the first was still in flight) must never win a race and commit
+  // over a newer call's result. Every async continuation below re-checks
+  // isCurrent() immediately before it's about to touch folder/folderError/
+  // ownerProfile/folderLoading state; a superseded call's checks all fail
+  // and it simply stops without touching anything.
+  const folderRequestIdRef = useRef(0);
+
+  // Reusable so both the mount/folderId-change effect below and a Retry
+  // action can call the exact same loader — no duplicated fetch logic.
+  //
+  // error.code === 'PGRST116' is .single()'s own "legitimately no such
+  // row" signal (0 rows matched) — covers both a genuinely deleted/
+  // nonexistent folder and one hidden by RLS, which are indistinguishable
+  // by design (RLS isn't meant to leak existence) and aren't something to
+  // separate further. Any other error, or a thrown exception, is a real
+  // request failure and must never be represented as "Collection not
+  // found."
+  const loadFolder = useCallback(async () => {
+    const requestId = ++folderRequestIdRef.current;
+    const isCurrent = () => folderRequestIdRef.current === requestId;
+
+    if (!folderId) {
+      if (isCurrent()) setFolderLoading(false);
+      return;
+    }
+    setFolderLoading(true);
+    try {
+      const { data, error: queryError } = await supabase
         .from('folders')
         .select('*')
         .eq('id', folderId)
         .single();
-      if (cancelled) return;
-      if (data) {
-        setFolder(data as Folder);
-        if (data.user_id !== currentUserId) {
-          const { data: profile } = await supabase
+
+      if (!isCurrent()) return;
+
+      if (queryError) {
+        if (queryError.code === 'PGRST116') {
+          setFolder(null);
+          setFolderError(null);
+        } else {
+          console.error('[CollectionFolderScreen] folder query failed:', queryError.message, queryError);
+          setFolderError(queryError.message);
+        }
+        return;
+      }
+
+      setFolder(data as Folder);
+      setFolderError(null);
+
+      // Owner-profile enrichment — best-effort: the folder itself already
+      // loaded successfully above, so a failure here must never set
+      // folderError or clear `folder`, only leave ownerProfile unset. Same
+      // isCurrent() guard as the primary query, since this is still part
+      // of the same requestId's lifecycle.
+      if (data.user_id !== currentUserId) {
+        try {
+          const { data: profile, error: profileError } = await supabase
             .from('profiles')
             .select('username, display_name, avatar_url')
             .eq('id', data.user_id)
             .single();
-          if (!cancelled && profile) setOwnerProfile(profile as OwnerProfile);
+          if (!isCurrent()) return;
+          if (profileError) {
+            console.error(
+              '[CollectionFolderScreen] owner profile lookup failed (best-effort):',
+              profileError.message,
+              profileError,
+            );
+          } else if (profile) {
+            setOwnerProfile(profile as OwnerProfile);
+          }
+        } catch (profileErr) {
+          if (!isCurrent()) return;
+          console.error('[CollectionFolderScreen] owner profile lookup failed (best-effort):', profileErr);
         }
-      } else {
-        setFolder(null);
       }
-      if (!cancelled) setFolderLoading(false);
+    } catch (e) {
+      if (!isCurrent()) return;
+      // A thrown exception from the primary folder query — never converted
+      // into "not found"; folderError makes the failure explicit instead.
+      console.error('[CollectionFolderScreen] folder load failed:', e);
+      setFolderError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      // A superseded request must never clear folderLoading out from under
+      // whichever newer request is now responsible for it.
+      if (isCurrent()) setFolderLoading(false);
     }
-    if (folderId) load();
-    else setFolderLoading(false);
-    return () => { cancelled = true; };
   }, [folderId, currentUserId]);
+
+  useEffect(() => {
+    loadFolder();
+  }, [loadFolder]);
 
   const isOwner = !!currentUserId && folder?.user_id === currentUserId;
   const isPrivate = folder !== null && !folder.is_public && !isOwner;
@@ -469,6 +539,23 @@ export default function CollectionFolderScreen() {
 
   const showInitialLoading = loading && items.length === 0;
 
+  // Failed refresh with items already on screen — kept visible below (never
+  // cleared/replaced), just flagged with this lightweight inline row above
+  // the grid. Same shape as the Collections-tab's refreshErrorRow/refresh()
+  // pattern. Computed once, rendered in both isCardMode and grouping-mode
+  // branches below rather than duplicated.
+  const itemsErrorBanner =
+    itemsError && items.length > 0 ? (
+      <View style={styles.refreshErrorRow}>
+        <Text style={styles.refreshErrorText} numberOfLines={1}>
+          Couldn&apos;t refresh cards
+        </Text>
+        <Pressable onPress={refreshItems} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.refreshErrorRetry}>Retry</Text>
+        </Pressable>
+      </View>
+    ) : null;
+
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
   // shared links) can reach this screen — folder loading used to be a
@@ -481,6 +568,36 @@ export default function CollectionFolderScreen() {
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={styles.center}>
             <ActivityIndicator size="large" color={PV2.accent} />
+          </View>
+        </SafeAreaView>
+      </>
+    );
+  }
+
+  if (!folder && folderError) {
+    // Distinct from the legitimate not-found branch below — a real
+    // query/network failure, never mistaken for "this collection doesn't
+    // exist." Retry calls the same loadFolder() the mount effect uses.
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <SafeAreaView style={styles.container} edges={['bottom']}>
+          <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Back">
+              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+          <View style={styles.center}>
+            <Text style={styles.emptyTitle}>Couldn&apos;t load this collection</Text>
+            <Text style={styles.emptyBody}>Check your connection and try again.</Text>
+            <Pressable style={styles.emptyButton} onPress={loadFolder}>
+              <Text style={styles.emptyButtonText}>Retry</Text>
+            </Pressable>
           </View>
         </SafeAreaView>
       </>
@@ -777,8 +894,21 @@ export default function CollectionFolderScreen() {
           <View style={styles.center}>
             <ActivityIndicator size="large" color={PV2.accent} />
           </View>
+        ) : itemsError && items.length === 0 ? (
+          // Real query/network failure with nothing already on screen —
+          // distinct from the legitimate "No cards yet" empty state further
+          // down. Retry calls the same refreshItems() the focus effect uses.
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyTitle}>Couldn&apos;t load cards</Text>
+            <Text style={styles.emptyBody}>Check your connection and try again.</Text>
+            <Pressable style={styles.emptyButton} onPress={refreshItems}>
+              <Text style={styles.emptyButtonText}>Retry</Text>
+            </Pressable>
+          </View>
         ) : isCardMode ? (
-          <FlatList
+          <>
+            {itemsErrorBanner}
+            <FlatList
             data={cardSlots}
             numColumns={CARD_NUM_COLUMNS}
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
@@ -830,9 +960,12 @@ export default function CollectionFolderScreen() {
                 </View>
               )
             }
-          />
+            />
+          </>
         ) : (
-          <FlatList
+          <>
+            {itemsErrorBanner}
+            <FlatList
             data={groupSlots}
             numColumns={NUM_COLUMNS}
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.key : slot.key)}
@@ -882,7 +1015,8 @@ export default function CollectionFolderScreen() {
                 </View>
               )
             }
-          />
+            />
+          </>
         )}
       </SafeAreaView>
 
@@ -1184,5 +1318,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: PV2.textPrimary,
+  },
+  // Inline banner for a failed item-list refresh when cards are already on
+  // screen — same shape/tokens as the Collections tab's own refreshErrorRow
+  // (app/(tabs)/collection.tsx), deliberately lightweight, no toast system.
+  refreshErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(232,24,26,0.35)',
+  },
+  refreshErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: PV2.textSecondary,
+    marginRight: 12,
+  },
+  refreshErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: PV2.accent,
   },
 });

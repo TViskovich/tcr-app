@@ -214,6 +214,12 @@ export function itemMatchesSearch(item: CollectionItem, query: string): boolean 
 export function useItems(folderId: string | undefined) {
   const [items, setItems] = useState<CollectionItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // Same convention as useFolders/useAllItems above: captures and surfaces
+  // `error` so a failed query is never indistinguishable from "this folder
+  // has zero cards." On failure, `items` is deliberately left untouched
+  // (never reset to []) so a refresh() that fails doesn't wipe an
+  // already-loaded grid off screen.
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!folderId) {
@@ -221,21 +227,38 @@ export function useItems(folderId: string | undefined) {
       return;
     }
     setLoading(true);
-    const { data } = await supabase
-      .from('collection_items')
-      .select('*')
-      .eq('folder_id', folderId)
-      .eq('collection_status', 'active')
-      .order('created_at', { ascending: false });
-    setItems(data ?? []);
-    setLoading(false);
+    try {
+      const { data, error: queryError } = await supabase
+        .from('collection_items')
+        .select('*')
+        .eq('folder_id', folderId)
+        .eq('collection_status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (queryError) {
+        console.error('[useItems] query failed:', queryError.message, queryError);
+        setError(queryError.message);
+        return;
+      }
+
+      setItems((data ?? []) as CollectionItem[]);
+      setError(null);
+    } catch (e) {
+      // A thrown exception (as opposed to a {data, error}-shaped result) —
+      // same defensive shape as useFolders' load(). Never touches `items`,
+      // so previously-loaded data survives a failed refresh here too.
+      console.error('[useItems] load failed:', e);
+      setError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setLoading(false);
+    }
   }, [folderId]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  return { items, loading, refresh: load };
+  return { items, loading, error, refresh: load };
 }
 
 // Flat, all-folders view of a user's own collection_items — unlike
