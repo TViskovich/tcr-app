@@ -67,7 +67,15 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     .abortSignal(signal);
 
   if (postsError) {
-    console.error('[queryFeed] posts query failed:', postsError.message, postsError);
+    // An aborted request resolves as an error-shaped result rather than
+    // rejecting (see this function's own comment above) — expected
+    // cancellation from focus-loss/request-replacement must not be logged
+    // as if it were a real failure. Still thrown either way, unchanged:
+    // the caller's own controller.signal.aborted check already discards
+    // an aborted result correctly regardless of what's thrown here.
+    if (!signal.aborted) {
+      console.error('[queryFeed] posts query failed:', postsError.message, postsError);
+    }
     throw postsError;
   }
 
@@ -181,7 +189,12 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
     .abortSignal(signal);
 
   if (postsError) {
-    console.error('[queryFollowingFeed] posts query failed:', postsError.message, postsError);
+    // Same reasoning as queryFeed's identical guard above — expected
+    // cancellation must not be logged as a real failure, but still throws
+    // unchanged so the caller's own abort check discards it correctly.
+    if (!signal.aborted) {
+      console.error('[queryFollowingFeed] posts query failed:', postsError.message, postsError);
+    }
     throw postsError;
   }
 

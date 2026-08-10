@@ -90,7 +90,14 @@ export async function fetchCardShareItems(postIds: string[], signal: AbortSignal
     .abortSignal(signal);
 
   if (error) {
-    console.error('[fetchCardShareItems] query failed:', error.message, error);
+    // Same reasoning as app/(tabs)/index.tsx's queryFeed/queryFollowingFeed
+    // — expected cancellation (focus-loss/request-replacement) must not be
+    // logged as a real failure. Still thrown either way, unchanged: the
+    // caller's own controller.signal.aborted check already discards an
+    // aborted result correctly regardless of what's thrown here.
+    if (!signal.aborted) {
+      console.error('[fetchCardShareItems] query failed:', error.message, error);
+    }
     throw error;
   }
 
