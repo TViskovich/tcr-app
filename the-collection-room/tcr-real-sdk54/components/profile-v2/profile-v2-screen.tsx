@@ -398,23 +398,29 @@ export function ProfileV2Screen({ userId }: Props) {
   }
 
   async function handleMessage() {
-    if (!currentUserId || isOwnProfile) return;
+    if (!currentUserId || isOwnProfile || msgLoading) return;
     setMsgLoading(true);
-    const { data, error } = await supabase.rpc('get_or_create_conversation', { other_user_id: userId });
-    if (error || !data) {
-      console.error('DM failed:', error?.message);
+    try {
+      const { data, error } = await supabase.rpc('get_or_create_conversation', { other_user_id: userId });
+      if (error || !data) {
+        console.error('[handleMessage] get_or_create_conversation failed:', error?.message);
+        Alert.alert('Couldn’t start conversation', 'Please try again.');
+        return;
+      }
+      router.push({
+        pathname: '/conversation/[id]',
+        params: {
+          id: data as string,
+          otherUsername: profile?.username ?? '',
+          otherDisplayName: profile?.display_name ?? '',
+        },
+      });
+    } catch (e) {
+      console.error('[handleMessage] unexpected error:', e);
+      Alert.alert('Couldn’t start conversation', 'Please try again.');
+    } finally {
       setMsgLoading(false);
-      return;
     }
-    setMsgLoading(false);
-    router.push({
-      pathname: '/conversation/[id]',
-      params: {
-        id: data as string,
-        otherUsername: profile?.username ?? '',
-        otherDisplayName: profile?.display_name ?? '',
-      },
-    });
   }
 
   // Temporary owner-only entry point for testing the real
