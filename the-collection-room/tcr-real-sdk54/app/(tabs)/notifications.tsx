@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -90,20 +90,32 @@ function notifLabel(item: NotificationItem): string {
 }
 
 async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
-  const { data: rows } = await supabase
+  const { data: rows, error } = await supabase
     .from('notifications')
     .select('id, type, read, created_at, post_id, conversation_id, actor_id, rating_score, transfer_id, registered_card_id')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(100);
 
+  // Critical — this is the actual result set. A failure here must never be
+  // represented as "no notifications," so it's thrown rather than
+  // swallowed into [].
+  if (error) throw new Error(error.message);
+
   if (!rows?.length) return [];
 
   const actorIds = [...new Set((rows as any[]).map((r) => r.actor_id as string))];
-  const { data: profiles } = await supabase
+  // Best-effort — the notification rows above are already valid on their
+  // own; a failure here only degrades the actor username/display
+  // name/avatar to the existing 'user'/null fallback below, it must never
+  // fail the whole notifications fetch.
+  const { data: profiles, error: profileError } = await supabase
     .from('profiles')
     .select('id, username, display_name, avatar_url')
     .in('id', actorIds);
+  if (profileError) {
+    console.error('[Notifications] actor profile enrichment failed (best-effort):', profileError.message, profileError);
+  }
 
   const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
 
@@ -184,19 +196,68 @@ export default function NotificationsScreen() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Distinct from "notifications.length === 0" — only a real query failure
+  // sets this, never a legitimate empty inbox. On failure, `notifications`
+  // is deliberately left untouched (never reset to []) so a failed load or
+  // refresh doesn't wipe an already-loaded list off screen.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Request-identity guard — plain incrementing counter, not
+  // AbortController: load() fires on every focus (no debounce) and
+  // onRefresh() fires on pull-to-refresh, both writing the same
+  // notifications/loading/refreshing/loadError state, so a slower older
+  // call (e.g. rapidly leaving and re-entering this screen, or a refresh
+  // racing a focus-triggered load) must never win and overwrite a newer
+  // call's result. Shared between load and onRefresh on purpose — either
+  // can supersede the other, they write the same state.
+  const loadRequestIdRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!currentUserId) { setLoading(false); return; }
+
+    const requestId = ++loadRequestIdRef.current;
+    const isCurrent = () => loadRequestIdRef.current === requestId;
+
     setLoading(true);
-    setNotifications(await fetchNotifications(currentUserId));
-    setLoading(false);
+    try {
+      const result = await fetchNotifications(currentUserId);
+      if (!isCurrent()) return;
+      setNotifications(result);
+      setLoadError(null);
+    } catch (e) {
+      if (!isCurrent()) return;
+      // A thrown exception (fetchNotifications now throws on a real query
+      // error) — never touches `notifications`, so previously-loaded data
+      // survives a failed load/refresh here too.
+      console.error('[Notifications] load failed:', e);
+      setLoadError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      // A superseded request must never clear loading out from under
+      // whichever newer request is now responsible for it.
+      if (isCurrent()) setLoading(false);
+    }
   }, [currentUserId]);
 
   const onRefresh = useCallback(async () => {
     if (!currentUserId) return;
+
+    const requestId = ++loadRequestIdRef.current;
+    const isCurrent = () => loadRequestIdRef.current === requestId;
+
     setRefreshing(true);
-    setNotifications(await fetchNotifications(currentUserId));
-    setRefreshing(false);
+    try {
+      const result = await fetchNotifications(currentUserId);
+      if (!isCurrent()) return;
+      setNotifications(result);
+      setLoadError(null);
+    } catch (e) {
+      if (!isCurrent()) return;
+      console.error('[Notifications] refresh failed:', e);
+      // Existing notifications are deliberately left untouched — only a
+      // failed refresh's own error is surfaced, never a wiped list.
+      setLoadError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      if (isCurrent()) setRefreshing(false);
+    }
   }, [currentUserId]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -305,6 +366,18 @@ export default function NotificationsScreen() {
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
+      ) : notifications.length === 0 && loadError ? (
+        // Real query/network failure with nothing already on screen —
+        // distinct from the legitimate empty inbox below. Retry calls the
+        // same load() the focus effect uses.
+        <View style={styles.center}>
+          <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
+          <Text style={styles.emptyTitle}>Couldn&apos;t load notifications</Text>
+          <Text style={styles.emptyBody}>Check your connection and try again.</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={load}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
       ) : notifications.length === 0 ? (
         <View style={styles.center}>
           <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
@@ -314,18 +387,33 @@ export default function NotificationsScreen() {
           </Text>
         </View>
       ) : (
-        <FlatList
-          data={notifications}
-          keyExtractor={(item) => item.id}
-          onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}
-          renderItem={({ item }) => (
-            <NotificationRow item={item} onPress={() => handlePress(item)} />
+        <>
+          {loadError && (
+            // Failed refresh with notifications already on screen — kept
+            // visible below (never cleared/replaced), just flagged with
+            // this lightweight inline row. Retry calls onRefresh().
+            <View style={styles.refreshErrorRow}>
+              <Text style={styles.refreshErrorText} numberOfLines={1}>
+                Couldn&apos;t refresh notifications
+              </Text>
+              <TouchableOpacity onPress={onRefresh} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={styles.refreshErrorRetry}>Retry</Text>
+              </TouchableOpacity>
+            </View>
           )}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
-          }
-        />
+          <FlatList
+            data={notifications}
+            keyExtractor={(item) => item.id}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
+            renderItem={({ item }) => (
+              <NotificationRow item={item} onPress={() => handlePress(item)} />
+            )}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            }
+          />
+        </>
       )}
     </SafeAreaView>
   );
@@ -386,6 +474,48 @@ const styles = StyleSheet.create({
     color: '#687076',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  // Full-panel error-state Retry button — same convention as Feed's own
+  // retryButton (app/(tabs)/index.tsx).
+  retryButton: {
+    marginTop: 16,
+    backgroundColor: '#0a7ea4',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  // Inline banner for a failed refresh when notifications are already on
+  // screen — same shape as the Collections-tab/Folder-detail/Search
+  // refreshErrorRow, adapted to this screen's light theme/accent.
+  refreshErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#fdecea',
+    borderWidth: 1,
+    borderColor: '#f5c6c0',
+  },
+  refreshErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#687076',
+    marginRight: 12,
+  },
+  refreshErrorRetry: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0a7ea4',
   },
   row: {
     flexDirection: 'row',
