@@ -52,10 +52,16 @@ export async function cancelOwnershipTransfer(
 
 // ============================================================================
 // Card-scoped pending-transfer check — used by the registry detail screen to
-// decide between "Transfer Card" and "View Transfer" for the owner.
-// Deliberately NOT fetchOwnershipTransfersForUser below (that returns a
-// user's entire transfer history across every card, sent+received); the
-// registry screen only ever needs "does THIS card have a pending transfer,"
+// decide between "Transfer Card" and "View Transfer" for the owner, and by
+// handleSendTransfer's response reconciliation to tell "this attempt
+// committed" apart from "a DIFFERENT pending transfer exists for this card"
+// (e.g. one created by the same owner from another session/device racing
+// this one) — to_owner_id is included precisely so a caller can compare it
+// against the recipient it actually attempted, rather than assuming any
+// pending transfer found must be its own. Deliberately NOT
+// fetchOwnershipTransfersForUser below (that returns a user's entire
+// transfer history across every card, sent+received); the registry screen
+// only ever needs "does THIS card have a pending transfer, and for whom,"
 // so this is its own narrow, single-row query rather than over-fetching.
 // maybeSingle() is safe (not just convenient) because
 // ownership_transfers_one_pending_per_card is a real partial unique index
@@ -67,16 +73,16 @@ export async function cancelOwnershipTransfer(
 
 export async function fetchPendingTransferForCard(
   registeredCardId: string,
-): Promise<{ error: string | null; data: { id: string } | null }> {
+): Promise<{ error: string | null; data: { id: string; to_owner_id: string } | null }> {
   const { data, error } = await supabase
     .from('ownership_transfers')
-    .select('id')
+    .select('id, to_owner_id')
     .eq('registered_card_id', registeredCardId)
     .eq('status', 'pending')
     .maybeSingle();
 
   if (error) return { error: error.message, data: null };
-  return { error: null, data: data as { id: string } | null };
+  return { error: null, data: data as { id: string; to_owner_id: string } | null };
 }
 
 // ============================================================================

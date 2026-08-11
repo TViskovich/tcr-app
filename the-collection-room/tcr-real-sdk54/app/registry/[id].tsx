@@ -463,6 +463,64 @@ export default function RegistryDetailScreen() {
     router.push({ pathname: '/item/[id]', params: { id: record.collection_item_id } });
   }
 
+  async function reconcilePendingTransferAfterError(
+    cardId: string,
+    recipientId: string,
+    recipientUsername: string,
+    originalErrorMessage: string,
+  ) {
+    try {
+      const { error, data } = await fetchPendingTransferForCard(cardId);
+
+      if (error) {
+        console.error('[RegistryDetail] transfer reconciliation read failed:', error);
+        Alert.alert(
+          'Transfer status unknown',
+          "We couldn't confirm whether the transfer was sent. Refresh and check your transfers before trying again.",
+        );
+        return;
+      }
+
+      if (!data) {
+        Alert.alert('Unable to send transfer', originalErrorMessage);
+        return;
+      }
+
+      if (data.to_owner_id === recipientId) {
+        setIsTransferModalVisible(false);
+        setSelectedRecipient(null);
+        setSelectedReason(null);
+        setPendingTransferId(data.id);
+        Alert.alert('Transfer Sent', `Transfer request sent to @${recipientUsername}.`);
+        return;
+      }
+
+      console.error(
+        '[RegistryDetail] transfer reconciliation found a mismatched pending transfer:',
+        {
+          expectedRecipientId: recipientId,
+          actualToOwnerId: data.to_owner_id,
+        },
+      );
+
+      setIsTransferModalVisible(false);
+      setSelectedRecipient(null);
+      setSelectedReason(null);
+      setPendingTransferId(data.id);
+
+      Alert.alert(
+        'Transfer status changed',
+        'A different pending transfer now exists for this card. Refresh and review the transfer before trying again.',
+      );
+    } catch (e) {
+      console.error('[RegistryDetail] transfer reconciliation read threw:', e);
+      Alert.alert(
+        'Transfer status unknown',
+        "We couldn't confirm whether the transfer was sent. Refresh and check your transfers before trying again.",
+      );
+    }
+  }
+
   async function handleSendTransfer() {
     // Guards against a double-submit from a rapid double-tap: the button
     // is also `disabled={submittingTransfer}`, but this is the actual
@@ -475,6 +533,10 @@ export default function RegistryDetailScreen() {
     // already has a pending transfer" error below, never a duplicate row.
     if (!record || !selectedRecipient || submittingTransfer) return;
 
+    const cardId = record.id;
+    const recipientId = selectedRecipient.id;
+    const recipientUsername = selectedRecipient.username;
+
     setSubmittingTransfer(true);
     try {
       // Kept as one result object (not destructured into separate
@@ -483,7 +545,7 @@ export default function RegistryDetailScreen() {
       // union — splitting it into two independent bindings loses that
       // narrowing, since TS can't relate two separate variables back to
       // the same union.
-      const result = await initiateOwnershipTransfer(record.id, selectedRecipient.username, selectedReason);
+      const result = await initiateOwnershipTransfer(cardId, recipientUsername, selectedReason);
 
       // Narrows via equality against the literal `null` discriminant, not
       // truthiness — OwnershipTransferRpcResult's failure member types
@@ -492,18 +554,11 @@ export default function RegistryDetailScreen() {
       // union narrowing, which is exactly what produced a "possibly null"
       // error on result.data below on the first pass here.
       if (result.error !== null) {
-        // initiate_ownership_transfer's own RAISE EXCEPTION messages
-        // (e.g. "This card already has a pending transfer", "Recipient
-        // not found", "Cannot transfer a card to yourself", "Only the
-        // current owner may initiate a transfer") are already
-        // hand-authored, user-safe strings — shown directly, unlike a
-        // raw query-failure message such as pendingTransferError above,
-        // which never reaches the UI.
-        Alert.alert('Unable to send transfer', result.error);
+        console.error('[RegistryDetail] initiate_ownership_transfer failed:', result.error);
+        await reconcilePendingTransferAfterError(cardId, recipientId, recipientUsername, result.error);
         return;
       }
 
-      const recipientUsername = selectedRecipient.username;
       setIsTransferModalVisible(false);
       setSelectedRecipient(null);
       setSelectedReason(null);
@@ -518,12 +573,13 @@ export default function RegistryDetailScreen() {
       setPendingTransferId(result.data.id);
       Alert.alert('Transfer Sent', `Transfer request sent to @${recipientUsername}.`);
     } catch (e) {
-      // initiateOwnershipTransfer never throws by its own convention (see
-      // lib/ownership-transfer.ts) — this is defense-in-depth against a
-      // genuinely unexpected exception, matching applyCustodyStatus's
-      // identical try/catch/finally shape above. No raw exception detail
-      // is ever shown to the user.
-      Alert.alert('Unable to send transfer', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      console.error('[RegistryDetail] initiate_ownership_transfer threw:', e);
+      await reconcilePendingTransferAfterError(
+        cardId,
+        recipientId,
+        recipientUsername,
+        e instanceof Error ? e.message : 'Something went wrong. Please try again.',
+      );
     } finally {
       setSubmittingTransfer(false);
     }
