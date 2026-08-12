@@ -58,41 +58,47 @@ export function useGrailRating({
       setCount(nextCount);
       setMyRating(score);
 
-      const { error } = await supabase.from('grail_ratings').upsert(
-        {
-          post_id: postId,
-          rater_user_id: currentUserId,
-          score,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'post_id,rater_user_id' },
-      );
+      try {
+        const { error } = await supabase.from('grail_ratings').upsert(
+          {
+            post_id: postId,
+            rater_user_id: currentUserId,
+            score,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'post_id,rater_user_id' },
+        );
 
-      if (error) {
-        console.error('Rating failed:', error.message);
+        if (error) {
+          console.error('Rating failed:', error.message);
+          setAvg(prevAvg);
+          setCount(prevCount);
+          setMyRating(prevMyRating);
+          return;
+        }
+
+        // Every submit/change gets its own notification — the score is frozen
+        // onto the row since a later rating change must not rewrite it.
+        supabase
+          .from('notifications')
+          .insert({
+            user_id: postOwnerId,
+            actor_id: currentUserId,
+            type: 'grail_rating',
+            post_id: postId,
+            rating_score: score,
+          })
+          .then(({ error: e }) => {
+            if (e) console.error('Rating notif failed:', e.message);
+          });
+      } catch (e) {
+        console.error('Rating threw:', e);
         setAvg(prevAvg);
         setCount(prevCount);
         setMyRating(prevMyRating);
+      } finally {
         setSubmitting(false);
-        return;
       }
-
-      // Every submit/change gets its own notification — the score is frozen
-      // onto the row since a later rating change must not rewrite it.
-      supabase
-        .from('notifications')
-        .insert({
-          user_id: postOwnerId,
-          actor_id: currentUserId,
-          type: 'grail_rating',
-          post_id: postId,
-          rating_score: score,
-        })
-        .then(({ error: e }) => {
-          if (e) console.error('Rating notif failed:', e.message);
-        });
-
-      setSubmitting(false);
     },
     [postId, postOwnerId, currentUserId, isOwner, submitting, avg, count, myRating],
   );
