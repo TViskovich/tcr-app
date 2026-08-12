@@ -13,6 +13,7 @@ import {
   fetchOwnershipTransfersForUser,
   type OwnershipTransferView,
 } from '@/lib/ownership-transfer';
+import type { OwnershipTransferStatus } from '@/types';
 
 type FilterKey = 'all' | 'sent' | 'received' | 'pending';
 
@@ -80,22 +81,38 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
   // screen-wide flag, so acting on one row can't disable an unrelated row.
   const [actionLoadingIds, setActionLoadingIds] = useState<Set<string>>(new Set());
 
-  const loadTransfers = useCallback(async () => {
+  const loadTransfers = useCallback(async (): Promise<{ error: string | null; data: OwnershipTransferView[] }> => {
     if (!currentUserId) {
       setLoading(false);
-      return;
+      return { error: null, data: [] };
     }
     setLoading(true);
-    const { error: fetchError, data } = await fetchOwnershipTransfersForUser(currentUserId);
-    if (fetchError) {
-      if (__DEV__) console.error('[TransactionsList] fetch failed:', fetchError);
-      setError(fetchError);
+    try {
+      const { error: fetchError, data } = await fetchOwnershipTransfersForUser(currentUserId);
+      if (fetchError) {
+        if (__DEV__) console.error('[TransactionsList] fetch failed:', fetchError);
+        // Existing transfers are deliberately left untouched on failure —
+        // only `error` is set, which is what switches the render below to
+        // the error/Retry state; a stale-but-real list is never silently
+        // wiped by a failed refresh.
+        setError(fetchError);
+        return { error: fetchError, data: [] };
+      }
+      setError(null);
+      // A genuinely empty result is a legitimate, distinct success case
+      // from a failed read (see fetchOwnershipTransfersForUser's own
+      // error/data separation) — always committed here on success, empty
+      // or not.
+      setTransfers(data);
+      return { error: null, data };
+    } catch (e) {
+      if (__DEV__) console.error('[TransactionsList] fetch threw:', e);
+      const message = 'Unable to load transfers.';
+      setError(message);
+      return { error: message, data: [] };
+    } finally {
       setLoading(false);
-      return;
     }
-    setError(null);
-    setTransfers(data);
-    setLoading(false);
   }, [currentUserId]);
 
   useFocusEffect(
@@ -104,27 +121,125 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
     }, [loadTransfers]),
   );
 
+  // P0 ownership-transfer response-reconciliation for accept/decline/cancel
+  // (audit: "ownership-transfer Accept / Decline / Cancel response
+  // reconciliation") — a resolved RPC error and a thrown exception from
+  // acceptOwnershipTransfer/declineOwnershipTransfer/cancelOwnershipTransfer
+  // can both mean either "the request never committed" OR "the server
+  // committed the status change but the response was lost in transit."
+  // loadTransfers() is the single existing authoritative read (no new
+  // query) — reused here both to refresh the UI and to inspect the
+  // acted-on transfer's real, current status. Deliberately wraps its own
+  // body in try/catch so a genuinely unexpected read/reconciliation
+  // exception here converts to the same neutral "status unknown" outcome
+  // rather than ever propagating back out to runAction — this function
+  // never itself throws, which is what guarantees runAction can only ever
+  // call it once per failed RPC attempt (see runAction's own comment).
+  async function reconcileTransferAfterError(
+    transferId: string,
+    requestedStatus: OwnershipTransferStatus,
+    failureMessage: string,
+  ) {
+    try {
+      const { error, data } = await loadTransfers();
+
+      if (error) {
+        Alert.alert(
+          'Transfer status unknown',
+          "We couldn't confirm whether the transfer was updated. Refresh and check your transfers before trying again.",
+        );
+        return;
+      }
+
+      const transfer = data.find((t) => t.id === transferId);
+      if (!transfer) {
+        Alert.alert(
+          'Transfer status unknown',
+          "We couldn't confirm whether the transfer was updated. Refresh and check your transfers before trying again.",
+        );
+        return;
+      }
+
+      if (transfer.status === requestedStatus) {
+        // Authoritative state proves this attempt committed — loadTransfers()
+        // above already refreshed the UI with the real status. No Alert,
+        // matching the existing silent-success convention for
+        // accept/decline/cancel today.
+        return;
+      }
+
+      if (transfer.status === 'pending') {
+        // Authoritative state proves the mutation did not commit — safe to
+        // show today's existing failure copy.
+        Alert.alert('Error', failureMessage);
+        return;
+      }
+
+      // A different terminal status than the one requested — some other
+      // resolution (e.g. another session) won the race. Don't claim this
+      // attempt succeeded or failed; loadTransfers() above already
+      // refreshed state to the real value, so no second refresh here.
+      Alert.alert(
+        'Transfer status changed',
+        "This transfer's status changed before we could confirm the action. Review the latest transfer status.",
+      );
+    } catch (e) {
+      if (__DEV__) console.error('[TransactionsList] reconciliation read threw:', e);
+      Alert.alert(
+        'Transfer status unknown',
+        "We couldn't confirm whether the transfer was updated. Refresh and check your transfers before trying again.",
+      );
+    }
+  }
+
   async function runAction(
     transferId: string,
+    requestedStatus: OwnershipTransferStatus,
     rpcCall: () => Promise<{ error: string | null; data: unknown }>,
     failureMessage: string,
   ) {
     if (actionLoadingIds.has(transferId)) return;
     setActionLoadingIds((prev) => new Set(prev).add(transferId));
     try {
-      const { error: rpcError } = await rpcCall();
-      if (rpcError) {
-        if (__DEV__) console.error('[TransactionsList] action failed:', rpcError);
-        Alert.alert('Error', __DEV__ ? rpcError : failureMessage);
+      // Scoped so a thrown RPC call and a resolved {error} both funnel
+      // into exactly one reconcileTransferAfterError call below — never
+      // both, and never the success-path refresh either (see below): a
+      // resolved {error: null} result is definitive proof the mutation
+      // committed, so nothing after this inner try/catch can trigger
+      // mutation reconciliation again.
+      let rpcError: string | null = null;
+      try {
+        const result = await rpcCall();
+        rpcError = result.error;
+      } catch (e) {
+        if (__DEV__) console.error('[TransactionsList] action threw:', e);
+        await reconcileTransferAfterError(transferId, requestedStatus, failureMessage);
         return;
       }
+
+      if (rpcError) {
+        if (__DEV__) console.error('[TransactionsList] action failed:', rpcError);
+        await reconcileTransferAfterError(transferId, requestedStatus, failureMessage);
+        return;
+      }
+
       // The RPC already performed the full state change atomically
       // (including, for accept, the registered_cards ownership move,
       // collection_item_id clear, and registry_events insert — none of
-      // that is duplicated here). A full refetch is what updates the
-      // summary counts and re-renders every row (including the acted-on
-      // one) with its new, real status.
-      await loadTransfers();
+      // that is duplicated here). A resolved {error: null} result IS
+      // definitive proof the mutation committed — a refresh failure below
+      // must never downgrade this to "unknown" or trigger mutation
+      // reconciliation, only tell the user their already-completed
+      // action's on-screen status may be stale. loadTransfers() catches
+      // its own read failures internally and always resolves (never
+      // throws), so no try/catch is needed around this call.
+      const refreshResult = await loadTransfers();
+      if (refreshResult.error) {
+        Alert.alert(
+          'Transfer updated',
+          "The transfer was completed, but we couldn't refresh the latest status. Pull to refresh or reopen this screen.",
+        );
+      }
     } finally {
       setActionLoadingIds((prev) => {
         const next = new Set(prev);
@@ -140,7 +255,12 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
       {
         text: 'Accept',
         onPress: () =>
-          runAction(transfer.id, () => acceptOwnershipTransfer(transfer.id), 'Unable to accept this transfer. Please try again.'),
+          runAction(
+            transfer.id,
+            'accepted',
+            () => acceptOwnershipTransfer(transfer.id),
+            'Unable to accept this transfer. Please try again.',
+          ),
       },
     ]);
   }
@@ -152,7 +272,12 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
         text: 'Decline',
         style: 'destructive',
         onPress: () =>
-          runAction(transfer.id, () => declineOwnershipTransfer(transfer.id), 'Unable to decline this transfer. Please try again.'),
+          runAction(
+            transfer.id,
+            'declined',
+            () => declineOwnershipTransfer(transfer.id),
+            'Unable to decline this transfer. Please try again.',
+          ),
       },
     ]);
   }
@@ -164,7 +289,12 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
         text: 'Cancel Transfer',
         style: 'destructive',
         onPress: () =>
-          runAction(transfer.id, () => cancelOwnershipTransfer(transfer.id), 'Unable to cancel this transfer. Please try again.'),
+          runAction(
+            transfer.id,
+            'cancelled',
+            () => cancelOwnershipTransfer(transfer.id),
+            'Unable to cancel this transfer. Please try again.',
+          ),
       },
     ]);
   }
