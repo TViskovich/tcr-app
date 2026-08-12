@@ -166,7 +166,12 @@ export default function CollectionFolderScreen() {
   const [galleryCommentsVisible, setGalleryCommentsVisible] = useState(false);
 
   const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
-  const { likeCount, liked, toggle: toggleFolderLike } = useFolderLikes(folderId, currentUserId);
+  const {
+    likeCount,
+    liked,
+    inFlight: folderLikeInFlight,
+    toggle: toggleFolderLike,
+  } = useFolderLikes(folderId, currentUserId);
 
   // Request-identity guard — plain incrementing counter, not
   // AbortController: loadFolder is called from two places (the mount/
@@ -747,7 +752,7 @@ export default function CollectionFolderScreen() {
 
             <View style={styles.galleryActionsRow}>
               <View style={styles.galleryActionsSide}>
-                <Pressable onPress={toggleFolderLike} hitSlop={10} style={styles.likeBtn}>
+                <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
                   <IconSymbol
                     name={liked ? 'heart.fill' : 'heart'}
                     size={20}
@@ -858,7 +863,7 @@ export default function CollectionFolderScreen() {
                 </Text>
 
                 <View style={styles.titleInlineActions}>
-                  <Pressable onPress={toggleFolderLike} hitSlop={10} style={styles.likeBtn}>
+                  <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
                     <IconSymbol
                       name={liked ? 'heart.fill' : 'heart'}
                       size={20}
