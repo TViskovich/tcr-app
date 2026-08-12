@@ -92,6 +92,10 @@ export default function ConversationScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
+  // Synchronous re-entry guard for handleSend — sending (React state) alone
+  // doesn't take effect until the next render, so two send events arriving
+  // before that commit could both pass a state-only check. See handleSend.
+  const sendingRef = useRef(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList<Message>>(null);
 
@@ -253,59 +257,66 @@ export default function ConversationScreen() {
   }, [loadMessages]);
 
   async function handleSend() {
-    if (!currentUserId || !newMessage.trim() || !convId || sending) return;
+    if (!currentUserId || !newMessage.trim() || !convId || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
     const body = newMessage.trim();
     setNewMessage('');
 
-    const { data: msgData, error } = await supabase
-      .from('messages')
-      .insert({ conversation_id: convId, sender_id: currentUserId, body })
-      .select('id, sender_id, body, created_at')
-      .single();
+    try {
+      const { data: msgData, error } = await supabase
+        .from('messages')
+        .insert({ conversation_id: convId, sender_id: currentUserId, body })
+        .select('id, sender_id, body, created_at')
+        .single();
 
-    if (error) {
-      console.error('Send failed:', error.message);
+      if (error) {
+        console.error('Send failed:', error.message);
+        setNewMessage(body);
+        return;
+      }
+
+      const now = new Date().toISOString();
+
+      // Update last_message_at so inbox sorts correctly — fire and forget
+      supabase
+        .from('conversations')
+        .update({ last_message_at: now })
+        .eq('id', convId)
+        .then(({ error: e }) => {
+          if (e) console.error('last_message_at update failed:', e.message);
+        });
+
+      // Keep sender's last_read_at current so their own send doesn't show as unread
+      supabase
+        .from('conversation_participants')
+        .update({ last_read_at: now })
+        .eq('conversation_id', convId)
+        .eq('user_id', currentUserId)
+        .then(({ error: e }) => {
+          if (e) console.error('last_read_at send-stamp failed:', e.message);
+        });
+
+      setMessages((prev) => [...prev, msgData as Message]);
+
+      // Notify the other user of the new message (fire and forget)
+      if (otherUser) {
+        supabase.from('notifications').insert({
+          user_id: otherUser.id,
+          actor_id: currentUserId,
+          type: 'message',
+          conversation_id: convId,
+        }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
+      }
+
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch (e) {
+      console.error('Send threw:', e);
       setNewMessage(body);
+    } finally {
+      sendingRef.current = false;
       setSending(false);
-      return;
     }
-
-    const now = new Date().toISOString();
-
-    // Update last_message_at so inbox sorts correctly — fire and forget
-    supabase
-      .from('conversations')
-      .update({ last_message_at: now })
-      .eq('id', convId)
-      .then(({ error: e }) => {
-        if (e) console.error('last_message_at update failed:', e.message);
-      });
-
-    // Keep sender's last_read_at current so their own send doesn't show as unread
-    supabase
-      .from('conversation_participants')
-      .update({ last_read_at: now })
-      .eq('conversation_id', convId)
-      .eq('user_id', currentUserId)
-      .then(({ error: e }) => {
-        if (e) console.error('last_read_at send-stamp failed:', e.message);
-      });
-
-    setMessages((prev) => [...prev, msgData as Message]);
-
-    // Notify the other user of the new message (fire and forget)
-    if (otherUser) {
-      supabase.from('notifications').insert({
-        user_id: otherUser.id,
-        actor_id: currentUserId,
-        type: 'message',
-        conversation_id: convId,
-      }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
-    }
-
-    setSending(false);
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }
 
   const displayTitle =
