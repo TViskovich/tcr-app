@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -161,6 +161,8 @@ export default function ItemDetailScreen() {
   const [form, setForm] = useState<EditForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [grailsLoading, setGrailsLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
   // Sender Transferred-Out Item Lifecycle — a top-level derived flag, not
@@ -365,67 +367,170 @@ export default function ItemDetailScreen() {
     }
   }
 
-  async function handleDelete() {
+  // Reconciliation for the two ambiguous delete outcomes (resolved {error}
+  // and thrown exception) — both can mean either "never committed" or
+  // "committed but the response was lost", and the two are indistinguishable
+  // from the client's perspective without an authoritative re-read.
+  //
+  // Queries by id only, with no .eq('user_id', ...) filter: collection_items
+  // SELECT is unconditionally public (see supabase/schema.sql's
+  // "items_select_public" policy, USING (true) — confirmed by this same
+  // screen's own fetchItem() above, which already reads any item by id
+  // regardless of viewer). That means a null result here can only mean "this
+  // row does not exist", never "exists but hidden from this viewer" — RLS
+  // does not obscure the answer, so this is authoritative for "does the item
+  // still exist", which is the only question that matters for reconciling a
+  // delete this user already issued.
+  //
+  // Catches its own read failure internally so it never rethrows into a
+  // second reconciliation attempt.
+  async function reconcileItemDeleteAfterError(itemId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('collection_items')
+        .select('id')
+        .eq('id', itemId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[ItemDetail] reconciliation read failed:', error.message, error);
+        Alert.alert(
+          'Delete status unknown',
+          "We couldn't confirm whether the item was deleted. Refresh your collection before trying again.",
+        );
+        return;
+      }
+
+      if (data === null) {
+        console.log('[ItemDetail][DEBUG] delete: reconciliation confirms item gone, navigating back', { itemId });
+        router.back();
+        return;
+      }
+
+      console.error('[ItemDetail] reconciliation confirms item still exists:', { itemId });
+      Alert.alert('Delete failed', 'This item could not be deleted. Please try again.');
+    } catch (e) {
+      console.error('[ItemDetail] reconciliation read threw:', e);
+      Alert.alert(
+        'Delete status unknown',
+        "We couldn't confirm whether the item was deleted. Refresh your collection before trying again.",
+      );
+    }
+  }
+
+  // deletingRef is the actual re-entry lock: it's acquired synchronously
+  // here, before Alert.alert is even shown, so a second tap on the delete
+  // button while the confirmation dialog is already open bails out above
+  // without ever queueing a second dialog. It's released on Cancel and on
+  // Android's outside-tap/back-button dismissal (onDismiss below); on
+  // Delete it stays held through the whole mutation and is only released in
+  // the mutation's own finally. `settled` (local per invocation, not state)
+  // distinguishes "a button already claimed this dismissal" from a bare
+  // onDismiss, since Android fires onDismiss after every button press too —
+  // without that guard, onDismiss would immediately re-release the lock
+  // while the Delete mutation it just started is still in flight.
+  // `deleting` (React state) is separate: it only reflects the actual
+  // mutation/loading window, for button UI, not the confirmation-dialog
+  // window.
+  function handleDelete() {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+
+    let settled = false;
+
     const title = isTransferredOut ? 'Remove from Collection?' : 'Delete Item';
     const body = isTransferredOut
       ? 'This permanently removes this historical item from your collection. It will not affect the transferred Cache ID or the recipient\'s ownership.'
       : 'Are you sure? This cannot be undone.';
-    Alert.alert(title, body, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(
+      title,
+      body,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            settled = true;
+            deletingRef.current = false;
+          },
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            settled = true;
+            if (!currentUserId) {
+              deletingRef.current = false;
+              return;
+            }
+
+            setDeleting(true);
+
+            // No manual posts cleanup here — posts.item_id is FK'd to
+            // collection_items(id) ON DELETE SET NULL (see supabase/
+            // schema.sql), so any post referencing this item is preserved
+            // (its own image_url/caption are already denormalized onto the
+            // post row at creation time) and just loses its "view original
+            // card" link, exactly like the card_share_items/
+            // rate_my_grail_cards snapshot pattern. A manual delete()...
+            // eq('item_id', id) here would be a second, non-atomic
+            // destructive operation — if it succeeded but the item delete
+            // below then failed, the user's feed post would be gone while
+            // the collection item survived.
+            console.log('[ItemDetail][DEBUG] delete: start', { itemId: id, currentUserId });
+
+            try {
+              // .select('id') is what makes a silently-zero-row delete (e.g.
+              // an RLS/ownership mismatch) detectable at all — without it, a
+              // DELETE whose WHERE clause (id + the RLS USING policy)
+              // matches nothing still returns { error: null },
+              // indistinguishable from success. The .eq('user_id',
+              // currentUserId) is a defense-in-depth client-side ownership
+              // check on top of RLS, not a replacement for it.
+              const { data: deletedRows, error: deleteError } = await supabase
+                .from('collection_items')
+                .delete()
+                .eq('id', id)
+                .eq('user_id', currentUserId)
+                .select('id');
+
+              if (deleteError) {
+                console.error('[ItemDetail] delete failed:', deleteError.message, deleteError);
+                await reconcileItemDeleteAfterError(id);
+                return;
+              }
+
+              console.log('[ItemDetail][DEBUG] delete: returned rows', {
+                deletedIds: deletedRows?.map((r) => r.id) ?? [],
+              });
+
+              if (!deletedRows || deletedRows.length === 0) {
+                console.error('[ItemDetail] delete returned zero rows:', { itemId: id, currentUserId });
+                Alert.alert('Delete failed', 'No item was deleted. Check ownership and database permissions.');
+                return;
+              }
+
+              console.log('[ItemDetail][DEBUG] delete: confirmed, navigating back', { itemId: id });
+              router.back();
+            } catch (e) {
+              console.error('[ItemDetail] delete threw:', e);
+              await reconcileItemDeleteAfterError(id);
+            } finally {
+              deletingRef.current = false;
+              setDeleting(false);
+            }
+          },
+        },
+      ],
       {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          if (!currentUserId) return;
-
-          // No manual posts cleanup here — posts.item_id is FK'd to
-          // collection_items(id) ON DELETE SET NULL (see supabase/
-          // schema.sql), so any post referencing this item is preserved
-          // (its own image_url/caption are already denormalized onto the
-          // post row at creation time) and just loses its "view original
-          // card" link, exactly like the card_share_items/
-          // rate_my_grail_cards snapshot pattern. A manual delete()...
-          // eq('item_id', id) here would be a second, non-atomic
-          // destructive operation — if it succeeded but the item delete
-          // below then failed, the user's feed post would be gone while
-          // the collection item survived.
-          console.log('[ItemDetail][DEBUG] delete: start', { itemId: id, currentUserId });
-
-          // .select('id') is what makes a silently-zero-row delete (e.g. an
-          // RLS/ownership mismatch) detectable at all — without it, a
-          // DELETE whose WHERE clause (id + the RLS USING policy) matches
-          // nothing still returns { error: null }, indistinguishable from
-          // success. The .eq('user_id', currentUserId) is a defense-in-
-          // depth client-side ownership check on top of RLS, not a
-          // replacement for it.
-          const { data: deletedRows, error: deleteError } = await supabase
-            .from('collection_items')
-            .delete()
-            .eq('id', id)
-            .eq('user_id', currentUserId)
-            .select('id');
-
-          if (deleteError) {
-            console.error('[ItemDetail] delete failed:', deleteError.message, deleteError);
-            Alert.alert('Delete failed', 'This item could not be deleted. Please try again.');
-            return;
+        cancelable: true,
+        onDismiss: () => {
+          if (!settled) {
+            deletingRef.current = false;
           }
-
-          console.log('[ItemDetail][DEBUG] delete: returned rows', {
-            deletedIds: deletedRows?.map((r) => r.id) ?? [],
-          });
-
-          if (!deletedRows || deletedRows.length === 0) {
-            console.error('[ItemDetail] delete returned zero rows:', { itemId: id, currentUserId });
-            Alert.alert('Delete failed', 'No item was deleted. Check ownership and database permissions.');
-            return;
-          }
-
-          console.log('[ItemDetail][DEBUG] delete: confirmed, navigating back', { itemId: id });
-          router.back();
         },
       },
-    ]);
+    );
   }
 
   function handleRegisterPress() {
@@ -678,7 +783,7 @@ export default function ItemDetailScreen() {
                       </TouchableOpacity>
                     </>
                   )}
-                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete} disabled={deleting}>
                     <Text style={styles.deleteText}>Remove from Collection</Text>
                   </TouchableOpacity>
                 </View>
@@ -788,7 +893,7 @@ export default function ItemDetailScreen() {
                       </TouchableOpacity>
                     );
                   })()}
-                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete} disabled={deleting}>
                     <Text style={styles.deleteText}>Delete Item</Text>
                   </TouchableOpacity>
                 </View>
