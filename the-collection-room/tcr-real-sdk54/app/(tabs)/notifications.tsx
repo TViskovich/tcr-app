@@ -210,6 +210,15 @@ export default function NotificationsScreen() {
   // call's result. Shared between load and onRefresh on purpose — either
   // can supersede the other, they write the same state.
   const loadRequestIdRef = useRef(0);
+  // Mark-read reliability guards — refs only, no loading/disabled UI exists
+  // for either mutation today and none is being added here. markingReadRef
+  // tracks which individual notification ids currently have an in-flight
+  // mark-read mutation (a Set, since multiple rows can be mid-mutation at
+  // once); markingAllReadRef is a single in-flight flag for the bulk
+  // mutation. Both exist purely to block duplicate concurrent mutations for
+  // the same action, not to drive rendering.
+  const markingReadRef = useRef<Set<string>>(new Set());
+  const markingAllReadRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!currentUserId) { setLoading(false); return; }
@@ -264,31 +273,140 @@ export default function NotificationsScreen() {
 
   async function handleMarkAllRead() {
     if (!currentUserId) return;
-    const { error } = await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('user_id', currentUserId)
-      .eq('read', false);
-    if (!error) {
+    if (markingAllReadRef.current) return;
+    markingAllReadRef.current = true;
+    try {
+      // No .select() and no row-count inspection here on purpose: this
+      // UPDATE's own WHERE clause (user_id + read=false) already guarantees
+      // that "no unread rows remain for this user" holds on any
+      // error === null result, regardless of how many rows it actually
+      // touched — zero affected rows (e.g. another session already marked
+      // everything read) is a legitimate outcome, not a failure signal.
+      const { error } = await supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('user_id', currentUserId)
+        .eq('read', false);
+
+      if (error) {
+        console.error('[Notifications] mark all read failed:', error.message, error);
+        return;
+      }
+
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
       refreshBadge();
+    } catch (e) {
+      console.error('[Notifications] mark all read threw:', e);
+    } finally {
+      markingAllReadRef.current = false;
+    }
+  }
+
+  // Reconciliation for the single-notification mark-read mutation's
+  // ambiguous outcomes (a resolved error with status === 0, or a thrown
+  // exception) — both can mean either "the UPDATE never committed" or "it
+  // committed but the response was lost," and the two are indistinguishable
+  // without an authoritative re-read. Scoped by id and user_id (defense in
+  // depth, matching the mutation itself). Catches its own failure so it can
+  // never recurse into a second reconciliation attempt.
+  async function reconcileNotificationRead(notifId: string, userId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('read')
+        .eq('id', notifId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Notifications] mark-read reconciliation failed:', error.message, error);
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notifId ? { ...n, read: false } : n)),
+        );
+        return;
+      }
+
+      if (data === null) {
+        console.error('[Notifications] mark-read reconciliation found no row:', { notifId });
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notifId ? { ...n, read: false } : n)),
+        );
+        return;
+      }
+
+      if (data.read) {
+        // UPDATE actually committed — local read:true (already set
+        // optimistically) was correct all along, just confirm the badge.
+        refreshBadge();
+        return;
+      }
+
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notifId ? { ...n, read: false } : n)),
+      );
+    } catch (e) {
+      console.error('[Notifications] mark-read reconciliation threw:', e);
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notifId ? { ...n, read: false } : n)),
+      );
+    }
+  }
+
+  // Full mark-read mutation lifecycle for a single notification — always
+  // invoked fire-and-forget from handlePress (never awaited there), so
+  // navigation is never blocked on it. markingReadRef is acquired by the
+  // caller before this runs and is released here on every exit path.
+  async function markNotificationRead(notifId: string, userId: string) {
+    try {
+      const { error, status } = await supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('id', notifId)
+        .eq('user_id', userId);
+
+      if (!error) {
+        refreshBadge();
+        return;
+      }
+
+      if (status !== 0) {
+        // Definitive server rejection — the request reached PostgREST and
+        // was explicitly refused, so the UPDATE never committed. No
+        // reconciliation needed; we already know the outcome.
+        console.error('[Notifications] mark read failed:', error.message, error);
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notifId ? { ...n, read: false } : n)),
+        );
+        return;
+      }
+
+      // status === 0 — a network-origin error (see mark-read reliability
+      // audit): the response never arrived, so whether the UPDATE committed
+      // is genuinely unknown. Reconcile instead of guessing.
+      console.error('[Notifications] mark read ambiguous (network):', error.message, error);
+      await reconcileNotificationRead(notifId, userId);
+    } catch (e) {
+      // A thrown exception at this call site is ambiguous for the same
+      // reason as status === 0 — reconcile rather than assuming failure.
+      console.error('[Notifications] mark read threw:', e);
+      await reconcileNotificationRead(notifId, userId);
+    } finally {
+      markingReadRef.current.delete(notifId);
     }
   }
 
   function handlePress(notif: NotificationItem) {
-    // Mark read optimistically then persist
-    if (!notif.read) {
+    // Mark read optimistically then persist — fire-and-forget on purpose:
+    // navigation below must happen immediately regardless of this
+    // mutation's outcome. markingReadRef is the synchronous re-entry guard,
+    // acquired here (before the optimistic update) so a rapid re-tap on the
+    // same row can't issue a second concurrent mutation for the same id.
+    if (!notif.read && currentUserId && !markingReadRef.current.has(notif.id)) {
+      markingReadRef.current.add(notif.id);
       setNotifications((prev) =>
         prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n)),
       );
-      supabase
-        .from('notifications')
-        .update({ read: true })
-        .eq('id', notif.id)
-        .then(({ error }) => {
-          if (error) console.error('Mark read failed:', error.message);
-          else refreshBadge();
-        });
+      void markNotificationRead(notif.id, currentUserId);
     }
 
     switch (notif.type) {
