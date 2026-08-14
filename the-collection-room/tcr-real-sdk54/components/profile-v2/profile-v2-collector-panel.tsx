@@ -21,7 +21,6 @@ type Props = {
   vaultTotal: number;
   graded: number;
   prototype: PrototypeCollectorStats;
-  badgeUri: string | null;
   // Sole avatar-edit entry point for Profile V2 (see profile-v2-screen.tsx,
   // which only passes this for the owner's own profile — pickAvatar).
   // Omitted entirely for a visitor, leaving the avatar non-interactive,
@@ -45,7 +44,6 @@ export function ProfileV2CollectorPanel({
   vaultTotal,
   graded,
   prototype,
-  badgeUri,
   onAvatarPress,
 }: Props) {
   return (
@@ -86,15 +84,19 @@ export function ProfileV2CollectorPanel({
 
       <View style={styles.colDivider} />
 
-      {/* Right — collector badge + id. Badge reuses the real, already-
-          editable showcase_badge_url field; collectorId is prototype-only. */}
+      {/* Right — CacheCase Certified/Registered seal + CCA id. The seal is
+          a permanent part of the CCA identity, not user content — always
+          the same static local asset, unrelated to profiles.showcase_
+          badge_url (that field and its "Change Collector Badge" edit flow
+          still exist in profile-v2-screen.tsx, just no longer rendered
+          here). collectorId is prototype-only. */}
       <View style={[styles.col, styles.rightCol]}>
         <View style={styles.badge}>
-          {badgeUri ? (
-            <Image source={{ uri: badgeUri }} style={StyleSheet.absoluteFill} contentFit="contain" />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.badgePlaceholder]} />
-          )}
+          <Image
+            source={require('@/assets/Registry/cachecase-certified-registered.png')}
+            style={StyleSheet.absoluteFill}
+            contentFit="contain"
+          />
         </View>
         <Text style={styles.collectorId} numberOfLines={1}>
           <Text style={styles.collectorIdBase}>CCA </Text>
@@ -200,12 +202,8 @@ const styles = StyleSheet.create({
     lineHeight: 13,
   },
   badge: {
-    width: 44,
-    height: 44,
-  },
-  badgePlaceholder: {
-    backgroundColor: '#1E1E20',
-    borderRadius: 6,
+    width: 54,
+    height: 54,
   },
   collectorId: {
     fontSize: 11,

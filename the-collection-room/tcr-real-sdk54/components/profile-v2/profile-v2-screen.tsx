@@ -1048,7 +1048,6 @@ export function ProfileV2Screen({ userId }: Props) {
               vaultTotal={stats.itemCount}
               graded={stats.gradedCount}
               prototype={prototypeCollectorStats}
-              badgeUri={badgeUri}
               onAvatarPress={isOwnProfile ? pickAvatar : undefined}
             />
           )}
