@@ -151,7 +151,27 @@ export async function removeItemImage(imageId: string): Promise<void> {
   });
   if (error) throw new Error(error.message);
   if (storagePath) {
-    await supabase.storage.from('item-images').remove([storagePath as string]);
+    // Best-effort only — the RPC above already committed the authoritative
+    // DB deletion, so a failure removing the underlying object (resolved
+    // {error} or a thrown exception) must never surface to the caller as a
+    // failed removeItemImage(); it's an orphaned Storage object, not a
+    // failed delete. Same never-throws convention as lib/storage.ts's
+    // deleteProfileImage.
+    try {
+      const { error: storageError } = await supabase.storage
+        .from('item-images')
+        .remove([storagePath as string]);
+      if (storageError && __DEV__) {
+        console.warn(
+          `[removeItemImage] failed to remove storage object ${storagePath}:`,
+          storageError.message,
+        );
+      }
+    } catch (e) {
+      if (__DEV__) {
+        console.warn(`[removeItemImage] unexpected error removing storage object ${storagePath}:`, e);
+      }
+    }
   }
 }
 
