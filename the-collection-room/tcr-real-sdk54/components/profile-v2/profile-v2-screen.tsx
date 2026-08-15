@@ -39,7 +39,13 @@ import {
 import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { deleteProfileImage, uploadAvatar, uploadBadgeImage, uploadHeroImage } from '@/lib/storage';
+import {
+  deleteProfileImage,
+  uploadAvatar,
+  uploadBadgeImage,
+  uploadHeroImage,
+  type ProfileImageKind,
+} from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget } from '@/types';
@@ -891,46 +897,77 @@ export function ProfileV2Screen({ userId }: Props) {
 
     setSaving(true);
     try {
+      // Storage objects successfully uploaded during THIS invocation only —
+      // never old/unchanged URLs, never remove-only fields, never carried
+      // over from a prior attempt. An entry is added only immediately after
+      // its corresponding upload helper successfully returns. Scoped
+      // strictly to the upload phase below: nothing durable has been
+      // written to the database yet at any point this array is read, so a
+      // later field's failure can always safely best-effort delete every
+      // object already uploaded in this same attempt before rethrowing.
+      // profiles.update()'s own error handling further down is a
+      // deliberately separate, untouched boundary — once that call has
+      // been issued, DB commit state can be ambiguous in a way it never is
+      // here, and this cleanup must never run for that case.
+      const uploadedThisAttempt: { url: string; kind: ProfileImageKind }[] = [];
+
       let avatarUrl: string | null;
-      if (newAvatarUri) {
-        try {
-          avatarUrl = await uploadAvatar(newAvatarUri, userId);
-        } catch (uploadErr: unknown) {
-          const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
-          throw new Error(`Avatar upload failed: ${detail}`);
-        }
-      } else if (removeAvatar) {
-        avatarUrl = null;
-      } else {
-        avatarUrl = profile?.avatar_url ?? null;
-      }
-
       let heroUrl: string | null;
-      if (newHeroUri) {
-        try {
-          heroUrl = await uploadHeroImage(newHeroUri, userId);
-        } catch (uploadErr: unknown) {
-          const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
-          throw new Error(`Banner upload failed: ${detail}`);
-        }
-      } else if (removeHero) {
-        heroUrl = null;
-      } else {
-        heroUrl = profile?.hero_image_url ?? null;
-      }
-
       let badgeUrl: string | null;
-      if (newBadgeUri) {
-        try {
-          badgeUrl = await uploadBadgeImage(newBadgeUri, userId);
-        } catch (uploadErr: unknown) {
-          const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
-          throw new Error(`Badge upload failed: ${detail}`);
+      try {
+        if (newAvatarUri) {
+          try {
+            avatarUrl = await uploadAvatar(newAvatarUri, userId);
+          } catch (uploadErr: unknown) {
+            const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
+            throw new Error(`Avatar upload failed: ${detail}`);
+          }
+          uploadedThisAttempt.push({ url: avatarUrl, kind: 'avatar' });
+        } else if (removeAvatar) {
+          avatarUrl = null;
+        } else {
+          avatarUrl = profile?.avatar_url ?? null;
         }
-      } else if (removeBadge) {
-        badgeUrl = null;
-      } else {
-        badgeUrl = profile?.showcase_badge_url ?? null;
+
+        if (newHeroUri) {
+          try {
+            heroUrl = await uploadHeroImage(newHeroUri, userId);
+          } catch (uploadErr: unknown) {
+            const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
+            throw new Error(`Banner upload failed: ${detail}`);
+          }
+          uploadedThisAttempt.push({ url: heroUrl, kind: 'hero' });
+        } else if (removeHero) {
+          heroUrl = null;
+        } else {
+          heroUrl = profile?.hero_image_url ?? null;
+        }
+
+        if (newBadgeUri) {
+          try {
+            badgeUrl = await uploadBadgeImage(newBadgeUri, userId);
+          } catch (uploadErr: unknown) {
+            const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
+            throw new Error(`Badge upload failed: ${detail}`);
+          }
+          uploadedThisAttempt.push({ url: badgeUrl, kind: 'badge' });
+        } else if (removeBadge) {
+          badgeUrl = null;
+        } else {
+          badgeUrl = profile?.showcase_badge_url ?? null;
+        }
+      } catch (uploadPhaseErr: unknown) {
+        // A later field's upload failed after one or more earlier uploads
+        // in this same attempt already succeeded — those are now
+        // unreferenced by any row (profiles.update() below never ran) and
+        // would otherwise linger as permanent orphans. Best-effort only:
+        // deleteProfileImage never throws, so this can't mask or replace
+        // the original, already-field-labeled upload error being rethrown
+        // unchanged right after.
+        await Promise.all(
+          uploadedThisAttempt.map(({ url, kind }) => deleteProfileImage(url, userId, kind)),
+        );
+        throw uploadPhaseErr;
       }
 
       const { error } = await supabase
