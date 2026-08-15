@@ -113,6 +113,88 @@ async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
   }
 }
 
+// Best-effort parent-sync for the first-ever gallery image added to an
+// item. By the time this is called, the collection_item_images INSERT has
+// already been authoritatively established as successful (see addItemImages
+// below) — so a failure here must never retroactively turn that success
+// into a reported "Upload failed." Uses the existing set_primary_item_image
+// RPC (already proven, via the Slice 2 design audit, to leave sort_order/
+// is_primary unchanged for an already-correct first-ever batch — its only
+// real effect here is the collection_items.image_url sync) rather than a
+// raw UPDATE, because the RPC's own RAISE EXCEPTION preconditions eliminate
+// the raw UPDATE's silent-zero-row-success risk, and its single-transaction
+// body means "committed" always implies is_primary and image_url are
+// synchronized together — never throws; always resolves.
+async function syncPrimaryItemImage(itemId: string, row: CollectionItemImage): Promise<void> {
+  try {
+    const { error, status } = await supabase.rpc('set_primary_item_image', {
+      p_item_id: itemId,
+      p_image_id: row.id,
+    });
+    if (!error) return;
+
+    if (status >= 400) {
+      // Definitive rejection — already authoritative, nothing to reconcile.
+      // Retrying the identical call would almost certainly fail identically
+      // (the RPC's own preconditions are what rejected it), so this is
+      // logged, not retried.
+      if (__DEV__) {
+        console.warn(
+          `[addItemImages] set_primary_item_image rejected for item ${itemId}, image ${row.id}:`,
+          error.message,
+        );
+      }
+      return;
+    }
+
+    // Ambiguous outcome (status 0 / non-authoritative) — the RPC may have
+    // actually committed before the response was lost. Reconcile against
+    // an authoritative re-read before ever retrying.
+    const { data: reread, error: rereadError } = await supabase
+      .from('collection_items')
+      .select('image_url')
+      .eq('id', itemId)
+      .maybeSingle();
+
+    if (rereadError) {
+      // Commit status remains genuinely unknown — do not blindly retry.
+      if (__DEV__) {
+        console.warn(
+          `[addItemImages] could not confirm parent image_url sync for item ${itemId}, image ${row.id} after an ambiguous set_primary_item_image response:`,
+          rereadError.message,
+        );
+      }
+      return;
+    }
+
+    if (reread?.image_url === row.image_url) {
+      // Response was merely lost — the RPC actually committed.
+      return;
+    }
+
+    // Confirmed not yet synced — safe to retry exactly once (the RPC is
+    // idempotent: re-clearing/re-setting is_primary and recomputing
+    // sort_order from current state is a pure function of that state).
+    const { error: retryError } = await supabase.rpc('set_primary_item_image', {
+      p_item_id: itemId,
+      p_image_id: row.id,
+    });
+    if (retryError && __DEV__) {
+      console.warn(
+        `[addItemImages] parent image_url sync unresolved for item ${itemId}, image ${row.id} after one retry:`,
+        retryError.message,
+      );
+    }
+  } catch (e) {
+    if (__DEV__) {
+      console.warn(
+        `[addItemImages] unexpected error syncing parent image_url for item ${itemId}, image ${row.id}:`,
+        e,
+      );
+    }
+  }
+}
+
 // Uploads each picked photo, then inserts one gallery row per successful
 // upload in a single batch insert. A failed upload is skipped rather than
 // aborting the whole call, so a partial failure still leaves the
@@ -245,11 +327,7 @@ export async function addItemImages(
   }
 
   if (startCount === 0 && insertedRows[0]) {
-    const { error: syncError } = await supabase
-      .from('collection_items')
-      .update({ image_url: insertedRows[0].image_url })
-      .eq('id', itemId);
-    if (syncError) throw new Error(syncError.message);
+    await syncPrimaryItemImage(itemId, insertedRows[0]);
   }
 
   return { added: insertedRows, failed: failed + extraFailed };
