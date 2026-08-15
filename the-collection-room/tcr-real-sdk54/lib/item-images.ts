@@ -81,6 +81,38 @@ export type AddItemImagesResult = {
   failed: number;
 };
 
+// Best-effort Storage cleanup for item-images objects uploaded by
+// addItemImages but proven to have no corresponding collection_item_images
+// row — either because the batch INSERT was definitively rejected, or
+// because post-ambiguity reconciliation (see addItemImages below) confirmed
+// a given path's row never committed. Never throws — a cleanup failure here
+// must never replace or mask the original insert failure the caller is
+// already being told about. Same never-throws, __DEV__-only-logging
+// convention as removeItemImage's own Storage cleanup above; kept as its
+// own small helper (not merged into that one) to keep this slice scoped to
+// addItemImages only.
+async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  try {
+    const { error } = await supabase.storage.from('item-images').remove(paths);
+    if (error && __DEV__) {
+      console.warn(
+        `[addItemImages] failed to clean up ${paths.length} orphaned storage object(s):`,
+        paths,
+        error.message,
+      );
+    }
+  } catch (e) {
+    if (__DEV__) {
+      console.warn(
+        `[addItemImages] unexpected error cleaning up ${paths.length} orphaned storage object(s):`,
+        paths,
+        e,
+      );
+    }
+  }
+}
+
 // Uploads each picked photo, then inserts one gallery row per successful
 // upload in a single batch insert. A failed upload is skipped rather than
 // aborting the whole call, so a partial failure still leaves the
@@ -88,6 +120,32 @@ export type AddItemImagesResult = {
 // report as failed. The very first image ever added to an item (starting
 // gallery count of 0) is automatically marked primary and synced onto
 // collection_items.image_url.
+//
+// The batch INSERT's outcome is handled in three ways, distinguished by the
+// resolved response's own `status` (this codebase never calls
+// .throwOnError(), so postgrest-js resolves every outcome — including a lost
+// network response — as {data, error, status} rather than throwing; see
+// hooks/use-profile.ts's own comment for the same finding):
+//
+//   - success (no error): unchanged from before.
+//   - a real, definitive non-2xx `status` from PostgREST: the whole batch
+//     INSERT is one transaction, so a genuine rejection proves every row in
+//     `rows` was rolled back — every uploaded object in this batch is safe
+//     to clean up unconditionally before rethrowing.
+//   - `status === 0` (or any other non-authoritative outcome, e.g. a 2xx
+//     whose body failed to parse): postgrest-js's own sentinel for "no HTTP
+//     response was ever received" — the request may have reached Postgres
+//     and committed before the response was lost, so this can NOT be
+//     treated as proof of rejection. Reconciled against an authoritative
+//     re-read (collection_item_images_select_public is USING (true), so
+//     this SELECT is authoritative regardless of RLS) before anything is
+//     ever deleted: confirmed-present paths are kept untouched, only
+//     confirmed-absent paths are cleaned up, and if the reconciliation read
+//     itself fails, nothing is deleted at all — unknown DB state never
+//     triggers a delete. The reconciliation read is ordered by sort_order
+//     ascending — the same order getItemImages/the normal insert response
+//     both produce — so insertedRows[0] below is still the intended
+//     first/primary row on this path, not an arbitrary one.
 export async function addItemImages(
   itemId: string,
   userId: string,
@@ -125,18 +183,76 @@ export async function addItemImages(
     is_primary: startCount === 0 && i === 0,
   }));
 
-  const { data, error } = await supabase.from('collection_item_images').insert(rows).select();
-  if (error) throw new Error(error.message);
+  const { data, error, status } = await supabase.from('collection_item_images').insert(rows).select();
 
-  if (startCount === 0 && data?.[0]) {
+  let insertedRows: CollectionItemImage[];
+  let extraFailed = 0;
+
+  if (error) {
+    if (status >= 400) {
+      // Definitive rejection — none of `rows` committed. Original failure
+      // is preserved regardless of whether cleanup itself succeeds.
+      await cleanupOrphanedItemImages(successes.map((s) => s.path));
+      throw new Error(error.message);
+    }
+
+    // Ambiguous outcome — reconcile before touching any Storage object.
+    // Ordered by sort_order ascending so insertedRows[0] below is still
+    // the intended first/primary row, matching the normal-success shape.
+    const paths = successes.map((s) => s.path);
+    let reconciled: CollectionItemImage[];
+    try {
+      const { data: existing, error: reconcileError } = await supabase
+        .from('collection_item_images')
+        .select('*')
+        .eq('item_id', itemId)
+        .in('storage_path', paths)
+        .order('sort_order', { ascending: true });
+      if (reconcileError) throw new Error(reconcileError.message);
+      reconciled = (existing ?? []) as CollectionItemImage[];
+    } catch (reconcileErr) {
+      // Reconciliation itself failed — commit status remains genuinely
+      // unknown for every path in this batch. Never delete under
+      // uncertainty; the original insert failure is still what's surfaced,
+      // never replaced by the reconciliation failure.
+      if (__DEV__) {
+        console.warn(
+          '[addItemImages] reconciliation read failed after an ambiguous insert outcome; leaving all uploaded objects untouched:',
+          reconcileErr,
+        );
+      }
+      throw new Error(error.message);
+    }
+
+    const confirmedPaths = new Set(reconciled.map((r) => r.storage_path));
+    const missingPaths = successes.filter((s) => !confirmedPaths.has(s.path)).map((s) => s.path);
+    if (missingPaths.length) {
+      await cleanupOrphanedItemImages(missingPaths);
+    }
+
+    if (!reconciled.length) {
+      // Reconciliation proves nothing from this batch committed.
+      throw new Error(error.message);
+    }
+
+    // Some/all rows actually committed despite the ambiguous response — the
+    // reconciled rows are the authoritative inserted rows; anything
+    // confirmed-absent counts as an additional failure.
+    insertedRows = reconciled;
+    extraFailed = missingPaths.length;
+  } else {
+    insertedRows = (data ?? []) as CollectionItemImage[];
+  }
+
+  if (startCount === 0 && insertedRows[0]) {
     const { error: syncError } = await supabase
       .from('collection_items')
-      .update({ image_url: data[0].image_url })
+      .update({ image_url: insertedRows[0].image_url })
       .eq('id', itemId);
     if (syncError) throw new Error(syncError.message);
   }
 
-  return { added: (data ?? []) as CollectionItemImage[], failed };
+  return { added: insertedRows, failed: failed + extraFailed };
 }
 
 // Deletes the gallery row (via the remove_item_image RPC, which also
