@@ -20,6 +20,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import type { PostgrestError } from '@supabase/supabase-js';
+
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -48,7 +50,7 @@ import {
 } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, Folder, GrailChooserTarget } from '@/types';
+import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
 import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from './profile-v2-collector-panel';
@@ -193,6 +195,53 @@ function arraysEqualOrdered(a: string[], b: string[]): boolean {
   return true;
 }
 
+// The exact set of columns handleSave's profiles.update() writes. Used for
+// BOTH the update payload and the response-loss reconciliation read below,
+// so there is only ever one definition of "the intended state" to drift
+// out of sync.
+type IntendedProfileFields = Pick<
+  Profile,
+  | 'hero_display_name'
+  | 'display_name'
+  | 'bio'
+  | 'tagline'
+  | 'location'
+  | 'website'
+  | 'favorite_sports'
+  | 'favorite_teams'
+  | 'collecting_categories'
+  | 'collector_tags'
+  | 'avatar_url'
+  | 'hero_image_url'
+  | 'hero_theme'
+  | 'showcase_badge_url'
+>;
+
+// True only if the row currently holds EXACTLY the state this save attempt
+// intended to write, across every column the UPDATE touched — not just the
+// image URLs. A text-only or remove-to-already-null edit gives the image
+// columns zero signal on their own, so partial (image-only) comparison
+// would misclassify most non-image saves; comparing the full payload is
+// what actually proves commit vs. non-commit.
+function intendedProfileMatchesRow(intended: IntendedProfileFields, row: IntendedProfileFields): boolean {
+  return (
+    intended.hero_display_name === row.hero_display_name &&
+    intended.display_name === row.display_name &&
+    intended.bio === row.bio &&
+    intended.tagline === row.tagline &&
+    intended.location === row.location &&
+    intended.website === row.website &&
+    intended.avatar_url === row.avatar_url &&
+    intended.hero_image_url === row.hero_image_url &&
+    intended.hero_theme === row.hero_theme &&
+    intended.showcase_badge_url === row.showcase_badge_url &&
+    arraysEqualOrdered(intended.favorite_sports, row.favorite_sports) &&
+    arraysEqualOrdered(intended.favorite_teams, row.favorite_teams) &&
+    arraysEqualOrdered(intended.collecting_categories, row.collecting_categories) &&
+    arraysEqualOrdered(intended.collector_tags, row.collector_tags)
+  );
+}
+
 type Props = {
   // The profile being VIEWED — the signed-in user's own id when opened
   // from app/(tabs)/profile.tsx, or another user's resolved id when
@@ -315,6 +364,12 @@ export function ProfileV2Screen({ userId }: Props) {
   // not because it's functionally reachable.
   const [selectedTheme, setSelectedTheme] = useState<HeroCanvasThemeId>('base');
   const [saving, setSaving] = useState(false);
+  // Synchronous re-entry lock for handleSave — `saving` (React state) only
+  // reflects the UI's loading indicator and updates asynchronously, so two
+  // fast taps can both fire handleSave() before disabled={saving} visually
+  // updates. This ref is set the instant handleSave starts, before any
+  // await, so a second call in the same tick is rejected immediately.
+  const savingRef = useRef(false);
 
   // Follow/message state — only ever meaningful (and only ever loaded)
   // when viewing someone else's profile.
@@ -860,19 +915,32 @@ export function ProfileV2Screen({ userId }: Props) {
 
   async function handleSave() {
     if (!isOwnProfile) return;
+    // Synchronous re-entry lock. Acquired here — after isOwnProfile but
+    // before any upload/DB work — so two fast taps can't both pass this
+    // point in the same tick, unlike disabled={saving}, which only updates
+    // once React re-renders. NOT acquired any earlier: the validation
+    // checks immediately below return early (bypassing the try/finally
+    // that releases it), so acquiring before them would permanently lock
+    // out every future save after the first validation failure.
+    if (savingRef.current) return;
+    savingRef.current = true;
 
     // Full validation pass BEFORE setSaving/any upload/any DB write, in the
     // exact order requested: tagline length, website, array counts, array
     // item lengths, array duplicates. Stops at the first failure with one
-    // Alert; edit mode stays open, nothing is uploaded or saved.
+    // Alert; edit mode stays open, nothing is uploaded or saved. Each early
+    // return here happens before the try/finally below, so each one must
+    // release savingRef itself rather than relying on the finally.
     const trimmedTagline = editForm.tagline.trim();
     if (trimmedTagline.length > TAGLINE_MAX_LENGTH) {
+      savingRef.current = false;
       Alert.alert('Tagline Too Long', `Tagline must be ${TAGLINE_MAX_LENGTH} characters or fewer.`);
       return;
     }
 
     const websiteResult = normalizeWebsiteInput(editForm.website);
     if (!websiteResult.ok) {
+      savingRef.current = false;
       Alert.alert('Invalid Website', websiteResult.message);
       return;
     }
@@ -884,6 +952,7 @@ export function ProfileV2Screen({ userId }: Props) {
       { label: 'Collector Tags', values: collectorTags },
     ]);
     if (arraySectionIssue) {
+      savingRef.current = false;
       Alert.alert('Check Collector Preferences', arraySectionIssue);
       return;
     }
@@ -970,80 +1039,204 @@ export function ProfileV2Screen({ userId }: Props) {
         throw uploadPhaseErr;
       }
 
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          hero_display_name: editForm.heroName.trim() || null,
-          display_name: editForm.displayName.trim() || null,
-          bio: editForm.bio.trim() || null,
-          tagline: trimmedTagline || null,
-          location: editForm.location.trim() || null,
-          website: websiteResult.value,
-          favorite_sports: favoriteSports,
-          favorite_teams: favoriteTeams,
-          collecting_categories: collectingCategories,
-          collector_tags: collectorTags,
-          avatar_url: avatarUrl,
-          hero_image_url: heroUrl,
-          hero_theme: selectedTheme,
-          showcase_badge_url: badgeUrl,
-        })
-        .eq('id', userId);
+      // The one and only definition of "what this attempt intends the row
+      // to look like" — fed to BOTH the update call below and the
+      // response-loss reconciliation comparison, so there's never a
+      // second, independently-maintained copy of this state to drift out
+      // of sync with the first.
+      const intendedProfileFields: IntendedProfileFields = {
+        hero_display_name: editForm.heroName.trim() || null,
+        display_name: editForm.displayName.trim() || null,
+        bio: editForm.bio.trim() || null,
+        tagline: trimmedTagline || null,
+        location: editForm.location.trim() || null,
+        website: websiteResult.value,
+        favorite_sports: favoriteSports,
+        favorite_teams: favoriteTeams,
+        collecting_categories: collectingCategories,
+        collector_tags: collectorTags,
+        avatar_url: avatarUrl,
+        hero_image_url: heroUrl,
+        hero_theme: selectedTheme,
+        showcase_badge_url: badgeUrl,
+      };
 
-      if (error) {
-        if (__DEV__) {
-          console.error('[handleSave] Supabase profile update failed:', {
-            code: error.code,
-            message: error.message,
-            details: error.details,
-            hint: error.hint,
-          });
-        }
-        // The row update failed, so the OLD images are still exactly what
-        // the (unchanged) row points to — never touch those. Any image
-        // freshly uploaded in THIS attempt, though, is now unreferenced by
-        // any row — best-effort clean it up so it doesn't linger as an
-        // orphan. deleteProfileImage never throws, so this can't mask or
-        // replace the real error below, and a failure here (e.g. the
-        // storage bucket has no delete permission configured yet) simply
-        // leaves an orphaned file rather than causing any further problem.
+      // Shared by every branch below that has proven (either directly or
+      // via reconciliation) that the row was NOT updated to
+      // intendedProfileFields: the OLD images are still exactly what the
+      // (unchanged) row points to — never touch those. Any image freshly
+      // uploaded THIS attempt, though, is now unreferenced by any row —
+      // best-effort clean it up so it doesn't linger as an orphan.
+      // deleteProfileImage never throws, so this can't mask or replace the
+      // real error thrown right after, and a failure here (e.g. the
+      // storage bucket has no delete permission configured yet) simply
+      // leaves an orphaned file rather than causing any further problem.
+      const cleanupUploadedThisAttempt = () =>
+        Promise.all(uploadedThisAttempt.map(({ url, kind }) => deleteProfileImage(url, userId, kind)));
+
+      // Shared by every branch below that has proven (either directly or
+      // via reconciliation) that the row now holds intendedProfileFields —
+      // only NOW is it safe to clean up whichever old Storage objects are
+      // no longer referenced by this profile. Skipped entirely when the
+      // URL didn't actually change (unchanged image) or when there was
+      // nothing to clean up (no old image). Never deletes the newly
+      // uploaded image — only the old one. Best-effort only:
+      // deleteProfileImage never throws, so a cleanup failure here can
+      // never be mistaken for the save itself failing.
+      const finishSuccess = async () => {
         await Promise.all([
-          newAvatarUri && avatarUrl ? deleteProfileImage(avatarUrl, userId, 'avatar') : Promise.resolve(),
-          newHeroUri && heroUrl ? deleteProfileImage(heroUrl, userId, 'hero') : Promise.resolve(),
-          newBadgeUri && badgeUrl ? deleteProfileImage(badgeUrl, userId, 'badge') : Promise.resolve(),
+          oldAvatarUrl && oldAvatarUrl !== avatarUrl ? deleteProfileImage(oldAvatarUrl, userId, 'avatar') : Promise.resolve(),
+          oldHeroUrl && oldHeroUrl !== heroUrl ? deleteProfileImage(oldHeroUrl, userId, 'hero') : Promise.resolve(),
+          oldBadgeUrl && oldBadgeUrl !== badgeUrl ? deleteProfileImage(oldBadgeUrl, userId, 'badge') : Promise.resolve(),
         ]);
+
+        await refresh();
+        setNewAvatarUri(null);
+        setRemoveAvatar(false);
+        setNewHeroUri(null);
+        setRemoveHero(false);
+        setNewBadgeUri(null);
+        setRemoveBadge(false);
+        setEditMode(false);
+      };
+
+      // Reads the row back and proves, from its ACTUAL current state,
+      // whether intendedProfileFields ever committed — used whenever the
+      // update call's own outcome can't be trusted (status === 0, a 5xx
+      // response, or the call itself threw). UNKNOWN DB STATE => DELETE
+      // NOTHING: if the read itself can't produce an authoritative row, no
+      // Storage object — new or old — is touched, and the user stays in
+      // edit mode with pending changes intact rather than risk deleting
+      // something still referenced by a write we can't prove happened.
+      const resolveAmbiguousUpdateOutcome = async (): Promise<void> => {
+        let reconciledRow: IntendedProfileFields | null = null;
+        try {
+          const { data: reconData, error: reconError } = await supabase
+            .from('profiles')
+            .select(
+              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, showcase_badge_url'
+            )
+            .eq('id', userId)
+            .maybeSingle();
+          reconciledRow = !reconError && reconData ? (reconData as IntendedProfileFields) : null;
+        } catch {
+          reconciledRow = null;
+        }
+
+        if (!reconciledRow) {
+          Alert.alert(
+            'Save status unknown',
+            "We couldn't confirm whether your changes were saved. Check your connection before trying again."
+          );
+          return;
+        }
+
+        if (intendedProfileMatchesRow(intendedProfileFields, reconciledRow)) {
+          // The row currently holds exactly the intended state — the
+          // ambiguous update DID commit.
+          await finishSuccess();
+          return;
+        }
+
+        // The row provably does not hold the intended state — the
+        // ambiguous update did NOT commit.
+        await cleanupUploadedThisAttempt();
         throw new Error(
           __DEV__
-            ? `Failed to save profile: ${error.message}${error.code ? ` (${error.code})` : ''}`
+            ? 'Failed to save profile: reconciliation proved the update did not commit'
             : 'Failed to save profile. Please try again.'
         );
+      };
+
+      const updateOutcome = await (async (): Promise<
+        | { kind: 'resolved'; data: { id: string }[] | null; error: PostgrestError | null; status: number }
+        | { kind: 'threw' }
+      > => {
+        try {
+          const { data, error, status } = await supabase
+            .from('profiles')
+            .update(intendedProfileFields)
+            .eq('id', userId)
+            .select('id');
+          return { kind: 'resolved', data, error, status };
+        } catch {
+          // The request may already have reached the server before this
+          // threw, so its commit state can't be assumed either way —
+          // handled identically to an ambiguous resolved response below,
+          // never as a definitive failure.
+          return { kind: 'threw' };
+        }
+      })();
+
+      if (updateOutcome.kind === 'resolved') {
+        const { data, error, status } = updateOutcome;
+
+        if (!error && data && data.length > 0) {
+          // Authoritative success — the row was updated and returned.
+          await finishSuccess();
+          return;
+        }
+
+        if (!error) {
+          // Zero-row "success": the request was processed without error
+          // but matched/returned no row. For an authenticated user's own
+          // id this should never legitimately happen, so this is treated
+          // as definitive proof the row was NOT updated, not as an
+          // ambiguous outcome — error is null, so there's nothing
+          // non-authoritative about this response.
+          if (__DEV__) {
+            console.error('[handleSave] Supabase profile update returned zero rows for own id');
+          }
+          await cleanupUploadedThisAttempt();
+          throw new Error(
+            __DEV__
+              ? 'Failed to save profile: update matched zero rows'
+              : 'Failed to save profile. Please try again.'
+          );
+        }
+
+        if (status >= 400 && status < 500) {
+          // Definitive server rejection — an authoritative PostgREST 4xx
+          // response means the server processed and explicitly rejected
+          // the request. The row is provably unchanged.
+          if (__DEV__) {
+            console.error('[handleSave] Supabase profile update failed:', {
+              code: error.code,
+              message: error.message,
+              details: error.details,
+              hint: error.hint,
+            });
+          }
+          await cleanupUploadedThisAttempt();
+          throw new Error(
+            __DEV__
+              ? `Failed to save profile: ${error.message}${error.code ? ` (${error.code})` : ''}`
+              : 'Failed to save profile. Please try again.'
+          );
+        }
+
+        // Genuinely ambiguous/non-authoritative response: status === 0
+        // (response lost), a 5xx (infrastructure/server failure — not
+        // proof the database itself never committed the write), or any
+        // other unexpected status. Falls through to reconciliation below
+        // — DELETE NOTHING until that proves which actually happened.
+        if (__DEV__) {
+          console.error('[handleSave] Supabase profile update response ambiguous, reconciling:', {
+            code: error.code,
+            message: error.message,
+            status,
+          });
+        }
+      } else if (__DEV__) {
+        console.error('[handleSave] Supabase profile update threw, reconciling');
       }
 
-      // The row update above succeeded — only NOW is it safe to clean up
-      // whichever old Storage objects are no longer referenced by this
-      // profile. Skipped entirely when the URL didn't actually change
-      // (unchanged image) or when there was nothing to clean up (no old
-      // image). Never deletes the newly uploaded image — only the old one.
-      // Best-effort only: deleteProfileImage never throws, so a cleanup
-      // failure here can never be mistaken for the save itself failing.
-      await Promise.all([
-        oldAvatarUrl && oldAvatarUrl !== avatarUrl ? deleteProfileImage(oldAvatarUrl, userId, 'avatar') : Promise.resolve(),
-        oldHeroUrl && oldHeroUrl !== heroUrl ? deleteProfileImage(oldHeroUrl, userId, 'hero') : Promise.resolve(),
-        oldBadgeUrl && oldBadgeUrl !== badgeUrl ? deleteProfileImage(oldBadgeUrl, userId, 'badge') : Promise.resolve(),
-      ]);
-
-      await refresh();
-      setNewAvatarUri(null);
-      setRemoveAvatar(false);
-      setNewHeroUri(null);
-      setRemoveHero(false);
-      setNewBadgeUri(null);
-      setRemoveBadge(false);
-      setEditMode(false);
+      await resolveAmbiguousUpdateOutcome();
     } catch (e: unknown) {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
   }
 
