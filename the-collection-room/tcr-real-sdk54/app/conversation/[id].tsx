@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { HeaderBackButton } from '@react-navigation/elements';
+import { uuid } from 'expo-modules-core';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -96,6 +97,26 @@ export default function ConversationScreen() {
   // doesn't take effect until the next render, so two send events arriving
   // before that commit could both pass a state-only check. See handleSend.
   const sendingRef = useRef(false);
+  // A logical send whose outcome is unresolved after an ambiguous write
+  // (lost response, 5xx, thrown exception) AND an authoritative
+  // reconciliation-by-id read also failed to prove it either way. Holds the
+  // same sendId + body so an explicit retry reuses them instead of minting a
+  // new logical send — see performSend/resolveAmbiguousSend. Session-local
+  // only: held in React state, not persisted, so an app kill while a send is
+  // in this state loses the token (known beta gap, not solved here).
+  const [pendingSend, setPendingSend] = useState<{ id: string; body: string } | null>(null);
+  // Synchronous, same-runtime exactly-once guard for finalizeSentMessage,
+  // keyed by durable messages.id. Needed because setPendingSend(null) is an
+  // async state update — a second Retry tap can still read the pre-commit
+  // "pendingSend still set" closure and call performSend again before React
+  // re-renders, which can reach finalizeSentMessage a second time for the
+  // same id (e.g. via a second 23505 -> reconciliation FOUND). This ref is
+  // checked/populated synchronously, unlike React state, so it closes that
+  // window. This is same-JS-runtime side-effect dedupe only, not a durable
+  // database uniqueness guarantee — it resets on remount and provides no
+  // protection at all across an app restart (see pendingSend's own comment
+  // for that still-open, documented beta gap).
+  const finalizedSendIdsRef = useRef<Set<string>>(new Set());
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList<Message>>(null);
 
@@ -256,67 +277,189 @@ export default function ConversationScreen() {
     }
   }, [loadMessages]);
 
-  async function handleSend() {
-    if (!currentUserId || !newMessage.trim() || !convId || sendingRef.current) return;
+  // Shared finalization for a logical send that is now known to durably
+  // exist — used by both a clean INSERT success and a reconciliation read
+  // that finds the row. One function so the two cases can't drift apart.
+  function finalizeSentMessage(message: Message) {
+    // Synchronous exactly-once guard — must be the very first thing this
+    // function does, before any side effect or state update below. See
+    // finalizedSendIdsRef's declaration for why setPendingSend(null) alone
+    // (an async state update) isn't enough to prevent a second call for the
+    // same id from a rapid second Retry tap.
+    if (finalizedSendIdsRef.current.has(message.id)) return;
+    finalizedSendIdsRef.current.add(message.id);
+
+    const now = new Date().toISOString();
+
+    // Update last_message_at so inbox sorts correctly — fire and forget
+    supabase
+      .from('conversations')
+      .update({ last_message_at: now })
+      .eq('id', convId)
+      .then(({ error: e }) => {
+        if (e) console.error('last_message_at update failed:', e.message);
+      });
+
+    // Keep sender's last_read_at current so their own send doesn't show as unread
+    supabase
+      .from('conversation_participants')
+      .update({ last_read_at: now })
+      .eq('conversation_id', convId)
+      .eq('user_id', currentUserId)
+      .then(({ error: e }) => {
+        if (e) console.error('last_read_at send-stamp failed:', e.message);
+      });
+
+    // Local-render dedupe only — the DB primary key is what actually
+    // prevents a duplicate row; this just guards against appending the same
+    // durable row twice locally.
+    setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
+
+    // Notify the other user of the new message (fire and forget). Safe to
+    // run unconditionally here: the finalizedSendIdsRef guard above already
+    // made this function body exactly-once for message.id within this JS
+    // runtime — a rapid second Retry/reconciliation FOUND for the same id
+    // returns before reaching this point.
+    if (otherUser) {
+      supabase.from('notifications').insert({
+        user_id: otherUser.id,
+        actor_id: currentUserId,
+        type: 'message',
+        conversation_id: convId,
+      }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
+    }
+
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+  }
+
+  type ReconcileResult =
+    | { status: 'found'; message: Message }
+    | { status: 'absent' }
+    | { status: 'unknown' };
+
+  // Authoritative check for one logical send: did sendId actually commit?
+  // The live messages_select policy is participant-gated, so this read is
+  // trustworthy for the sender's own row. A read error or thrown exception
+  // leaves the true outcome unknown — must not be reported as ABSENT, which
+  // would wrongly tell the caller it's safe to let the user resend under a
+  // fresh id.
+  async function reconcileSendById(sendId: string): Promise<ReconcileResult> {
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id, sender_id, body, created_at')
+        .eq('id', sendId)
+        .eq('conversation_id', convId)
+        .eq('sender_id', currentUserId)
+        .maybeSingle();
+
+      if (error) return { status: 'unknown' };
+      return data ? { status: 'found', message: data as Message } : { status: 'absent' };
+    } catch {
+      return { status: 'unknown' };
+    }
+  }
+
+  // Resolves an ambiguous write outcome (23505 conflict, status 0, 5xx, or a
+  // thrown exception) for one logical send by reading back its sendId.
+  // FOUND/ABSENT are authoritative and end the pending send. UNKNOWN is not
+  // — the same sendId/body must survive in pendingSend for an explicit
+  // retry rather than being discarded or guessed at.
+  async function resolveAmbiguousSend(sendId: string, body: string) {
+    const outcome = await reconcileSendById(sendId);
+    if (outcome.status === 'found') {
+      finalizeSentMessage(outcome.message);
+      setPendingSend(null);
+    } else if (outcome.status === 'absent') {
+      setNewMessage(body);
+      setPendingSend(null);
+    } else {
+      setPendingSend({ id: sendId, body });
+    }
+  }
+
+  // The actual durable-write attempt for one logical send — callable both
+  // for a fresh Send tap (handleSend) and an explicit retry of a still-
+  // pending sendId (handleRetryPendingSend). Both callers pass the
+  // identical (sendId, body) for a given logical send so a retry that lands
+  // on an already-committed row surfaces as a genuine primary-key conflict,
+  // not a coincidence. sendingRef/sending always release in `finally`,
+  // independent of whether the logical send itself resolved — an
+  // unresolved send lives on in pendingSend after this returns.
+  async function performSend(sendId: string, body: string) {
+    if (!currentUserId || !convId || sendingRef.current) return;
     sendingRef.current = true;
     setSending(true);
-    const body = newMessage.trim();
-    setNewMessage('');
 
     try {
-      const { data: msgData, error } = await supabase
+      const { data: msgData, error, status } = await supabase
         .from('messages')
-        .insert({ conversation_id: convId, sender_id: currentUserId, body })
+        .insert({ id: sendId, conversation_id: convId, sender_id: currentUserId, body })
         .select('id, sender_id, body, created_at')
         .single();
 
-      if (error) {
-        console.error('Send failed:', error.message);
-        setNewMessage(body);
+      if (!error) {
+        // A. Clean success.
+        finalizeSentMessage(msgData as Message);
+        setPendingSend(null);
         return;
       }
 
-      const now = new Date().toISOString();
-
-      // Update last_message_at so inbox sorts correctly — fire and forget
-      supabase
-        .from('conversations')
-        .update({ last_message_at: now })
-        .eq('id', convId)
-        .then(({ error: e }) => {
-          if (e) console.error('last_message_at update failed:', e.message);
-        });
-
-      // Keep sender's last_read_at current so their own send doesn't show as unread
-      supabase
-        .from('conversation_participants')
-        .update({ last_read_at: now })
-        .eq('conversation_id', convId)
-        .eq('user_id', currentUserId)
-        .then(({ error: e }) => {
-          if (e) console.error('last_read_at send-stamp failed:', e.message);
-        });
-
-      setMessages((prev) => [...prev, msgData as Message]);
-
-      // Notify the other user of the new message (fire and forget)
-      if (otherUser) {
-        supabase.from('notifications').insert({
-          user_id: otherUser.id,
-          actor_id: currentUserId,
-          type: 'message',
-          conversation_id: convId,
-        }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
+      if (error.code === '23505') {
+        // B. Duplicate-key conflict on messages_pkey — a prior attempt
+        // under this exact sendId may have already committed.
+        await resolveAmbiguousSend(sendId, body);
+        return;
       }
 
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (e) {
-      console.error('Send threw:', e);
+      if (status === 0) {
+        // C. Lost/network-origin response — the INSERT may have committed
+        // before the response leg failed.
+        await resolveAmbiguousSend(sendId, body);
+        return;
+      }
+
+      if (status >= 500) {
+        // D. Server error — same ambiguity as status 0.
+        await resolveAmbiguousSend(sendId, body);
+        return;
+      }
+
+      // E. A definitive 4xx that isn't a duplicate-key conflict (e.g. RLS
+      // rejection, malformed payload) — the INSERT did not commit.
+      console.error('Send failed:', error.message, { code: error.code, status });
       setNewMessage(body);
+      setPendingSend(null);
+    } catch (e) {
+      // F. Thrown after the request may have already left the device — the
+      // INSERT may still have committed. Never treat a throw as proof of
+      // non-commit; reconcile the same as the ambiguous-status cases above.
+      console.error('Send threw (outcome unknown), reconciling:', e);
+      await resolveAmbiguousSend(sendId, body);
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
+  }
+
+  // A brand-new logical send always gets a brand-new sendId. Blocked while
+  // a pendingSend exists so the composer never has two unresolved logical
+  // sends in flight at once — the pending one must be resolved via
+  // handleRetryPendingSend first (see the pending-send banner in the JSX).
+  function handleSend() {
+    if (!currentUserId || !newMessage.trim() || !convId || sendingRef.current || pendingSend) return;
+    const body = newMessage.trim();
+    const sendId = uuid.v4();
+    setNewMessage('');
+    performSend(sendId, body);
+  }
+
+  // Explicit retry of the one currently-pending ambiguous send — reuses its
+  // exact sendId/body so a prior successful commit surfaces as a 23505
+  // conflict (reconciled, not duplicated) rather than a second row.
+  function handleRetryPendingSend() {
+    if (!pendingSend || sendingRef.current) return;
+    performSend(pendingSend.id, pendingSend.body);
   }
 
   const displayTitle =
@@ -370,6 +513,29 @@ export default function ConversationScreen() {
           }
         />
 
+        {/* Pending-send banner — shown only while an ambiguous write's
+            outcome is unresolved (see resolveAmbiguousSend's UNKNOWN case).
+            The only way to clear this state is Retry (reuses the same
+            sendId/body) — the normal composer stays disabled below so the
+            user can't accidentally abandon it by starting a new send. */}
+        {pendingSend && (
+          <View style={styles.pendingBanner}>
+            <Text style={styles.pendingBannerText} numberOfLines={1}>
+              Message not confirmed as sent
+            </Text>
+            <TouchableOpacity
+              onPress={handleRetryPendingSend}
+              disabled={sending}
+              style={styles.pendingRetryBtn}>
+              {sending ? (
+                <ActivityIndicator size="small" color="#0a7ea4" />
+              ) : (
+                <Text style={styles.pendingRetryText}>Retry</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Composer — extra bottom clearance (TAB_BAR_CLEARANCE) only while
             the keyboard is closed, so it sits above the floating tab bar
             instead of underneath its touch-absorbing surface. See
@@ -392,12 +558,12 @@ export default function ConversationScreen() {
             returnKeyType="send"
             onSubmitEditing={handleSend}
             blurOnSubmit={false}
-            editable={!sending}
+            editable={!sending && !pendingSend}
             maxLength={1000}
           />
           <TouchableOpacity
             onPress={handleSend}
-            disabled={!newMessage.trim() || sending}
+            disabled={!newMessage.trim() || sending || !!pendingSend}
             style={styles.sendBtn}>
             {sending ? (
               <ActivityIndicator size="small" color="#0a7ea4" />
@@ -477,6 +643,34 @@ const styles = StyleSheet.create({
     color: '#aaa',
     marginTop: 2,
     marginHorizontal: 4,
+  },
+  // Pending-send banner
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#fff3e0',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e0e0e0',
+    gap: 8,
+  },
+  pendingBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#8a5a00',
+  },
+  pendingRetryBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    minWidth: 48,
+    alignItems: 'center',
+  },
+  pendingRetryText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0a7ea4',
   },
   // Input bar
   inputBar: {
