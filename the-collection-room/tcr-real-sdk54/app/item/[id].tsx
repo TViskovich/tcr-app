@@ -33,7 +33,7 @@ import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem } from '@/types';
@@ -384,7 +384,7 @@ export default function ItemDetailScreen() {
   //
   // Catches its own read failure internally so it never rethrows into a
   // second reconciliation attempt.
-  async function reconcileItemDeleteAfterError(itemId: string) {
+  async function reconcileItemDeleteAfterError(itemId: string, capturedPaths: string[]) {
     try {
       const { data, error } = await supabase
         .from('collection_items')
@@ -403,6 +403,7 @@ export default function ItemDetailScreen() {
 
       if (data === null) {
         console.log('[ItemDetail][DEBUG] delete: reconciliation confirms item gone, navigating back', { itemId });
+        await cleanupOrphanedItemImages(capturedPaths);
         router.back();
         return;
       }
@@ -466,6 +467,26 @@ export default function ItemDetailScreen() {
 
             setDeleting(true);
 
+            // Gallery storage_path values must be captured before the
+            // parent DELETE — ON DELETE CASCADE destroys the
+            // collection_item_images rows the instant it commits, so this
+            // is the last point they're readable. Best-effort only: Storage
+            // cleanup must never block the authoritative item deletion.
+            let capturedPaths: string[] = [];
+            try {
+              const { data: galleryRows, error: galleryReadError } = await supabase
+                .from('collection_item_images')
+                .select('storage_path')
+                .eq('item_id', id);
+              if (!galleryReadError && galleryRows) {
+                capturedPaths = galleryRows.map((r) => r.storage_path).filter((p): p is string => !!p);
+              }
+            } catch (galleryReadErr) {
+              if (__DEV__) {
+                console.warn('[ItemDetail] pre-delete gallery path capture failed:', galleryReadErr);
+              }
+            }
+
             // No manual posts cleanup here — posts.item_id is FK'd to
             // collection_items(id) ON DELETE SET NULL (see supabase/
             // schema.sql), so any post referencing this item is preserved
@@ -496,7 +517,7 @@ export default function ItemDetailScreen() {
 
               if (deleteError) {
                 console.error('[ItemDetail] delete failed:', deleteError.message, deleteError);
-                await reconcileItemDeleteAfterError(id);
+                await reconcileItemDeleteAfterError(id, capturedPaths);
                 return;
               }
 
@@ -511,10 +532,11 @@ export default function ItemDetailScreen() {
               }
 
               console.log('[ItemDetail][DEBUG] delete: confirmed, navigating back', { itemId: id });
+              await cleanupOrphanedItemImages(capturedPaths);
               router.back();
             } catch (e) {
               console.error('[ItemDetail] delete threw:', e);
-              await reconcileItemDeleteAfterError(id);
+              await reconcileItemDeleteAfterError(id, capturedPaths);
             } finally {
               deletingRef.current = false;
               setDeleting(false);

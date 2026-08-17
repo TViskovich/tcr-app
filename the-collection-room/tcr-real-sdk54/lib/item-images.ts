@@ -91,7 +91,7 @@ export type AddItemImagesResult = {
 // convention as removeItemImage's own Storage cleanup above; kept as its
 // own small helper (not merged into that one) to keep this slice scoped to
 // addItemImages only.
-async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
+export async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
   if (!paths.length) return;
   try {
     const { error } = await supabase.storage.from('item-images').remove(paths);
