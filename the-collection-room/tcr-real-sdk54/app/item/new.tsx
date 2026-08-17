@@ -17,6 +17,7 @@ import {
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -24,6 +25,7 @@ import { useAuth } from '@/lib/auth';
 import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 type FormState = {
   title: string;
@@ -71,6 +73,7 @@ export default function AddItemScreen() {
   const { session } = useAuth();
   const { folderId, folderName } = useLocalSearchParams<{ folderId: string; folderName: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   // A create/edit form, not a scrollable browsing list — no scroll-hide
   // effect, but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });
@@ -202,7 +205,10 @@ export default function AddItemScreen() {
         behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
+          ]}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
