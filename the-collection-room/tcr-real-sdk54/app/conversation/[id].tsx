@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -15,7 +18,7 @@ import {
 
 import { HeaderBackButton } from '@react-navigation/elements';
 import { uuid } from 'expo-modules-core';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -37,6 +40,11 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 // TAB_BAR_CLEARANCE pattern already used by app/post/[id].tsx for its
 // comment input bar.
 const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
+
+// Below this distance (px) from the bottom of the message list, a freshness
+// refresh (poll/focus) auto-scrolls to a newly-arrived message; beyond it,
+// the user is treated as reading older history and left undisturbed.
+const NEAR_BOTTOM_THRESHOLD = 90;
 
 type Message = {
   id: string;
@@ -120,6 +128,38 @@ export default function ConversationScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList<Message>>(null);
 
+  // Mirrors `messages` synchronously for loadMessages' authoritative-compare
+  // logic below, which runs from a setInterval/AppState closure that must
+  // never read a stale `messages` value captured at effect-setup time.
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Whether the FlatList is currently scrolled near its bottom edge — used
+  // to decide whether a freshness refresh (poll/focus) should auto-scroll to
+  // a newly-arrived message or leave the user's scroll position (e.g.
+  // reading older history) undisturbed. Starts true: the initial load and
+  // every send scroll to bottom.
+  const isNearBottomRef = useRef(true);
+
+  // Synchronous overlap guard shared by every authoritative messages fetch
+  // (initial mount load, focus-triggered refresh, each 5s poll tick, and
+  // manual pull-to-refresh via loadMessages) — prevents two of these firing
+  // concurrently, per beta freshness slice's concurrency requirement.
+  const fetchInFlightRef = useRef(false);
+
+  // Coalesced "run one more authoritative refresh as soon as the in-flight
+  // one releases" request — set only by a foreground-transition refresh
+  // (see the AppState listener below) that arrived while fetchInFlightRef
+  // was already held (e.g. a poll tick still in flight when the app
+  // backgrounds and is quickly foregrounded again). Holds only the
+  // requesting call's AbortSignal, never a growing queue: a second request
+  // before the first is consumed just overwrites this ref, so at most one
+  // extra refresh ever runs. Consumed exactly once, in loadMessages' own
+  // `finally`, immediately after it releases fetchInFlightRef.
+  const pendingImmediateRefreshRef = useRef<AbortSignal | null>(null);
+
   // Separate controllers for the mount-effect load and onRefresh — they
   // guard separate flags (loading/refreshing). loadControllerRef belongs to
   // the useEffect below (true unmount when this screen is popped, since
@@ -159,22 +199,117 @@ export default function ConversationScreen() {
 
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
-  // Only caller is onRefresh below, which always supplies a signal from its
-  // own controller — see that controller's comment for why.
-  const loadMessages = useCallback(async (signal: AbortSignal) => {
+  // Shared authoritative messages fetch — called from onRefresh (manual
+  // pull-to-refresh), the focus/poll effect below (initial focus, every 5s
+  // tick, and app-foreground), each supplying its own controller's signal.
+  // Guarded by fetchInFlightRef so overlapping callers skip rather than
+  // stack concurrent requests. Always re-fetches the full authoritative,
+  // deterministically-ordered list and compares it against messagesRef
+  // before touching state — never blind-replaces — so an unchanged poll is
+  // a no-op (no re-render, no scroll, no last_read_at write).
+  const loadMessages = useCallback(async (
+    signal: AbortSignal,
+    options?: { coalesceIfBusy?: boolean },
+  ) => {
     if (!convId) return;
-    const { data } = await supabase
-      .from('messages')
-      .select('id, sender_id, body, created_at')
-      .eq('conversation_id', convId)
-      .order('created_at', { ascending: true })
-      .abortSignal(signal);
-    // Single caller/single controller here, so checking the signal directly
-    // (rather than comparing controller identity, as the multi-controller
-    // screens in this codebase do) is sufficient to discard a stale result.
-    if (signal.aborted) return;
-    setMessages((data ?? []) as Message[]);
-  }, [convId]);
+    if (fetchInFlightRef.current) {
+      // Only a foreground-transition refresh opts into coalescing (see the
+      // AppState listener below) — a busy poll tick or manual refresh is
+      // left to silently skip exactly as before; they have no "must not
+      // wait for the next tick" requirement, so queuing them would just be
+      // extra unrequested fetches.
+      if (options?.coalesceIfBusy) pendingImmediateRefreshRef.current = signal;
+      return;
+    }
+    fetchInFlightRef.current = true;
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id, sender_id, body, created_at')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .abortSignal(signal);
+
+      // Single caller/single controller here, so checking the signal
+      // directly (rather than comparing controller identity, as the
+      // multi-controller screens in this codebase do) is sufficient to
+      // discard a stale result.
+      if (signal.aborted) return;
+
+      if (error) {
+        // Leave currently-rendered messages untouched on failure — never
+        // clear the conversation or surface a noisy alert for a background
+        // freshness check. The next poll tick or manual refresh will retry.
+        if (__DEV__) console.error('[Conversation] messages refresh failed:', error.message);
+        return;
+      }
+
+      const fetched = (data ?? []) as Message[];
+      const prev = messagesRef.current;
+      const unchanged =
+        fetched.length === prev.length && fetched.every((m, i) => m.id === prev[i].id);
+      if (unchanged) return;
+
+      const prevIds = new Set(prev.map((m) => m.id));
+      const hasNewIncoming = fetched.some(
+        (m) => !prevIds.has(m.id) && m.sender_id !== currentUserId,
+      );
+
+      setMessages(fetched);
+      // Synchronous mirror, not left to the messages-effect above: this
+      // function can be re-entered (once fetchInFlightRef releases in
+      // `finally` below) sooner than a passive useEffect is guaranteed to
+      // have flushed, which would otherwise let a closely-following fetch
+      // compare against a stale `prev` and re-flag an already-applied
+      // incoming message as new. Keeping both assignments is intentional:
+      // this one is the correctness guarantee, the effect covers callers
+      // that update `messages` some other way (e.g. finalizeSentMessage).
+      messagesRef.current = fetched;
+
+      if (isNearBottomRef.current) {
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      }
+
+      // Only advance last_read_at when this fetch actually surfaced a new
+      // incoming (not-own) message — never on an unchanged tick, and never
+      // unconditionally on every poll. Mirrors the sender-side stamp in
+      // finalizeSentMessage, which is untouched by this addition.
+      if (hasNewIncoming && currentUserId) {
+        const { error: readError } = await supabase
+          .from('conversation_participants')
+          .update({ last_read_at: new Date().toISOString() })
+          .eq('conversation_id', convId)
+          .eq('user_id', currentUserId);
+
+        if (readError) {
+          if (__DEV__) console.error('[Conversation] last_read_at advance failed:', readError.message);
+        } else {
+          refreshMessageBadge();
+        }
+      }
+    } catch (e) {
+      if (!signal.aborted && __DEV__) console.error('[Conversation] messages refresh threw:', e);
+    } finally {
+      fetchInFlightRef.current = false;
+
+      // Run a coalesced pending refresh, if one was requested while this
+      // fetch held the guard — closes the foreground-catch-up race (Test
+      // 11) instead of leaving it to wait for the next 5s interval tick.
+      // Consumed exactly once and cleared regardless of outcome, so it can
+      // never re-fire or accumulate. Only fires if still valid: the
+      // requesting signal's own controller is aborted by the same
+      // useFocusEffect cleanup that handles blur/unmount/convId-change (see
+      // that effect below), and the AppState check here additionally
+      // covers "backgrounded again before this could run" — neither
+      // condition is guaranteed by signal.aborted alone.
+      const pendingSignal = pendingImmediateRefreshRef.current;
+      pendingImmediateRefreshRef.current = null;
+      if (pendingSignal && !pendingSignal.aborted && AppState.currentState === 'active') {
+        loadMessages(pendingSignal, { coalesceIfBusy: true });
+      }
+    }
+  }, [convId, currentUserId, refreshMessageBadge]);
 
   useEffect(() => {
     if (!convId || !currentUserId) return;
@@ -185,6 +320,12 @@ export default function ConversationScreen() {
 
     async function load() {
       setLoading(true);
+      // Claim the shared fetch guard for the initial combined load too, so
+      // a focus-triggered immediate refresh that lands in the same tick
+      // (the polling effect below also fires on initial focus) finds it
+      // already held and skips — this load already fetches fresh messages,
+      // so that would otherwise be a redundant simultaneous request.
+      fetchInFlightRef.current = true;
 
       try {
         // Parallel: find the other participant + load messages
@@ -201,6 +342,7 @@ export default function ConversationScreen() {
             .select('id, sender_id, body, created_at')
             .eq('conversation_id', convId)
             .order('created_at', { ascending: true })
+            .order('id', { ascending: true })
             .abortSignal(controller.signal),
         ]);
 
@@ -243,6 +385,7 @@ export default function ConversationScreen() {
         if (controller.signal.aborted || loadControllerRef.current !== controller) return;
         if (__DEV__) console.error('[Conversation] load failed:', e);
       } finally {
+        fetchInFlightRef.current = false;
         if (loadControllerRef.current === controller) {
           loadControllerRef.current = null;
           setLoading(false);
@@ -276,6 +419,70 @@ export default function ConversationScreen() {
       }
     }
   }, [loadMessages]);
+
+  // Beta freshness: while this conversation screen is focused AND the app
+  // is foregrounded, poll for new messages every 5s via the same
+  // loadMessages used above, plus an immediate refresh on focus/foreground
+  // rather than waiting for the first tick. useFocusEffect's own cleanup
+  // (returned below) runs on blur, unmount, AND whenever this callback's
+  // identity changes while still focused (i.e. convId/currentUserId
+  // change) — covering every stop condition without extra bookkeeping.
+  // Deliberately does not use Realtime/publication changes — polling only.
+  useFocusEffect(
+    useCallback(() => {
+      if (!convId || !currentUserId) return;
+
+      const controller = new AbortController();
+      let intervalId: ReturnType<typeof setInterval> | null = null;
+
+      function startInterval() {
+        if (intervalId) return;
+        intervalId = setInterval(() => {
+          loadMessages(controller.signal);
+        }, 5000);
+      }
+      function stopInterval() {
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      }
+
+      // Only start immediately if the app is actually foregrounded right
+      // now — a screen can become focused while the app is backgrounded
+      // (e.g. a focus event firing during app-state transitions), and
+      // polling must never begin until both focus AND foreground hold. The
+      // AppState listener below covers the transition the other way.
+      if (AppState.currentState === 'active') {
+        loadMessages(controller.signal);
+        startInterval();
+      }
+
+      // Pause polling while backgrounded (no point spending battery/network
+      // on a screen nobody can see) and resume with an immediate refresh —
+      // same reasoning as the foreground-entry check above — when
+      // foregrounded again, all without leaving the screen's focus state.
+      const appStateSub = AppState.addEventListener('change', (nextState) => {
+        if (nextState === 'active') {
+          // coalesceIfBusy: true — if a prior fetch (e.g. a poll tick that
+          // was still in flight when the app backgrounded) is still
+          // holding fetchInFlightRef, don't just drop this refresh and
+          // wait for the next 5s tick; loadMessages' own `finally` will run
+          // it the moment that fetch releases the guard.
+          loadMessages(controller.signal, { coalesceIfBusy: true });
+          startInterval();
+        } else {
+          stopInterval();
+        }
+      });
+
+      return () => {
+        stopInterval();
+        appStateSub.remove();
+        controller.abort();
+      };
+    }, [convId, currentUserId, loadMessages]),
+  );
 
   // Shared finalization for a logical send that is now known to durably
   // exist — used by both a clean INSERT success and a reconciliation read
@@ -462,6 +669,16 @@ export default function ConversationScreen() {
     performSend(pendingSend.id, pendingSend.body);
   }
 
+  // Updates isNearBottomRef only — a ref write, not state, so this never
+  // triggers a render on its own regardless of scroll frequency. Read by
+  // loadMessages to decide whether an incoming-message refresh should
+  // auto-scroll or leave the user's reading position alone.
+  function handleMessagesScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const { contentSize, layoutMeasurement, contentOffset } = e.nativeEvent;
+    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD;
+  }
+
   const displayTitle =
     otherUser?.display_name ||
     otherUser?.username ||
@@ -511,6 +728,8 @@ export default function ConversationScreen() {
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
           }
+          onScroll={handleMessagesScroll}
+          scrollEventThrottle={100}
         />
 
         {/* Pending-send banner — shown only while an ambiguous write's
