@@ -1,7 +1,8 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -61,6 +62,12 @@ async function loadInbox(currentUserId: string, signal: AbortSignal): Promise<Co
     .is('hidden_at', null)
     .abortSignal(signal);
 
+  // Checked after every awaited phase below (not just the final one) so an
+  // aborted lifecycle (blur/unmount/foreground-superseded) stops issuing
+  // further queries instead of paying for phases whose result can never be
+  // applied — the caller (load/onRefresh/refreshInbox) independently checks
+  // signal.aborted again before touching state either way.
+  if (signal.aborted) return [];
   if (!myRows?.length) return [];
 
   const convIds = (myRows as any[]).map((r) => r.conversation_id as string);
@@ -85,6 +92,8 @@ async function loadInbox(currentUserId: string, signal: AbortSignal): Promise<Co
       .abortSignal(signal),
   ]);
 
+  if (signal.aborted) return [];
+
   // Map: conversation_id → other user_id
   const convOtherUserMap = new Map<string, string>();
   for (const row of (allParticipantsRes.data ?? []) as any[]) {
@@ -99,6 +108,8 @@ async function loadInbox(currentUserId: string, signal: AbortSignal): Promise<Co
     .select('id, username, display_name, avatar_url')
     .in('id', otherUserIds)
     .abortSignal(signal);
+
+  if (signal.aborted) return [];
 
   const profileMap = new Map((profilesData ?? []).map((p: any) => [p.id, p]));
 
@@ -221,6 +232,15 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Mirrors `conversations` synchronously for refreshInbox's authoritative-
+  // compare logic below, which can be re-entered (via the coalesced-pending
+  // path) sooner than a passive effect is guaranteed to have flushed — same
+  // pattern/reasoning as app/conversation/[id].tsx's messagesRef.
+  const conversationsRef = useRef<ConversationItem[]>([]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
   // Separate controllers for load() and onRefresh() — they guard separate
   // flags (loading/refreshing) so a stale one must never clear the other's
   // flag. Both aborted together on focus-loss/unmount (see the
@@ -228,6 +248,94 @@ export default function MessagesScreen() {
   // whatwg-fetch status-0 crash mechanism this guards against.
   const loadControllerRef = useRef<AbortController | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
+
+  // Synchronous overlap guard shared by every authoritative inbox fetch.
+  // Claimed and released in EXACTLY ONE place — refreshInbox's own
+  // try/finally below. load() and onRefresh() both delegate their actual
+  // fetch to refreshInbox rather than claiming this ref themselves: giving
+  // two separate call sites their own claim/release of the same ref made it
+  // possible for a rapid blur+refocus to have an old (aborted, not-yet-
+  // settled) holder release a guard a newer fetch believed it still held.
+  // A single claim/release site removes that failure mode structurally.
+  const fetchInFlightRef = useRef(false);
+
+  // Coalesced "run one more authoritative refresh as soon as the in-flight
+  // one releases" request. Set by a focus-triggered load() or an AppState
+  // foreground catch-up (the only two callers that pass coalesceIfBusy:
+  // true — see load() and the AppState listener below) that arrived while
+  // fetchInFlightRef was already held, regardless of which logical caller
+  // currently holds it. Holds only the requesting call's AbortSignal, never
+  // a growing queue — a second request before the first is consumed just
+  // overwrites this ref, so at most one extra refresh ever runs. Consumed
+  // exactly once, in refreshInbox's own `finally`, immediately after it
+  // releases fetchInFlightRef — the same fix already proven for this class
+  // of race (Test 11) in app/conversation/[id].tsx's
+  // pendingImmediateRefreshRef.
+  const pendingImmediateRefreshRef = useRef<AbortSignal | null>(null);
+
+  // Shared authoritative inbox refresh — the ONLY function that claims or
+  // releases fetchInFlightRef (see that ref's comment for why). Called from
+  // load() (focus-triggered), onRefresh() (manual pull-to-refresh), and the
+  // poll/foreground effect below. Always re-fetches the full authoritative
+  // inbox via loadInbox and compares it against conversationsRef before
+  // touching state — an unchanged result is a no-op (no re-render). Never
+  // touches `loading`/`refreshing` itself — those stay owned by load()/
+  // onRefresh() respectively, so background polling stays visually silent.
+  const refreshInbox = useCallback(async (
+    signal: AbortSignal,
+    options?: { coalesceIfBusy?: boolean },
+  ) => {
+    if (!currentUserId) return;
+    if (fetchInFlightRef.current) {
+      // Only a focus-triggered load() or an AppState foreground catch-up
+      // opts into coalescing — a busy poll tick or a busy manual refresh is
+      // left to silently skip, matching the "poll ticks silently skip when
+      // busy" baseline; queuing them would just be extra unrequested
+      // fetches.
+      if (options?.coalesceIfBusy) pendingImmediateRefreshRef.current = signal;
+      return;
+    }
+    fetchInFlightRef.current = true;
+    try {
+      const data = await loadInbox(currentUserId, signal);
+      if (signal.aborted) return;
+
+      const prev = conversationsRef.current;
+      // Compare only the fields that actually determine what's rendered
+      // (identity, order via array position, preview text, timestamp) — not
+      // a general deep-equality; avatar/name drift from a profile edit is
+      // not this slice's concern and will still show up on the next
+      // focus-triggered load() regardless.
+      const unchanged =
+        data.length === prev.length &&
+        data.every(
+          (c, i) =>
+            c.id === prev[i].id &&
+            c.lastMessageAt === prev[i].lastMessageAt &&
+            c.lastMessageBody === prev[i].lastMessageBody,
+        );
+      if (unchanged) return;
+
+      setConversations(data);
+      // Synchronous mirror — see conversationsRef's own comment.
+      conversationsRef.current = data;
+    } catch (e) {
+      if (!signal.aborted && __DEV__) console.error('[Messages] inbox refresh failed:', e);
+    } finally {
+      fetchInFlightRef.current = false;
+
+      // Run a coalesced pending refresh, if one was requested while THIS
+      // call held the guard — regardless of whether this call originated
+      // from load(), onRefresh(), a poll tick, or a foreground event.
+      // Consumed exactly once and cleared regardless of outcome, so it can
+      // never re-fire or accumulate.
+      const pendingSignal = pendingImmediateRefreshRef.current;
+      pendingImmediateRefreshRef.current = null;
+      if (pendingSignal && !pendingSignal.aborted && AppState.currentState === 'active') {
+        refreshInbox(pendingSignal, { coalesceIfBusy: true });
+      }
+    }
+  }, [currentUserId]);
 
   const load = useCallback(async () => {
     if (!currentUserId) {
@@ -240,19 +348,32 @@ export default function MessagesScreen() {
 
     setLoading(true);
     try {
-      const data = await loadInbox(currentUserId, controller.signal);
-      if (loadControllerRef.current !== controller || controller.signal.aborted) return;
-      setConversations(data);
-    } catch (e) {
-      if (controller.signal.aborted || loadControllerRef.current !== controller) return;
-      if (__DEV__) console.error('[Messages] load failed:', e);
+      // coalesceIfBusy: true — a focus-triggered load is a "must obtain
+      // current authoritative inbox data now" event, same as foreground
+      // catch-up: if it collides with a fetch still settling from the
+      // previous focus lifecycle, it must not be silently dropped. If that
+      // happens, this controller's signal is the one sitting in
+      // pendingImmediateRefreshRef until the busy fetch releases the guard
+      // — see why loadControllerRef.current is deliberately NOT cleared
+      // here below.
+      await refreshInbox(controller.signal, { coalesceIfBusy: true });
     } finally {
+      // Deliberately does NOT clear loadControllerRef.current here (only
+      // controls `loading` via the identity check). If this call coalesced
+      // rather than actually fetching, its signal may still be sitting in
+      // pendingImmediateRefreshRef, waiting for a busy fetch to release the
+      // guard — that signal must remain abortable by the focus-effect
+      // cleanup below for the entire remaining focus session, not just
+      // until this function returns. Nulling it here would let a second
+      // blur happen with no live reference to abort it, stranding a stale
+      // pending refresh that could fire on an unfocused screen. The next
+      // load() still safely aborts/replaces whatever loadControllerRef
+      // currently holds regardless of whether it was nulled in between.
       if (loadControllerRef.current === controller) {
-        loadControllerRef.current = null;
         setLoading(false);
       }
     }
-  }, [currentUserId]);
+  }, [currentUserId, refreshInbox]);
 
   const onRefresh = useCallback(async () => {
     if (!currentUserId) return;
@@ -262,9 +383,16 @@ export default function MessagesScreen() {
 
     setRefreshing(true);
     try {
-      const data = await loadInbox(currentUserId, controller.signal);
+      // No coalesceIfBusy — a manual pull that collides with a busy poll
+      // silently skips, same as the proven conversation-screen onRefresh;
+      // this function's own independent `finally` below always clears
+      // `refreshing` regardless, so the spinner can never stick either way.
+      await refreshInbox(controller.signal);
       if (refreshControllerRef.current !== controller || controller.signal.aborted) return;
-      setConversations(data);
+      // Preserves existing behavior: manual refresh has always refreshed
+      // the aggregate unread badge on completion, unconditionally. Left
+      // as-is deliberately — global badge polling is Slice B's scope, not
+      // this slice's.
       refreshMessageBadge();
     } catch (e) {
       if (controller.signal.aborted || refreshControllerRef.current !== controller) return;
@@ -275,16 +403,95 @@ export default function MessagesScreen() {
         setRefreshing(false);
       }
     }
-  }, [currentUserId, refreshMessageBadge]);
+  }, [currentUserId, refreshInbox, refreshMessageBadge]);
 
   useFocusEffect(
     useCallback(() => {
       load();
       return () => {
+        // Authoritative place that both aborts AND clears the focus-load
+        // controller for this focus session — load() itself deliberately
+        // leaves loadControllerRef.current populated after it returns (see
+        // that function's own comment) specifically so a coalesced pending
+        // refresh's signal remains abortable via this exact cleanup for as
+        // long as the tab stays focused, not just until load()'s own await
+        // settles. An already-completed AbortController can be aborted
+        // again harmlessly, so this is safe even when load() finished a
+        // real fetch rather than coalescing.
         loadControllerRef.current?.abort();
+        loadControllerRef.current = null;
+
         refreshControllerRef.current?.abort();
+        refreshControllerRef.current = null;
       };
     }, [load]),
+  );
+
+  // Beta freshness: while the Messages tab is focused AND the app is
+  // foregrounded, poll the inbox for changes every 5s via the same
+  // refreshInbox used by load()/onRefresh(), plus an immediate refresh when
+  // the app returns to foreground rather than waiting for the first tick.
+  // Kept as its own useFocusEffect (rather than merged into the one above)
+  // so load()'s existing focus-triggered full-screen load stays untouched —
+  // this effect only adds silent background freshness on top of it. Mirrors
+  // app/conversation/[id].tsx's polling lifecycle, adapted rather than
+  // copied since messages.tsx already owns its own focus-load mechanism.
+  useFocusEffect(
+    useCallback(() => {
+      if (!currentUserId) return;
+
+      const controller = new AbortController();
+      let intervalId: ReturnType<typeof setInterval> | null = null;
+
+      function startInterval() {
+        if (intervalId) return;
+        intervalId = setInterval(() => {
+          refreshInbox(controller.signal);
+        }, 5000);
+      }
+      function stopInterval() {
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      }
+
+      // Only start immediately if the app is actually foregrounded right
+      // now — same reasoning as the conversation screen's identical check.
+      // No coalesceIfBusy here: this is a secondary attempt alongside
+      // load()'s own focus-triggered fetch, fine to silently skip if the
+      // guard is already held.
+      if (AppState.currentState === 'active') {
+        refreshInbox(controller.signal);
+        startInterval();
+      }
+
+      // Pause polling while backgrounded and resume with an immediate,
+      // coalescing-eligible refresh when foregrounded again, all without
+      // leaving the tab's focus state.
+      const appStateSub = AppState.addEventListener('change', (nextState) => {
+        if (nextState === 'active') {
+          // coalesceIfBusy: true — if a prior fetch is still holding
+          // fetchInFlightRef when the app foregrounds, don't just drop this
+          // refresh and wait for the next 5s tick; refreshInbox's own
+          // `finally` will run it the moment that fetch releases the guard.
+          refreshInbox(controller.signal, { coalesceIfBusy: true });
+          startInterval();
+        } else {
+          stopInterval();
+        }
+      });
+
+      return () => {
+        stopInterval();
+        appStateSub.remove();
+        // Aborts this lifecycle's controller — if pendingImmediateRefreshRef
+        // currently holds this exact controller's signal (i.e. a pending
+        // foreground catch-up owned by THIS polling effect instance),
+        // refreshInbox's `finally` will see it as aborted and skip firing.
+        controller.abort();
+      };
+    }, [currentUserId, refreshInbox]),
   );
 
   function handleFindCollectors() {
