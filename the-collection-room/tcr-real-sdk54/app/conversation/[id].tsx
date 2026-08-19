@@ -520,19 +520,12 @@ export default function ConversationScreen() {
     // durable row twice locally.
     setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
 
-    // Notify the other user of the new message (fire and forget). Safe to
-    // run unconditionally here: the finalizedSendIdsRef guard above already
-    // made this function body exactly-once for message.id within this JS
-    // runtime — a rapid second Retry/reconciliation FOUND for the same id
-    // returns before reaching this point.
-    if (otherUser) {
-      supabase.from('notifications').insert({
-        user_id: otherUser.id,
-        actor_id: currentUserId,
-        type: 'message',
-        conversation_id: convId,
-      }).then(({ error: e }) => { if (e) console.error('Message notif failed:', e.message); });
-    }
+    // type='message' notifications are created server-side by the
+    // messages_create_message_notification trigger (AFTER INSERT ON
+    // public.messages) — this used to also be inserted here client-side,
+    // but a second writer would produce a duplicate, user-visible
+    // notification row on every send. Removed; the trigger is the sole
+    // writer.
 
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }
