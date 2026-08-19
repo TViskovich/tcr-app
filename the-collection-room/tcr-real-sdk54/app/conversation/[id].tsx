@@ -498,14 +498,12 @@ export default function ConversationScreen() {
 
     const now = new Date().toISOString();
 
-    // Update last_message_at so inbox sorts correctly — fire and forget
-    supabase
-      .from('conversations')
-      .update({ last_message_at: now })
-      .eq('id', convId)
-      .then(({ error: e }) => {
-        if (e) console.error('last_message_at update failed:', e.message);
-      });
+    // conversations.last_message_at is maintained server-side by the
+    // messages_bump_conversation_last_message_at trigger (AFTER INSERT ON
+    // public.messages) — this used to also be set here client-side, but a
+    // plain client-clock assignment isn't guaranteed >= the trigger's
+    // GREATEST(last_message_at, NEW.created_at) value, so a second client
+    // write here could regress it. Removed; the trigger is the sole writer.
 
     // Keep sender's last_read_at current so their own send doesn't show as unread
     supabase
