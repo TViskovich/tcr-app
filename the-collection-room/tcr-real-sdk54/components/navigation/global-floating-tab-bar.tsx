@@ -6,9 +6,8 @@ import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useUnreadMessages } from '@/hooks/use-unread-messages';
-import { useAuth } from '@/lib/auth';
 import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
+import { useMessageBadgeCount } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // The same floating pill rendered inside the (tabs) group (see
@@ -75,8 +74,7 @@ export function GlobalFloatingTabBar() {
   const pathname = usePathname();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { session } = useAuth();
-  const { unreadCount: unreadMessages } = useUnreadMessages(session?.user?.id);
+  const unreadMessages = useMessageBadgeCount();
   // Same shared translateY/opacity the tabs-group bar animates — driven by
   // useScrollResponsiveNavbar() on whichever screen is currently focused,
   // so this bar (rendered on every screen outside the tabs group) hides

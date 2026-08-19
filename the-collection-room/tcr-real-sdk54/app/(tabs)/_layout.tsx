@@ -7,11 +7,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadCount } from '@/hooks/use-unread-count';
-import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
 import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
-import { MessageBadgeRefreshContext } from '@/lib/message-badge-context';
+import { useMessageBadgeCount, useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
@@ -262,81 +261,80 @@ export default function TabLayout() {
   const userId = session?.user?.id;
 
   const { unreadCount, refresh: refreshNotifBadge } = useUnreadCount(userId);
-  const { unreadCount: unreadMessages, refresh: refreshMessageBadge } = useUnreadMessages(userId);
+  const unreadMessages = useMessageBadgeCount();
+  const refreshMessageBadge = useMessageBadgeRefresh();
 
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
 
   return (
     <BadgeRefreshContext.Provider value={{ count: unreadCount, refresh: refreshNotifBadge }}>
-      <MessageBadgeRefreshContext.Provider value={refreshMessageBadge}>
-        <Tabs
-          tabBar={(props) => <AnimatedTabBar {...props} />}
-          screenListeners={({ route }) => ({
-            focus: () => {
-              if (route.name === 'messages') refreshMessageBadge();
-              // Ownership Transfer Notifications Phase 1 — same existing
-              // focus-refresh convention as messages above, just not
-              // previously applied to notifications. Not polling, not a
-              // new subscription: this only refetches the unread count
-              // when the user actually navigates to/focuses this screen
-              // (reached via router.push('/(tabs)/notifications') from
-              // the Home bell icon, which — since notifications is
-              // declared as a real Tabs.Screen, just hidden from the tab
-              // bar via href:null — fires this same navigator focus
-              // event). Does not make the badge update live while the
-              // user stays idle on another tab; no mechanism in this app
-              // does that for any notification type today.
-              if (route.name === 'notifications') refreshNotifBadge();
-            },
-          })}
-          screenOptions={{ headerShown: false }}>
-          <Tabs.Screen
-            name="index"
-            options={{
-              title: 'Home',
-              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
-            }}
-          />
-          <Tabs.Screen
-            name="search"
-            options={{
-              title: 'Search',
-              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
-            }}
-          />
-          <Tabs.Screen
-            name="collection"
-            options={{
-              title: 'Collection',
-              tabBarAccessibilityLabel: 'CacheCase',
-              tabBarIcon: ({ color }) => (
-                <Image
-                  source={CacheCaseLogoNav}
-                  contentFit="contain"
-                  tintColor={color}
-                  style={styles.cacheCaseLogo}
-                />
-              ),
-            }}
-          />
-          <Tabs.Screen
-            name="messages"
-            options={{
-              title: 'Messages',
-              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
-              tabBarBadge: messageBadge,
-            }}
-          />
-          <Tabs.Screen name="notifications" options={{ href: null }} />
-          <Tabs.Screen
-            name="profile"
-            options={{
-              title: 'Profile',
-              tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
-            }}
-          />
-        </Tabs>
-      </MessageBadgeRefreshContext.Provider>
+      <Tabs
+        tabBar={(props) => <AnimatedTabBar {...props} />}
+        screenListeners={({ route }) => ({
+          focus: () => {
+            if (route.name === 'messages') refreshMessageBadge();
+            // Ownership Transfer Notifications Phase 1 — same existing
+            // focus-refresh convention as messages above, just not
+            // previously applied to notifications. Not polling, not a
+            // new subscription: this only refetches the unread count
+            // when the user actually navigates to/focuses this screen
+            // (reached via router.push('/(tabs)/notifications') from
+            // the Home bell icon, which — since notifications is
+            // declared as a real Tabs.Screen, just hidden from the tab
+            // bar via href:null — fires this same navigator focus
+            // event). Does not make the badge update live while the
+            // user stays idle on another tab; no mechanism in this app
+            // does that for any notification type today.
+            if (route.name === 'notifications') refreshNotifBadge();
+          },
+        })}
+        screenOptions={{ headerShown: false }}>
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="search"
+          options={{
+            title: 'Search',
+            tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="collection"
+          options={{
+            title: 'Collection',
+            tabBarAccessibilityLabel: 'CacheCase',
+            tabBarIcon: ({ color }) => (
+              <Image
+                source={CacheCaseLogoNav}
+                contentFit="contain"
+                tintColor={color}
+                style={styles.cacheCaseLogo}
+              />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="messages"
+          options={{
+            title: 'Messages',
+            tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
+            tabBarBadge: messageBadge,
+          }}
+        />
+        <Tabs.Screen name="notifications" options={{ href: null }} />
+        <Tabs.Screen
+          name="profile"
+          options={{
+            title: 'Profile',
+            tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
+          }}
+        />
+      </Tabs>
     </BadgeRefreshContext.Provider>
   );
 }
