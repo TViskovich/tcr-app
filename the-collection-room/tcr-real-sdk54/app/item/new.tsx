@@ -23,6 +23,7 @@ import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
+import { copyShareSnapshotImage } from '@/lib/share-snapshots';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -168,15 +169,26 @@ export default function AddItemScreen() {
       }
 
       if (shareToFeed && item) {
-        const { error: postError } = await supabase.from('posts').insert({
-          user_id: session.user.id,
-          item_id: item.id,
-          post_type: 'item',
-          image_url: imageUrl,
-          caption: form.title.trim() || null,
-        });
-        if (postError) {
+        // Copy-before-insert (Phase 3E) — a feed post is never created
+        // pointing at a raw item-images URL. targetId reuses item.id
+        // since no post exists yet at this point (see
+        // lib/share-snapshots.ts's own module comment). A copy failure
+        // aborts the share entirely; the item itself is already saved
+        // either way.
+        const snapshot = await copyShareSnapshotImage(item.id, 'post', item.id);
+        if (snapshot.status !== 'ok') {
           Alert.alert('Heads up', 'Item saved, but could not share to feed.');
+        } else {
+          const { error: postError } = await supabase.from('posts').insert({
+            user_id: session.user.id,
+            item_id: item.id,
+            post_type: 'item',
+            image_url: snapshot.publicUrl,
+            caption: form.title.trim() || null,
+          });
+          if (postError) {
+            Alert.alert('Heads up', 'Item saved, but could not share to feed.');
+          }
         }
       }
 

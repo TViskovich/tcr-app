@@ -19,7 +19,7 @@ import { useGrails } from '@/hooks/use-grails';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { createSnapshotPost } from '@/lib/share-snapshots';
 
 const MAX_CHARS = 280;
 
@@ -55,42 +55,23 @@ export default function NewRateMyGrailsScreen() {
     if (!canPost || !currentUserId) return;
     setPosting(true);
 
-    const postPayload = {
-      user_id: currentUserId,
-      post_type: 'rate_my_grails',
-      caption: caption.trim() || null,
-    };
-    // TEMP DEBUG — remove once the insert is confirmed working.
-    console.log('[rate-my-grails] posts insert payload:', JSON.stringify(postPayload));
-    console.log('[rate-my-grails] post_type value:', postPayload.post_type);
+    // All-or-nothing (Phase 3E) — every showcased card's image is copied
+    // into share-snapshots and the post + rate_my_grail_cards rows are
+    // created together, server-side, as one unit. Either the whole post
+    // exists with every card already durable, or nothing was created at
+    // all — never a partially-imaged post, never a raw item-images URL.
+    // See create-snapshot-post's own module comment for the full
+    // invariant. Showcase order (grails' own order) is preserved via
+    // item_ids' array order, which the Edge Function uses directly as
+    // display_order.
+    const result = await createSnapshotPost(
+      'rate_my_grails',
+      grails.map((g) => g.item_id),
+      caption.trim() || null,
+    );
 
-    const { data: post, error: postError } = await supabase
-      .from('posts')
-      .insert(postPayload)
-      .select('id')
-      .single();
-
-    if (postError || !post) {
-      Alert.alert('Post failed', postError?.message ?? 'Please try again.');
-      setPosting(false);
-      return;
-    }
-
-    // Snapshot the current showcase onto the post — later edits to the
-    // profile's Grails section never alter this post.
-    const cardRows = grails.map((g, index) => ({
-      post_id: post.id,
-      item_id: g.item_id,
-      snapshot_image_url: g.item.image_url,
-      snapshot_title: g.item.title,
-      snapshot_subtitle: g.item.brand,
-      display_order: index,
-    }));
-
-    const { error: cardsError } = await supabase.from('rate_my_grail_cards').insert(cardRows);
-
-    if (cardsError) {
-      Alert.alert('Post failed', cardsError.message);
+    if (result.status !== 'ok') {
+      Alert.alert('Post failed', 'Could not prepare your Grails’ images. Please try again.');
       setPosting(false);
       return;
     }

@@ -18,7 +18,9 @@ import { Stack, useRouter } from 'expo-router';
 
 import { useAllItems } from '@/hooks/use-collection';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 
 const MAX_CHARS = 280;
@@ -26,13 +28,15 @@ const MAX_CARDS = 5;
 
 // Card picker for the Create menu's "Share Card" option — lets the
 // signed-in user pick 1-5 of their own collection_items (across every
-// folder, via useAllItems) and post them to the feed. 1 selected reuses
-// the existing plain post_type 'item' insert shape (app/item/new.tsx's own
-// pattern) — no orphan risk, a single-table insert. 2-5 selected goes
-// through the create_card_share_post RPC (see the migration), which is
-// atomic (a failure can never leave an orphaned empty post) and validates
-// everything server-side regardless of what this screen already filtered
-// client-side.
+// folder, via useAllItems) and post them to the feed. 1 selected copies
+// its snapshot then inserts directly (mirrors app/item/new.tsx's own
+// share-to-feed pattern). 2-5 selected goes through the
+// create-snapshot-post Edge Function (Phase 3E — supersedes the original
+// create_card_share_post RPC, still present in the database but no
+// longer called from here), which copies every card's image into
+// share-snapshots and creates the post + card_share_items rows together,
+// server-side, as one all-or-nothing unit — see that function's own
+// module comment for the full invariant.
 export default function ShareCardScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -47,11 +51,22 @@ export default function ShareCardScreen() {
   const [posting, setPosting] = useState(false);
 
   // A feed post needs an image to be worth sharing — this is a product/UX
-  // filter only; create_card_share_post independently rejects any
-  // imageless (or whitespace-only) item server-side for the multi-card
-  // path regardless of this. Trimmed, not just truthy — a whitespace-only
-  // string is not a usable image.
+  // filter only; create-snapshot-post's own copy step independently fails
+  // the whole request for any item with no resolvable image regardless of
+  // this (see that function's own module comment). Trimmed, not just
+  // truthy — a whitespace-only string is not a usable image. Still
+  // filtered on the legacy image_url
+  // field (unrelated to Step 2's render migration below) — every real
+  // item with a gallery image also has this field set (kept in sync by
+  // the same DB functions that maintain primary_image_id), so this
+  // remains an accurate proxy for "has an image" without needing to wait
+  // on a signed lookup just to decide the picker's contents.
   const shareableItems = items.filter((i) => !!i.image_url?.trim());
+  // One batched call for the whole picker grid — never one signing
+  // request per card (item-images beta privacy hardening, Phase 3E).
+  const { urls: signedItemImageUrls } = useSignedItemImages(
+    shareableItems.map((i) => i.primary_image_id),
+  );
   const canPost = selectedIds.length >= 1 && !posting;
 
   // No back history when this screen was deep-linked, reloaded directly, or
@@ -80,28 +95,40 @@ export default function ShareCardScreen() {
     try {
       if (selectedIds.length === 1) {
         const item = shareableItems.find((i) => i.id === selectedIds[0]);
-        // Re-validated here (trimmed, non-empty) rather than trusted from
-        // the shareableItems filter above — this single-card path is a
-        // plain client insert that bypasses create_card_share_post's own
-        // server-side image validation entirely, so this is the only
-        // enforcement point for it.
-        const trimmedImageUrl = item?.image_url?.trim();
-        if (!item || !trimmedImageUrl) throw new Error('Selected card is missing an image.');
+        if (!item) throw new Error('Selected card is missing an image.');
+
+        // Copy-before-insert (Phase 3E) — a feed post is never created
+        // pointing at a raw item-images URL. targetId reuses item.id
+        // since no post exists yet at this point (see
+        // lib/share-snapshots.ts's own module comment). This is now the
+        // sole enforcement point for "the selected item must have a
+        // resolvable image" on this path — a copy failure aborts the
+        // whole post, surfaced to the user below.
+        const snapshot = await copyShareSnapshotImage(item.id, 'post', item.id);
+        if (snapshot.status !== 'ok') {
+          throw new Error('Could not prepare this card’s image. Please try again.');
+        }
 
         const { error: insertError } = await supabase.from('posts').insert({
           user_id: currentUserId,
           item_id: item.id,
           post_type: 'item',
-          image_url: trimmedImageUrl,
+          image_url: snapshot.publicUrl,
           caption: caption.trim() || null,
         });
         if (insertError) throw insertError;
       } else {
-        const { error: rpcError } = await supabase.rpc('create_card_share_post', {
-          p_caption: caption.trim() || null,
-          p_item_ids: selectedIds,
-        });
-        if (rpcError) throw rpcError;
+        // All-or-nothing (Phase 3E) — every selected card's image is
+        // copied into share-snapshots and the post + card_share_items
+        // rows are created together, server-side, as one unit. Either the
+        // whole post exists with every card already durable, or nothing
+        // was created at all — never a partially-imaged post, never a
+        // raw item-images URL. See create-snapshot-post's own module
+        // comment for the full invariant.
+        const result = await createSnapshotPost('card_share', selectedIds, caption.trim() || null);
+        if (result.status !== 'ok') {
+          throw new Error('Could not prepare these cards’ images. Please try again.');
+        }
       }
       leaveScreen();
     } catch (e) {
@@ -184,10 +211,15 @@ export default function ShareCardScreen() {
               {shareableItems.map((item) => {
                 const selectedIndex = selectedIds.indexOf(item.id);
                 const isSelected = selectedIndex !== -1;
+                const signedUrl = item.primary_image_id
+                  ? signedItemImageUrls.get(item.primary_image_id)
+                  : undefined;
                 return (
                   <Pressable key={item.id} style={styles.slotShadow} onPress={() => toggleSelect(item.id)}>
                     <View style={[styles.slot, isSelected && styles.slotSelected]}>
-                      <Image source={{ uri: item.image_url! }} style={styles.image} contentFit="cover" transition={150} />
+                      {signedUrl && (
+                        <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" transition={150} />
+                      )}
                       {isSelected && (
                         <View style={styles.selectedBadge}>
                           <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>

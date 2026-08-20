@@ -17,7 +17,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -40,6 +42,7 @@ type CardResult = {
   brand: string | null;
   grade: string | null;
   image_url: string | null;
+  primary_image_id: string | null;
   folder_name: string | null;
   owner_username: string;
   owner_display_name: string | null;
@@ -89,6 +92,11 @@ async function queryCards(term: string): Promise<CardResult[]> {
 
   const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
 
+  // One batched query for every result's primary_image_id (item-images
+  // beta privacy hardening, Phase 3E) — never one per row.
+  const withPrimaryIds = await attachPrimaryImageIds(items as { id: string }[]);
+  const primaryIdByItemId = new Map(withPrimaryIds.map((i) => [i.id, i.primary_image_id]));
+
   return (items as any[]).map((item) => {
     const p = profileMap.get(item.user_id) ?? {};
     const folder = Array.isArray(item.folders) ? item.folders[0] : item.folders;
@@ -101,6 +109,7 @@ async function queryCards(term: string): Promise<CardResult[]> {
       brand: item.brand ?? null,
       grade: item.grade ?? null,
       image_url: item.image_url ?? null,
+      primary_image_id: primaryIdByItemId.get(item.id) ?? null,
       folder_name: folder?.name ?? null,
       owner_username: p.username ?? 'user',
       owner_display_name: p.display_name ?? null,
@@ -132,7 +141,15 @@ function UserRow({ profile, onPress }: { profile: SearchProfile; onPress: () => 
   );
 }
 
-function CardRow({ card, onPress }: { card: CardResult; onPress: () => void }) {
+function CardRow({
+  card,
+  imageUrl,
+  onPress,
+}: {
+  card: CardResult;
+  imageUrl: string | undefined;
+  onPress: () => void;
+}) {
   const title = card.title || card.player || 'Untitled Card';
   const meta = [card.player, card.year?.toString(), card.brand].filter(Boolean).join(' · ');
   const sub = [card.team, card.grade].filter(Boolean).join(' · ');
@@ -144,8 +161,8 @@ function CardRow({ card, onPress }: { card: CardResult; onPress: () => void }) {
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.cardThumb}>
-        {card.image_url ? (
-          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+        {imageUrl ? (
+          <Image source={{ uri: imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.cardThumbPlaceholder]}>
             <Text style={styles.cardThumbEmoji}>🃏</Text>
@@ -174,6 +191,13 @@ export default function SearchScreen() {
   const [query, setQuery] = useState('');
   const [userResults, setUserResults] = useState<SearchProfile[]>([]);
   const [cardResults, setCardResults] = useState<CardResult[]>([]);
+  // One batched call for the whole visible results list — never one
+  // signing request per row (item-images beta privacy hardening,
+  // Phase 3E). cardResults already carries public folders' items only
+  // (queryCards' own .eq('folders.is_public', true)); this is the
+  // cross-user counterpart to the owner-only signed lookups elsewhere in
+  // the app, authorized the same way via get-collection-item-image-signed-url.
+  const { urls: signedCardImageUrls } = useSignedItemImages(cardResults.map((c) => c.primary_image_id));
   const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -477,6 +501,7 @@ export default function SearchScreen() {
             renderItem={({ item }) => (
               <CardRow
                 card={item}
+                imageUrl={item.primary_image_id ? signedCardImageUrls.get(item.primary_image_id) : undefined}
                 onPress={() =>
                   router.push({ pathname: '/item/[id]', params: { id: item.id } })
                 }

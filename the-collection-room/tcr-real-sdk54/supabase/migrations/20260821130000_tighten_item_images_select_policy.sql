@@ -1,0 +1,51 @@
+-- PREPARED FOR THE EVENTUAL item-images PRIVATE-BUCKET CUTOVER — NOT PART
+-- OF PHASE 3E'S OWN ROLLOUT. Phase 3E's own goal is explicitly to leave
+-- item-images PUBLIC until this whole slice's runtime validation is
+-- complete (see the Phase 3E plan) — do not apply this migration as part
+-- of that validation pass. It's written now, ready to review, and should
+-- be applied together with (or immediately before) the actual bucket
+-- privacy flip in a later phase, not before.
+--
+-- Why this exists: the final pre-cutover audit found that
+-- item_images_select_public currently has NO ownership/visibility
+-- condition at all —
+--
+--   CREATE POLICY "item_images_select_public" ON storage.objects
+--     FOR SELECT USING (bucket_id = 'item-images');
+--
+-- — which is harmless today only because item-images is a PUBLIC bucket:
+-- the public bucket's own /object/public/... URL path bypasses
+-- storage.objects RLS entirely for reads, and both signed-delivery Edge
+-- Functions (get-collection-item-image-signed-url,
+-- get-folder-cover-signed-url) call createSignedUrl() via the
+-- SERVICE-ROLE client, which also bypasses RLS regardless of this policy.
+-- Nothing in this app's client code calls createSignedUrl() or
+-- .download() directly (confirmed repo-wide, no client-side usage exists)
+-- — but the MOMENT the bucket becomes private, this exact policy becomes
+-- the real authorization boundary for any direct, authenticated Storage
+-- API read, and as written it would let any signed-in user directly read
+-- any other user's private item's object, completely bypassing the
+-- folder-visibility system the signed-delivery Edge Functions exist to
+-- enforce.
+--
+-- Applying this migration is a safe no-op against CURRENT behavior either
+-- way: it does not change the bucket's own public/private flag (untouched
+-- here), and no existing code path depends on direct authenticated
+-- SELECT access to this bucket. It only closes the latent gap described
+-- above, ahead of the bucket actually going private.
+DROP POLICY IF EXISTS "item_images_select_public" ON storage.objects;
+
+-- No replacement SELECT policy is created — same "absence of a policy
+-- means denial" convention already used for registry-images and
+-- share-snapshots' write side. All reads must go through the two signed-
+-- delivery Edge Functions (service-role, unaffected by this policy) once
+-- the bucket is private; while the bucket remains public, reads continue
+-- working exactly as before via the public URL path, which this policy
+-- was never actually gating in the first place.
+--
+-- INSERT/UPDATE/DELETE policies are untouched — they are already
+-- correctly owner-scoped (bucket_id = 'item-images' AND
+-- (storage.foldername(name))[1] = auth.uid()::text) and need no change
+-- for the cutover.
+
+NOTIFY pgrst, 'reload schema';

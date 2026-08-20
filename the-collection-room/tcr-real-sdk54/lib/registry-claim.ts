@@ -1,3 +1,4 @@
+import { deriveStoragePathFromPublicUrl } from './item-images';
 import { getRegistrySnapshotImageUrl } from './registry-images';
 import { uploadItemImageFromBytes } from './storage';
 import { supabase } from './supabase';
@@ -56,7 +57,17 @@ export async function claimRegisteredCard(
 }
 
 export type CopyRegistrySnapshotImageResult =
-  | { status: 'copied'; imageUrl: string }
+  // gallerySynced is true only once the canonical collection_item_images
+  // primary row was also confirmed created — false means image_url is set
+  // and the photo already renders correctly everywhere, but the canonical
+  // invariant ("a live item's image has a collection_item_images row with
+  // a real storage_path") is not yet satisfied for this item; it self-
+  // heals on the owner's next edit-mode entry. 'copied' with
+  // gallerySynced: false is deliberately still 'copied', not a new
+  // failure state — see this function's own comment below for why the
+  // caller's existing status === 'failed' check must not start matching
+  // this case.
+  | { status: 'copied'; imageUrl: string; gallerySynced: boolean }
   | { status: 'skipped' }
   | { status: 'failed' };
 
@@ -69,8 +80,9 @@ export type CopyRegistrySnapshotImageResult =
 // considered successful. Order is always: 1) claim RPC commits, 2) this
 // function requests a signed snapshot URL, 3) fetches its bytes, 4)
 // uploads them under the recipient's own item-images path, 5) updates
-// only the new item's image_url. Copies ONLY the registry's own durable
-// snapshot object via the existing authorized
+// the new item's image_url, 6) creates the corresponding
+// collection_item_images gallery row (Phase 3E — see below). Copies ONLY
+// the registry's own durable snapshot object via the existing authorized
 // get-registry-snapshot-image-url Edge Function — never reads or
 // references the former owner's original item-images path/object. The
 // signed URL itself is never persisted anywhere; only the freshly
@@ -91,6 +103,28 @@ export type CopyRegistrySnapshotImageResult =
 // bucket), and building new cleanup infrastructure for this narrow,
 // low-severity case (a small private object under the recipient's own
 // path, no data exposure) is out of scope for this pass.
+//
+// Gallery-row creation (Phase 3E fix): previously this function only ever
+// updated collection_items.image_url, leaving primary_image_id null for
+// every claimed card until the owner happened to open Edit mode once
+// (item-image-gallery-manager.tsx's materializeLegacyItemImage
+// self-heal) — meaning a freshly-claimed card's cover photo rendered as
+// "unavailable" everywhere signed delivery is used, immediately, with no
+// cutover involved. The gallery-row insert below runs only after the
+// image_url UPDATE is already confirmed committed (this whole function
+// runs entirely post-commit relative to the claim RPC — there is no
+// enclosing transaction to extend here, matching this function's existing
+// documented best-effort design). If this insert fails, the item is left
+// in exactly the same state this function already produced before this
+// fix — but the overall result is still 'copied', never downgraded to
+// 'failed': image_url is already durably set at that point, exactly the
+// same outcome this function already produced before this fix, so a
+// caller's UI must never regress from success to failure over a step
+// that's strictly additive on top of an already-successful copy. The gap
+// self-heals the same way it already did pre-fix — materializeLegacyItemImage,
+// on the owner's next edit-mode entry. Logged in __DEV__ only, same tier
+// as deleteProfileImage's own best-effort Storage cleanup elsewhere in
+// this codebase.
 export async function copyRegistrySnapshotImageToNewItem(
   registeredCardId: string,
   newItemId: string,
@@ -169,5 +203,49 @@ export async function copyRegistrySnapshotImageToNewItem(
     return { status: 'failed' };
   }
 
-  return { status: 'copied', imageUrl };
+  // Phase 3E gallery-row fix — see the module comment above. Best-effort,
+  // strictly additive on top of the already-confirmed image_url update: a
+  // failure here never turns this into 'failed', only gallerySynced:
+  // false. is_primary: true is normally safe unconditionally (this is
+  // always a brand-new item, image_url starts NULL per
+  // claimRegisteredCard's own comment, so no gallery row would ordinarily
+  // exist yet) — but this whole function is documented as callable only
+  // once per claim, not guaranteed never to be re-invoked for the same
+  // newItemId by some future caller, so the existence check below makes
+  // that guarantee explicit and enforced here rather than merely assumed:
+  // a second call for the same item can never create a duplicate primary
+  // row (which collection_item_images_one_primary's partial unique index
+  // would otherwise reject as a Storage-orphaning insert failure anyway).
+  let gallerySynced = false;
+  const { data: existingPrimary } = await supabase
+    .from('collection_item_images')
+    .select('id')
+    .eq('item_id', newItemId)
+    .eq('is_primary', true)
+    .maybeSingle();
+
+  if (existingPrimary) {
+    gallerySynced = true;
+  } else {
+    const { error: galleryError } = await supabase.from('collection_item_images').insert({
+      item_id: newItemId,
+      user_id: userId,
+      image_url: imageUrl,
+      storage_path: deriveStoragePathFromPublicUrl(imageUrl, 'item-images'),
+      sort_order: 0,
+      is_primary: true,
+    });
+    if (galleryError) {
+      if (__DEV__) {
+        console.warn(
+          '[copyRegistrySnapshotImageToNewItem] gallery row insert failed (image_url already set; self-heals on next edit-mode entry):',
+          galleryError.message,
+        );
+      }
+    } else {
+      gallerySynced = true;
+    }
+  }
+
+  return { status: 'copied', imageUrl, gallerySynced };
 }
