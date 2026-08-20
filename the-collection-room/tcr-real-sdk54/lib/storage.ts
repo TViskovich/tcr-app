@@ -220,9 +220,18 @@ export async function deleteProfileImage(
   }
 }
 
+export type UploadedFolderCover = {
+  // Transitional/legacy display value only (folders.cover_image_url) — not
+  // the authorization or canonical-identity mechanism for signed delivery.
+  publicUrl: string;
+  // Canonical Storage object path (folders.cover_storage_path, Phase 3D) —
+  // what get-folder-cover-signed-url actually signs.
+  storagePath: string;
+};
+
 // Reuses item-images bucket — same RLS policy (first path segment = userId).
 // Path: {userId}/covers/{timestamp}.{ext} keeps covers logically separate from card photos.
-export async function uploadFolderCover(uri: string, userId: string): Promise<string> {
+export async function uploadFolderCover(uri: string, userId: string): Promise<UploadedFolderCover> {
   const ext = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
   const contentType = MIME[ext] ?? 'image/jpeg';
   const path = `${userId}/covers/${Date.now()}.${ext}`;
@@ -236,5 +245,5 @@ export async function uploadFolderCover(uri: string, userId: string): Promise<st
   if (error) throw new Error(error.message);
 
   const { data } = supabase.storage.from('item-images').getPublicUrl(path);
-  return data.publicUrl;
+  return { publicUrl: data.publicUrl, storagePath: path };
 }

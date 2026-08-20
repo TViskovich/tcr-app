@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
 import { FolderColorPicker } from '@/components/collection/folder-color-picker';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
@@ -39,6 +40,13 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
   const [editName, setEditName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(true);
   const [editCoverSource, setEditCoverSource] = useState<string>('upload');
+  // Dual-purpose, as before: (1) the write-path value persisted back to
+  // cover_image_url on save (transitional field — see saveEditFolder), and
+  // (2) the "does a persisted cover currently exist, or was it removed"
+  // marker (null = none/removed) that drives the signed-preview lookup
+  // below. Since Phase 3D, this is NEVER read directly as an <Image>
+  // source — only newCoverUri (a fresh local pick) or a resolved signed
+  // URL are.
   const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
   const [editColor, setEditColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
   const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
@@ -111,12 +119,29 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
     if (!editName.trim()) return;
     setEditSaving(true);
     try {
-      // Only modify cover_image_url when in upload mode; first_card leaves it untouched.
+      // Only modify cover_image_url/cover_storage_path when in upload mode.
+      // first_card always clears cover_storage_path (Phase 3D design — it's
+      // never a folder-owned object, so no path is ever persisted for it);
+      // cover_image_url is left untouched for first_card (display-only
+      // legacy field, unused by first_card's own — server-resolved —
+      // rendering).
       let coverUrl = folder.cover_image_url;
+      let coverStoragePath = folder.cover_storage_path;
       if (editCoverSource === 'upload') {
-        coverUrl = newCoverUri && currentUserId
-          ? await uploadFolderCover(newCoverUri, currentUserId)
-          : editCoverUrl;
+        if (newCoverUri && currentUserId) {
+          const uploaded = await uploadFolderCover(newCoverUri, currentUserId);
+          coverUrl = uploaded.publicUrl;
+          coverStoragePath = uploaded.storagePath;
+        } else {
+          coverUrl = editCoverUrl;
+          // "Remove Cover" clears editCoverUrl without a replacement
+          // upload — the previously-uploaded object's path must be
+          // cleared too, or cover_storage_path would keep pointing at an
+          // image the UI no longer shows as this folder's cover.
+          if (!editCoverUrl) coverStoragePath = null;
+        }
+      } else {
+        coverStoragePath = null;
       }
       const { data, error } = await supabase
         .from('folders')
@@ -125,6 +150,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           is_public: editIsPublic,
           cover_image_url: coverUrl,
           cover_source: editCoverSource,
+          cover_storage_path: coverStoragePath,
           color: editColor,
         })
         .eq('id', folder.id)
@@ -165,8 +191,32 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
     }
   }
 
-  const coverPreviewUri = newCoverUri ?? editCoverUrl;
-  const hasCover = !!coverPreviewUri;
+  // Only fetched when there's actually a persisted cover to preview, no
+  // fresher local pick overriding it, and the upload-cover preview section
+  // is even in view (it only ever renders in 'upload' mode — see below) —
+  // avoids a wasted signed-delivery request while editing a 'first_card'
+  // folder, which has no image preview slot to fill either way.
+  const wantsPersistedCoverPreview = visible && editCoverSource === 'upload' && editCoverUrl !== null && !newCoverUri;
+  const { urls: signedCoverUrls, statuses: signedCoverStatuses } = useSignedFolderCovers(
+    wantsPersistedCoverPreview ? [folder.id] : [],
+  );
+  const persistedCoverReady = wantsPersistedCoverPreview && signedCoverStatuses.get(folder.id) === 'ready';
+
+  // A freshly-picked local image always wins and renders immediately from
+  // its local URI (never sent through signed delivery — see module intent
+  // above). Otherwise, a persisted cover only ever renders once its signed
+  // URL has actually resolved ('loading'/'unavailable' render nothing here,
+  // same empty slot this component already showed pre-Phase-3D whenever
+  // there was no cover at all — there's no separate placeholder graphic to
+  // introduce). folder.cover_image_url is never used as a fallback.
+  const coverPreviewUri = newCoverUri ?? (persistedCoverReady ? signedCoverUrls.get(folder.id) : undefined) ?? null;
+  // Button labels ("Add" vs "Change"/"Remove") reflect whether a cover
+  // conceptually exists — a freshly picked local image, or a persisted one
+  // not yet removed — independent of whether its signed preview has
+  // resolved yet, matching the pre-Phase-3D behavior exactly (those labels
+  // never waited on the raw URL "loading" either, since it rendered
+  // synchronously before).
+  const hasCover = !!newCoverUri || editCoverUrl !== null;
 
   return (
     <Modal
@@ -209,9 +259,9 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           {/* Upload controls — only when upload mode */}
           {editCoverSource === 'upload' && (
             <View style={styles.coverSection}>
-              {hasCover && (
+              {coverPreviewUri && (
                 <Image
-                  source={{ uri: coverPreviewUri! }}
+                  source={{ uri: coverPreviewUri }}
                   style={styles.coverPreview}
                   contentFit="cover"
                   transition={200}

@@ -5,6 +5,7 @@ import { CollectionPreviewCard } from '@/components/collection/collection-previe
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { resolveCovers } from '@/hooks/use-collection';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
 
@@ -129,6 +130,11 @@ type Props = {
 // inside the registry Transfer modal.
 export function ClaimFolderPicker({ userId, onSelect }: Props) {
   const { folders, itemCounts, loading, error, refresh } = useOwnFoldersForClaimPicker(userId);
+  // One batched call for the whole grid — never one signing request per
+  // tile (item-images beta privacy hardening, Phase 3D). Owner-only picker
+  // (useOwnFoldersForClaimPicker scopes to userId), so every id here is an
+  // owner+public or owner+private folder, always authorized.
+  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
   const { width: windowWidth } = useWindowDimensions();
   const tileWidth = (windowWidth - HORIZONTAL_PADDING * 2 - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
   const [isCreateFolderVisible, setIsCreateFolderVisible] = useState(false);
@@ -188,7 +194,7 @@ export function ClaimFolderPicker({ userId, onSelect }: Props) {
             // component's generic "Collection item" fallback.
             <CollectionPreviewCard
               key={folder.id}
-              imageUrl={folder.cover_image_url}
+              imageUrl={signedFolderCoverUrls.get(folder.id) ?? null}
               title={folder.name}
               subtitle={`${itemCounts[folder.id] ?? 0} items`}
               tileWidth={tileWidth}

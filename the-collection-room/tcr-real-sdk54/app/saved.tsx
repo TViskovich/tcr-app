@@ -16,6 +16,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 
@@ -26,10 +27,14 @@ export default function SavedScreen() {
 
   const { folders, cards, grails, loading, refresh } = useSavedAll(currentUserId);
   // One batched call for the whole Saved Cards section — never one signing
-  // request per row (item-images beta privacy hardening, Phase 3C). Saved
-  // Collections' folder covers are unaffected/unrelated — folder covers
-  // remain deferred (see hooks/use-collection.ts's resolveCovers).
+  // request per row (item-images beta privacy hardening, Phase 3C).
   const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id));
+  // One batched call for the whole Saved Collections section (Phase 3D) —
+  // useSavedAll's own folder query is already public-only
+  // (hooks/use-saved.ts: .eq('is_public', true)), so every id requested
+  // here is expected to resolve, but the request still goes through the
+  // same authorized signed-delivery path as an owner's own folders.
+  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
   const [refreshing, setRefreshing] = useState(false);
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
@@ -75,6 +80,7 @@ export default function SavedScreen() {
                 <FolderRow
                   key={folder.id}
                   folder={folder}
+                  coverUrl={signedFolderCoverUrls.get(folder.id)}
                   onPress={() =>
                     router.push({
                       pathname: '/collection/[folderId]',
@@ -137,13 +143,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // ─── Row components ───────────────────────────────────────────────────────────
 
-function FolderRow({ folder, onPress }: { folder: SavedFolderEntry; onPress: () => void }) {
+function FolderRow({
+  folder,
+  coverUrl,
+  onPress,
+}: {
+  folder: SavedFolderEntry;
+  coverUrl: string | undefined;
+  onPress: () => void;
+}) {
   const ownerName = folder.ownerDisplayName || folder.ownerUsername;
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.thumb}>
-        {folder.cover_image_url ? (
-          <Image source={{ uri: folder.cover_image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+        {coverUrl ? (
+          <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbInitial}>{folder.name.charAt(0).toUpperCase()}</Text>

@@ -4,6 +4,12 @@ export type Folder = {
   name: string;
   cover_image_url: string | null;
   cover_source: string; // 'upload' | 'first_card'
+  // Canonical item-images Storage object path for an 'upload' cover — null
+  // for 'first_card' folders by design (that cover is derived server-side
+  // from the folder's current newest active item, never a folder-owned
+  // object). Added in Phase 3D (item-images beta privacy hardening);
+  // cover_image_url remains for transitional/legacy display only.
+  cover_storage_path: string | null;
   color: string | null; // FolderColorKey (components/collection/folder-card.tsx) or null = auto (name-hash)
   is_public: boolean;
   created_at: string;

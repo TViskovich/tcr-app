@@ -19,6 +19,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { resolveCovers } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -160,6 +161,11 @@ export default function PickGrailCollectionScreen() {
     error: slotsError,
     refresh: refreshSlots,
   } = useGrailSlots(target ? currentUserId : undefined);
+  // One batched call for the whole grid — never one signing request per
+  // tile (item-images beta privacy hardening, Phase 3D). Owner-only picker
+  // (useOwnFoldersForPicker scopes to currentUserId), so every id here is
+  // an owner+public or owner+private folder, always authorized.
+  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
 
   const dataLoading = foldersLoading || slotsLoading;
   const dataError = foldersError ?? slotsError;
@@ -323,7 +329,7 @@ export default function PickGrailCollectionScreen() {
                 <View key={folder.id} style={{ width: tileWidth }}>
                   <View style={disabled ? styles.tileDisabled : undefined} pointerEvents={disabled ? 'none' : 'auto'}>
                     <CollectionPreviewCard
-                      imageUrl={folder.cover_image_url}
+                      imageUrl={signedFolderCoverUrls.get(folder.id) ?? null}
                       title={folder.name}
                       subtitle={disabled ? 'In Grails' : `${count} ${count === 1 ? 'item' : 'items'}`}
                       tileWidth={tileWidth}
