@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import type { CollectionItem, Folder } from '@/types';
 
@@ -189,7 +190,11 @@ export function useSavedAll(currentUserId: string | undefined) {
       if (abortControllerRef.current !== controller || controller.signal.aborted) return;
 
       const folderList = (folderData.data ?? []) as Folder[];
-      const cardList   = (cardData.data   ?? []) as CollectionItem[];
+      // Attaches primary_image_id (item-images beta privacy hardening,
+      // Phase 3C) in one batched query — never one per saved card.
+      const cardList = await attachPrimaryImageIds((cardData.data ?? []) as CollectionItem[]);
+
+      if (abortControllerRef.current !== controller || controller.signal.aborted) return;
 
       // Round 3: one combined profile query for all folder and card owners.
       // Set deduplication means a shared owner is fetched only once even if

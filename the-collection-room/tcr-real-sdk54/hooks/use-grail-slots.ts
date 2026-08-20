@@ -2,8 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { PostgrestError } from '@supabase/supabase-js';
 
+import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
-import type { GrailSlot, GrailSlotConflict, GrailSlotEntryType } from '@/types';
+import type { CollectionItem, GrailSlot, GrailSlotConflict, GrailSlotEntryType } from '@/types';
 
 // The identity + current source a caller last saw for one occupied slot —
 // what replaceGrailSlot and removeGrailSlot both re-verify, in their own
@@ -223,6 +224,26 @@ export function useGrailSlots(userId: string | undefined) {
 
     let nextSlots = (data ?? []) as GrailSlot[];
     setError(null);
+
+    // Attaches primary_image_id onto every visible item-slot's embedded
+    // CollectionItem in one batched query (item-images beta privacy
+    // hardening, Phase 3C) — propagates for free through hooks/use-grails.ts's
+    // ShowcaseItem shim to components/profile/grails-slot.tsx too, since
+    // that shim just repackages this same slot.item object. RLS has
+    // already determined visibility by this point: a slot the caller isn't
+    // allowed to see has item: null and is filtered out of `itemSlots`
+    // below, so this — and any later signing request built from its
+    // result — never runs for a hidden item.
+    const itemSlots = nextSlots.filter(
+      (s): s is typeof s & { item: CollectionItem } => s.entry_type === 'item' && !!s.item,
+    );
+    if (itemSlots.length) {
+      const withPrimaryIds = await attachPrimaryImageIds(itemSlots.map((s) => s.item));
+      const byItemId = new Map(withPrimaryIds.map((i) => [i.id, i]));
+      nextSlots = nextSlots.map((s) =>
+        s.entry_type === 'item' && s.item ? { ...s, item: byItemId.get(s.item.id) ?? s.item } : s,
+      );
+    }
 
     // One uncapped, narrow-column query covering every collection slot's
     // folder at once — not a per-folder query (N+1) and not a single

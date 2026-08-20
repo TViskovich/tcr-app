@@ -6,10 +6,14 @@ import type { ShowcaseItem } from '@/types';
 
 type Props = {
   item: ShowcaseItem;
+  // Resolved once for the whole vault by the parent (GrailsGrid) via
+  // useSignedItemImages — item-images beta privacy hardening, Phase 3C.
+  // Keyed by collection_item_images.id (item.item.primary_image_id).
+  signedImageUrls: Map<string, string>;
   onPress?: () => void;
 };
 
-export function GrailsSlot({ item, onPress }: Props) {
+export function GrailsSlot({ item, signedImageUrls, onPress }: Props) {
   return (
     // Layer 1: outer glow/shadow ring.
     // width:'100%' — fills the fixed-size grailCell the grid now wraps
@@ -30,9 +34,9 @@ export function GrailsSlot({ item, onPress }: Props) {
 
         {/* Layer 3: image clip. overflow:'hidden' rounds the card corners. */}
         <View style={styles.innerCard}>
-          {item.item.image_url ? (
+          {item.item.primary_image_id && signedImageUrls.get(item.item.primary_image_id) ? (
             <Image
-              source={{ uri: item.item.image_url }}
+              source={{ uri: signedImageUrls.get(item.item.primary_image_id) }}
               style={styles.image}
               contentFit="cover"
               transition={200}

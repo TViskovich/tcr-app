@@ -49,6 +49,11 @@ const SUPPRESS_WINDOW_MS = 400;
 type Props = {
   slot: GrailSlot | null;
   slotIndex: number;
+  // Resolved once for the whole 3x3 grid by the parent (ProfileV2Grid) via
+  // useSignedItemImages — item-images beta privacy hardening, Phase 3C.
+  // Keyed by collection_item_images.id (slot.item.primary_image_id), never
+  // by a raw storage path.
+  signedImageUrls: Map<string, string>;
   isOwnProfile: boolean;
   onPressEmpty: (slotIndex: number) => void;
   onPressItem: (item: CollectionItem) => void;
@@ -60,6 +65,7 @@ type Props = {
 export function GrailSlotPreview({
   slot,
   slotIndex,
+  signedImageUrls,
   isOwnProfile,
   onPressEmpty,
   onPressItem,
@@ -417,9 +423,9 @@ export function GrailSlotPreview({
         </View>
       ) : slot.entry_type === 'item' ? (
         <View style={styles.itemWrap}>
-          {slot.item!.image_url ? (
+          {slot.item!.primary_image_id && signedImageUrls.get(slot.item!.primary_image_id) ? (
             <Image
-              source={{ uri: slot.item!.image_url }}
+              source={{ uri: signedImageUrls.get(slot.item!.primary_image_id!) }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={150}

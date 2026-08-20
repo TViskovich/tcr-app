@@ -19,6 +19,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAllItems } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
 
@@ -75,6 +76,8 @@ export default function PickGrailItemScreen() {
 
   const dataLoading = itemsLoading || slotsLoading;
   const dataError = itemsError ?? slotsError;
+  // One batched call for every item currently rendered in this picker.
+  const { urls: signedImageUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
 
   function retryAll() {
     refreshItems();
@@ -239,7 +242,7 @@ export default function PickGrailItemScreen() {
                 <View key={item.id} style={{ width: tileWidth }}>
                   <View style={disabled ? styles.tileDisabled : undefined} pointerEvents={disabled ? 'none' : 'auto'}>
                     <CollectionPreviewCard
-                      imageUrl={item.image_url}
+                      imageUrl={item.primary_image_id ? (signedImageUrls.get(item.primary_image_id) ?? null) : null}
                       title={item.title}
                       subtitle={disabled ? 'In Grails' : item.brand}
                       tileWidth={tileWidth}

@@ -1,5 +1,6 @@
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { GrailSlotPreview } from './grail-slot-preview';
@@ -58,6 +59,12 @@ export function ProfileV2Grid({
   onReplace,
   onRemove,
 }: Props) {
+  // One batched call for the whole 3x3 grid — never one signing request per
+  // slot (item-images beta privacy hardening, Phase 3C).
+  const { urls: signedImageUrls } = useSignedItemImages(
+    slots.map((s) => (s.entry_type === 'item' ? s.item?.primary_image_id : undefined)),
+  );
+
   // State: initial load failed, nothing loaded yet — never render 9 empty
   // owner-editable "+" slots for a failed query, which would misrepresent
   // an error as "you have no Grails."
@@ -103,6 +110,7 @@ export function ProfileV2Grid({
                 key={slot?.id ?? `empty-${slotIndex}`}
                 slot={slot}
                 slotIndex={slotIndex}
+                signedImageUrls={signedImageUrls}
                 isOwnProfile={isOwnProfile}
                 onPressEmpty={onPressEmpty}
                 onPressItem={onPressItem}

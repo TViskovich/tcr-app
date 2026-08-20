@@ -45,6 +45,7 @@ import {
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -281,6 +282,11 @@ export default function CollectionFolderScreen() {
 
   const groups = useMemo(() => groupItemsByPlayer(items), [items]);
 
+  // One batched call covering every item currently loaded for this folder —
+  // hero carousel, card-detail grid, and grouping grid covers all read from
+  // this same map (item-images beta privacy hardening, Phase 3B).
+  const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
+
   const cardItems = useMemo(() => {
     if (!activePlayer) return [];
     return activePlayer === NO_PLAYER_KEY
@@ -293,7 +299,7 @@ export default function CollectionFolderScreen() {
   // created_at DESC), so index 0 doubles as both "default cover" and
   // "newest item" — there's no separate per-player-group cover-selection
   // concept in the data model to draw a distinct "selected cover" from.
-  const heroItems = useMemo(() => cardItems.filter((i) => !!i.image_url), [cardItems]);
+  const heroItems = useMemo(() => cardItems.filter((i) => !!i.primary_image_id), [cardItems]);
   const [heroIndex, setHeroIndex] = useState(0);
   // Non-null only while a transition is in flight — the overlay layer
   // renders (and fades in) exactly when this is set, then disappears once
@@ -378,11 +384,16 @@ export default function CollectionFolderScreen() {
   }, [heroItems]);
 
   // Warm the cache for every image in this gallery up front, so a swipe or
-  // grid tap never has to wait on a network fetch mid-transition.
+  // grid tap never has to wait on a network fetch mid-transition. Prefetches
+  // whichever signed URLs have resolved so far — re-runs as signedUrls
+  // fills in, so a hero item whose signing request is still in flight when
+  // this first runs still gets prefetched the moment it resolves.
   useEffect(() => {
-    const uris = heroItems.map((i) => i.image_url!);
+    const uris = heroItems
+      .map((i) => (i.primary_image_id ? signedUrls.get(i.primary_image_id) : undefined))
+      .filter((u): u is string => !!u);
     if (uris.length) Image.prefetch(uris).catch(() => {});
-  }, [heroItems]);
+  }, [heroItems, signedUrls]);
 
   // Single entry point for every hero change (swipe or grid tap) — decodes
   // the target image first, then runs one 240ms opacity crossfade on the UI
@@ -421,10 +432,16 @@ export default function CollectionFolderScreen() {
       return;
     }
 
-    const targetUri = heroItems[targetIndex].image_url!;
+    // May still be undefined if this target's signed URL hasn't resolved
+    // yet (rare — the up-front prefetch effect above usually wins the
+    // race) — the crossfade still proceeds either way; the overlay layer
+    // below simply renders nothing until signedUrls fills in, per the
+    // "no raw URL fallback" requirement, rather than blocking the gesture.
+    const targetImageId = heroItems[targetIndex].primary_image_id;
+    const targetUri = targetImageId ? signedUrls.get(targetImageId) : undefined;
     setHeroPendingIndex(targetIndex);
     heroOverlayOpacity.value = 0;
-    Image.prefetch(targetUri)
+    (targetUri ? Image.prefetch(targetUri) : Promise.resolve())
       .catch(() => {})
       .finally(() => {
         heroOverlayOpacity.value = withTiming(1, { duration: HERO_TRANSITION_DURATION }, (finished) => {
@@ -703,22 +720,29 @@ export default function CollectionFolderScreen() {
                           animates itself; only the overlay below does.
                           contentPosition top:'0%' keeps the source image's
                           own top edge (face/upper body) fully uncropped —
-                          cover-fit trims the excess from the bottom instead. */}
-                      <Image
-                        source={{ uri: activeHeroItem.image_url! }}
-                        style={StyleSheet.absoluteFill}
-                        contentFit="cover"
-                        contentPosition={HERO_IMAGE_CONTENT_POSITION}
-                      />
+                          cover-fit trims the excess from the bottom instead.
+                          Resolved via the signed-delivery Edge Function
+                          (item-images beta privacy hardening) — renders
+                          nothing (the panel's own dark background shows
+                          through) rather than falling back to a raw public
+                          URL while the signed URL is still resolving. */}
+                      {activeHeroItem.primary_image_id && signedUrls.get(activeHeroItem.primary_image_id) && (
+                        <Image
+                          source={{ uri: signedUrls.get(activeHeroItem.primary_image_id) }}
+                          style={StyleSheet.absoluteFill}
+                          contentFit="cover"
+                          contentPosition={HERO_IMAGE_CONTENT_POSITION}
+                        />
+                      )}
                       {/* Overlay — present only mid-transition, crossfades
                           the incoming image on top of the base layer. Once
                           fully opaque, heroIndex commits to match and this
                           layer unmounts with no visible change. Same
                           contentPosition as the base layer so nothing jumps
                           vertically during the crossfade. */}
-                      {pendingHeroItem && (
+                      {pendingHeroItem && pendingHeroItem.primary_image_id && signedUrls.get(pendingHeroItem.primary_image_id) && (
                         <AnimatedExpoImage
-                          source={{ uri: pendingHeroItem.image_url! }}
+                          source={{ uri: signedUrls.get(pendingHeroItem.primary_image_id) }}
                           style={[StyleSheet.absoluteFill, heroOverlayStyle]}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}
@@ -934,9 +958,9 @@ export default function CollectionFolderScreen() {
                   testID={`collection-item-${slot.data.id}`}
                   style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
                   onPress={() => openItem(slot.data)}>
-                  {slot.data.image_url ? (
+                  {slot.data.primary_image_id && signedUrls.get(slot.data.primary_image_id) ? (
                     <Image
-                      source={{ uri: slot.data.image_url }}
+                      source={{ uri: signedUrls.get(slot.data.primary_image_id) }}
                       style={StyleSheet.absoluteFill}
                       contentFit="cover"
                       transition={150}
@@ -990,7 +1014,12 @@ export default function CollectionFolderScreen() {
                 );
               }
               const group = slot.data;
-              const cover = group.items.find((i) => i.image_url)?.image_url ?? null;
+              // First item in the group with a primary gallery image,
+              // resolved through the signed-delivery Edge Function — same
+              // positional selection rule as before, just no longer trusting
+              // each item's own raw image_url directly.
+              const coverImageId = group.items.find((i) => i.primary_image_id)?.primary_image_id;
+              const cover = coverImageId ? (signedUrls.get(coverImageId) ?? null) : null;
               return (
                 <CollectionPreviewCard
                   testID={`collection-group-${group.key}`}

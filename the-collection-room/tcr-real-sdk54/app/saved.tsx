@@ -16,6 +16,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 
 export default function SavedScreen() {
@@ -24,6 +25,11 @@ export default function SavedScreen() {
   const router = useRouter();
 
   const { folders, cards, grails, loading, refresh } = useSavedAll(currentUserId);
+  // One batched call for the whole Saved Cards section — never one signing
+  // request per row (item-images beta privacy hardening, Phase 3C). Saved
+  // Collections' folder covers are unaffected/unrelated — folder covers
+  // remain deferred (see hooks/use-collection.ts's resolveCovers).
+  const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id));
   const [refreshing, setRefreshing] = useState(false);
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
@@ -86,6 +92,7 @@ export default function SavedScreen() {
                 <CardRow
                   key={card.id}
                   card={card}
+                  signedImageUrls={signedCardImageUrls}
                   onPress={() =>
                     router.push({ pathname: '/item/[id]', params: { id: card.id } })
                   }
@@ -152,14 +159,23 @@ function FolderRow({ folder, onPress }: { folder: SavedFolderEntry; onPress: () 
   );
 }
 
-function CardRow({ card, onPress }: { card: SavedCardEntry; onPress: () => void }) {
+function CardRow({
+  card,
+  signedImageUrls,
+  onPress,
+}: {
+  card: SavedCardEntry;
+  signedImageUrls: Map<string, string>;
+  onPress: () => void;
+}) {
   const ownerName = card.ownerDisplayName || card.ownerUsername;
   const cardTitle = card.title || card.player || 'Untitled Card';
+  const imageUrl = card.primary_image_id ? signedImageUrls.get(card.primary_image_id) : undefined;
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={[styles.thumb, styles.thumbCard]}>
-        {card.image_url ? (
-          <Image source={{ uri: card.image_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+        {imageUrl ? (
+          <Image source={{ uri: imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbEmoji}>🃏</Text>

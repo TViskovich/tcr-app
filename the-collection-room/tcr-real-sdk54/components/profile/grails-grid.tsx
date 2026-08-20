@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { PremiumCardHeader, PremiumEmptyCard, VAULT_COLORS } from '@/components/ui/premium-empty-card';
 import { GrailsSlot } from '@/components/profile/grails-slot';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { ShowcaseItem } from '@/types';
 
 type Props = {
@@ -125,6 +126,11 @@ export function GrailsGrid({
   const { width: screenWidth } = useWindowDimensions();
   const vaultWidth = screenWidth - vaultMargin * 2;
 
+  // One batched call for the whole vault — never one signing request per
+  // card (item-images beta privacy hardening, Phase 3C). Declared before
+  // the zero-state early return below to satisfy Rules of Hooks.
+  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id));
+
   // Press animation — declared before early return to satisfy Rules of Hooks.
   const pressScale = useRef(new Animated.Value(1)).current;
   const pressOpacity = useRef(new Animated.Value(1)).current;
@@ -229,6 +235,7 @@ export function GrailsGrid({
                 const slot = (
                   <GrailsSlot
                     item={item}
+                    signedImageUrls={signedImageUrls}
                     // When the whole cabinet is tappable, individual slots are passive.
                     onPress={onCabinetPress ? undefined : () => onItemPress?.(item)}
                   />

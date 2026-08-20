@@ -29,6 +29,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -607,17 +608,27 @@ export default function ItemDetailScreen() {
     setGrailsLoading(false);
   }
 
-  // Real per-item gallery, ordered primary-first (see useItemImages/
-  // lib/item-images.ts). Falls back to the legacy single image_url only
-  // when the gallery genuinely has no rows yet (a rare gap the migration's
-  // backfill — and enterEdit's self-heal — mostly close); buildItemImageList
-  // still runs over that fallback to drop null/duplicate values.
+  // View-mode carousel now renders through the signed-delivery Edge
+  // Function (item-images beta privacy hardening, Phase 3) instead of each
+  // row's raw public image_url — one batched call for the whole gallery.
+  // Falls back to the legacy single image_url only when the gallery
+  // genuinely has no rows yet (a rare gap Phase 1A's backfill — and
+  // enterEdit's self-heal — mostly close); that narrow fallback still has
+  // no collection_item_images.id to sign against, so it's left on the raw
+  // URL deliberately, not a general escape hatch. `unavailable`/still-
+  // loading gallery images are simply dropped from the list rather than
+  // falling back to their own raw URL, so this surface actually exercises
+  // authorized delivery instead of masking it.
+  const galleryImageIds = useMemo(() => galleryImages.map((img) => img.id), [galleryImages]);
+  const { urls: signedGalleryUrls } = useSignedItemImages(galleryImageIds);
   const galleryImageUrls = useMemo(
     () =>
       galleryImages.length > 0
-        ? galleryImages.map((img) => img.image_url)
+        ? galleryImages
+            .map((img) => signedGalleryUrls.get(img.id))
+            .filter((url): url is string => !!url)
         : buildItemImageList([item?.image_url]),
-    [galleryImages, item?.image_url],
+    [galleryImages, signedGalleryUrls, item?.image_url],
   );
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 

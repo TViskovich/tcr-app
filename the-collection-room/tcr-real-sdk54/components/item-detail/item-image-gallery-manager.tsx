@@ -4,6 +4,7 @@ import { Image } from 'expo-image';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItemImage } from '@/types';
 
 const TILE_WIDTH = 96;
@@ -36,6 +37,12 @@ export function ItemImageGalleryManager({
   onReorder,
 }: Props) {
   const atCapacity = images.length >= maxImages;
+  // One batched call for this item's whole gallery — never one signing
+  // request per tile. `unavailable`/still-loading tiles intentionally show
+  // no image (see the imageBox fallback below) rather than falling back to
+  // image.image_url's raw public URL, so this surface actually exercises
+  // the authorized delivery path instead of masking it.
+  const { urls: signedUrls } = useSignedItemImages(images.map((img) => img.id));
 
   function confirmRemove(imageId: string) {
     Alert.alert('Remove Photo', 'Are you sure you want to remove this photo?', [
@@ -79,7 +86,14 @@ export function ItemImageGalleryManager({
           images.map((image, index) => (
             <View key={image.id} style={styles.tile}>
               <View style={styles.imageBox}>
-                <Image source={{ uri: image.image_url }} style={styles.image} contentFit="cover" transition={150} />
+                {signedUrls.has(image.id) ? (
+                  <Image
+                    source={{ uri: signedUrls.get(image.id) }}
+                    style={styles.image}
+                    contentFit="cover"
+                    transition={150}
+                  />
+                ) : null}
 
                 {image.is_primary ? (
                   <View style={styles.coverBadge}>

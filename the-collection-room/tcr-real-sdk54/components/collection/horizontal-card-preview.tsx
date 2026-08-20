@@ -5,6 +5,7 @@ import { COMPACT_SECTION_GUTTER, SECTION_GUTTER } from '@/components/collection/
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { CollectionPreviewPlaceholder } from '@/components/collection/collection-preview-placeholder';
 import { groupItemsByPlayer, type PlayerGroup } from '@/hooks/use-collection';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItem } from '@/types';
 
 // Shows ~3.6 cards across the screen width so the next one is always
@@ -37,9 +38,17 @@ function groupSubtitle(group: PlayerGroup): string {
 }
 
 // Same cover-resolution rule as the folder detail screen's grouping grid —
-// first item in the group with a real image_url.
-function groupCover(group: PlayerGroup): string | null {
-  return group.items.find((i) => i.image_url)?.image_url ?? null;
+// first item in the group with a primary gallery image, resolved through
+// the signed-delivery Edge Function rather than each item's own raw
+// image_url (item-images beta privacy hardening, Phase 3B). Selection order
+// is still purely positional (first item that HAS a primary_image_id at
+// all) — independent of whether that particular id has actually resolved
+// yet, matching the original image_url-based rule's own semantics exactly;
+// only the URL lookup itself is now async/signed.
+function groupCover(group: PlayerGroup, urls: Map<string, string>): string | null {
+  const coverItem = group.items.find((i) => i.primary_image_id);
+  if (!coverItem?.primary_image_id) return null;
+  return urls.get(coverItem.primary_image_id) ?? null;
 }
 
 type PreviewSlot =
@@ -78,6 +87,9 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem,
   const tileWidth = (visibleWidth - cardGap * Math.floor(cardsVisible)) / cardsVisible;
 
   const groups = useMemo(() => groupItemsByPlayer(items), [items]);
+  // One batched call for every item currently in this preview row (already
+  // capped by the caller, see hooks/use-collection.ts's PREVIEW_ITEM_LIMIT).
+  const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
 
   const slots = useMemo<PreviewSlot[]>(() => {
     const capacity = compact ? PROFILE_COLLECTION_PREVIEW_LIMIT : MIN_VISIBLE_SLOTS;
@@ -103,7 +115,7 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem,
       renderItem={({ item: slot }) =>
         slot.kind === 'group' ? (
           <CollectionPreviewCard
-            imageUrl={groupCover(slot.group)}
+            imageUrl={groupCover(slot.group, signedUrls)}
             title={slot.group.label}
             subtitle={groupSubtitle(slot.group)}
             tileWidth={tileWidth}

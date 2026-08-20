@@ -17,6 +17,7 @@ import { Stack, useRouter } from 'expo-router';
 import { GrailsSlot } from '@/components/profile/grails-slot';
 import { useGrails } from '@/hooks/use-grails';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 
@@ -27,6 +28,9 @@ export default function NewRateMyGrailsScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const { grails, loading } = useGrails(currentUserId);
+  // One batched call for the whole preview grid — never one signing
+  // request per card (item-images beta privacy hardening, Phase 3C).
+  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id));
   // A create form, not a scrollable browsing list — no scroll-hide effect,
   // but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });
@@ -142,7 +146,7 @@ export default function NewRateMyGrailsScreen() {
             <Text style={styles.sectionLabel}>This is what will be shared</Text>
             <View style={styles.grid}>
               {grails.map((g) => (
-                <GrailsSlot key={g.id} item={g} />
+                <GrailsSlot key={g.id} item={g} signedImageUrls={signedImageUrls} />
               ))}
             </View>
 

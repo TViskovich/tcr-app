@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import type { CollectionItem, Folder } from '@/types';
 
@@ -49,9 +50,17 @@ async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, Co
         .limit(PREVIEW_ITEM_LIMIT),
     ),
   );
+  // One flat batched primary_image_id lookup across every folder's preview
+  // items combined — not one per folder — then re-split back by folder.
+  const allItems = results.flatMap((r) => (r.data ?? []) as CollectionItem[]);
+  const withPrimaryIds = await attachPrimaryImageIds(allItems);
+  const byItemId = new Map(withPrimaryIds.map((i) => [i.id, i]));
+
   const byFolder: Record<string, CollectionItem[]> = {};
   folderIds.forEach((id, i) => {
-    byFolder[id] = (results[i].data ?? []) as CollectionItem[];
+    byFolder[id] = ((results[i].data ?? []) as CollectionItem[]).map(
+      (item) => byItemId.get(item.id) ?? item,
+    );
   });
   return byFolder;
 }
@@ -241,7 +250,7 @@ export function useItems(folderId: string | undefined) {
         return;
       }
 
-      setItems((data ?? []) as CollectionItem[]);
+      setItems(await attachPrimaryImageIds((data ?? []) as CollectionItem[]));
       setError(null);
     } catch (e) {
       // A thrown exception (as opposed to a {data, error}-shaped result) —
@@ -291,7 +300,7 @@ export function useAllItems(userId: string | undefined) {
       setLoading(false);
       return;
     }
-    setItems(data ?? []);
+    setItems(await attachPrimaryImageIds((data ?? []) as CollectionItem[]));
     setLoading(false);
   }, [userId]);
 

@@ -35,6 +35,24 @@ export type CollectionItem = {
   collection_status: 'active' | 'transferred_out';
   transferred_out_at: string | null;
   transferred_registered_card_id: string | null;
+  // Client-only, not a DB column — the id of this item's primary
+  // collection_item_images row (is_primary = true), attached by
+  // lib/item-images.ts's attachPrimaryImageIds() after the base
+  // collection_items query. Item-images beta privacy hardening (Phase 3):
+  // this is the only identifier the signed-delivery Edge Function accepts,
+  // so any live-collection read surface that renders item.image_url
+  // directly needs this populated instead. Non-optional (always assign it
+  // explicitly, e.g. via attachPrimaryImageIds) rather than `?:` — an
+  // optional modifier here previously conflicted with
+  // attachPrimaryImageIds's own non-optional return type in type-predicate
+  // filters (e.g. hooks/use-saved.ts's `.filter((x): x is SavedCardEntry
+  // => ...)`). A raw `.select('*')` result cast via `as CollectionItem[]`
+  // is a type assertion, not a structural check, so this doesn't require
+  // every existing cast site to literally include the field — only
+  // attachPrimaryImageIds's callers get a real value; anything cast
+  // without going through it should be treated as effectively unresolved
+  // (null) rather than trusted as an unset field.
+  primary_image_id: string | null;
 };
 
 // One photo in an item's gallery (supabase/migrations/20260721120000_

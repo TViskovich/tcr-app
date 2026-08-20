@@ -40,6 +40,33 @@ export function deriveStoragePathFromPublicUrl(
   }
 }
 
+// Attaches each item's primary_image_id (the collection_item_images.id the
+// signed-delivery Edge Function requires — see hooks/use-signed-item-images.ts)
+// via ONE batched query, never one per item. Items with no primary gallery
+// row yet (a legacy gap Phase 1A's backfill closes for anything with a real
+// image_url) get primary_image_id: null, not omitted.
+export async function attachPrimaryImageIds<T extends { id: string }>(
+  items: T[],
+): Promise<(T & { primary_image_id: string | null })[]> {
+  if (!items.length) return [];
+  const { data, error } = await supabase
+    .from('collection_item_images')
+    .select('id, item_id')
+    .eq('is_primary', true)
+    .in('item_id', items.map((i) => i.id));
+
+  if (error) {
+    // Never block rendering of the items themselves over this — every item
+    // just resolves to no signed image this pass, same as "no primary row
+    // yet." A later refetch (e.g. pull-to-refresh) tries again.
+    if (__DEV__) console.error('[attachPrimaryImageIds] query failed:', error.message, error);
+    return items.map((i) => ({ ...i, primary_image_id: null }));
+  }
+
+  const byItemId = new Map((data ?? []).map((r) => [r.item_id as string, r.id as string]));
+  return items.map((i) => ({ ...i, primary_image_id: byItemId.get(i.id) ?? null }));
+}
+
 export async function getItemImages(itemId: string): Promise<CollectionItemImage[]> {
   const { data, error } = await supabase
     .from('collection_item_images')
