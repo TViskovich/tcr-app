@@ -261,7 +261,7 @@ export function useGrailSlots(userId: string | undefined) {
     if (collectionIds.length) {
       const { data: previewRows, error: previewError } = await supabase
         .from('collection_items')
-        .select('folder_id, image_url, created_at')
+        .select('id, folder_id, created_at')
         .eq('collection_status', 'active')
         .in('folder_id', collectionIds)
         .order('created_at', { ascending: false });
@@ -273,30 +273,42 @@ export function useGrailSlots(userId: string | undefined) {
         // collection row) from showing.
         console.error('[useGrailSlots] preview query failed:', previewError.message, previewError);
       } else {
-        const byFolder = new Map<string, { image_url: string | null }[]>();
-        for (const row of (previewRows ?? []) as { folder_id: string; image_url: string | null }[]) {
+        const previewItemRows = (previewRows ?? []) as { id: string; folder_id: string }[];
+        // Same attachPrimaryImageIds helper the item-slot pass above uses —
+        // one batched collection_item_images lookup covering every
+        // collection slot's preview candidates combined (item-images beta
+        // privacy hardening, signed-delivery migration), not a per-folder
+        // or per-item query. Preview URLs are resolved later, from
+        // primary_image_id, through the same signed-delivery path
+        // (useSignedItemImages) the item-slot images already use — this
+        // hook only ever hands out ids, never a raw/public URL.
+        const withPrimaryIds = await attachPrimaryImageIds(previewItemRows);
+        const primaryImageIdByItemId = new Map(withPrimaryIds.map((r) => [r.id, r.primary_image_id]));
+
+        const byFolder = new Map<string, string[]>();
+        for (const row of previewItemRows) {
           const list = byFolder.get(row.folder_id);
-          if (list) list.push(row);
-          else byFolder.set(row.folder_id, [row]);
+          if (list) list.push(row.id);
+          else byFolder.set(row.folder_id, [row.id]);
         }
 
         nextSlots = nextSlots.map((slot) => {
           if (slot.entry_type !== 'collection' || !slot.collection_id) return slot;
-          const rows = byFolder.get(slot.collection_id) ?? [];
+          const itemIds = byFolder.get(slot.collection_id) ?? [];
           // collectionItemCount counts every row in the folder (not just
           // imaged ones) so "N items" always matches the folder's real
           // size, matching how the main Collection page counts items.
-          const collectionItemCount = rows.length;
+          const collectionItemCount = itemIds.length;
           const seen = new Set<string>();
-          const previewImages: string[] = [];
-          for (const row of rows) {
-            const url = row.image_url?.trim();
-            if (!url || seen.has(url)) continue;
-            seen.add(url);
-            previewImages.push(url);
-            if (previewImages.length >= PREVIEW_IMAGE_LIMIT) break;
+          const previewImageIds: string[] = [];
+          for (const itemId of itemIds) {
+            const primaryImageId = primaryImageIdByItemId.get(itemId);
+            if (!primaryImageId || seen.has(primaryImageId)) continue;
+            seen.add(primaryImageId);
+            previewImageIds.push(primaryImageId);
+            if (previewImageIds.length >= PREVIEW_IMAGE_LIMIT) break;
           }
-          return { ...slot, previewImages, collectionItemCount };
+          return { ...slot, previewImageIds, collectionItemCount };
         });
       }
     }

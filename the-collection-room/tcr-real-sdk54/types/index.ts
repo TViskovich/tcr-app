@@ -182,8 +182,12 @@ export type GrailSlot = {
   collection?: Folder | null; // joined via select('*, collection:folders(*)')
   // Hook-attached, non-DB fields for collection slots — populated once by
   // hooks/use-grail-slots.ts's single batched preview query, never
-  // derived or re-queried per-render.
-  previewImages?: string[];
+  // derived or re-queried per-render. previewImageIds are
+  // collection_item_images.id values (one per distinct item in the
+  // folder, primary image only) — never raw/public URLs; a renderer
+  // resolves them through useSignedItemImages, same as primary_image_id
+  // on an item slot.
+  previewImageIds?: string[];
   collectionItemCount?: number;
 };
 

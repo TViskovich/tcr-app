@@ -50,9 +50,10 @@ type Props = {
   slot: GrailSlot | null;
   slotIndex: number;
   // Resolved once for the whole 3x3 grid by the parent (ProfileV2Grid) via
-  // useSignedItemImages — item-images beta privacy hardening, Phase 3C.
-  // Keyed by collection_item_images.id (slot.item.primary_image_id), never
-  // by a raw storage path.
+  // a single useSignedItemImages call — item-images beta privacy
+  // hardening, Phase 3C. Keyed by collection_item_images.id: an item
+  // slot's own primary_image_id, or (signed-delivery migration) one of a
+  // collection slot's slot.previewImageIds — never a raw storage path.
   signedImageUrls: Map<string, string>;
   isOwnProfile: boolean;
   onPressEmpty: (slotIndex: number) => void;
@@ -108,12 +109,19 @@ export function GrailSlotPreview({
     });
   }, []);
 
+  // previewImageIds are collection_item_images.id values, resolved through
+  // the same shared signedImageUrls map an item slot's primary_image_id
+  // uses — never rendered as raw ids, and an id that hasn't resolved yet
+  // (still loading, or the server said unavailable) is simply dropped
+  // rather than falling back to any raw/public URL.
   const usableImages = useMemo(
     () =>
       slot?.entry_type === 'collection'
-        ? (slot.previewImages ?? []).filter((u) => !brokenUrls.has(u))
+        ? (slot.previewImageIds ?? [])
+            .map((id) => signedImageUrls.get(id))
+            .filter((u): u is string => !!u && !brokenUrls.has(u))
         : [],
-    [slot, brokenUrls],
+    [slot, signedImageUrls, brokenUrls],
   );
   const usableImagesRef = useRef<string[]>(usableImages);
   useEffect(() => {
@@ -182,7 +190,7 @@ export function GrailSlotPreview({
 
   // Single effect drives both reconciliation and scheduling, re-running
   // whenever shouldAnimate flips OR usableImages changes identity (a
-  // source went broken, the slot's previewImages refreshed, the slot
+  // source went broken, the slot's previewImageIds refreshed, the slot
   // itself changed). Every run starts by tearing down any in-flight
   // transition unconditionally — a fade that started against the OLD
   // list must never be allowed to land (commit or even keep rendering)

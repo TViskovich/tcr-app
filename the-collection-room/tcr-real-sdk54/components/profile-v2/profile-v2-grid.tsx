@@ -60,9 +60,13 @@ export function ProfileV2Grid({
   onRemove,
 }: Props) {
   // One batched call for the whole 3x3 grid — never one signing request per
-  // slot (item-images beta privacy hardening, Phase 3C).
+  // slot, and never one per collection slot's preview images either
+  // (item-images beta privacy hardening, Phase 3C / signed-delivery
+  // migration): an item slot contributes its own primary_image_id, a
+  // collection slot contributes every id in its previewImageIds, all
+  // resolved together in this single call.
   const { urls: signedImageUrls } = useSignedItemImages(
-    slots.map((s) => (s.entry_type === 'item' ? s.item?.primary_image_id : undefined)),
+    slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? []))),
   );
 
   // State: initial load failed, nothing loaded yet — never render 9 empty
