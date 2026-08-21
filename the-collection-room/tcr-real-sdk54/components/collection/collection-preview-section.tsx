@@ -2,7 +2,6 @@ import { StyleSheet, View } from 'react-native';
 
 import { CollectionHeaderRow } from '@/components/collection/collection-header-row';
 import { HorizontalCardPreview } from '@/components/collection/horizontal-card-preview';
-import type { PlayerGroup } from '@/hooks/use-collection';
 import type { CollectionItem } from '@/types';
 
 type Props = {
@@ -14,8 +13,11 @@ type Props = {
   // "compact" variant never renders that control, so its callers don't
   // need to pass this.
   onToggle?: () => void;
-  onOpenFolder?: () => void;
-  onOpenGroup: (group: PlayerGroup) => void;
+  // Required (not just for the header row's own title tap) — every real
+  // preview tile in the expanded HorizontalCardPreview below also opens
+  // the folder itself, since this is a preview of the folder's contents,
+  // not a navigator into any per-item/per-group destination.
+  onOpenFolder: () => void;
   onAddItem: () => void;
   // "compact" shrinks dimensions/typography AND drops the collapse
   // chevron entirely — its rows are always expanded (see
@@ -48,7 +50,6 @@ export function CollectionPreviewSection({
   isExpanded,
   onToggle,
   onOpenFolder,
-  onOpenGroup,
   onAddItem,
   variant = 'full',
 }: Props) {
@@ -66,7 +67,7 @@ export function CollectionPreviewSection({
         <HorizontalCardPreview
           folderId={folderId}
           items={items}
-          onOpenGroup={onOpenGroup}
+          onOpenFolder={onOpenFolder}
           onAddItem={onAddItem}
           variant={variant}
         />

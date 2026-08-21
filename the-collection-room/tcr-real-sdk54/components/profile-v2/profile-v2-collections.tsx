@@ -2,7 +2,6 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
-import type { PlayerGroup } from '@/hooks/use-collection';
 import type { CollectionItem, Folder } from '@/types';
 import { PV2 } from './profile-v2-theme';
 
@@ -13,7 +12,6 @@ type Props = {
   // caller rather than re-fetched here.
   previewItems: Record<string, CollectionItem[]>;
   onOpenFolder: (folder: Folder) => void;
-  onOpenGroup: (folder: Folder, group: PlayerGroup) => void;
   // Owner-only — omitted when viewing someone else's profile. Folder
   // navigation (above) always works either way; only the "add a card" /
   // "create a folder" actions are gated, since those would otherwise add
@@ -41,7 +39,6 @@ export function ProfileV2Collections({
   folders,
   previewItems,
   onOpenFolder,
-  onOpenGroup,
   onAddItem,
   onCreatePress,
 }: Props) {
@@ -72,7 +69,6 @@ export function ProfileV2Collections({
             items={previewItems[folder.id] ?? []}
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
-            onOpenGroup={(group) => onOpenGroup(folder, group)}
             onAddItem={() => onAddItem?.(folder)}
             variant="compact"
           />

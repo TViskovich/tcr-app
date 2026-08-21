@@ -31,7 +31,7 @@ import {
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
-import { useFolders, type PlayerGroup } from '@/hooks/use-collection';
+import { useFolders } from '@/hooks/use-collection';
 import {
   expectedRefIdForSlot,
   removeGrailSlot,
@@ -543,20 +543,13 @@ export function ProfileV2Screen({ userId }: Props) {
     }
   }
 
-  // Same destinations/params as app/(tabs)/collection.tsx's own
-  // openFolder/openGroup/addItem — the compact preview below must land on
-  // the exact same screens as the main Collection page, not a
-  // profile-only route. Folder/group navigation always works, own profile
-  // or public; addFolderItem (below) is owner-only.
+  // Same destination/params as app/(tabs)/collection.tsx's own
+  // openFolder/addItem — the compact preview below must land on the exact
+  // same screen as the main Collection page, not a profile-only route.
+  // Folder navigation always works, own profile or public; addFolderItem
+  // (below) is owner-only.
   function openFolder(folder: Folder) {
     router.push({ pathname: '/collection/[folderId]', params: { folderId: folder.id, title: folder.name } });
-  }
-
-  function openFolderGroup(folder: Folder, group: PlayerGroup) {
-    router.push({
-      pathname: '/collection/[folderId]',
-      params: { folderId: folder.id, title: folder.name, player: group.key },
-    });
   }
 
   function addFolderItem(folder: Folder) {
@@ -1558,7 +1551,6 @@ export function ProfileV2Screen({ userId }: Props) {
                     folders={folders}
                     previewItems={previewItems}
                     onOpenFolder={openFolder}
-                    onOpenGroup={openFolderGroup}
                     onAddItem={isOwnProfile ? addFolderItem : undefined}
                     onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
                   />

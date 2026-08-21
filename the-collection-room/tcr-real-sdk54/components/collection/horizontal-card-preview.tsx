@@ -4,7 +4,6 @@ import { FlatList, useWindowDimensions, View } from 'react-native';
 import { COMPACT_SECTION_GUTTER, SECTION_GUTTER } from '@/components/collection/collection-header-row';
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { CollectionPreviewPlaceholder } from '@/components/collection/collection-preview-placeholder';
-import { groupItemsByPlayer, type PlayerGroup } from '@/hooks/use-collection';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItem } from '@/types';
 
@@ -33,32 +32,19 @@ const MIN_VISIBLE_SLOTS = Math.ceil(CARDS_VISIBLE);
 // this same cap, applied to whichever mix reaches it first.
 const PROFILE_COLLECTION_PREVIEW_LIMIT = 4;
 
-function groupSubtitle(group: PlayerGroup): string {
-  return `${group.items.length} ${group.items.length === 1 ? 'card' : 'cards'}`;
-}
-
-// Same cover-resolution rule as the folder detail screen's grouping grid —
-// first item in the group with a primary gallery image, resolved through
-// the signed-delivery Edge Function rather than each item's own raw
-// image_url (item-images beta privacy hardening, Phase 3B). Selection order
-// is still purely positional (first item that HAS a primary_image_id at
-// all) — independent of whether that particular id has actually resolved
-// yet, matching the original image_url-based rule's own semantics exactly;
-// only the URL lookup itself is now async/signed.
-function groupCover(group: PlayerGroup, urls: Map<string, string>): string | null {
-  const coverItem = group.items.find((i) => i.primary_image_id);
-  if (!coverItem?.primary_image_id) return null;
-  return urls.get(coverItem.primary_image_id) ?? null;
-}
-
 type PreviewSlot =
-  | { kind: 'group'; group: PlayerGroup }
+  | { kind: 'item'; item: CollectionItem }
   | { kind: 'placeholder'; key: string };
 
 type Props = {
   folderId: string;
   items: CollectionItem[];
-  onOpenGroup: (group: PlayerGroup) => void;
+  // Tapping any real preview tile opens the folder itself — this is a
+  // preview of the folder's CONTENTS (distinct CollectionItems), not a
+  // navigator into a player-filtered subset, so there's no per-tile
+  // destination beyond "open this folder" (same destination
+  // CollectionHeaderRow's own title tap already uses).
+  onOpenFolder: () => void;
   onAddItem: () => void;
   // "compact" only shrinks tile size/spacing (see
   // components/profile-v2/profile-v2-collections.tsx) — same slot-filling
@@ -67,17 +53,21 @@ type Props = {
 };
 
 // A free-scrolling (no snap, indicator hidden) horizontal preview of one
-// collection's player groupings (e.g. "Shohei Ohtani — 2 cards"), matching
-// the grouping grid on the folder detail screen (app/collection/[folderId].tsx)
-// so tapping a preview tile lands on the same grouping's card gallery. No
-// data fetching of its own — items are already resolved and capped by the
-// caller (see hooks/use-collection.ts's PREVIEW_ITEM_LIMIT), so a group's
-// count here reflects only that capped recent sample, not the folder's full
-// total (the folder detail screen is the source of truth for exact counts).
-// Real groups always come first; generated placeholder slots (local-only,
-// never persisted) fill out the rest of the initial visible row so a sparse
-// or empty collection still reads as a complete, intentional row.
-export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem, variant = 'full' }: Props) {
+// folder's own distinct CollectionItems — one tile per item, each showing
+// only that item's own primary_image_id signed cover. No data fetching of
+// its own — items are already resolved and capped by the caller (see
+// hooks/use-collection.ts's PREVIEW_ITEM_LIMIT), so this preview reflects
+// only that capped recent sample, not the folder's full total. Real items
+// always come first; generated placeholder slots (local-only, never
+// persisted) fill out the rest of the initial visible row so a sparse or
+// empty collection still reads as a complete, intentional row.
+//
+// Deliberately does NOT group items by player (that's a separate,
+// intentional feature scoped to the folder-detail screen's own top-level
+// grid — see app/collection/[folderId].tsx) — a folder preview must keep
+// filling additional visible positions as more items are added, never
+// losing positions because several items share a player or have none set.
+export function HorizontalCardPreview({ folderId, items, onOpenFolder, onAddItem, variant = 'full' }: Props) {
   const compact = variant === 'compact';
   const { width: windowWidth } = useWindowDimensions();
   const gutter = compact ? COMPACT_SECTION_GUTTER : SECTION_GUTTER;
@@ -86,22 +76,24 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem,
   const visibleWidth = windowWidth - gutter;
   const tileWidth = (visibleWidth - cardGap * Math.floor(cardsVisible)) / cardsVisible;
 
-  const groups = useMemo(() => groupItemsByPlayer(items), [items]);
   // One batched call for every item currently in this preview row (already
   // capped by the caller, see hooks/use-collection.ts's PREVIEW_ITEM_LIMIT).
   const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
 
   const slots = useMemo<PreviewSlot[]>(() => {
     const capacity = compact ? PROFILE_COLLECTION_PREVIEW_LIMIT : MIN_VISIBLE_SLOTS;
-    const realGroups = compact ? groups.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : groups;
-    const real: PreviewSlot[] = realGroups.map((group) => ({ kind: 'group', group }));
-    const placeholderCount = Math.max(0, capacity - realGroups.length);
+    // Compact (profile) rows never scroll, so they hard-cap to `capacity`
+    // real tiles; the full/scrollable row shows every item the caller
+    // passed in — `capacity` there only determines the placeholder floor.
+    const realItems = compact ? items.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : items;
+    const real: PreviewSlot[] = realItems.map((item) => ({ kind: 'item', item }));
+    const placeholderCount = Math.max(0, capacity - realItems.length);
     const placeholders: PreviewSlot[] = Array.from({ length: placeholderCount }, (_, i) => ({
       kind: 'placeholder',
       key: `placeholder-${folderId}-${i}`,
     }));
     return [...real, ...placeholders];
-  }, [compact, groups, folderId]);
+  }, [compact, items, folderId]);
 
   return (
     <FlatList
@@ -109,18 +101,16 @@ export function HorizontalCardPreview({ folderId, items, onOpenGroup, onAddItem,
       horizontal
       scrollEnabled={!compact}
       showsHorizontalScrollIndicator={false}
-      keyExtractor={(slot) => (slot.kind === 'group' ? slot.group.key : slot.key)}
+      keyExtractor={(slot) => (slot.kind === 'item' ? slot.item.id : slot.key)}
       contentContainerStyle={{ paddingHorizontal: gutter }}
       ItemSeparatorComponent={() => <View style={{ width: cardGap }} />}
       renderItem={({ item: slot }) =>
-        slot.kind === 'group' ? (
+        slot.kind === 'item' ? (
           <CollectionPreviewCard
-            imageUrl={groupCover(slot.group, signedUrls)}
-            title={slot.group.label}
-            subtitle={groupSubtitle(slot.group)}
+            imageUrl={slot.item.primary_image_id ? (signedUrls.get(slot.item.primary_image_id) ?? null) : null}
             tileWidth={tileWidth}
             variant={variant}
-            onPress={() => onOpenGroup(slot.group)}
+            onPress={onOpenFolder}
           />
         ) : (
           <CollectionPreviewPlaceholder tileWidth={tileWidth} onPress={onAddItem} />

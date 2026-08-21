@@ -26,7 +26,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
 import {
-  CollectionPreviewCard,
   PREVIEW_CARD_ASPECT_RATIO,
   PREVIEW_CARD_RADIUS,
 } from '@/components/collection/collection-preview-card';
@@ -36,13 +35,7 @@ import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-s
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import {
-  NO_PLAYER_KEY,
-  groupItemsByPlayer,
-  itemMatchesSearch,
-  useItems,
-  type PlayerGroup,
-} from '@/hooks/use-collection';
+import { NO_PLAYER_KEY, itemMatchesSearch, useItems } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -76,10 +69,6 @@ type OwnerProfile = {
 // Dense grid. Gap is applied via FlatList's own contentContainerStyle/
 // columnWrapperStyle gap support — no per-item margin math, no
 // ItemSeparatorComponent (unreliable with numColumns > 1).
-const NUM_COLUMNS = 2;
-// Individual-card gallery (isCardMode) uses a denser 3-column grid than the
-// grouping grid above — only affects that grid's own columns/padding/tile
-// width, computed separately below.
 const CARD_NUM_COLUMNS = 3;
 const GRID_GAP = 3;
 
@@ -112,12 +101,16 @@ function padToMinimumGrid<T>(data: T[], keyPrefix: string, columns: number): Gri
   return [...toRealSlots(data), ...placeholders];
 }
 
-// The gallery for one folder — "a folder that holds folders": opening a
-// top-level category (Basketball, Baseball, ...) first reveals its
-// player groupings, and opening a grouping reveals that player's individual
-// cards. Same route both times — grouping mode vs. card mode is decided
-// purely by whether the `player` param is present — so there's no second
-// route/file to keep in sync with this one.
+// The gallery for one folder. The default view (no `player` route param)
+// renders every CollectionItem in the folder directly, one tile each — no
+// automatic grouping by player. The same screen also still answers a
+// `player` param (isCardMode below) by filtering to just that player's
+// cards inside the identical grid, and keeps its own hero-carousel header
+// and per-player gallery-comments thread (hooks/use-gallery-comments.ts) —
+// nothing currently links to that mode, but it's left intact rather than
+// deleted, since an explicit user-created-grouping feature could reuse this
+// same filtered-view plumbing later; only the *automatic* player grouping
+// that used to run by default has been removed.
 export default function CollectionFolderScreen() {
   const params = useLocalSearchParams<{
     folderId?: string | string[];
@@ -277,18 +270,21 @@ export default function CollectionFolderScreen() {
   const [search, setSearch] = useState('');
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
-  const thumbWidth = (windowWidth - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
   const cardThumbWidth = (windowWidth - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
 
-  const groups = useMemo(() => groupItemsByPlayer(items), [items]);
-
   // One batched call covering every item currently loaded for this folder —
-  // hero carousel, card-detail grid, and grouping grid covers all read from
-  // this same map (item-images beta privacy hardening, Phase 3B).
+  // both the hero carousel (isCardMode) and the default item grid below
+  // read from this same map (item-images beta privacy hardening, Phase 3B).
   const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
 
+  // The item grid's actual source list. With no `player` param (the
+  // default view) this is simply every item in the folder — one tile per
+  // CollectionItem, no automatic grouping. A `player` param (isCardMode,
+  // currently unreachable from any in-app navigation — see the top-level
+  // comment) still filters down to just that player's cards, reusing this
+  // exact same grid rather than a second parallel one.
   const cardItems = useMemo(() => {
-    if (!activePlayer) return [];
+    if (!activePlayer) return items;
     return activePlayer === NO_PLAYER_KEY
       ? items.filter((i) => !i.player?.trim())
       : items.filter((i) => i.player?.trim() === activePlayer);
@@ -472,18 +468,9 @@ export default function CollectionFolderScreen() {
     });
 
   // Filters what's already loaded (the full per-folder item set from
-  // useItems, not a capped preview) — no new query per keystroke. A group
-  // matches if its player name matches, or any card inside it does (team,
-  // title, brand — see hooks/use-collection.ts's itemMatchesSearch).
-  const filteredGroups = useMemo(() => {
-    const q = search.trim();
-    if (!q) return groups;
-    const qLower = q.toLowerCase();
-    return groups.filter(
-      (group) => group.label.toLowerCase().includes(qLower) || group.items.some((item) => itemMatchesSearch(item, q)),
-    );
-  }, [groups, search]);
-
+  // useItems, not a capped preview) — no new query per keystroke. Runs over
+  // `cardItems`, which by default is every item in the folder (see its own
+  // comment above), so this is what powers search for the default grid too.
   const filteredCardItems = useMemo(() => {
     const q = search.trim();
     if (!q) return cardItems;
@@ -496,11 +483,6 @@ export default function CollectionFolderScreen() {
     if (search.trim()) return toRealSlots(filteredCardItems);
     return padToMinimumGrid(filteredCardItems, `item-placeholder-${folderId}`, CARD_NUM_COLUMNS);
   }, [filteredCardItems, search, folderId]);
-
-  const groupSlots = useMemo(() => {
-    if (search.trim()) return toRealSlots(filteredGroups);
-    return padToMinimumGrid(filteredGroups, `folder-placeholder-${folderId}`, NUM_COLUMNS);
-  }, [filteredGroups, search, folderId]);
 
   const isCardMode = !!activePlayer;
   const screenTitle = isCardMode ? (activePlayer === NO_PLAYER_KEY ? 'Other' : activePlayer!) : folderTitle;
@@ -520,16 +502,14 @@ export default function CollectionFolderScreen() {
   const pendingHeroItem = clampedHeroPendingIndex !== null ? heroItems[clampedHeroPendingIndex] : null;
 
   function openItem(item: CollectionItem) {
-    const heroIdx = heroItems.findIndex((i) => i.id === item.id);
-    if (heroIdx !== -1) goToHeroIndex(heroIdx);
+    // Hero-carousel sync only matters while that carousel is actually
+    // mounted (isCardMode) — skipping it in the default grid avoids an
+    // unnecessary crossfade/prefetch on every tap there.
+    if (isCardMode) {
+      const heroIdx = heroItems.findIndex((i) => i.id === item.id);
+      if (heroIdx !== -1) goToHeroIndex(heroIdx);
+    }
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
-  }
-
-  function openGroup(group: PlayerGroup) {
-    router.push({
-      pathname: '/collection/[folderId]',
-      params: { folderId: folderId ?? '', title: folderTitle, player: group.key },
-    });
   }
 
   // Same /item/new + folderId/folderName params app/folder/[id].tsx and
@@ -934,7 +914,13 @@ export default function CollectionFolderScreen() {
               <Text style={styles.emptyButtonText}>Retry</Text>
             </Pressable>
           </View>
-        ) : isCardMode ? (
+        ) : (
+          // Unified item grid — the only grid this screen renders now. By
+          // default (no `player` param) cardItems is every item in the
+          // folder, so this is simultaneously "the default contents view"
+          // and (when a `player` param is present) the still-supported
+          // filtered view; there is deliberately no second, parallel grid
+          // for the filtered case.
           <>
             {itemsErrorBanner}
             <FlatList
@@ -942,7 +928,7 @@ export default function CollectionFolderScreen() {
             numColumns={CARD_NUM_COLUMNS}
             keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
             columnWrapperStyle={styles.row}
-            contentContainerStyle={[styles.gridContent, styles.cardGridContent]}
+            contentContainerStyle={[styles.gridContent, isCardMode && styles.cardGridContent]}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
             renderItem={({ item: slot }) =>
@@ -973,66 +959,6 @@ export default function CollectionFolderScreen() {
             }
             ListEmptyComponent={
               search.trim() && cardItems.length > 0 ? (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyTitle}>No matches</Text>
-                  <Text style={styles.emptyBody}>Try a different search term.</Text>
-                </View>
-              ) : (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyTitle}>No cards yet</Text>
-                  <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
-                  {isOwner && (
-                    <Pressable style={styles.emptyButton} onPress={addCard}>
-                      <Text style={styles.emptyButtonText}>Add Card</Text>
-                    </Pressable>
-                  )}
-                </View>
-              )
-            }
-            />
-          </>
-        ) : (
-          <>
-            {itemsErrorBanner}
-            <FlatList
-            data={groupSlots}
-            numColumns={NUM_COLUMNS}
-            keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.key : slot.key)}
-            columnWrapperStyle={styles.row}
-            contentContainerStyle={styles.gridContent}
-            onScroll={navbarOnScroll}
-            scrollEventThrottle={scrollEventThrottle}
-            renderItem={({ item: slot }) => {
-              if (slot.kind === 'placeholder') {
-                return (
-                  <CacheCasePlaceholderShell
-                    width={thumbWidth}
-                    aspectRatio={PREVIEW_CARD_ASPECT_RATIO}
-                    borderRadius={PREVIEW_CARD_RADIUS}
-                    accessibilityLabel="Empty folder slot"
-                  />
-                );
-              }
-              const group = slot.data;
-              // First item in the group with a primary gallery image,
-              // resolved through the signed-delivery Edge Function — same
-              // positional selection rule as before, just no longer trusting
-              // each item's own raw image_url directly.
-              const coverImageId = group.items.find((i) => i.primary_image_id)?.primary_image_id;
-              const cover = coverImageId ? (signedUrls.get(coverImageId) ?? null) : null;
-              return (
-                <CollectionPreviewCard
-                  testID={`collection-group-${group.key}`}
-                  imageUrl={cover}
-                  title={group.label}
-                  subtitle={`${group.items.length} ${group.items.length === 1 ? 'card' : 'cards'}`}
-                  tileWidth={thumbWidth}
-                  onPress={() => openGroup(group)}
-                />
-              );
-            }}
-            ListEmptyComponent={
-              search.trim() && groups.length > 0 ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyTitle}>No matches</Text>
                   <Text style={styles.emptyBody}>Try a different search term.</Text>

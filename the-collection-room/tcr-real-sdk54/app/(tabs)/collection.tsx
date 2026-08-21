@@ -24,7 +24,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
-import { itemMatchesSearch, useFolders, type PlayerGroup } from '@/hooks/use-collection';
+import { itemMatchesSearch, useFolders } from '@/hooks/use-collection';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import type { Folder } from '@/types';
 
@@ -240,12 +240,6 @@ export default function CollectionScreen() {
       params: { folderId: folder.id, title: folder.name },
     });
 
-  const openGroup = (folder: Folder, group: PlayerGroup) =>
-    router.push({
-      pathname: '/collection/[folderId]',
-      params: { folderId: folder.id, title: folder.name, player: group.key },
-    });
-
   const addItem = (folder: Folder) =>
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
 
@@ -380,7 +374,6 @@ export default function CollectionScreen() {
                 isExpanded={isExpanded(item.id)}
                 onToggle={() => toggle(item.id)}
                 onOpenFolder={() => openFolder(item)}
-                onOpenGroup={(group) => openGroup(item, group)}
                 onAddItem={() => addItem(item)}
               />
             )}
