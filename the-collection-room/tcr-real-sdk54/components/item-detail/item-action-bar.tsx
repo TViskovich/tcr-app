@@ -17,33 +17,30 @@ type Props = {
   onPressCacheCaseId: () => void;
   // Bookmark is the one icon in this row with real, already-existing
   // business logic elsewhere on the same screen (useSavedCard) — wired
-  // here rather than left as a placeholder View, unlike heart/message/
-  // magnifyingglass/share below (still genuinely unimplemented; see this
-  // component's own comment). Omitted entirely — renders the same static
-  // placeholder icon as before — when the viewer is the item's owner,
-  // matching the header BookmarkButton's own owner-gating (an owner isn't
-  // offered a control to bookmark their own card).
+  // here rather than left as a placeholder. Omitted entirely — renders the
+  // same static placeholder icon as before — when the viewer is the
+  // item's owner, matching the header BookmarkButton's own owner-gating
+  // (an owner isn't offered a control to bookmark their own card).
   isSaved?: boolean;
   onPressBookmark?: () => void;
   savingBookmark?: boolean;
 };
 
-// Layout only — see app/item/[id].tsx. Every icon except CacheCase ID
-// (always wired) and Bookmark (wired when onPressBookmark is passed) is
-// still a plain, non-interactive placeholder; this is the permanent slot
-// future features (likes, comments, ratings, search, share) will plug
-// into. The centered dots are a placeholder for a future element, not a
-// control.
+// Heart/comment/search/share were removed from this row (beta polish —
+// they rendered as plain, non-interactive Views that looked identically
+// tappable to the real CacheCase ID and Bookmark controls beside them, but
+// had no backing feature at all: this app has no item-like, item-comment,
+// or item-search concept anywhere, and share exists elsewhere — e.g.
+// app/collection/[folderId].tsx's own handleShare — but was never wired
+// here). Only CacheCase ID (always wired) and Bookmark (wired when
+// onPressBookmark is passed) remain. The centered dots stay as a
+// deliberate decorative accent, not a control — flex:1 on both `side`
+// containers keeps it truly centered regardless of how many real icons
+// end up on either side.
 export function ItemActionBar({ onPressCacheCaseId, isSaved, onPressBookmark, savingBookmark }: Props) {
   return (
     <View style={styles.row}>
       <View style={styles.side}>
-        <View style={styles.iconBtn}>
-          <IconSymbol name="heart" size={22} color={PV2.textPrimary} />
-        </View>
-        <View style={styles.iconBtn}>
-          <IconSymbol name="message" size={21} color={PV2.textPrimary} />
-        </View>
         <TouchableOpacity
           style={styles.iconBtn}
           onPress={onPressCacheCaseId}
@@ -61,9 +58,6 @@ export function ItemActionBar({ onPressCacheCaseId, isSaved, onPressBookmark, sa
       </View>
 
       <View style={[styles.side, styles.sideRight]}>
-        <View style={styles.iconBtn}>
-          <IconSymbol name="magnifyingglass" size={20} color={PV2.textPrimary} />
-        </View>
         {onPressBookmark ? (
           <TouchableOpacity
             style={styles.iconBtn}
@@ -88,9 +82,6 @@ export function ItemActionBar({ onPressCacheCaseId, isSaved, onPressBookmark, sa
             <IconSymbol name="bookmark" size={21} color={PV2.textPrimary} />
           </View>
         )}
-        <View style={styles.iconBtn}>
-          <IconSymbol name="square.and.arrow.up" size={21} color={PV2.textPrimary} />
-        </View>
       </View>
     </View>
   );

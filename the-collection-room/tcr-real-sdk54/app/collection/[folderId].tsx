@@ -770,10 +770,6 @@ export default function CollectionFolderScreen() {
               </View>
 
               <View style={styles.galleryActionsSide}>
-                {/* Not wired yet — layout placeholder. */}
-                <Pressable hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="magnifyingglass" size={20} color={PV2.textPrimary} />
-                </Pressable>
                 {showBookmark && (
                   <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
                     <IconSymbol
