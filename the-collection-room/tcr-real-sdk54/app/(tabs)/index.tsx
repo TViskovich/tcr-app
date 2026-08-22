@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -17,6 +18,7 @@ import { useSharedValue } from 'react-native-reanimated';
 import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
+import { deletePost } from '@/lib/posts';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -480,6 +482,30 @@ export default function HomeScreen() {
     }
   }
 
+  // Optimistic removal, same shape as handleLike's optimistic update above
+  // — the post disappears immediately, and is spliced back into its exact
+  // original position if the delete actually fails, so a failure never
+  // leaves the list silently missing a post that's still really there.
+  async function handleDeletePost(postId: string) {
+    const index = posts.findIndex((p) => p.id === postId);
+    if (index === -1) return;
+    const removed = posts[index];
+
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+
+    const result = await deletePost(postId);
+    if (result.status !== 'ok') {
+      console.error('[HomeScreen] handleDeletePost failed:', result.reason);
+      setPosts((prev) => {
+        if (prev.some((p) => p.id === postId)) return prev; // already restored/superseded
+        const next = [...prev];
+        next.splice(Math.min(index, next.length), 0, removed);
+        return next;
+      });
+      Alert.alert('Error', 'Could not delete post. Please try again.');
+    }
+  }
+
   const emptyBody =
     feedMode === 'for-you'
       ? 'Add an item to your collection and enable "Share to feed" to post here.'
@@ -583,6 +609,7 @@ export default function HomeScreen() {
                   });
                 }}
                 onLike={() => handleLike(item.id)}
+                onDelete={() => handleDeletePost(item.id)}
               />
             )}
             contentContainerStyle={[styles.list, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}

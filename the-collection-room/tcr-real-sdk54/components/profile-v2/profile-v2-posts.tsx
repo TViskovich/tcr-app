@@ -9,6 +9,9 @@ type Props = {
   onUserPress: (username: string) => void;
   onPostPress: (postId: string) => void;
   onLike: (postId: string) => void;
+  // Owner-only — PostCard itself gates the affordance to posts where
+  // currentUserId === post.user_id, so this is safe to always pass through.
+  onDelete: (postId: string) => void;
   // Set only when the posts query itself failed — distinct from a
   // genuinely empty list, so a failure is never shown as "No posts yet."
   error?: string | null;
@@ -17,7 +20,7 @@ type Props = {
 
 // Plain stacked list, not a FlatList — this renders inside the profile
 // screen's single outer ScrollView, same reasoning as ProfileV2Collections.
-export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress, onLike, error, onRetry }: Props) {
+export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress, onLike, onDelete, error, onRetry }: Props) {
   if (error && posts.length === 0) {
     return (
       <View style={styles.empty}>
@@ -50,6 +53,7 @@ export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress,
           onUserPress={() => onUserPress(post.username)}
           onPostPress={() => onPostPress(post.id)}
           onLike={() => onLike(post.id)}
+          onDelete={() => onDelete(post.id)}
         />
       ))}
     </View>

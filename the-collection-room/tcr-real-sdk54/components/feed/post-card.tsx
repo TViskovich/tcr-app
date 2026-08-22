@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Animated, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { supabase } from '@/lib/supabase';
 import type { CardShareItem, RateMyGrailCard } from '@/types';
@@ -215,18 +216,25 @@ export function PostCard({
   onUserPress,
   onPostPress,
   onLike,
+  onDelete,
 }: {
   post: FeedPost;
   currentUserId: string | undefined;
   onUserPress: () => void;
   onPostPress: () => void;
   onLike: () => void;
+  // Owner-only — omitted (or simply never rendered, see isOwner below) for
+  // every other viewer's post. The caller owns the actual delete request
+  // and local list update; this component only surfaces the confirmed
+  // intent.
+  onDelete?: () => void;
 }) {
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
   const isCardShare = post.post_type === 'card_share';
+  const isOwner = !!currentUserId && currentUserId === post.user_id;
 
   const rating = useGrailRating({
     postId: post.id,
@@ -245,6 +253,22 @@ export function PostCard({
     onLike();
   }
 
+  // Same title/body/Cancel-Delete shape as this codebase's other
+  // destructive-action confirmations (e.g. app/item/[id].tsx's
+  // handleDelete, folder-edit-modal.tsx's confirmDeleteFolder) — there's
+  // no separate "menu" step elsewhere in this app either, so tapping the
+  // single owner-only affordance goes straight to this confirmation.
+  function handleDeleteTap() {
+    Alert.alert(
+      'Delete Post',
+      "This will permanently remove this post, its comments, and likes. This can't be undone.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: onDelete },
+      ],
+    );
+  }
+
   // Only hide on image error for item posts — text posts have no image to fail.
   if (imageError && !isTextPost) return null;
 
@@ -252,32 +276,47 @@ export function PostCard({
 
   return (
     <View style={styles.card}>
-      {/* User row — tapping navigates to their public profile */}
-      <TouchableOpacity style={styles.cardHeader} onPress={onUserPress} activeOpacity={0.7}>
-        <View style={styles.cardAvatar}>
-          {post.avatar_url ? (
-            <Image
-              source={{ uri: post.avatar_url }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-              transition={200}
-            />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
-              <Text style={styles.cardAvatarInitial}>
-                {displayName.charAt(0).toUpperCase()}
-              </Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.cardUserInfo}>
-          <Text style={styles.cardDisplayName} numberOfLines={1}>
-            {displayName}
-          </Text>
-          <Text style={styles.cardUsername}>@{post.username}</Text>
-        </View>
-        <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
-      </TouchableOpacity>
+      {/* User row — tapping the avatar/name/date group navigates to their
+          public profile; the owner-only "..." sits outside that touch
+          target as its own sibling, in the same row. */}
+      <View style={styles.cardHeader}>
+        <TouchableOpacity style={styles.cardHeaderUserTouch} onPress={onUserPress} activeOpacity={0.7}>
+          <View style={styles.cardAvatar}>
+            {post.avatar_url ? (
+              <Image
+                source={{ uri: post.avatar_url }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+                transition={200}
+              />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
+                <Text style={styles.cardAvatarInitial}>
+                  {displayName.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.cardUserInfo}>
+            <Text style={styles.cardDisplayName} numberOfLines={1}>
+              {displayName}
+            </Text>
+            <Text style={styles.cardUsername}>@{post.username}</Text>
+          </View>
+          <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
+        </TouchableOpacity>
+
+        {isOwner && onDelete && (
+          <TouchableOpacity
+            onPress={handleDeleteTap}
+            hitSlop={10}
+            style={styles.moreBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Post options">
+            <IconSymbol name="ellipsis" size={18} color="rgba(255,255,255,0.55)" />
+          </TouchableOpacity>
+        )}
+      </View>
 
       {/* Post body — text block for text posts, grails grid for Rate My Grails, image otherwise */}
       {isTextPost ? (
@@ -368,8 +407,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
-    gap: 10,
     backgroundColor: '#1A1A1A',
+  },
+  cardHeaderUserTouch: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  moreBtn: {
+    paddingLeft: 10,
   },
   cardAvatar: {
     width: 36,

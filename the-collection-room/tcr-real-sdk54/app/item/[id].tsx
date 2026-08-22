@@ -26,7 +26,6 @@ import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gal
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
-import { BookmarkButton } from '@/components/ui/bookmark-button';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -664,6 +663,11 @@ export default function ItemDetailScreen() {
         options={{
           title: headerTitle,
           headerBackButtonDisplayMode: 'minimal',
+          // Non-owner viewers no longer get a header-right control at all —
+          // the ItemActionBar bookmark (lower on the screen) is now the
+          // sole bookmark entry point; see that component for the
+          // cardSaved/toggleCardSave/savingCard wiring, still owned by
+          // this same useSavedCard() call below.
           headerRight: isOwner && !isTransferredOut
             ? () =>
                 editMode ? (
@@ -682,10 +686,6 @@ export default function ItemDetailScreen() {
                     <Text style={styles.headerBtnText}>Edit</Text>
                   </TouchableOpacity>
                 )
-            : !!currentUserId
-            ? () => (
-                <BookmarkButton isSaved={cardSaved} onPress={toggleCardSave} disabled={savingCard} />
-              )
             : undefined,
           headerLeft: editMode
             ? () => (
@@ -825,7 +825,12 @@ export default function ItemDetailScreen() {
           ) : (
             /* ── View Mode — the new permanent layout ── */
             <>
-              <ItemActionBar onPressCacheCaseId={handleCacheCaseIdPress} />
+              <ItemActionBar
+                onPressCacheCaseId={handleCacheCaseIdPress}
+                isSaved={!isOwner ? cardSaved : undefined}
+                onPressBookmark={!isOwner ? toggleCardSave : undefined}
+                savingBookmark={savingCard}
+              />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
 

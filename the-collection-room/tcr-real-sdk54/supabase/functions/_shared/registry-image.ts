@@ -157,3 +157,27 @@ export function parseItemImagesStoragePath(url: string, projectUrl: string): str
 
   return validateItemImagesStoragePath(decoded);
 }
+
+// Same shape/rationale as parseItemImagesStoragePath above, for the
+// share-snapshots bucket instead (POST DELETION beta blocker —
+// delete-post's own storage cleanup step). Strictly constrained to THIS
+// project's own public share-snapshots bucket; returns null (never
+// guesses) for anything else, including a still-unmigrated item-images
+// URL — delete-post relies on that null to skip such a value entirely
+// rather than ever attempting to delete from item-images.
+export function parseShareSnapshotsStoragePath(url: string, projectUrl: string): string | null {
+  const marker = `${projectUrl}/storage/v1/object/public/share-snapshots/`;
+  if (!url.startsWith(marker)) return null;
+
+  const encodedRemainder = url.slice(marker.length);
+  if (!encodedRemainder) return null;
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encodedRemainder);
+  } catch {
+    return null;
+  }
+
+  return validateItemImagesStoragePath(decoded);
+}

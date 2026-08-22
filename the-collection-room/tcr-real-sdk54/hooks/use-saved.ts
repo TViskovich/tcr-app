@@ -39,6 +39,13 @@ function useSavedEntity(
 ) {
   const [isSaved, setIsSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  // The actual re-entry guard for toggle() below — same reasoning as
+  // hooks/use-folder-likes.ts's own inFlightRef: setSaving(true) doesn't
+  // take effect until the next render, so two taps arriving before then
+  // could both read the `saving` state as false and both fire a mutation,
+  // risking a duplicate saved_cards/saved_folders/saved_grails row. The
+  // ref is synchronous and closes that gap.
+  const savingRef = useRef(false);
   // An in-flight request left running past the point this hook's owning
   // screen unmounts or entityId/currentUserId changes can have its
   // underlying XHR connection torn down by the native networking layer and
@@ -70,18 +77,47 @@ function useSavedEntity(
     };
   }, [table, idColumn, entityId, currentUserId]);
 
+  // Root-cause fix (beta bug: item-detail bookmark "doesn't save/unsave as
+  // expected") — the previous version unconditionally set `isSaved` to the
+  // ATTEMPTED outcome regardless of whether the insert/delete actually
+  // succeeded, and never even logged a failure. Any mutation error (RLS
+  // denial, a raced duplicate insert, a network hiccup — anything) was
+  // completely invisible: the icon could flip to "saved" while no row was
+  // ever created, silently reverting the next time this hook re-mounted
+  // and re-read the real DB state. Same optimistic-update-then-roll-back-
+  // on-failure shape as hooks/use-folder-likes.ts's own toggle(), which
+  // already gets this right for the structurally identical folder-likes
+  // case.
   async function toggle() {
-    if (!entityId || !currentUserId || saving) return;
+    if (!entityId || !currentUserId || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
-    if (isSaved) {
-      await supabase.from(table).delete()
-        .eq('user_id', currentUserId).eq(idColumn, entityId);
-      setIsSaved(false);
-    } else {
-      await supabase.from(table).insert({ user_id: currentUserId, [idColumn]: entityId });
-      setIsSaved(true);
+
+    const prevSaved = isSaved;
+    setIsSaved(!prevSaved);
+
+    try {
+      if (prevSaved) {
+        const { error } = await supabase.from(table).delete()
+          .eq('user_id', currentUserId).eq(idColumn, entityId);
+        if (error) {
+          console.error(`[useSavedEntity] ${table} unsave failed:`, error.message);
+          setIsSaved(prevSaved);
+        }
+      } else {
+        const { error } = await supabase.from(table).insert({ user_id: currentUserId, [idColumn]: entityId });
+        if (error) {
+          console.error(`[useSavedEntity] ${table} save failed:`, error.message);
+          setIsSaved(prevSaved);
+        }
+      }
+    } catch (e) {
+      console.error(`[useSavedEntity] ${table} toggle threw:`, e);
+      setIsSaved(prevSaved);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
-    setSaving(false);
   }
 
   return { isSaved, saving, toggle };

@@ -15,14 +15,26 @@ type Props = {
   // cachecase-id-sheet.tsx, removed) with no real data; this button now
   // leads to the one real registry screen instead of a second, fake one.
   onPressCacheCaseId: () => void;
+  // Bookmark is the one icon in this row with real, already-existing
+  // business logic elsewhere on the same screen (useSavedCard) — wired
+  // here rather than left as a placeholder View, unlike heart/message/
+  // magnifyingglass/share below (still genuinely unimplemented; see this
+  // component's own comment). Omitted entirely — renders the same static
+  // placeholder icon as before — when the viewer is the item's owner,
+  // matching the header BookmarkButton's own owner-gating (an owner isn't
+  // offered a control to bookmark their own card).
+  isSaved?: boolean;
+  onPressBookmark?: () => void;
+  savingBookmark?: boolean;
 };
 
-// Layout only — see app/item/[id].tsx. None of these icons are wired to a
-// handler yet except the CacheCase ID logo below; this is the permanent
-// slot future features (likes, comments, ratings, search, bookmark, share)
-// will plug into. The centered dots are a placeholder for a future
-// element, not a control.
-export function ItemActionBar({ onPressCacheCaseId }: Props) {
+// Layout only — see app/item/[id].tsx. Every icon except CacheCase ID
+// (always wired) and Bookmark (wired when onPressBookmark is passed) is
+// still a plain, non-interactive placeholder; this is the permanent slot
+// future features (likes, comments, ratings, search, share) will plug
+// into. The centered dots are a placeholder for a future element, not a
+// control.
+export function ItemActionBar({ onPressCacheCaseId, isSaved, onPressBookmark, savingBookmark }: Props) {
   return (
     <View style={styles.row}>
       <View style={styles.side}>
@@ -52,9 +64,30 @@ export function ItemActionBar({ onPressCacheCaseId }: Props) {
         <View style={styles.iconBtn}>
           <IconSymbol name="magnifyingglass" size={20} color={PV2.textPrimary} />
         </View>
-        <View style={styles.iconBtn}>
-          <IconSymbol name="bookmark" size={21} color={PV2.textPrimary} />
-        </View>
+        {onPressBookmark ? (
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={onPressBookmark}
+            disabled={savingBookmark}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={isSaved ? 'Remove bookmark' : 'Bookmark'}
+            accessibilityState={{ selected: !!isSaved, disabled: !!savingBookmark }}>
+            {/* Same active/inactive glyph+color convention as the folder-
+                detail bookmark control (app/collection/[folderId].tsx) —
+                filled + PV2.accent when saved, outline + PV2.textPrimary
+                otherwise. */}
+            <IconSymbol
+              name={isSaved ? 'bookmark.fill' : 'bookmark'}
+              size={21}
+              color={isSaved ? PV2.accent : PV2.textPrimary}
+            />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.iconBtn}>
+            <IconSymbol name="bookmark" size={21} color={PV2.textPrimary} />
+          </View>
+        )}
         <View style={styles.iconBtn}>
           <IconSymbol name="square.and.arrow.up" size={21} color={PV2.textPrimary} />
         </View>

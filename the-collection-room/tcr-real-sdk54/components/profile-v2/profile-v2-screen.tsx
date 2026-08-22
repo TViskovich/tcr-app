@@ -39,8 +39,10 @@ import {
   type ExpectedGrailSlot,
 } from '@/hooks/use-grail-slots';
 import { useProfile } from '@/hooks/use-profile';
+import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { deletePost } from '@/lib/posts';
 import {
   deleteProfileImage,
   uploadAvatar,
@@ -276,6 +278,16 @@ export function ProfileV2Screen({ userId }: Props) {
   // writes — this state just carries what was true when Replace was
   // chosen.
   const [grailChooserTarget, setGrailChooserTarget] = useState<GrailChooserTarget | null>(null);
+  // Bookmarking a whole Grails showcase, not any single item — the same
+  // saved_grails-backed hook already used by app/grails/[userId].tsx
+  // (a route with no live entry point from normal browsing; this profile
+  // screen is what a non-owner viewer actually lands on). null ownerId for
+  // isOwnProfile mirrors that screen's own !isOwnGrails gate, so an owner
+  // never gets a control to save their own showcase.
+  const { isSaved: isGrailsSaved, saving: savingGrails, toggle: toggleGrailsSave } = useSavedGrails(
+    !isOwnProfile ? userId : null,
+    currentUserId,
+  );
   // Someone else's private folders never load client-side at all — not
   // just hidden in the UI, per hooks/use-collection.ts's publicOnly.
   const { folders, previewItems, refresh: refreshFolders } = useFolders(userId, {
@@ -540,6 +552,30 @@ export function ProfileV2Screen({ userId }: Props) {
           if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
         });
       }
+    }
+  }
+
+  // Owner-only (PostCard itself gates the "..." affordance to
+  // currentUserId === post.user_id, same as app/(tabs)/index.tsx's own
+  // handleDeletePost) — optimistic removal, spliced back into its exact
+  // original position if the delete actually fails.
+  async function handleDeletePost(postId: string) {
+    const index = profilePosts.findIndex((p) => p.id === postId);
+    if (index === -1) return;
+    const removed = profilePosts[index];
+
+    setProfilePosts((prev) => prev.filter((p) => p.id !== postId));
+
+    const result = await deletePost(postId);
+    if (result.status !== 'ok') {
+      console.error('[ProfileV2Screen] handleDeletePost failed:', result.reason);
+      setProfilePosts((prev) => {
+        if (prev.some((p) => p.id === postId)) return prev;
+        const next = [...prev];
+        next.splice(Math.min(index, next.length), 0, removed);
+        return next;
+      });
+      Alert.alert('Error', 'Could not delete post. Please try again.');
     }
   }
 
@@ -1306,7 +1342,7 @@ export function ProfileV2Screen({ userId }: Props) {
               so the canvas itself is dimensionally identical for owner
               and public view mode (same gridStage 32/32 padding, no
               action row inside either way). Owner sees Settings/Saved;
-              public sees Back. Both branches share styles.ownerActionRow/
+              public sees Back/Grails-bookmark. Both branches share styles.ownerActionRow/
               ownerIconBtn (not two independently-maintained style
               objects) so their outer spacing footprint is guaranteed
               identical — identity content begins at the same vertical
@@ -1317,26 +1353,73 @@ export function ProfileV2Screen({ userId }: Props) {
           {profile && !editMode && (
             <View style={styles.ownerActionRow}>
               {isOwnProfile ? (
-                <TouchableOpacity
-                  onPress={() => router.push('/settings')}
-                  hitSlop={10}
-                  style={styles.ownerIconBtn}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Settings"
-                  testID="profile-settings-button">
-                  <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    onPress={() => router.push('/settings')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Settings"
+                    testID="profile-settings-button">
+                    <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
+                  </TouchableOpacity>
+                  {/* Saved screen (app/saved.tsx) — fully built (Saved
+                      Collections/Cards/Grails, already on the signed-image
+                      architecture) but had no reachable entry point
+                      anywhere in the app; this row's own justifyContent:
+                      'space-between' plus this doc comment block's
+                      "Owner sees Settings/Saved" already assumed a second
+                      icon here. */}
+                  <TouchableOpacity
+                    onPress={() => router.push('/saved')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Saved"
+                    testID="profile-saved-button">
+                    <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
+                  </TouchableOpacity>
+                </>
               ) : (
-                <TouchableOpacity
-                  onPress={() => router.back()}
-                  hitSlop={10}
-                  style={styles.ownerIconBtn}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Back">
-                  <IconSymbol name="chevron.left" size={18} color="#fff" />
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    onPress={() => router.back()}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back">
+                    <IconSymbol name="chevron.left" size={18} color="#fff" />
+                  </TouchableOpacity>
+                  {/* Save/unsave this profile's whole Grails showcase
+                      (saved_grails via useSavedGrails above) — the visible
+                      control the live QA pass couldn't find, since it was
+                      only ever wired into app/grails/[userId].tsx, a route
+                      nothing in normal browsing actually navigates to.
+                      This profile screen is the real, live surface a
+                      non-owner views someone else's Grails on. */}
+                  {currentUserId && (
+                    <TouchableOpacity
+                      onPress={toggleGrailsSave}
+                      disabled={savingGrails}
+                      hitSlop={10}
+                      style={styles.ownerIconBtn}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel={isGrailsSaved ? 'Remove Grails bookmark' : 'Bookmark Grails'}
+                      accessibilityState={{ selected: isGrailsSaved, disabled: savingGrails }}
+                      testID="profile-grails-bookmark-button">
+                      <IconSymbol
+                        name={isGrailsSaved ? 'bookmark.fill' : 'bookmark'}
+                        size={18}
+                        color={isGrailsSaved ? PV2.accent : '#fff'}
+                        accessible={false}
+                      />
+                    </TouchableOpacity>
+                  )}
+                </>
               )}
             </View>
           )}
@@ -1541,6 +1624,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     onUserPress={(username) => router.push({ pathname: '/user/[username]', params: { username } })}
                     onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
                     onLike={handleLike}
+                    onDelete={handleDeletePost}
                     error={profilePostsError}
                     onRetry={refreshPosts}
                   />

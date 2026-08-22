@@ -25,6 +25,7 @@ import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { deletePost } from '@/lib/posts';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem, RateMyGrailCard } from '@/types';
@@ -244,6 +245,7 @@ export default function PostDetailScreen() {
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [newComment, setNewComment] = useState('');
   const [sending, setSending] = useState(false);
+  const [deletingPost, setDeletingPost] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
@@ -639,6 +641,39 @@ export default function PostDetailScreen() {
     ]);
   }
 
+  // Same title/body/Cancel-Delete shape as this app's other destructive-
+  // action confirmations (app/item/[id].tsx's handleDelete, folder-edit-
+  // modal.tsx's confirmDeleteFolder, components/feed/post-card.tsx's own
+  // handleDeleteTap for the feed/profile-list version of this same
+  // action). On success, navigates back — there's no post left here to
+  // display. On failure, the post stays fully visible and untouched;
+  // nothing was removed optimistically on this single-post screen.
+  function handleDeletePostPress() {
+    if (!post || deletingPost) return;
+    Alert.alert(
+      'Delete Post',
+      "This will permanently remove this post, its comments, and likes. This can't be undone.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingPost(true);
+            const result = await deletePost(post.id);
+            if (result.status !== 'ok') {
+              console.error('[PostDetail] handleDeletePostPress failed:', result.reason);
+              setDeletingPost(false);
+              Alert.alert('Error', 'Could not delete post. Please try again.');
+              return;
+            }
+            handleBack();
+          },
+        },
+      ],
+    );
+  }
+
   const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
 
   if (loading && !post) {
@@ -678,7 +713,26 @@ export default function PostDetailScreen() {
   return (
     <>
       <Stack.Screen
-        options={{ title: `@${post.username}`, headerBackTitle: '', headerLeft: headerBackLeft }}
+        options={{
+          title: `@${post.username}`,
+          headerBackTitle: '',
+          headerLeft: headerBackLeft,
+          headerRight:
+            post.user_id === currentUserId
+              ? () =>
+                  deletingPost ? (
+                    <ActivityIndicator size="small" color="#0a7ea4" style={styles.headerDeleteBtn} />
+                  ) : (
+                    <TouchableOpacity
+                      onPress={handleDeletePostPress}
+                      style={styles.headerDeleteBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel="Post options">
+                      <Text style={styles.headerDeleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  )
+              : undefined,
+        }}
       />
       <KeyboardAvoidingView
         style={styles.container}
@@ -771,6 +825,14 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
+  },
+  headerDeleteBtn: {
+    paddingHorizontal: 4,
+  },
+  headerDeleteText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#E53935',
   },
   center: {
     flex: 1,
