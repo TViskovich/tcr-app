@@ -55,7 +55,7 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
-import { ProfileV2CollectorPanel, type PrototypeCollectorStats } from './profile-v2-collector-panel';
+import { ProfileV2CollectorPanel } from './profile-v2-collector-panel';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2Grid } from './profile-v2-grid';
 import { ProfileV2HeroCanvas } from './profile-v2-hero-canvas';
@@ -67,17 +67,6 @@ import { ProfileV2Selector, type ProfileV2Section } from './profile-v2-selector'
 import { ProfileV2Stats } from './profile-v2-stats';
 import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
 import { PV2 } from './profile-v2-theme';
-
-// Values with no corresponding column/table yet (see PrototypeCollectorStats
-// in profile-v2-collector-panel.tsx). Kept in exactly one place, clearly
-// named, rather than inlined in JSX — swap these out if/when the real data
-// lands (an authentications table, an ownership-transfer history, a
-// collector registry id).
-const prototypeCollectorStats: PrototypeCollectorStats = {
-  authenticated: 0,
-  transferred: 0,
-  collectorId: 'CCA #1',
-};
 
 const TAGLINE_MAX_LENGTH = 80;
 const LOCATION_MAX_LENGTH = 80;
@@ -1306,7 +1295,6 @@ export function ProfileV2Screen({ userId }: Props) {
               username={profile?.username ?? ''}
               vaultTotal={stats.itemCount}
               graded={stats.gradedCount}
-              prototype={prototypeCollectorStats}
               onAvatarPress={isOwnProfile ? pickAvatar : undefined}
             />
           )}

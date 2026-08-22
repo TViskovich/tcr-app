@@ -4,23 +4,12 @@ import { Image } from 'expo-image';
 
 import { PV2 } from './profile-v2-theme';
 
-// Fake values that don't correspond to any real column/table today. Kept in
-// one object (per spec) rather than scattered through JSX, and re-exported
-// so app/(tabs)/profile.tsx can own it while this file just renders whatever
-// it's given.
-export type PrototypeCollectorStats = {
-  authenticated: number;
-  transferred: number;
-  collectorId: string;
-};
-
 type Props = {
   avatarUri: string | null;
   displayName: string;
   username: string;
   vaultTotal: number;
   graded: number;
-  prototype: PrototypeCollectorStats;
   // Sole avatar-edit entry point for Profile V2 (see profile-v2-screen.tsx,
   // which only passes this for the owner's own profile — pickAvatar).
   // Omitted entirely for a visitor, leaving the avatar non-interactive,
@@ -43,7 +32,6 @@ export function ProfileV2CollectorPanel({
   username,
   vaultTotal,
   graded,
-  prototype,
   onAvatarPress,
 }: Props) {
   return (
@@ -72,24 +60,26 @@ export function ProfileV2CollectorPanel({
 
       <View style={styles.colDivider} />
 
-      {/* Center — vault totals. vaultTotal/graded are real (collection_items
-          count / non-null-grade count via hooks/use-profile.ts); authenticated/
-          transferred are prototype-only, per PrototypeCollectorStats above. */}
+      {/* Center — vault totals. Both real (collection_items count /
+          non-null-grade count via hooks/use-profile.ts). This panel used
+          to also show "Authenticated"/"Transferred" stats, but those had
+          no backing column/table — always 0 for every user — and were
+          removed as visible fake data (beta placeholder-data pass). */}
       <View style={[styles.col, styles.centerCol]}>
         <StatRow label="Vault Total" value={`${vaultTotal} Assets`} />
         <StatRow label="Graded" value={`${graded} Items`} />
-        <StatRow label="Authenticated" value={`${prototype.authenticated} Items`} />
-        <StatRow label="Transferred" value={`${prototype.transferred} Items`} />
       </View>
 
       <View style={styles.colDivider} />
 
-      {/* Right — CacheCase Certified/Registered seal + CCA id. The seal is
-          a permanent part of the CCA identity, not user content — always
-          the same static local asset, unrelated to profiles.showcase_
-          badge_url (that field and its "Change Collector Badge" edit flow
-          still exist in profile-v2-screen.tsx, just no longer rendered
-          here). collectorId is prototype-only. */}
+      {/* Right — CacheCase Certified/Registered seal. A permanent part of
+          the CCA identity, not user content — always the same static
+          local asset, unrelated to profiles.showcase_badge_url (that
+          field and its "Change Collector Badge" edit flow still exist in
+          profile-v2-screen.tsx, just no longer rendered here). The
+          "CCA #1"-style collector id that used to sit under it was
+          identical, hardcoded text on every profile with no real
+          per-user identifier behind it — removed as visible fake data. */}
       <View style={[styles.col, styles.rightCol]}>
         <View style={styles.badge}>
           <Image
@@ -98,10 +88,6 @@ export function ProfileV2CollectorPanel({
             contentFit="contain"
           />
         </View>
-        <Text style={styles.collectorId} numberOfLines={1}>
-          <Text style={styles.collectorIdBase}>CCA </Text>
-          <Text style={styles.collectorIdAccent}>{prototype.collectorId.replace(/^CCA\s*/i, '')}</Text>
-        </Text>
       </View>
     </View>
   );
@@ -204,16 +190,5 @@ const styles = StyleSheet.create({
   badge: {
     width: 54,
     height: 54,
-  },
-  collectorId: {
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  collectorIdBase: {
-    color: '#fff',
-  },
-  collectorIdAccent: {
-    color: PV2.accent,
   },
 });
