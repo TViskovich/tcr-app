@@ -38,7 +38,7 @@ export default function GrailsShowcaseScreen() {
       hasAnimated.current = true;
       Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
     }
-  }, [loading, grails.length]);
+  }, [loading, grails.length, fadeAnim]);
 
   const name = (displayName ?? '').trim();
   const title = name ? `${name}'s Grails` : `@${username ?? ''}'s Grails`;

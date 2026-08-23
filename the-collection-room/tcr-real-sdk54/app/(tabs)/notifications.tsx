@@ -501,7 +501,7 @@ export default function NotificationsScreen() {
           <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
           <Text style={styles.emptyTitle}>No notifications yet</Text>
           <Text style={styles.emptyBody}>
-            You'll see likes, comments, follows, and messages here.
+            You&apos;ll see likes, comments, follows, and messages here.
           </Text>
         </View>
       ) : (

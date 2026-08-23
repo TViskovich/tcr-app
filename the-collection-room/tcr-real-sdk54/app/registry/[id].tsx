@@ -331,6 +331,16 @@ export default function RegistryDetailScreen() {
       return;
     }
     checkPendingTransfer(record.id);
+    // record?.id below IS the intended dependency, matching this effect's
+    // own "different card navigated to" comment above: the rule doesn't
+    // recognize record?.id in this array as satisfying the record.id read
+    // above (an optional-chain vs. plain-member-expression mismatch — a
+    // known eslint-plugin-react-hooks limitation, not a real missing
+    // dependency), and adding the full `record` object instead would make
+    // this re-run on every unrelated setRecord update (e.g. the
+    // partial-field merge elsewhere in this file), triggering an
+    // unnecessary pending-transfer network re-check each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record?.id, isOwner, checkPendingTransfer]);
 
   function handleBack() {

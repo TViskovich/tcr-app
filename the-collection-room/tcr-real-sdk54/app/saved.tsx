@@ -219,7 +219,7 @@ function GrailsRow({ entry, onPress }: { entry: SavedGrailsEntry; onPress: () =>
         )}
       </View>
       <View style={styles.rowInfo}>
-        <Text style={styles.rowTitle} numberOfLines={1}>{name}'s Grails</Text>
+        <Text style={styles.rowTitle} numberOfLines={1}>{name}&apos;s Grails</Text>
         <Text style={styles.rowSub} numberOfLines={1}>@{entry.username}</Text>
       </View>
       <Text style={styles.chevron}>›</Text>

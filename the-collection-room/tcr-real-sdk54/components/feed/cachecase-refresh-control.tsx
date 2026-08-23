@@ -51,7 +51,7 @@ export function CacheCaseRefreshControl({ pullProgress, refreshing }: Props) {
       displayOpacity.value = withTiming(0, { duration: 260 });
       displayScale.value = withTiming(0.5, { duration: 260 });
     }
-  }, [refreshing]);
+  }, [refreshing, refreshingSV, displayOpacity, displayScale, spin]);
 
   // Progressive reveal + snap while the user is actively pulling (ignored
   // once a refresh is in flight — that phase is owned by the effect above).

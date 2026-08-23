@@ -156,10 +156,10 @@ export function PhotoAdjuster({
     if (cropW <= 0 || cropH <= 0) return uri;
 
     // ── Step 4: build manipulator action list ─────────────────────────
-    const actions: Array<
-      { crop: { originX: number; originY: number; width: number; height: number } } |
-      { resize: { width: number; height: number } }
-    > = [
+    const actions: (
+      | { crop: { originX: number; originY: number; width: number; height: number } }
+      | { resize: { width: number; height: number } }
+    )[] = [
       { crop: { originX: cropX, originY: cropY, width: cropW, height: cropH } },
     ];
 
@@ -178,7 +178,6 @@ export function PhotoAdjuster({
 
     // compress: 0.95 — near-lossless JPEG; preserves card text and slab
     // labels without producing unnecessarily large files.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await manipulateAsync(uri, actions as any, {
       compress: 0.95,
       format: SaveFormat.JPEG,
