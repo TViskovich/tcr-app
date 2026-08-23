@@ -233,6 +233,34 @@ function intendedProfileMatchesRow(intended: IntendedProfileFields, row: Intende
   );
 }
 
+// notifications_follow_unique is a live, undocumented-in-migrations partial
+// unique index on (user_id, actor_id) WHERE type = 'follow' — one row ever
+// per (recipient, follower) pair, not one row per follow event, so a
+// re-follow after an earlier unfollow needs the existing row refreshed
+// (fresh created_at, read reset to false), not a second insert.
+//
+// A prior client-side attempt did this as insert-then-on-23505-delete-then-
+// reinsert, but that can't work under RLS: the actor's own session can
+// never SELECT the recipient's notification row (notifications_select_own
+// is USING (user_id = auth.uid())), so PostgREST's row-visibility-gated
+// DELETE silently affects zero rows and the replacement insert hits the
+// same 23505 again. The refresh has to happen server-side, where it isn't
+// constrained by the actor's own SELECT visibility — see
+// create_or_refresh_follow_notification in supabase/migrations/
+// 20260822120000_create_or_refresh_follow_notification_rpc.sql. That
+// function is SECURITY DEFINER, derives the actor exclusively from its own
+// internal auth.uid() (never a client-supplied id), and only ever writes
+// the one row shaped (user_id = followedUserId, actor_id = caller, type =
+// 'follow') — no broader RLS or index change involved.
+async function createFollowNotification(followedUserId: string): Promise<void> {
+  const { error } = await supabase.rpc('create_or_refresh_follow_notification', {
+    p_followed_user_id: followedUserId,
+  });
+  if (error) {
+    console.error('[createFollowNotification] RPC failed:', error.message);
+  }
+}
+
 type Props = {
   // The profile being VIEWED — the signed-in user's own id when opened
   // from app/(tabs)/profile.tsx, or another user's resolved id when
@@ -445,14 +473,10 @@ export function ProfileV2Screen({ userId }: Props) {
         }
         setIsFollowing(true);
         adjustFollowerCount(1);
-        // Notify the followed user (unique index makes this idempotent on re-follow)
-        supabase.from('notifications').insert({
-          user_id: userId,
-          actor_id: currentUserId,
-          type: 'follow',
-        }).then(({ error: notifError }) => {
-          if (notifError && notifError.code !== '23505') console.error('Follow notif failed:', notifError.message);
-        });
+        // Notification delivery is secondary to the follow mutation above,
+        // which has already succeeded — never let a notification failure
+        // surface as a failed follow.
+        createFollowNotification(userId);
       }
     } finally {
       setFollowLoading(false);
