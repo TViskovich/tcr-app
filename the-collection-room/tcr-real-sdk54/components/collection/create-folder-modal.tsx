@@ -7,6 +7,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -32,6 +33,16 @@ type Props = {
 // entirely rather than assigning any value on the new folder's behalf.
 export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props) {
   const [name, setName] = useState('');
+  // Defaults to private (false) — the live folders.is_public column
+  // default is true, but nothing in this codebase documents that as an
+  // intentional product decision (confirmed against supabase/migrations/
+  // 20260819120000_enforce_collection_folder_privacy.sql, the only
+  // migration that discusses is_public's semantics — it's entirely about
+  // RLS enforcement, silent on what a new folder's starting value should
+  // be). A user should explicitly opt into public discoverability rather
+  // than a new collection starting exposed; the DB column default itself
+  // is untouched — this client just always sends an explicit value.
+  const [isPublic, setIsPublic] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function handleCreate() {
@@ -39,11 +50,12 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
     setLoading(true);
     const { error } = await supabase
       .from('folders')
-      .insert({ user_id: userId, name: name.trim() });
+      .insert({ user_id: userId, name: name.trim(), is_public: isPublic });
     if (error) {
       Alert.alert('Error', error.message);
     } else {
       setName('');
+      setIsPublic(false);
       onCreated();
     }
     setLoading(false);
@@ -51,6 +63,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
 
   function handleClose() {
     setName('');
+    setIsPublic(false);
     onClose();
   }
 
@@ -77,6 +90,25 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
             returnKeyType="done"
             onSubmitEditing={handleCreate}
           />
+
+          {/* Public toggle — same wording/behavior as folder-edit-modal.tsx's
+              own Public Collection control, just styled for this sheet. */}
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleLabel}>
+              <Text style={styles.toggleTitle}>Public Collection</Text>
+              <Text style={styles.toggleHint}>
+                {isPublic
+                  ? 'Anyone can discover and view this collection.'
+                  : 'Only you can see this collection.'}
+              </Text>
+            </View>
+            <Switch
+              value={isPublic}
+              onValueChange={setIsPublic}
+              trackColor={{ true: '#0a7ea4' }}
+            />
+          </View>
+
           <TouchableOpacity
             style={[styles.button, !name.trim() && styles.buttonDisabled]}
             onPress={handleCreate}
@@ -119,6 +151,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#ddd',
     alignSelf: 'center',
     marginBottom: 8,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  toggleLabel: {
+    flex: 1,
+  },
+  toggleTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#11181C',
+  },
+  toggleHint: {
+    fontSize: 13,
+    color: '#687076',
+    lineHeight: 18,
+    marginTop: 2,
   },
   title: {
     fontSize: 20,
