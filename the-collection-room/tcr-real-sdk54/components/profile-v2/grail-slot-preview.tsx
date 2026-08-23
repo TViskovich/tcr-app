@@ -437,6 +437,7 @@ export function GrailSlotPreview({
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={150}
+              cachePolicy="memory-disk"
             />
           ) : (
             <View style={styles.slotEmptyFill} />

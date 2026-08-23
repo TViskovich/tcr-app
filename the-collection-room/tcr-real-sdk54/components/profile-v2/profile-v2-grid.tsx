@@ -1,4 +1,7 @@
+import { useEffect } from 'react';
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+import { Image } from 'expo-image';
 
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
@@ -68,6 +71,26 @@ export function ProfileV2Grid({
   const { urls: signedImageUrls } = useSignedItemImages(
     slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? []))),
   );
+
+  // Warms expo-image's own cache for the whole grid up front, the moment
+  // the signing batch resolves — same pattern app/collection/[folderId].tsx
+  // already uses for its own hero carousel. Without this, each slot's own
+  // <Image> independently triggers its own fetch/decode the instant its
+  // URL becomes available, and 9 near-simultaneous but uncoordinated
+  // fetches to the same host land at visibly staggered times (connection-
+  // pool limits, decode timing, each with its own fade-in) — the grid
+  // "feeling ready together" instead of popping in one by one is exactly
+  // what a shared prefetch buys, without changing signing (still one
+  // batched useSignedItemImages call) or storage/RLS architecture at all.
+  // Keyed by a stable, sorted, joined string rather than `signedImageUrls`
+  // itself (a brand-new Map identity on every render of this hook, per its
+  // own implementation) — this must only actually re-run when the resolved
+  // URL set itself changes, not on every incidental re-render.
+  const resolvedUrlsKey = Array.from(signedImageUrls.values()).sort().join(',');
+  useEffect(() => {
+    if (!resolvedUrlsKey) return;
+    Image.prefetch(resolvedUrlsKey.split(',')).catch(() => {});
+  }, [resolvedUrlsKey]);
 
   // State: initial load failed, nothing loaded yet — never render 9 empty
   // owner-editable "+" slots for a failed query, which would misrepresent
