@@ -247,3 +247,42 @@ export async function uploadFolderCover(uri: string, userId: string): Promise<Up
   const { data } = supabase.storage.from('item-images').getPublicUrl(path);
   return { publicUrl: data.publicUrl, storagePath: path };
 }
+
+// Best-effort Storage cleanup for a folder cover object that a caller has
+// already determined is no longer referenced by any folder row — a
+// replaced upload's old object, an old object left behind after switching
+// cover_source away from 'upload', or an uploaded cover whose owning
+// folder was just deleted. Never throws, matching lib/storage.ts's own
+// deleteProfileImage convention exactly. Callers are responsible for only
+// ever invoking this AFTER the folders row write it depends on has already
+// committed successfully (see components/collection/folder-edit-modal.tsx),
+// so its only two possible outcomes are "the old object is now gone" or
+// "the old object is merely orphaned" — never a reason to treat that write
+// as failed.
+//
+// storagePath is always the exact, already-known value from
+// folders.cover_storage_path (Phase 3D) or a just-completed
+// uploadFolderCover() result — never guessed, never a prefix, never
+// derived from cover_image_url. The shape check below (userId/covers/...)
+// is defense in depth against a malformed/mismatched value, mirroring
+// deleteProfileImage's own ownership check; it never widens what this can
+// delete beyond that one exact path.
+export async function deleteFolderCover(
+  storagePath: string | null | undefined,
+  userId: string,
+): Promise<void> {
+  if (!storagePath) return;
+  const segments = storagePath.split('/');
+  if (segments[0] !== userId || segments[1] !== 'covers' || !segments[2]) return;
+
+  try {
+    const { error } = await supabase.storage.from('item-images').remove([storagePath]);
+    if (error && __DEV__) {
+      console.warn('[deleteFolderCover] failed to remove object:', error.message);
+    }
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[deleteFolderCover] unexpected error removing object:', e);
+    }
+  }
+}

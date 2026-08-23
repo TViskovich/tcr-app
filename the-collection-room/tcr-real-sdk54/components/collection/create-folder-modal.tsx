@@ -13,8 +13,6 @@ import {
   View,
 } from 'react-native';
 
-import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
-import { FolderColorPicker } from '@/components/collection/folder-color-picker';
 import { supabase } from '@/lib/supabase';
 
 type Props = {
@@ -24,9 +22,16 @@ type Props = {
   onCreated: () => void;
 };
 
+// No Binder Color picker here (beta product decision, same reasoning as
+// folder-edit-modal.tsx's own — folders.color has no rendered effect
+// anywhere reachable in the current, item-based Collection UI). The
+// column stays nullable with no DB default (see supabase/migrations/
+// 20260714120000_folder_binder_color.sql), and its own documented
+// semantics already treat null as a perfectly valid, meaningful value
+// ("null = auto (name-hash)") — so the insert below simply omits `color`
+// entirely rather than assigning any value on the new folder's behalf.
 export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props) {
   const [name, setName] = useState('');
-  const [color, setColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
   const [loading, setLoading] = useState(false);
 
   async function handleCreate() {
@@ -34,12 +39,11 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
     setLoading(true);
     const { error } = await supabase
       .from('folders')
-      .insert({ user_id: userId, name: name.trim(), color });
+      .insert({ user_id: userId, name: name.trim() });
     if (error) {
       Alert.alert('Error', error.message);
     } else {
       setName('');
-      setColor(FOLDER_COLOR_KEYS[0]);
       onCreated();
     }
     setLoading(false);
@@ -47,7 +51,6 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
 
   function handleClose() {
     setName('');
-    setColor(FOLDER_COLOR_KEYS[0]);
     onClose();
   }
 
@@ -74,10 +77,6 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
             returnKeyType="done"
             onSubmitEditing={handleCreate}
           />
-          <View>
-            <Text style={styles.colorLabel}>Binder Color</Text>
-            <FolderColorPicker value={color} onChange={setColor} />
-          </View>
           <TouchableOpacity
             style={[styles.button, !name.trim() && styles.buttonDisabled]}
             onPress={handleCreate}
@@ -126,14 +125,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#11181C',
     marginBottom: 4,
-  },
-  colorLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#687076',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
   },
   input: {
     borderWidth: 1,

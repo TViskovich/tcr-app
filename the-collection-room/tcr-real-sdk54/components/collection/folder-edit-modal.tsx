@@ -11,14 +11,9 @@ import {
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { FOLDER_COLOR_KEYS, type FolderColorKey } from '@/components/collection/folder-card';
-import { FolderColorPicker } from '@/components/collection/folder-color-picker';
-import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
-import { uploadFolderCover } from '@/lib/storage';
+import { deleteFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
 
@@ -31,25 +26,30 @@ type Props = {
   onDeleted: () => void;
 };
 
-// Rename / cover / binder color / visibility / delete for one folder —
-// extracted from the legacy app/folder/[id].tsx screen (now a compatibility
-// redirect to /collection/[folderId]) so the canonical folder-detail screen
-// gets this owner-only management surface without inlining ~300 lines into
-// an already-large file.
+// Rename / visibility / delete for one folder — extracted from the legacy
+// app/folder/[id].tsx screen (now a compatibility redirect to
+// /collection/[folderId]) so the canonical folder-detail screen gets this
+// owner-only management surface without inlining ~300 lines into an
+// already-large file.
+//
+// No cover-editing or binder-color UI here (beta product decision — the
+// main Collection screen and folder detail are both item-based today, not
+// cover-image or leather-binder-colored cards, so neither field has any
+// live, user-facing visual effect anywhere reachable — confirmed by
+// tracing every consumer of folders.color/cover_source/cover_image_url/
+// cover_storage_path across the app). This deliberately does NOT touch any
+// of those columns on save — the UPDATE below omits them entirely, so
+// whatever a folder's existing cover/color state already is (frozen from
+// before this UI was hidden) is left exactly as-is. That data, the
+// signed-cover Edge Function, and the underlying Storage objects remain
+// fully live and still render correctly wherever they're still consumed
+// (Saved Collections, the Grail collection picker, the registry claim
+// folder picker) — only the ability to change either from here is gone.
+// deleteFolder() below still cleans up a folder's own uploaded cover
+// object on folder deletion, independent of this.
 export function FolderEditModal({ visible, folder, currentUserId, onClose, onSaved, onDeleted }: Props) {
   const [editName, setEditName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(true);
-  const [editCoverSource, setEditCoverSource] = useState<string>('upload');
-  // Dual-purpose, as before: (1) the write-path value persisted back to
-  // cover_image_url on save (transitional field — see saveEditFolder), and
-  // (2) the "does a persisted cover currently exist, or was it removed"
-  // marker (null = none/removed) that drives the signed-preview lookup
-  // below. Since Phase 3D, this is NEVER read directly as an <Image>
-  // source — only newCoverUri (a fresh local pick) or a resolved signed
-  // URL are.
-  const [editCoverUrl, setEditCoverUrl] = useState<string | null>(null);
-  const [editColor, setEditColor] = useState<FolderColorKey>(FOLDER_COLOR_KEYS[0]);
-  const [newCoverUri, setNewCoverUri] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -60,98 +60,22 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
     if (!visible) return;
     setEditName(folder.name);
     setEditIsPublic(folder.is_public);
-    setEditCoverSource(folder.cover_source ?? 'upload');
-    setEditCoverUrl(folder.cover_image_url);
-    // Same name-hash fallback folder-card.tsx's leatherTone() uses, so the
-    // picker opens pre-selected on whatever color the card is actually
-    // showing right now, even if this folder predates the color column.
-    setEditColor(
-      (folder.color as FolderColorKey) && FOLDER_COLOR_KEYS.includes(folder.color as FolderColorKey)
-        ? (folder.color as FolderColorKey)
-        : FOLDER_COLOR_KEYS[folder.name.charCodeAt(0) % FOLDER_COLOR_KEYS.length],
-    );
-    setNewCoverUri(null);
   }, [visible, folder]);
 
-  async function launchCoverCamera() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow camera access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [3, 2],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) setNewCoverUri(result.assets[0].uri);
-  }
-
-  async function launchCoverLibrary() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [3, 2],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) setNewCoverUri(result.assets[0].uri);
-  }
-
-  function pickCover() {
-    Alert.alert('Cover Photo', undefined, [
-      { text: 'Take Photo', onPress: launchCoverCamera },
-      { text: 'Choose from Library', onPress: launchCoverLibrary },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }
-
-  function removeCover() {
-    setNewCoverUri(null);
-    setEditCoverUrl(null);
-  }
-
+  // No cover or color fields in this payload at all (see this component's
+  // own module comment) — an UPDATE only ever touches the columns it
+  // names, so whatever cover_source/cover_image_url/cover_storage_path/
+  // color a folder already has is left completely untouched by every
+  // save, regardless of what it was.
   async function saveEditFolder() {
     if (!editName.trim()) return;
     setEditSaving(true);
     try {
-      // Only modify cover_image_url/cover_storage_path when in upload mode.
-      // first_card always clears cover_storage_path (Phase 3D design — it's
-      // never a folder-owned object, so no path is ever persisted for it);
-      // cover_image_url is left untouched for first_card (display-only
-      // legacy field, unused by first_card's own — server-resolved —
-      // rendering).
-      let coverUrl = folder.cover_image_url;
-      let coverStoragePath = folder.cover_storage_path;
-      if (editCoverSource === 'upload') {
-        if (newCoverUri && currentUserId) {
-          const uploaded = await uploadFolderCover(newCoverUri, currentUserId);
-          coverUrl = uploaded.publicUrl;
-          coverStoragePath = uploaded.storagePath;
-        } else {
-          coverUrl = editCoverUrl;
-          // "Remove Cover" clears editCoverUrl without a replacement
-          // upload — the previously-uploaded object's path must be
-          // cleared too, or cover_storage_path would keep pointing at an
-          // image the UI no longer shows as this folder's cover.
-          if (!editCoverUrl) coverStoragePath = null;
-        }
-      } else {
-        coverStoragePath = null;
-      }
       const { data, error } = await supabase
         .from('folders')
         .update({
           name: editName.trim(),
           is_public: editIsPublic,
-          cover_image_url: coverUrl,
-          cover_source: editCoverSource,
-          cover_storage_path: coverStoragePath,
-          color: editColor,
         })
         .eq('id', folder.id)
         .select()
@@ -182,6 +106,17 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
     try {
       const { error } = await supabase.from('folders').delete().eq('id', folder.id);
       if (error) throw new Error(error.message);
+
+      // Best-effort, after the fact — the folder row (and every reference
+      // to this cover) is already gone by this point. A failure here must
+      // never surface as a failed delete: an orphaned Storage object is
+      // preferable to losing DB consistency, matching every other
+      // best-effort Storage cleanup in this codebase (deleteProfileImage,
+      // lib/item-images.ts's cleanupOrphanedItemImages/removeItemImage).
+      if (currentUserId) {
+        await deleteFolderCover(folder.cover_storage_path, currentUserId);
+      }
+
       onClose();
       onDeleted();
     } catch (e) {
@@ -190,33 +125,6 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
       setDeleting(false);
     }
   }
-
-  // Only fetched when there's actually a persisted cover to preview, no
-  // fresher local pick overriding it, and the upload-cover preview section
-  // is even in view (it only ever renders in 'upload' mode — see below) —
-  // avoids a wasted signed-delivery request while editing a 'first_card'
-  // folder, which has no image preview slot to fill either way.
-  const wantsPersistedCoverPreview = visible && editCoverSource === 'upload' && editCoverUrl !== null && !newCoverUri;
-  const { urls: signedCoverUrls, statuses: signedCoverStatuses } = useSignedFolderCovers(
-    wantsPersistedCoverPreview ? [folder.id] : [],
-  );
-  const persistedCoverReady = wantsPersistedCoverPreview && signedCoverStatuses.get(folder.id) === 'ready';
-
-  // A freshly-picked local image always wins and renders immediately from
-  // its local URI (never sent through signed delivery — see module intent
-  // above). Otherwise, a persisted cover only ever renders once its signed
-  // URL has actually resolved ('loading'/'unavailable' render nothing here,
-  // same empty slot this component already showed pre-Phase-3D whenever
-  // there was no cover at all — there's no separate placeholder graphic to
-  // introduce). folder.cover_image_url is never used as a fallback.
-  const coverPreviewUri = newCoverUri ?? (persistedCoverReady ? signedCoverUrls.get(folder.id) : undefined) ?? null;
-  // Button labels ("Add" vs "Change"/"Remove") reflect whether a cover
-  // conceptually exists — a freshly picked local image, or a persisted one
-  // not yet removed — independent of whether its signed preview has
-  // resolved yet, matching the pre-Phase-3D behavior exactly (those labels
-  // never waited on the raw URL "loading" either, since it rendered
-  // synchronously before).
-  const hasCover = !!newCoverUri || editCoverUrl !== null;
 
   return (
     <Modal
@@ -239,56 +147,6 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
         </View>
 
         <View style={styles.modalBody}>
-          {/* Cover source toggle */}
-          <View>
-            <Text style={styles.modalLabel}>Cover</Text>
-            <View style={styles.coverSourceRow}>
-              {(['upload', 'first_card'] as const).map(src => (
-                <TouchableOpacity
-                  key={src}
-                  style={[styles.coverSourceBtn, editCoverSource === src && styles.coverSourceBtnActive]}
-                  onPress={() => setEditCoverSource(src)}>
-                  <Text style={[styles.coverSourceText, editCoverSource === src && styles.coverSourceTextActive]}>
-                    {src === 'upload' ? 'Uploaded Image' : 'Latest Card'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* Upload controls — only when upload mode */}
-          {editCoverSource === 'upload' && (
-            <View style={styles.coverSection}>
-              {coverPreviewUri && (
-                <Image
-                  source={{ uri: coverPreviewUri }}
-                  style={styles.coverPreview}
-                  contentFit="cover"
-                  transition={200}
-                />
-              )}
-              <View style={styles.coverActions}>
-                <TouchableOpacity style={styles.coverBtn} onPress={pickCover}>
-                  <Text style={styles.coverBtnText}>
-                    {hasCover ? 'Change Cover' : 'Add Cover'}
-                  </Text>
-                </TouchableOpacity>
-                {hasCover && (
-                  <TouchableOpacity style={styles.coverBtn} onPress={removeCover}>
-                    <Text style={[styles.coverBtnText, styles.coverBtnDestructive]}>Remove Cover</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-          )}
-
-          {/* First card hint */}
-          {editCoverSource === 'first_card' && (
-            <Text style={styles.modalHint}>
-              The latest card added to this folder will be used as the cover. If the folder is empty, the letter initial is shown instead.
-            </Text>
-          )}
-
           {/* Folder name */}
           <View>
             <Text style={styles.modalLabel}>Folder Name</Text>
@@ -298,15 +156,9 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               onChangeText={setEditName}
               placeholder="Folder name"
               placeholderTextColor="#999"
-              autoFocus={!hasCover}
+              autoFocus
               maxLength={80}
             />
-          </View>
-
-          {/* Binder color */}
-          <View>
-            <Text style={styles.modalLabel}>Binder Color</Text>
-            <FolderColorPicker value={editColor} onChange={setEditColor} />
           </View>
 
           {/* Public toggle */}
@@ -412,66 +264,6 @@ const styles = StyleSheet.create({
     color: '#687076',
     lineHeight: 18,
     marginTop: 4,
-  },
-  coverSourceRow: {
-    flexDirection: 'row',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    padding: 3,
-  },
-  coverSourceBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  coverSourceBtnActive: {
-    backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  coverSourceText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#687076',
-  },
-  coverSourceTextActive: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#11181C',
-  },
-  coverSection: {
-    gap: 10,
-  },
-  coverPreview: {
-    width: '100%',
-    aspectRatio: 3 / 2,
-    borderRadius: 10,
-    backgroundColor: '#e9ecef',
-  },
-  coverActions: {
-    flexDirection: 'row',
-    gap: 10,
-    flexWrap: 'wrap',
-  },
-  coverBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d0d0d0',
-    backgroundColor: '#fff',
-  },
-  coverBtnText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#11181C',
-  },
-  coverBtnDestructive: {
-    color: '#e53935',
   },
   modalDangerZone: {
     paddingTop: 20,
