@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
-import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
+import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-collection-item-image-signed-url Edge
 // Function (item-images beta privacy hardening, Phase 3). Batches every
@@ -33,14 +33,54 @@ const TTL_MS = 300_000;
 // expiry, so a render never hands out a URL Storage is about to reject.
 const REFRESH_SKEW_MS = 15_000;
 
+// Bounded retry/backoff for a REQUEST-level failure only (thrown network
+// error, 5xx, 408, 429, or an auth-class 401/403) — never for a per-image
+// 'unavailable' the Edge Function itself already resolved successfully,
+// which is a real, final answer on the very first attempt regardless of
+// how many ids in the batch came back that way. Two retries, not
+// indefinite: this exists to self-heal a transient blip (the kind that
+// left a still-mounted, rarely-remounted screen like the Profile Grails
+// grid stuck at 'loading' forever with no natural retrigger), not to keep
+// hammering a genuinely broken/offline backend.
+const RETRY_DELAYS_MS = [750, 2000];
+const RETRYABLE_STATUSES = new Set([408, 429]);
+
+// Lifetime for a cache entry written after every retry above was exhausted
+// (or the failure wasn't retryable at all) — deliberately much shorter than
+// TTL_MS. A genuine 'unavailable' answer from the Edge Function is a
+// considered authorization decision that's cheap to hold for the full
+// signed-URL TTL; an exhausted request-level failure is not a decision at
+// all, just the last thing this hook happened to observe during (most
+// likely) a brief network/auth blip — holding it blank for the full 300s
+// would turn that blip into several minutes of an incorrectly-blank image.
+// 10s is long enough to avoid hammering a genuinely down backend on every
+// render, short enough that the image corrects itself on its own soon
+// after the outage clears, without requiring a remount.
+const FAILURE_TTL_MS = 10_000;
+
+function isRetryableStatus(status: number | null): boolean {
+  return status === null || status >= 500 || RETRYABLE_STATUSES.has(status);
+}
+
+function isAuthStatus(status: number | null): boolean {
+  return status === 401 || status === 403;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type SignedImageStatus = 'loading' | 'ready' | 'unavailable';
 
-// url === null means the server explicitly returned `unavailable` for this
-// id (not found, or not authorized) — cached for the same TTL as a success
-// so an unauthorized id isn't re-requested on every render, while still
-// being naturally re-checked after the TTL window (e.g. if the folder's
-// visibility or the caller's own session changes in the meantime).
-type CacheEntry = { url: string | null; expiresAt: number };
+// url === null means either the server explicitly returned `unavailable`
+// for this id (not found, or not authorized — a genuine, considered answer,
+// cached for the same TTL as a success) or every retry for a request-level
+// failure was exhausted (isTransientFailure: true, cached for the much
+// shorter FAILURE_TTL_MS instead — see that constant's own comment). The
+// two are never conflated: a real authorization denial and "the request
+// itself never got a real answer" are different facts with different
+// expected lifetimes.
+type CacheEntry = { url: string | null; expiresAt: number; isTransientFailure?: boolean };
 
 // Module-level, in-memory only, shared across every hook instance/screen —
 // never persisted to storage or the database, cleared on app reload. Keyed
@@ -56,12 +96,24 @@ type CacheEntry = { url: string | null; expiresAt: number };
 const cache = new Map<string, CacheEntry>();
 
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
-  return !!entry && entry.expiresAt - REFRESH_SKEW_MS > Date.now();
+  if (!entry) return false;
+  // REFRESH_SKEW_MS exists to preempt a real signed URL's own server-side
+  // expiry — meaningless for a transient-failure placeholder, which isn't
+  // a signed URL at all and already uses a much shorter FAILURE_TTL_MS.
+  // Applying the skew on top of that would make an entry expire (10s -
+  // 15s < 0) the instant it's written, immediately reporting 'loading'
+  // again despite this hook's own retry policy already having been fully
+  // exhausted for it — exactly the stuck/looping state this change exists
+  // to prevent.
+  if (entry.isTransientFailure) return entry.expiresAt > Date.now();
+  return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
 }
 
 type EdgeResult =
   | { id: string; status: 'ok'; signed_url: string; expires_in: number }
   | { id: string; status: 'unavailable' };
+
+type BatchAttempt = { ok: true; results: EdgeResult[] } | { ok: false; status: number | null };
 
 // Direct fetch, not supabase.functions.invoke() — see the module comment
 // above for why. Mirrors invoke()'s request shape exactly (same URL
@@ -70,10 +122,17 @@ type EdgeResult =
 // entirely otherwise. apikey is always sent — it's what the Supabase
 // gateway uses for project routing/rate-limiting, unrelated to per-request
 // caller identity, and is already public-by-design (never a secret).
-async function fetchSignedImageBatch(
+//
+// A single attempt only — retry/backoff policy lives one level up, in
+// fetchSignedImageBatchWithRetry, so this stays a plain "try once and
+// report exactly what happened" primitive. `status: null` means the
+// request never got a response at all (fetch itself threw); any other
+// status is the real HTTP status Supabase's gateway or the Edge Function
+// returned.
+async function fetchSignedImageBatchAttempt(
   imageIds: string[],
   accessToken: string | null,
-): Promise<EdgeResult[] | null> {
+): Promise<BatchAttempt> {
   const headers: Record<string, string> = {
     apikey: supabaseAnonKey,
     'Content-Type': 'application/json',
@@ -91,7 +150,7 @@ async function fetchSignedImageBatch(
     });
   } catch (e) {
     if (__DEV__) console.error('[useSignedItemImages] batch request threw:', e);
-    return null;
+    return { ok: false, status: null };
   }
 
   if (!res.ok) {
@@ -111,12 +170,73 @@ async function fetchSignedImageBatch(
         batchSize: imageIds.length,
       });
     }
-    return null;
+    return { ok: false, status: res.status };
   }
 
   const json = await res.json().catch(() => null);
-  if (!json?.results) return null;
-  return json.results as EdgeResult[];
+  if (!json?.results) return { ok: false, status: res.status };
+  return { ok: true, results: json.results as EdgeResult[] };
+}
+
+// Wraps a single attempt with the bounded retry policy described above
+// RETRY_DELAYS_MS. Only a request-level failure is ever retried — a
+// successful response (however many of its ids came back 'unavailable')
+// returns on the very first attempt, since that's the Edge Function's own
+// considered authorization answer, not a failure of the request itself.
+//
+// 401/403 get their own handling rather than being retried with the exact
+// token that was just rejected (which would just fail identically again):
+// before that retry, this re-reads the CURRENT session via
+// supabase.auth.getSession() — the same mechanism lib/auth.tsx's own
+// AuthProvider already uses to seed session state on load, not a second/
+// parallel auth path — so a retry after a stale-token 401 actually stands
+// a chance of succeeding once Supabase's client-side auto-refresh has
+// rotated the token, even if this hook's own `identity`/`accessToken`
+// closure hasn't picked up the new session yet. Any other non-retryable
+// status (e.g. a plain 400) is not retried at all.
+//
+// isCancelled is checked after every await so a hook unmount mid-retry
+// never causes a state update once the retry chain finally settles — it
+// simply returns `{ ok: false }` and the caller's own `if (cancelled)
+// return;` (see the effect below) discards it.
+async function fetchSignedImageBatchWithRetry(
+  imageIds: string[],
+  initialAccessToken: string | null,
+  isCancelled: () => boolean,
+): Promise<BatchAttempt> {
+  let accessToken = initialAccessToken;
+  let attempt = 0;
+
+  for (;;) {
+    const result = await fetchSignedImageBatchAttempt(imageIds, accessToken);
+    if (isCancelled()) return { ok: false, status: null };
+    if (result.ok) return result;
+
+    const authFailure = isAuthStatus(result.status);
+    const retryable = authFailure || isRetryableStatus(result.status);
+
+    if (!retryable || attempt >= RETRY_DELAYS_MS.length) {
+      if (__DEV__) {
+        console.error('[useSignedItemImages] batch request exhausted retries:', {
+          lastStatus: result.status,
+          attempts: attempt + 1,
+          batchSize: imageIds.length,
+          hadAccessToken: !!accessToken,
+        });
+      }
+      return result;
+    }
+
+    if (authFailure) {
+      const { data } = await supabase.auth.getSession();
+      if (isCancelled()) return { ok: false, status: null };
+      accessToken = data.session?.access_token ?? null;
+    }
+
+    await delay(RETRY_DELAYS_MS[attempt]);
+    if (isCancelled()) return { ok: false, status: null };
+    attempt += 1;
+  }
 }
 
 // Accepts collection_item_images.id values only (nulls/undefineds filtered
@@ -153,20 +273,37 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
     if (!missing.length) return;
 
     let cancelled = false;
+    const isCancelled = () => cancelled;
 
     (async () => {
       for (let i = 0; i < missing.length; i += MAX_BATCH_SIZE) {
         const batch = missing.slice(i, i + MAX_BATCH_SIZE);
-        const results = await fetchSignedImageBatch(batch, accessToken);
+        const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled);
         if (cancelled) return;
-        if (!results) continue;
 
         const now = Date.now();
-        for (const r of results) {
-          cache.set(`${identity}:${r.id}`, {
-            url: r.status === 'ok' ? r.signed_url : null,
-            expiresAt: now + TTL_MS,
-          });
+        if (outcome.ok) {
+          for (const r of outcome.results) {
+            cache.set(`${identity}:${r.id}`, {
+              url: r.status === 'ok' ? r.signed_url : null,
+              expiresAt: now + TTL_MS,
+            });
+          }
+        } else {
+          // Every retry for this batch was exhausted (or the failure
+          // wasn't retryable at all) — cache every id in it as
+          // unavailable so status doesn't stay stuck at 'loading' forever,
+          // but marked isTransientFailure and expired after the much
+          // shorter FAILURE_TTL_MS rather than the normal TTL_MS (see that
+          // constant's comment): this was never a real authorization
+          // answer, just the last observation during what's most likely a
+          // brief outage, and a screen that rarely remounts/re-requests
+          // (Profile Grails' static whole-grid batch being the motivating
+          // case) should self-correct within ~10s of the outage clearing,
+          // not stay blank for several minutes.
+          for (const id of batch) {
+            cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
+          }
         }
       }
       if (!cancelled) bump((n) => n + 1);
