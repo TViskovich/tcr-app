@@ -181,7 +181,16 @@ function CardRow({
 
 export default function SearchScreen() {
   const { session } = useAuth();
-  const currentUserId = session?.user?.id ?? '';
+  // Deliberately no `?? ''` fallback — queryProfiles' own .neq('id',
+  // excludeId) is a UUID column comparison, and an empty string is not a
+  // valid UUID (confirmed root cause of a beta crash: "invalid input
+  // syntax for type uuid" during logout, when session had already cleared
+  // for one render but this screen was still mounted with a leftover
+  // non-empty query, and the debounce effect below re-fired against it —
+  // see runSearch's own guard for the actual fix). Users-mode search
+  // requires a resolved, real user id; this screen has no anonymous-search
+  // affordance to fall back to.
+  const currentUserId = session?.user?.id;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const listContentStyle = { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 };
@@ -230,12 +239,33 @@ export default function SearchScreen() {
       return;
     }
 
+    // Users-mode search requires a resolved, real user id — queryProfiles'
+    // own .neq('id', excludeId) is a UUID column comparison, and this
+    // screen has no anonymous-search affordance to fall back to. The one
+    // place currentUserId can transiently go missing while this screen is
+    // still mounted with leftover query text is the render right after
+    // logout, before the root layout finishes redirecting away — this
+    // effect (see its useCallback deps below) re-fires the instant
+    // currentUserId changes identity, which would otherwise re-run this
+    // exact search with no valid id to exclude by and throw. Same
+    // invalidate-then-reset shape as the empty-term branch above, since
+    // there's equally nothing valid to search for.
+    if (mode === 'users' && !currentUserId) {
+      searchRequestIdRef.current += 1;
+      setUserResults([]);
+      setHasSearched(false);
+      setSearchError(null);
+      setLoading(false);
+      return;
+    }
+
     const requestId = ++searchRequestIdRef.current;
     const isCurrent = () => searchRequestIdRef.current === requestId;
 
     setLoading(true);
     try {
       if (mode === 'users') {
+        if (!currentUserId) return; // unreachable — already guarded above
         const results = await queryProfiles(term, currentUserId);
         if (!isCurrent()) return;
         setUserResults(results);
@@ -274,6 +304,9 @@ export default function SearchScreen() {
   const onRefresh = useCallback(async () => {
     const term = query.trim();
     if (!term) return;
+    // Same reasoning as runSearch's own guard above — never fire
+    // queryProfiles' UUID .neq() with no resolved user id.
+    if (mode === 'users' && !currentUserId) return;
 
     const requestId = ++searchRequestIdRef.current;
     const isCurrent = () => searchRequestIdRef.current === requestId;
@@ -281,6 +314,7 @@ export default function SearchScreen() {
     setRefreshing(true);
     try {
       if (mode === 'users') {
+        if (!currentUserId) return; // unreachable — already guarded above
         const results = await queryProfiles(term, currentUserId);
         if (!isCurrent()) return;
         setUserResults(results);
