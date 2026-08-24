@@ -469,14 +469,12 @@ export default function HomeScreen() {
       if (error) {
         console.error('Like failed:', error.message);
       } else if (post.user_id !== currentUserId) {
-        // Notify post owner (unique index makes this idempotent)
-        supabase.from('notifications').insert({
-          user_id: post.user_id,
-          actor_id: currentUserId,
-          type: 'like',
-          post_id: postId,
-        }).then(({ error: e }) => {
-          if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
+        // Notify post owner — server-verified against the likes row that
+        // just committed (create_or_refresh_like_notification RPC), never a
+        // direct client insert. Same pattern as toggleFollow's
+        // create_or_refresh_follow_notification in profile-v2-screen.tsx.
+        supabase.rpc('create_or_refresh_like_notification', { p_post_id: postId }).then(({ error: e }) => {
+          if (e) console.error('Like notif failed:', e.message);
         });
       }
     }

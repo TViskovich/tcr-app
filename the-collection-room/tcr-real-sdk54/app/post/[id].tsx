@@ -529,13 +529,11 @@ export default function PostDetailScreen() {
           .eq('actor_id', currentUserId).eq('post_id', currentPost.id).eq('type', 'like')
           .then(({ error: e }) => { if (e) console.error('Like notif delete failed:', e.message); });
       } else if (currentPost.user_id !== currentUserId) {
-        supabase.from('notifications').insert({
-          user_id: currentPost.user_id,
-          actor_id: currentUserId,
-          type: 'like',
-          post_id: currentPost.id,
-        }).then(({ error: e }) => {
-          if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
+        // Server-verified against the likes row that just committed
+        // (create_or_refresh_like_notification RPC), never a direct client
+        // insert.
+        supabase.rpc('create_or_refresh_like_notification', { p_post_id: currentPost.id }).then(({ error: e }) => {
+          if (e) console.error('Like notif failed:', e.message);
         });
       }
     });
@@ -574,12 +572,10 @@ export default function PostDetailScreen() {
     setNewComment('');
 
     if (post.user_id !== currentUserId) {
-      supabase.from('notifications').insert({
-        user_id: post.user_id,
-        actor_id: currentUserId,
-        type: 'comment',
-        post_id: post.id,
-      }).then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
+      // Server-verified against the comment row that just committed
+      // (create_comment_notification RPC), never a direct client insert.
+      supabase.rpc('create_comment_notification', { p_post_id: post.id, p_comment_id: inserted.id })
+        .then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
     }
 
     const result = await fetchComments(post.id);

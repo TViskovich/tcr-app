@@ -1,0 +1,35 @@
+-- Removes the client-facing notifications INSERT policy now that every
+-- notification type is server-generated.
+--
+-- Confirmed by repo-wide search immediately before writing this migration
+-- (`grep -r "from('notifications').insert"` across app/, components/,
+-- hooks/, supabase/functions/): zero remaining direct client inserts into
+-- public.notifications anywhere in this codebase. Every notification type
+-- is now created exclusively server-side:
+--   - follow            -> create_or_refresh_follow_notification (20260822120000)
+--   - like              -> create_or_refresh_like_notification (20260824130000)
+--   - comment           -> create_comment_notification (20260824130000)
+--   - grail_rating      -> create_or_refresh_grail_rating_notification (20260824130000)
+--   - message           -> create_message_notification() trigger (20260818130000)
+--   - ownership_transfer_* -> written inside their own RPCs (20260802140000)
+-- All six are SECURITY DEFINER (or a SECURITY DEFINER trigger), so none of
+-- them depend on this policy — they bypass RLS entirely by design, exactly
+-- like this codebase's existing registered_cards/ownership_transfers
+-- RPC-only convention (no INSERT/UPDATE/DELETE policy at all on those
+-- tables either).
+--
+-- notifications_insert_as_actor previously allowed any authenticated caller
+-- to insert an arbitrary notification into any other user's feed — actor_id
+-- = auth.uid() was the only condition, with no check on user_id, type,
+-- post_id, or that any real underlying event existed. Dropping it with no
+-- replacement denies direct client INSERT entirely (RLS enabled + no
+-- permissive INSERT policy = deny by default), closing that gap.
+--
+-- notifications_select_own, notifications_update_own, and
+-- notifications_delete_by_actor are untouched — none of them are the
+-- fabrication vector this migration closes, and the like-unlike cleanup
+-- path (app/(tabs)/index.tsx, app/post/[id].tsx, profile-v2-screen.tsx)
+-- still depends on notifications_delete_by_actor exactly as before.
+DROP POLICY IF EXISTS "notifications_insert_as_actor" ON public.notifications;
+
+NOTIFY pgrst, 'reload schema';

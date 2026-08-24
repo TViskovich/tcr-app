@@ -556,13 +556,11 @@ export function ProfileV2Screen({ userId }: Props) {
       if (error) {
         console.error('Like failed:', error.message);
       } else if (post.user_id !== currentUserId) {
-        supabase.from('notifications').insert({
-          user_id: post.user_id,
-          actor_id: currentUserId,
-          type: 'like',
-          post_id: postId,
-        }).then(({ error: e }) => {
-          if (e && e.code !== '23505') console.error('Like notif failed:', e.message);
+        // Server-verified against the likes row that just committed
+        // (create_or_refresh_like_notification RPC), never a direct client
+        // insert.
+        supabase.rpc('create_or_refresh_like_notification', { p_post_id: postId }).then(({ error: e }) => {
+          if (e) console.error('Like notif failed:', e.message);
         });
       }
     }

@@ -79,15 +79,11 @@ export function useGrailRating({
 
         // Every submit/change gets its own notification — the score is frozen
         // onto the row since a later rating change must not rewrite it.
+        // Server-verified against the grail_ratings row that just committed
+        // (create_or_refresh_grail_rating_notification RPC), never a direct
+        // client insert.
         supabase
-          .from('notifications')
-          .insert({
-            user_id: postOwnerId,
-            actor_id: currentUserId,
-            type: 'grail_rating',
-            post_id: postId,
-            rating_score: score,
-          })
+          .rpc('create_or_refresh_grail_rating_notification', { p_post_id: postId, p_score: score })
           .then(({ error: e }) => {
             if (e) console.error('Rating notif failed:', e.message);
           });
@@ -100,7 +96,7 @@ export function useGrailRating({
         setSubmitting(false);
       }
     },
-    [postId, postOwnerId, currentUserId, isOwner, submitting, avg, count, myRating],
+    [postId, currentUserId, isOwner, submitting, avg, count, myRating],
   );
 
   return { avg, count, myRating, isOwner, submitting, submitRating };
