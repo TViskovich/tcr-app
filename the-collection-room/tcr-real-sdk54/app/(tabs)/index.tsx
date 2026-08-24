@@ -594,13 +594,6 @@ export default function HomeScreen() {
                   })
                 }
                 onPostPress={() => {
-                  // DEBUG (temporary — see post-detail nav/comment fix;
-                  // remove once verified against a running app).
-                  console.log('[Feed][DEBUG] onPostPress', {
-                    sourceScreen: 'app/(tabs)/index.tsx (main feed)',
-                    destinationRoute: '/post/[id]',
-                    postIdPassed: item.id,
-                  });
                   router.push({
                     pathname: '/post/[id]',
                     params: { id: item.id },

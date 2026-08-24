@@ -402,7 +402,6 @@ export default function ItemDetailScreen() {
       }
 
       if (data === null) {
-        console.log('[ItemDetail][DEBUG] delete: reconciliation confirms item gone, navigating back', { itemId });
         await cleanupOrphanedItemImages(capturedPaths);
         router.back();
         return;
@@ -498,7 +497,6 @@ export default function ItemDetailScreen() {
             // destructive operation — if it succeeded but the item delete
             // below then failed, the user's feed post would be gone while
             // the collection item survived.
-            console.log('[ItemDetail][DEBUG] delete: start', { itemId: id, currentUserId });
 
             try {
               // .select('id') is what makes a silently-zero-row delete (e.g.
@@ -521,17 +519,12 @@ export default function ItemDetailScreen() {
                 return;
               }
 
-              console.log('[ItemDetail][DEBUG] delete: returned rows', {
-                deletedIds: deletedRows?.map((r) => r.id) ?? [],
-              });
-
               if (!deletedRows || deletedRows.length === 0) {
                 console.error('[ItemDetail] delete returned zero rows:', { itemId: id, currentUserId });
                 Alert.alert('Delete failed', 'No item was deleted. Check ownership and database permissions.');
                 return;
               }
 
-              console.log('[ItemDetail][DEBUG] delete: confirmed, navigating back', { itemId: id });
               await cleanupOrphanedItemImages(capturedPaths);
               router.back();
             } catch (e) {

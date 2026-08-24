@@ -274,24 +274,12 @@ export default function PostDetailScreen() {
     };
   }, []);
 
-  // DEBUG (temporary — see task report; remove once verified against a
-  // running app). Confirms the id this screen actually received and
-  // whether the native stack has real history to pop to.
-  useEffect(() => {
-    console.log('[PostDetail][DEBUG] mounted', {
-      postIdReceived: postId,
-      canGoBack: router.canGoBack(),
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [postId]);
-
   // Prefer popping real history (preserves whatever screen/scroll position
   // the user actually came from — feed, profile, notifications, etc. — per
   // requirement). Only fall back to the main feed when there's genuinely no
   // history to go back to (e.g. a cold deep link straight into this route).
   function handleBack() {
     const canGoBack = router.canGoBack();
-    console.log('[PostDetail][DEBUG] handleBack', { canGoBack });
     if (canGoBack) {
       router.back();
       return;
@@ -317,8 +305,6 @@ export default function PostDetailScreen() {
   // load) supplies one; the retry-comments and post-a-comment refresh
   // callers are user-triggered actions and intentionally don't cancel.
   const fetchComments = useCallback(async (pid: string, signal?: AbortSignal): Promise<{ comments: Comment[]; error: string | null }> => {
-    console.log('[PostDetail][DEBUG] fetchComments: start', { postId: pid });
-
     const commentsQuery = supabase
       .from('comments')
       .select('id, user_id, body, created_at')
@@ -332,7 +318,6 @@ export default function PostDetailScreen() {
     }
 
     if (!rows?.length) {
-      console.log('[PostDetail][DEBUG] fetchComments: success, 0 comments');
       return { comments: [], error: null };
     }
 
@@ -363,7 +348,6 @@ export default function PostDetailScreen() {
       };
     });
 
-    console.log('[PostDetail][DEBUG] fetchComments: success', { count: comments.length });
     return { comments, error: null };
   }, []);
 
@@ -547,12 +531,6 @@ export default function PostDetailScreen() {
     setSending(true);
     const body = newComment.trim();
 
-    console.log('[PostDetail][DEBUG] handleAddComment: inserting', {
-      postId: post.id,
-      userId: currentUserId,
-      bodyLength: body.length,
-    });
-
     const { data: inserted, error } = await supabase
       .from('comments')
       .insert({ user_id: currentUserId, post_id: post.id, body })
@@ -565,8 +543,6 @@ export default function PostDetailScreen() {
       setSending(false);
       return;
     }
-
-    console.log('[PostDetail][DEBUG] handleAddComment: insert succeeded', { commentId: inserted.id });
 
     // Only clear the input once the insert is confirmed successful.
     setNewComment('');
