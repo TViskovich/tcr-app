@@ -46,7 +46,6 @@ import { deletePost } from '@/lib/posts';
 import {
   deleteProfileImage,
   uploadAvatar,
-  uploadBadgeImage,
   uploadHeroImage,
   type ProfileImageKind,
 } from '@/lib/storage';
@@ -205,7 +204,6 @@ type IntendedProfileFields = Pick<
   | 'avatar_url'
   | 'hero_image_url'
   | 'hero_theme'
-  | 'showcase_badge_url'
 >;
 
 // True only if the row currently holds EXACTLY the state this save attempt
@@ -225,7 +223,6 @@ function intendedProfileMatchesRow(intended: IntendedProfileFields, row: Intende
     intended.avatar_url === row.avatar_url &&
     intended.hero_image_url === row.hero_image_url &&
     intended.hero_theme === row.hero_theme &&
-    intended.showcase_badge_url === row.showcase_badge_url &&
     arraysEqualOrdered(intended.favorite_sports, row.favorite_sports) &&
     arraysEqualOrdered(intended.favorite_teams, row.favorite_teams) &&
     arraysEqualOrdered(intended.collecting_categories, row.collecting_categories) &&
@@ -378,13 +375,11 @@ export function ProfileV2Screen({ userId }: Props) {
   const [newAvatarUri, setNewAvatarUri] = useState<string | null>(null);
   // Explicit removal, distinct from "no new avatar selected" (newAvatarUri
   // stays null in both cases) — same three-state model already used for
-  // banner/badge below (newXUri = replacement picked, removeX = explicit
+  // banner below (newXUri = replacement picked, removeX = explicit
   // removal, neither set = unchanged).
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [newHeroUri, setNewHeroUri] = useState<string | null>(null);
   const [removeHero, setRemoveHero] = useState(false);
-  const [newBadgeUri, setNewBadgeUri] = useState<string | null>(null);
-  const [removeBadge, setRemoveBadge] = useState(false);
   // Placeholder only — always overwritten by enterEdit's own
   // setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme)) before
   // edit mode is ever reachable/visible (owner-only, profile already
@@ -731,8 +726,6 @@ export function ProfileV2Screen({ userId }: Props) {
     setRemoveAvatar(false);
     setNewHeroUri(null);
     setRemoveHero(false);
-    setNewBadgeUri(null);
-    setRemoveBadge(false);
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
     setEditMode(true);
   }
@@ -771,9 +764,7 @@ export function ProfileV2Screen({ userId }: Props) {
       newAvatarUri !== null ||
       removeAvatar ||
       newHeroUri !== null ||
-      removeHero ||
-      newBadgeUri !== null ||
-      removeBadge);
+      removeHero);
 
   // The actual discard — identical to the old unconditional cancelEdit
   // body. No Storage or database operation happens here; it only resets
@@ -786,8 +777,6 @@ export function ProfileV2Screen({ userId }: Props) {
     setRemoveAvatar(false);
     setNewHeroUri(null);
     setRemoveHero(false);
-    setNewBadgeUri(null);
-    setRemoveBadge(false);
     setEditMode(false);
   }
 
@@ -843,41 +832,61 @@ export function ProfileV2Screen({ userId }: Props) {
     return () => subscription.remove();
   }, [editMode]);
 
-  async function launchCamera() {
+  // Low-level pick-only helpers, shared by both avatar-edit flows below
+  // (Edit Profile's stage-then-Save flow, and the direct profile-page tap's
+  // stage-and-persist-immediately flow) — the permission request + picker
+  // launch is identical either way; only what happens with the resulting
+  // uri differs, which is left entirely to each caller.
+  async function pickAvatarFromCamera(): Promise<string | null> {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission needed', 'Please allow camera access in settings.');
-      return;
+      return null;
     }
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.85,
     });
-    if (!result.canceled && result.assets[0]) {
-      setNewAvatarUri(result.assets[0].uri);
+    if (result.canceled || !result.assets[0]) return null;
+    return result.assets[0].uri;
+  }
+
+  async function pickAvatarFromLibrary(): Promise<string | null> {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
+      return null;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.85,
+    });
+    if (result.canceled || !result.assets[0]) return null;
+    return result.assets[0].uri;
+  }
+
+  async function launchCamera() {
+    const uri = await pickAvatarFromCamera();
+    if (uri) {
+      setNewAvatarUri(uri);
       setRemoveAvatar(false);
     }
   }
 
   async function launchLibrary() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setNewAvatarUri(result.assets[0].uri);
+    const uri = await pickAvatarFromLibrary();
+    if (uri) {
+      setNewAvatarUri(uri);
       setRemoveAvatar(false);
     }
   }
 
+  // Edit Profile's avatar picker — stages the pick into newAvatarUri/
+  // removeAvatar only; persistence happens later, only via the explicit
+  // Save button (handleSave), exactly as for every other edited field.
   function pickAvatar() {
     const canRemove = !!(profile?.avatar_url || newAvatarUri);
     const options: AlertButton[] = [
@@ -898,63 +907,87 @@ export function ProfileV2Screen({ userId }: Props) {
     Alert.alert('Change Photo', undefined, options);
   }
 
-  async function pickBadgeFromLibrary() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow photo library access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setNewBadgeUri(result.assets[0].uri);
-      setRemoveBadge(false);
-    }
-  }
-
-  async function pickBadgeFromCamera() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow camera access in settings.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.85,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setNewBadgeUri(result.assets[0].uri);
-      setRemoveBadge(false);
+  // Persists a direct (non-Edit-Profile) avatar change through the exact
+  // same canonical handleSave() used by Edit Profile's Save button — see
+  // handleSave's own `directAvatar` parameter doc for why an explicit
+  // argument (rather than relying on newAvatarUri/removeAvatar state) is
+  // required here. newAvatarUri/removeAvatar are still set for an
+  // immediate optimistic preview while the upload/update are in flight;
+  // handleSave's own success path (finishSuccess) clears them and calls
+  // refresh() once the real persisted avatar_url is available, so the
+  // preview seamlessly becomes the real thing rather than staying a
+  // dangling local file:// uri. On failure, handleSave shows its own
+  // existing "Save failed" alert (unchanged) and this reverts the optimistic
+  // preview back to the last-persisted avatar — there's no visible Cancel
+  // control outside edit mode to let the user discard a failed pick
+  // otherwise, unlike handleSave's normal (Edit Profile) failure path,
+  // which deliberately leaves the draft in place for the user to retry.
+  async function persistDirectAvatarChange(uri: string | null, remove: boolean) {
+    setNewAvatarUri(uri);
+    setRemoveAvatar(remove);
+    const ok = await handleSave({ uri, remove });
+    if (!ok) {
+      setNewAvatarUri(null);
+      setRemoveAvatar(false);
     }
   }
 
-  function pickBadge() {
-    const canRemove = !!(profile?.showcase_badge_url || newBadgeUri);
+  async function launchCameraDirect() {
+    const uri = await pickAvatarFromCamera();
+    if (uri) await persistDirectAvatarChange(uri, false);
+  }
+
+  async function launchLibraryDirect() {
+    const uri = await pickAvatarFromLibrary();
+    if (uri) await persistDirectAvatarChange(uri, false);
+  }
+
+  // Tapping the avatar directly from the profile page (outside Edit
+  // Profile) — same picker options as pickAvatar, but each selection
+  // persists immediately via persistDirectAvatarChange instead of staging
+  // for a separate Save step, since there's no Save button reachable here.
+  function pickAvatarDirect() {
+    const canRemove = !!profile?.avatar_url;
     const options: AlertButton[] = [
-      { text: 'Take Photo', onPress: pickBadgeFromCamera },
-      { text: 'Choose from Library', onPress: pickBadgeFromLibrary },
+      { text: 'Take Photo', onPress: launchCameraDirect },
+      { text: 'Choose from Library', onPress: launchLibraryDirect },
     ];
     if (canRemove) {
       options.push({
-        text: 'Remove Badge',
+        text: 'Remove Avatar',
         style: 'destructive',
-        onPress: () => {
-          setNewBadgeUri(null);
-          setRemoveBadge(true);
-        },
+        onPress: () => persistDirectAvatarChange(null, true),
       });
     }
     options.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert('Change Badge', undefined, options);
+    Alert.alert('Change Photo', undefined, options);
   }
 
-  async function handleSave() {
-    if (!isOwnProfile) return;
+  // Single entry point wired to the collector panel's avatar tap target —
+  // routes to whichever of the two flows above applies depending on
+  // whether Edit Profile is currently open.
+  function handleAvatarPress() {
+    if (editMode) {
+      pickAvatar();
+    } else {
+      pickAvatarDirect();
+    }
+  }
+
+  // The one canonical avatar (and every other profile field) persistence
+  // path — used directly by Edit Profile's Save button (no args: reads the
+  // current editForm/array/theme/avatar draft state exactly as before) AND
+  // by persistDirectAvatarChange above (passes `directAvatar` explicitly).
+  // An explicit argument, not newAvatarUri/removeAvatar state, is required
+  // for the direct-avatar path specifically because React state updates
+  // are asynchronous — setNewAvatarUri() immediately followed by a
+  // synchronous call into this function would still read the PREVIOUS
+  // render's (stale) state, not the just-picked uri. Returns whether the
+  // save actually committed, so persistDirectAvatarChange can revert its
+  // own optimistic preview on failure; the Save button ignores the return
+  // value (onSavePress is typed () => void, which accepts any return type).
+  async function handleSave(directAvatar?: { uri: string | null; remove: boolean }): Promise<boolean> {
+    if (!isOwnProfile) return false;
     // Synchronous re-entry lock. Acquired here — after isOwnProfile but
     // before any upload/DB work — so two fast taps can't both pass this
     // point in the same tick, unlike disabled={saving}, which only updates
@@ -962,7 +995,7 @@ export function ProfileV2Screen({ userId }: Props) {
     // checks immediately below return early (bypassing the try/finally
     // that releases it), so acquiring before them would permanently lock
     // out every future save after the first validation failure.
-    if (savingRef.current) return;
+    if (savingRef.current) return false;
     savingRef.current = true;
 
     // Full validation pass BEFORE setSaving/any upload/any DB write, in the
@@ -970,31 +1003,40 @@ export function ProfileV2Screen({ userId }: Props) {
     // item lengths, array duplicates. Stops at the first failure with one
     // Alert; edit mode stays open, nothing is uploaded or saved. Each early
     // return here happens before the try/finally below, so each one must
-    // release savingRef itself rather than relying on the finally.
-    const trimmedTagline = editForm.tagline.trim();
-    if (trimmedTagline.length > TAGLINE_MAX_LENGTH) {
-      savingRef.current = false;
-      Alert.alert('Tagline Too Long', `Tagline must be ${TAGLINE_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
+    // release savingRef itself rather than relying on the finally. Skipped
+    // entirely for a direct-avatar save — it never touches any of these
+    // fields (see the intendedProfileFields construction below, which
+    // sources them straight from `profile` in that case), so there is
+    // nothing here to validate.
+    let trimmedTagline = '';
+    let normalizedWebsite: string | null = null;
+    if (!directAvatar) {
+      trimmedTagline = editForm.tagline.trim();
+      if (trimmedTagline.length > TAGLINE_MAX_LENGTH) {
+        savingRef.current = false;
+        Alert.alert('Tagline Too Long', `Tagline must be ${TAGLINE_MAX_LENGTH} characters or fewer.`);
+        return false;
+      }
 
-    const websiteResult = normalizeWebsiteInput(editForm.website);
-    if (!websiteResult.ok) {
-      savingRef.current = false;
-      Alert.alert('Invalid Website', websiteResult.message);
-      return;
-    }
+      const websiteResult = normalizeWebsiteInput(editForm.website);
+      if (!websiteResult.ok) {
+        savingRef.current = false;
+        Alert.alert('Invalid Website', websiteResult.message);
+        return false;
+      }
+      normalizedWebsite = websiteResult.value;
 
-    const arraySectionIssue = findArraySectionIssue([
-      { label: 'Favorite Sports', values: favoriteSports },
-      { label: 'Favorite Teams', values: favoriteTeams },
-      { label: 'Collecting Categories', values: collectingCategories },
-      { label: 'Collector Tags', values: collectorTags },
-    ]);
-    if (arraySectionIssue) {
-      savingRef.current = false;
-      Alert.alert('Check Collector Preferences', arraySectionIssue);
-      return;
+      const arraySectionIssue = findArraySectionIssue([
+        { label: 'Favorite Sports', values: favoriteSports },
+        { label: 'Favorite Teams', values: favoriteTeams },
+        { label: 'Collecting Categories', values: collectingCategories },
+        { label: 'Collector Tags', values: collectorTags },
+      ]);
+      if (arraySectionIssue) {
+        savingRef.current = false;
+        Alert.alert('Check Collector Preferences', arraySectionIssue);
+        return false;
+      }
     }
 
     // Captured BEFORE any upload/state change below — these are what
@@ -1002,7 +1044,6 @@ export function ProfileV2Screen({ userId }: Props) {
     // has actually succeeded. Never mutated after this point.
     const oldAvatarUrl = profile?.avatar_url ?? null;
     const oldHeroUrl = profile?.hero_image_url ?? null;
-    const oldBadgeUrl = profile?.showcase_badge_url ?? null;
 
     setSaving(true);
     try {
@@ -1020,19 +1061,29 @@ export function ProfileV2Screen({ userId }: Props) {
       // here, and this cleanup must never run for that case.
       const uploadedThisAttempt: { url: string; kind: ProfileImageKind }[] = [];
 
+      // directAvatar (when present) takes over the avatar decision entirely
+      // — see handleSave's own doc comment for why this can't just read
+      // newAvatarUri/removeAvatar state for that call. Hero stays state-
+      // driven unconditionally: newHeroUri/removeHero are only ever
+      // non-neutral while editMode is true (enterEdit/discardEditsAndClose/
+      // finishSuccess all reset them to null/false the moment it isn't), and
+      // a direct-avatar save only ever happens while editMode is false — so
+      // this always resolves to the current persisted hero_image_url, a
+      // true no-op, for that call.
       let avatarUrl: string | null;
       let heroUrl: string | null;
-      let badgeUrl: string | null;
       try {
-        if (newAvatarUri) {
+        const avatarUriChoice = directAvatar ? directAvatar.uri : newAvatarUri;
+        const avatarRemoveChoice = directAvatar ? directAvatar.remove : removeAvatar;
+        if (avatarUriChoice) {
           try {
-            avatarUrl = await uploadAvatar(newAvatarUri, userId);
+            avatarUrl = await uploadAvatar(avatarUriChoice, userId);
           } catch (uploadErr: unknown) {
             const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
             throw new Error(`Avatar upload failed: ${detail}`);
           }
           uploadedThisAttempt.push({ url: avatarUrl, kind: 'avatar' });
-        } else if (removeAvatar) {
+        } else if (avatarRemoveChoice) {
           avatarUrl = null;
         } else {
           avatarUrl = profile?.avatar_url ?? null;
@@ -1050,20 +1101,6 @@ export function ProfileV2Screen({ userId }: Props) {
           heroUrl = null;
         } else {
           heroUrl = profile?.hero_image_url ?? null;
-        }
-
-        if (newBadgeUri) {
-          try {
-            badgeUrl = await uploadBadgeImage(newBadgeUri, userId);
-          } catch (uploadErr: unknown) {
-            const detail = uploadErr instanceof Error ? uploadErr.message : 'unknown';
-            throw new Error(`Badge upload failed: ${detail}`);
-          }
-          uploadedThisAttempt.push({ url: badgeUrl, kind: 'badge' });
-        } else if (removeBadge) {
-          badgeUrl = null;
-        } else {
-          badgeUrl = profile?.showcase_badge_url ?? null;
         }
       } catch (uploadPhaseErr: unknown) {
         // A later field's upload failed after one or more earlier uploads
@@ -1083,23 +1120,45 @@ export function ProfileV2Screen({ userId }: Props) {
       // to look like" — fed to BOTH the update call below and the
       // response-loss reconciliation comparison, so there's never a
       // second, independently-maintained copy of this state to drift out
-      // of sync with the first.
-      const intendedProfileFields: IntendedProfileFields = {
-        hero_display_name: editForm.heroName.trim() || null,
-        display_name: editForm.displayName.trim() || null,
-        bio: editForm.bio.trim() || null,
-        tagline: trimmedTagline || null,
-        location: editForm.location.trim() || null,
-        website: websiteResult.value,
-        favorite_sports: favoriteSports,
-        favorite_teams: favoriteTeams,
-        collecting_categories: collectingCategories,
-        collector_tags: collectorTags,
-        avatar_url: avatarUrl,
-        hero_image_url: heroUrl,
-        hero_theme: selectedTheme,
-        showcase_badge_url: badgeUrl,
-      };
+      // of sync with the first. Every field OTHER than avatar_url/
+      // hero_image_url is sourced from the current persisted `profile`
+      // (not editForm/the preference arrays/selectedTheme) when this is a
+      // direct-avatar save — editForm etc. may still hold stale or blank
+      // draft values from before Edit Profile was ever opened this
+      // session, and a direct-avatar save must never touch any field it
+      // isn't actually changing. Echoing the persisted value back is a
+      // true no-op for those columns either way.
+      const intendedProfileFields: IntendedProfileFields = directAvatar
+        ? {
+            hero_display_name: profile?.hero_display_name ?? null,
+            display_name: profile?.display_name ?? null,
+            bio: profile?.bio ?? null,
+            tagline: profile?.tagline ?? null,
+            location: profile?.location ?? null,
+            website: profile?.website ?? null,
+            favorite_sports: profile?.favorite_sports ?? [],
+            favorite_teams: profile?.favorite_teams ?? [],
+            collecting_categories: profile?.collecting_categories ?? [],
+            collector_tags: profile?.collector_tags ?? [],
+            avatar_url: avatarUrl,
+            hero_image_url: heroUrl,
+            hero_theme: resolveHeroCanvasTheme(profile?.hero_theme),
+          }
+        : {
+            hero_display_name: editForm.heroName.trim() || null,
+            display_name: editForm.displayName.trim() || null,
+            bio: editForm.bio.trim() || null,
+            tagline: trimmedTagline || null,
+            location: editForm.location.trim() || null,
+            website: normalizedWebsite,
+            favorite_sports: favoriteSports,
+            favorite_teams: favoriteTeams,
+            collecting_categories: collectingCategories,
+            collector_tags: collectorTags,
+            avatar_url: avatarUrl,
+            hero_image_url: heroUrl,
+            hero_theme: selectedTheme,
+          };
 
       // Shared by every branch below that has proven (either directly or
       // via reconciliation) that the row was NOT updated to
@@ -1127,7 +1186,6 @@ export function ProfileV2Screen({ userId }: Props) {
         await Promise.all([
           oldAvatarUrl && oldAvatarUrl !== avatarUrl ? deleteProfileImage(oldAvatarUrl, userId, 'avatar') : Promise.resolve(),
           oldHeroUrl && oldHeroUrl !== heroUrl ? deleteProfileImage(oldHeroUrl, userId, 'hero') : Promise.resolve(),
-          oldBadgeUrl && oldBadgeUrl !== badgeUrl ? deleteProfileImage(oldBadgeUrl, userId, 'badge') : Promise.resolve(),
         ]);
 
         await refresh();
@@ -1135,8 +1193,6 @@ export function ProfileV2Screen({ userId }: Props) {
         setRemoveAvatar(false);
         setNewHeroUri(null);
         setRemoveHero(false);
-        setNewBadgeUri(null);
-        setRemoveBadge(false);
         setEditMode(false);
       };
 
@@ -1148,13 +1204,13 @@ export function ProfileV2Screen({ userId }: Props) {
       // Storage object — new or old — is touched, and the user stays in
       // edit mode with pending changes intact rather than risk deleting
       // something still referenced by a write we can't prove happened.
-      const resolveAmbiguousUpdateOutcome = async (): Promise<void> => {
+      const resolveAmbiguousUpdateOutcome = async (): Promise<boolean> => {
         let reconciledRow: IntendedProfileFields | null = null;
         try {
           const { data: reconData, error: reconError } = await supabase
             .from('profiles')
             .select(
-              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, showcase_badge_url'
+              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme'
             )
             .eq('id', userId)
             .maybeSingle();
@@ -1168,14 +1224,14 @@ export function ProfileV2Screen({ userId }: Props) {
             'Save status unknown',
             "We couldn't confirm whether your changes were saved. Check your connection before trying again."
           );
-          return;
+          return false;
         }
 
         if (intendedProfileMatchesRow(intendedProfileFields, reconciledRow)) {
           // The row currently holds exactly the intended state — the
           // ambiguous update DID commit.
           await finishSuccess();
-          return;
+          return true;
         }
 
         // The row provably does not hold the intended state — the
@@ -1214,7 +1270,7 @@ export function ProfileV2Screen({ userId }: Props) {
         if (!error && data && data.length > 0) {
           // Authoritative success — the row was updated and returned.
           await finishSuccess();
-          return;
+          return true;
         }
 
         if (!error) {
@@ -1271,17 +1327,37 @@ export function ProfileV2Screen({ userId }: Props) {
         console.error('[handleSave] Supabase profile update threw, reconciling');
       }
 
-      await resolveAmbiguousUpdateOutcome();
+      return await resolveAmbiguousUpdateOutcome();
     } catch (e: unknown) {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
+      return false;
     } finally {
       setSaving(false);
       savingRef.current = false;
     }
   }
 
+  // The ONLY function ever wired to onSavePress. Deliberately declared
+  // with zero parameters — ProfileV2HeroCanvas's Save TouchableOpacity
+  // calls onPress={onSavePress}, and React Native always invokes an
+  // onPress handler with a GestureResponderEvent argument. handleSave
+  // previously WAS onSavePress directly, so that event object was being
+  // passed as handleSave's own `directAvatar` parameter: truthy (any
+  // object is), so handleSave read `directAvatar.uri`/`directAvatar.remove`
+  // off a GestureResponderEvent (both undefined) and silently treated
+  // every Edit Profile save as an avatar-untouched, other-fields-untouched
+  // no-op — the exact regression this wrapper exists to make structurally
+  // impossible. This function takes no parameters, so no matter what
+  // TouchableOpacity passes to it, `handleSave()` below is always called
+  // with truly zero arguments — directAvatar can only ever be `undefined`
+  // here, which is what routes handleSave into reading the staged
+  // newAvatarUri/removeAvatar (and editForm/array/selectedTheme) state,
+  // exactly as it did before the direct-avatar-save refactor.
+  function handleEditProfileSave() {
+    return handleSave();
+  }
+
   const avatarUri = removeAvatar ? null : (newAvatarUri ?? profile?.avatar_url ?? null);
-  const badgeUri = removeBadge ? null : (newBadgeUri ?? profile?.showcase_badge_url ?? null);
   const heroTheme = editMode ? selectedTheme : resolveHeroCanvasTheme(profile?.hero_theme);
   const themeDef = HERO_CANVAS_THEMES.find((t) => t.id === heroTheme);
   const themeFallbackSwatch: [string, string] =
@@ -1314,10 +1390,9 @@ export function ProfileV2Screen({ userId }: Props) {
             <ProfileV2CollectorPanel
               avatarUri={avatarUri}
               displayName={displayName}
-              username={profile?.username ?? ''}
               vaultTotal={stats.itemCount}
               graded={stats.gradedCount}
-              onAvatarPress={isOwnProfile ? pickAvatar : undefined}
+              onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
             />
           )}
 
@@ -1329,7 +1404,7 @@ export function ProfileV2Screen({ userId }: Props) {
               editMode={editMode}
               saving={saving}
               onCancelPress={cancelEdit}
-              onSavePress={handleSave}>
+              onSavePress={handleEditProfileSave}>
               {!editMode && (
                 <ProfileV2Grid
                   slots={grailSlots}
@@ -1519,16 +1594,6 @@ export function ProfileV2Screen({ userId }: Props) {
                 accessibilityLabel="Website"
               />
 
-              <TouchableOpacity style={styles.badgeEditRow} onPress={pickBadge} activeOpacity={0.8}>
-                <View style={styles.badgeEditPreview}>
-                  {badgeUri ? (
-                    <Image source={{ uri: badgeUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
-                  ) : null}
-                </View>
-                <Text style={styles.badgeEditLabel}>
-                  {badgeUri ? 'Change Collector Badge' : 'Add Collector Badge'}
-                </Text>
-              </TouchableOpacity>
               <Text style={styles.fieldLabel}>Hero Theme</Text>
               <View style={styles.themeRow}>
                 {getHeroCanvasPickerThemes().map((t) => (
@@ -1768,26 +1833,6 @@ const styles = StyleSheet.create({
   bioInput: {
     height: 100,
     paddingTop: 12,
-  },
-  badgeEditRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 20,
-  },
-  badgeEditPreview: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    overflow: 'hidden',
-    backgroundColor: PV2.panel,
-    borderWidth: 1,
-    borderColor: PV2.panelBorder,
-  },
-  badgeEditLabel: {
-    color: PV2.link,
-    fontSize: 14,
-    fontWeight: '600',
   },
   themeRow: {
     flexDirection: 'row',

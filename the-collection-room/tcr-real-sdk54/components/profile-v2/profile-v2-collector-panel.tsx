@@ -7,7 +7,6 @@ import { PV2 } from './profile-v2-theme';
 type Props = {
   avatarUri: string | null;
   displayName: string;
-  username: string;
   vaultTotal: number;
   graded: number;
   // Sole avatar-edit entry point for Profile V2 (see profile-v2-screen.tsx,
@@ -29,7 +28,6 @@ function StatRow({ label, value }: { label: string; value: string }) {
 export function ProfileV2CollectorPanel({
   avatarUri,
   displayName,
-  username,
   vaultTotal,
   graded,
   onAvatarPress,
@@ -52,10 +50,7 @@ export function ProfileV2CollectorPanel({
             </View>
           )}
         </Pressable>
-        <View style={styles.nameBlock}>
-          <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
-          <Text style={styles.username} numberOfLines={1}>@{username}</Text>
-        </View>
+        <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
       </View>
 
       <View style={styles.colDivider} />
@@ -75,11 +70,12 @@ export function ProfileV2CollectorPanel({
       {/* Right — CacheCase Certified/Registered seal. A permanent part of
           the CCA identity, not user content — always the same static
           local asset, unrelated to profiles.showcase_badge_url (that
-          field and its "Change Collector Badge" edit flow still exist in
-          profile-v2-screen.tsx, just no longer rendered here). The
-          "CCA #1"-style collector id that used to sit under it was
-          identical, hardcoded text on every profile with no real
-          per-user identifier behind it — removed as visible fake data. */}
+          column still exists, but its "Change Collector Badge" Edit
+          Profile control has since been removed as dead UI — nothing
+          writes to it anymore). The "CCA #1"-style collector id that used
+          to sit under it was identical, hardcoded text on every profile
+          with no real per-user identifier behind it — removed as visible
+          fake data. */}
       <View style={[styles.col, styles.rightCol]}>
         <View style={styles.badge}>
           <Image
@@ -115,8 +111,17 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 4,
   },
+  // Plain shared col.paddingVertical:6 applies here now, same as
+  // centerCol/rightCol — the paddingTop/paddingBottom overrides from the
+  // earlier two-line (name + @username) layout existed only to keep that
+  // taller content from clipping against the panel's bottom border within
+  // a fixed height budget; with only avatar + name left, there's nothing
+  // left to fit that on their own. justifyContent:'center' (inherited
+  // below) centers the now-shorter avatar+name group within whatever
+  // height the panel ends up being — normally set by rightCol/centerCol
+  // once leftCol is no longer the tallest column.
   leftCol: {
-    gap: 3,
+    gap: 12,
     justifyContent: 'center',
   },
   centerCol: {
@@ -150,26 +155,11 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
   },
-  // Purely visual downward nudge for the name+username block — a
-  // transform (not marginTop) deliberately, so it's applied after layout
-  // and doesn't change leftCol's measured content height. leftCol centers
-  // its content via justifyContent:'center', so a marginTop here would
-  // have redistributed that centering and shifted the avatar too;
-  // transform leaves the avatar's position and leftCol's height exactly
-  // as they were.
-  nameBlock: {
-    transform: [{ translateY: 10 }],
-  },
   name: {
     color: PV2.textPrimary,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.4,
-    marginTop: 2,
-  },
-  username: {
-    color: 'rgba(255,255,255,0.38)',
-    fontSize: 9,
   },
   statRow: {
     alignItems: 'center',
