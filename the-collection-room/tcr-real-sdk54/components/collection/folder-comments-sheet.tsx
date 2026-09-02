@@ -18,10 +18,10 @@ import {
 import { Image } from 'expo-image';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,6 +35,14 @@ import { useFolderComments, type FolderComment } from '@/hooks/use-folder-commen
 const DISMISS_DISTANCE = 120;
 const DISMISS_VELOCITY = 800;
 const SHEET_HEIGHT_RATIO = 0.72;
+
+// Standard decelerate-to-a-stop timing curve — no overshoot/bounce, unlike
+// the withSpring configs this replaced. Used both for the open animation
+// and for the pan gesture's "snap back to resting position" (a partial
+// drag that didn't cross DISMISS_DISTANCE) — the same "settle at open
+// position" motion either way, so both should feel identical.
+const SHEET_OPEN_DURATION = 280;
+const SHEET_OPEN_EASING = Easing.out(Easing.cubic);
 
 function formatAge(iso: string) {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -145,7 +153,7 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
   useEffect(() => {
     if (visible) {
       setMounted(true);
-      translateY.value = withSpring(0, { damping: 32, stiffness: 260 });
+      translateY.value = withTiming(0, { duration: SHEET_OPEN_DURATION, easing: SHEET_OPEN_EASING });
     } else {
       translateY.value = withTiming(sheetHeight, { duration: 220 }, (finished) => {
         if (finished) runOnJS(handleClosed)();
@@ -168,7 +176,7 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
       if (e.translationY > DISMISS_DISTANCE || e.velocityY > DISMISS_VELOCITY) {
         runOnJS(dismiss)();
       } else {
-        translateY.value = withSpring(0, { damping: 32, stiffness: 260 });
+        translateY.value = withTiming(0, { duration: SHEET_OPEN_DURATION, easing: SHEET_OPEN_EASING });
       }
     });
 

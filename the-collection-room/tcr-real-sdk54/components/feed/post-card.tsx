@@ -5,6 +5,7 @@ import { Image } from 'expo-image';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { supabase } from '@/lib/supabase';
@@ -297,11 +298,13 @@ export function PostCard({
               </View>
             )}
           </View>
-          <View style={styles.cardUserInfo}>
+          <View style={styles.cardIdentityLine}>
             <Text style={styles.cardDisplayName} numberOfLines={1}>
               {displayName}
             </Text>
-            <Text style={styles.cardUsername}>@{post.username}</Text>
+            <Text style={styles.cardUsername} numberOfLines={1}>
+              @{post.username}
+            </Text>
           </View>
           <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
         </TouchableOpacity>
@@ -318,7 +321,14 @@ export function PostCard({
         )}
       </View>
 
-      {/* Post body — text block for text posts, grails grid for Rate My Grails, image otherwise */}
+      {/* Post body — text block for text posts, grails grid for Rate My
+          Grails, image otherwise. The standard image path (final branch
+          below) gets the new X-style indented content column —
+          caption/hashtag text directly above a large, edge-forward image
+          whose left edge lines up with the identity text above it (never
+          under the avatar). CardShare/Rate My Grails keep their previous
+          caption-after-media positioning and full-bleed wrapper, unchanged
+          this pass. */}
       {isTextPost ? (
         <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
           <Text style={styles.cardTextContent}>{post.content}</Text>
@@ -339,7 +349,7 @@ export function PostCard({
       ) : isCardShare ? (
         // card_share posts have no top-level image_url (their images live
         // in card_share_items instead) — must never fall through to the
-        // plain-image branch above, which would pass an undefined uri to
+        // plain-image branch below, which would pass an undefined uri to
         // Image. An empty cardShareItems list (query returned zero rows
         // for this specific post, distinct from the whole fetch failing —
         // see fetchCardShareItems) gets a controlled fallback instead of
@@ -354,60 +364,107 @@ export function PostCard({
           )}
         </View>
       ) : (
-        <TouchableOpacity style={styles.cardImageWrap} onPress={onPostPress} activeOpacity={0.95}>
-          <Image
-            source={{ uri: post.image_url! }}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            transition={200}
-            onError={() => setImageError(true)}
-          />
-        </TouchableOpacity>
-      )}
-
-      {/* Caption + actions — caption only shown for item posts (Rate My Grails
-          renders its own caption inside GrailsPostBody, above) */}
-      <View style={styles.cardBody}>
-        {!isTextPost && !isRateMyGrails && (post.caption || post.item_name) ? (
-          <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
-        ) : null}
-        <View style={styles.cardActions}>
-          <Pressable onPress={handleLikeTap} hitSlop={8} style={styles.likeBtn}>
-            <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-              <Text style={[styles.likeEmoji, !post.liked && styles.likeEmojiDim]}>🔥</Text>
-            </Animated.View>
-            <Text style={[styles.likeCount, post.liked && styles.likeCountActive]}>
-              {post.likeCount}
-            </Text>
-          </Pressable>
-
-          {/* Comment count — tapping also opens post detail */}
-          <TouchableOpacity onPress={onPostPress} hitSlop={8} style={styles.commentBtn}>
-            <Text style={styles.commentIcon}>💬</Text>
-            <Text style={styles.commentCount}>{post.commentCount}</Text>
+        <View style={styles.mediaContentColumn}>
+          {(post.caption || post.item_name) && (
+            <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
+          )}
+          <TouchableOpacity style={styles.mediaImageWrap} onPress={onPostPress} activeOpacity={0.95}>
+            <Image
+              source={{ uri: post.image_url! }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={200}
+              onError={() => setImageError(true)}
+            />
           </TouchableOpacity>
         </View>
+      )}
+
+      {/* Caption — CardShare only (its previous, un-indented position and
+          wrapper, unchanged from Piece 3). Rate My Grails renders its own
+          caption inside GrailsPostBody, above; the standard image path's
+          caption already moved into mediaContentColumn in Piece 3. */}
+      {isCardShare && (post.caption || post.item_name) ? (
+        <View style={styles.cardBody}>
+          <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
+        </View>
+      ) : null}
+
+      {/* Engagement row (Piece 4) — only the two controls with real,
+          working behavior today: like (optimistic, backed by the likes
+          table) and comment (opens post detail, same as before). Repost
+          and bookmark have no functional backing for posts anywhere in
+          this app (see this file's own investigation notes), and there is
+          no native share action for a post either — none of the three are
+          rendered rather than faked. Indented to MEDIA_CONTENT_LEFT_INSET,
+          the same left inset Piece 3 established for the media/content
+          column, so this row lines up with it instead of the avatar. */}
+      <View style={styles.actionsRow}>
+        {/* Comment first, matching the X-style mockup's icon order —
+            tapping also opens post detail, same as before. Piece 6: emoji
+            glyph replaced with IconSymbol's existing 'message' mapping
+            (outline speech bubble) — no new icon system introduced. */}
+        <TouchableOpacity onPress={onPostPress} hitSlop={8} style={styles.commentBtn}>
+          <IconSymbol name="message" size={19} color={PV2.textSecondary} />
+          <Text style={styles.commentCount}>{post.commentCount}</Text>
+        </TouchableOpacity>
+
+        {/* Piece 6: emoji replaced with IconSymbol's existing 'heart'/
+            'heart.fill' mapping (outline when inactive, filled when
+            liked) — same scaleAnim wrapper, same handleLikeTap/onLike,
+            same optimistic update, unchanged. */}
+        <Pressable onPress={handleLikeTap} hitSlop={8} style={styles.likeBtn}>
+          <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+            <IconSymbol
+              name={post.liked ? 'heart.fill' : 'heart'}
+              size={19}
+              color={post.liked ? PV2.accent : PV2.textSecondary}
+            />
+          </Animated.View>
+          <Text style={[styles.likeCount, post.liked && styles.likeCountActive]}>
+            {post.likeCount}
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
 }
 
+// Left inset for the new indented content column (Piece 3 — caption/image
+// for the standard image path) below the header — matches cardHeader's own
+// paddingHorizontal (12) + cardAvatar's width (36) + cardHeaderUserTouch's
+// avatar-to-identity gap (10), so that column's content lines up exactly
+// under the identity text above it, never under the avatar.
+const MEDIA_CONTENT_LEFT_INSET = 12 + 36 + 10;
+
 const styles = StyleSheet.create({
+  // X-style Piece 2 — flat, edge-to-edge, single unified dark surface (no
+  // outer rounded card, no shadow/elevation, no per-section background
+  // fills). Every sub-section below (header, text, grails, body) used to
+  // carry its own separate '#1A1A1A' background against this card's white
+  // one; now there's just this one PV2.bg for the whole post, and each
+  // section only contributes spacing.
+  // No horizontal/vertical padding here — media sections below
+  // (cardImageWrap, cardGrailsWrap, CardSharePostBody) render edge-to-edge
+  // exactly as before and must not inherit any new inset from this
+  // container. Only the background is shared/unified now; every section
+  // still owns its own spacing, same as before this pass.
+  // Piece 3 — bottom hairline divider replaces the FlatList's old
+  // paddingHorizontal/gap floating-card spacing (see app/(tabs)/index.tsx's
+  // own list style): posts now sit edge-to-edge in a true stream, each
+  // separated by this one divider instead of a gap on all sides.
   card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: PV2.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: PV2.dividerColor,
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#1A1A1A',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    // Piece 6 — tightened 6→4, a few more px off the header→caption gap.
+    paddingBottom: 4,
   },
   cardHeaderUserTouch: {
     flex: 1,
@@ -435,27 +492,43 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  cardUserInfo: {
+  // Display Name + @username inline on one line (was a two-line stack) —
+  // the X-style identity row. cardDate stays a sibling right after this,
+  // unchanged in position, so it still lands at the row's far right.
+  cardIdentityLine: {
     flex: 1,
-    gap: 1,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
   },
+  // Piece 6 — sizes nudged up (14→15, 700→600 "semibold" rather than
+  // bold) to match the mockup's slightly larger, less heavy identity
+  // line; avatar/gap/left-inset math untouched.
   cardDisplayName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
   },
   cardUsername: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.60)',
+    flexShrink: 1,
+    fontSize: 14,
+    color: PV2.textSecondary,
   },
+  // Piece 6 — fontSize 12→14 and unified onto the PV2.textSecondary token
+  // (was a separate, dimmer one-off rgba value).
   cardDate: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.45)',
+    fontSize: 14,
+    color: PV2.textSecondary,
     flexShrink: 0,
   },
+  // CardShare's own wrapper — layout/position unchanged this pass; only
+  // the placeholder tint moved off the old light-theme gray (#e9ecef, a
+  // holdover from the white-card era) so it doesn't flash light against
+  // the now-dark card while CardSharePostBody's images load.
   cardImageWrap: {
     aspectRatio: 5 / 7,
-    backgroundColor: '#e9ecef',
+    backgroundColor: PV2.collectorPanelBg,
     overflow: 'hidden',
   },
   cardShareUnavailable: {
@@ -465,37 +538,99 @@ const styles = StyleSheet.create({
   },
   cardShareUnavailableText: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
+  // Standard image path only (Piece 3) — caption/hashtag text directly
+  // above a large, edge-forward image, indented to MEDIA_CONTENT_LEFT_INSET
+  // so its left edge lines up with the identity text above rather than the
+  // avatar; right edge matches cardHeader's own 12px right inset.
+  mediaContentColumn: {
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    // Piece 5 — tightened from 8 so this + actionsRow's own paddingTop
+    // (also tightened) don't stack into a 16px dead zone before actions.
+    paddingBottom: 6,
+    // Piece 6 — 6→4, a few more px off the caption→image gap.
+    gap: 4,
+  },
+  mediaCaption: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: PV2.textPrimary,
+    lineHeight: 19,
+  },
+  // Same aspect ratio as before (5/7, unchanged) — only the corner
+  // treatment (modest 11px radius, was square) and background (dark
+  // placeholder instead of light-theme gray) changed; no shadow, no extra
+  // card/frame around it.
+  mediaImageWrap: {
+    aspectRatio: 5 / 7,
+    borderRadius: 11,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  // Padding (10, all sides) deliberately untouched — GrailsPostBody
+  // renders a media grid, and any padding change would shift its internal
+  // grid width math. Piece 5: the background fill was removed (the
+  // separate '#1A1A1A' created a slightly different dark shade than the
+  // rest of the now-unified PV2.bg card, a small two-tone seam within one
+  // post) — this doesn't affect the box's size, only its fill, so it's
+  // safe to drop without touching GrailsPostBody's layout.
   cardGrailsWrap: {
     padding: 10,
-    backgroundColor: '#1A1A1A',
   },
+  // No separate background/rounded container, left-aligned, tighter
+  // spacing — flows directly on the card's own single dark surface. No
+  // minHeight — that existed to keep a short text post visually
+  // substantial as a floating card, which no longer applies.
+  // Piece 5 — left inset consolidated onto MEDIA_CONTENT_LEFT_INSET (was
+  // paddingHorizontal: 12 on both sides, a leftover from before Piece 3
+  // introduced that constant): text posts are the last place that still
+  // drifted from the identity/media/actions column's shared left edge.
   cardTextWrap: {
-    backgroundColor: '#1A1A1A',
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    minHeight: 80,
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    paddingBottom: 6,
   },
   cardTextContent: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.90)',
-    lineHeight: 24,
+    fontSize: 15,
+    color: PV2.textPrimary,
+    lineHeight: 20,
   },
+  // CardShare caption only now (Piece 4). Piece 5 — same left-inset
+  // consolidation as cardTextWrap above, for the same reason.
   cardBody: {
-    padding: 12,
-    gap: 8,
-    backgroundColor: '#1A1A1A',
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
   },
   cardCaption: {
     fontSize: 14,
     fontWeight: '500',
-    color: 'rgba(255,255,255,0.85)',
+    color: PV2.textPrimary,
+    lineHeight: 19,
   },
-  cardActions: {
+  // Piece 4 — indented to MEDIA_CONTENT_LEFT_INSET (same as Piece 3's
+  // mediaContentColumn) so the row aligns under the identity text/media
+  // column, not the avatar. Compact, left-grouped rather than
+  // space-between: only 2 controls actually exist today (see this file's
+  // own investigation notes on repost/bookmark/share), so stretching them
+  // to the row's full width would read as sparse rather than "evenly
+  // distributed" the way a genuine 5-icon X row does.
+  actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 28,
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    // Piece 5 — tightened (was 8/10) to match the also-tightened
+    // paddingBottom on whatever precedes this row (mediaContentColumn/
+    // cardTextWrap/cardBody), so media/text→actions and actions→divider
+    // read as compact, consistent gaps rather than the previous 16px
+    // combined dead zone before actions.
+    paddingTop: 6,
+    paddingBottom: 8,
   },
   likeBtn: {
     flexDirection: 'row',
@@ -503,20 +638,18 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingVertical: 2,
   },
-  likeEmoji: {
-    fontSize: 20,
-  },
-  likeEmojiDim: {
-    opacity: 0.25,
-  },
+  // Piece 6 — default color now lives on the IconSymbol/Text elements
+  // directly (PV2.textSecondary default, PV2.accent active), matching
+  // commentCount's own treatment; likeEmoji/likeEmojiDim (the old emoji
+  // opacity toggle) are gone with the emoji glyph itself.
   likeCount: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
-    color: 'rgba(255,255,255,0.50)',
+    color: PV2.textSecondary,
     minWidth: 16,
   },
   likeCountActive: {
-    color: '#FF7043',
+    color: PV2.accent,
   },
   commentBtn: {
     flexDirection: 'row',
@@ -524,14 +657,10 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingVertical: 2,
   },
-  commentIcon: {
-    fontSize: 18,
-    opacity: 0.55,
-  },
   commentCount: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
-    color: 'rgba(255,255,255,0.50)',
+    color: PV2.textSecondary,
     minWidth: 16,
   },
 });

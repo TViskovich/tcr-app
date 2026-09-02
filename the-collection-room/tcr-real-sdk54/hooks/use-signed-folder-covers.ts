@@ -60,6 +60,43 @@ function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   return !!entry && entry.expiresAt - REFRESH_SKEW_MS > Date.now();
 }
 
+// Bumped by invalidateSignedFolderCover and read into each hook instance's
+// fetch effect deps below — this is what actually makes an invalidation
+// cause a re-fetch. Deleting a cache entry alone does NOT do this: the
+// fetch effect's deps are [key, identity], and a cover-menu action changes
+// neither (same folderId, same caller), so without this, React sees the
+// same deps as last render and skips re-running the effect entirely — the
+// hook would recompute a fresh 'loading'/'unavailable' status for the
+// deleted entry on the next render (since the read side always reads the
+// cache live), but no request would ever go out to replace it, leaving the
+// hero stuck showing the reserved-but-empty state (or, once a later render
+// happens to change some other dep, whatever the entry happened to resolve
+// to) instead of the just-picked cover. Confirmed by tracing
+// invalidateSignedFolderCover's previous body (a bare cache.delete with no
+// other side effect) against useEffect's documented dependency-comparison
+// semantics — not something a live Edge Function reproduction could have
+// shown, since the function itself was never the problem.
+let version = 0;
+const versionListeners = new Set<() => void>();
+
+// Drops one folder's cached entry for one specific caller identity and
+// notifies every mounted useSignedFolderCovers instance to re-check its
+// fetch effect, so the next render treats it as missing and re-fetches
+// immediately rather than serving a stale cached result (up to TTL_MS old)
+// or getting stuck with none at all — see `version` above for why the
+// cache.delete alone was never sufficient. Only ever meaningful for the
+// owner's own identity — cover edits are owner-only, so `identity` here
+// should always be the current user's own id, never 'anon' or another
+// user's. Exported rather than folded into a "refresh" mutation on the hook
+// itself, since the caller (a folder-detail screen) already knows exactly
+// which folder just changed and doesn't need this hook's full batching
+// machinery just to invalidate one entry.
+export function invalidateSignedFolderCover(folderId: string, identity: string) {
+  cache.delete(`${identity}:${folderId}`);
+  version++;
+  for (const listener of versionListeners) listener();
+}
+
 type EdgeResult =
   | { id: string; status: 'ok'; signed_url: string; expires_in: number }
   | { id: string; status: 'unavailable' };
@@ -139,6 +176,22 @@ export function useSignedFolderCovers(folderIds: (string | null | undefined)[]):
   // share it, but each instance still needs to know when to re-read it.
   const [, bump] = useState(0);
 
+  // Subscribes to invalidateSignedFolderCover's module-level notifications
+  // for the lifetime of this hook instance, so an invalidation anywhere
+  // (this screen's own cover change, in practice) forces a re-render here.
+  // A re-render alone still wouldn't refetch anything by itself — that's
+  // what capturing `version` into the effect below's deps is for — this
+  // just makes sure a render actually happens soon after invalidation
+  // rather than waiting on some unrelated state change (like setFolder) to
+  // happen to coincide with it.
+  useEffect(() => {
+    const listener = () => bump((n) => n + 1);
+    versionListeners.add(listener);
+    return () => {
+      versionListeners.delete(listener);
+    };
+  }, []);
+
   useEffect(() => {
     if (!ids.length) return;
     const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
@@ -168,10 +221,16 @@ export function useSignedFolderCovers(folderIds: (string | null | undefined)[]):
       cancelled = true;
     };
     // `key` (a sorted/joined snapshot of `ids`) and `identity` are the
-    // intentional, stable dependencies — same rationale as
-    // use-signed-item-images.ts's effect.
+    // original stable dependencies (same rationale as
+    // use-signed-item-images.ts's effect); `version` is read fresh on every
+    // render (see the module-level `version` counter above) and added here
+    // specifically so an invalidateSignedFolderCover() call — which changes
+    // neither `key` nor `identity` — still causes this effect to actually
+    // re-run and refetch the now-missing entry, instead of only updating
+    // the *status* React reads on the next render while no new request
+    // ever goes out.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, identity]);
+  }, [key, identity, version]);
 
   const urls = new Map<string, string>();
   const statuses = new Map<string, SignedCoverStatus>();

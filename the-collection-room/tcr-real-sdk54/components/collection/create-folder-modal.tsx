@@ -43,6 +43,12 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
   // than a new collection starting exposed; the DB column default itself
   // is untouched — this client just always sends an explicit value.
   const [isPublic, setIsPublic] = useState(false);
+  // Display-only derivation — the underlying state/DB field stays
+  // `isPublic`/`is_public` (see above and handleCreate's insert below);
+  // only the switch's on-screen framing is inverted, since "Public
+  // Collection" labeled above a helper text saying "Only you can see
+  // this" read as contradictory. ON now unambiguously means private.
+  const isPrivate = !isPublic;
   const [loading, setLoading] = useState(false);
 
   async function handleCreate() {
@@ -91,20 +97,20 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
             onSubmitEditing={handleCreate}
           />
 
-          {/* Public toggle — same wording/behavior as folder-edit-modal.tsx's
-              own Public Collection control, just styled for this sheet. */}
+          {/* Private toggle — same wording/behavior as folder-edit-modal.tsx's
+              own Private Collection control, just styled for this sheet. */}
           <View style={styles.toggleRow}>
             <View style={styles.toggleLabel}>
-              <Text style={styles.toggleTitle}>Public Collection</Text>
+              <Text style={styles.toggleTitle}>{isPrivate ? 'Private Collection' : 'Public Collection'}</Text>
               <Text style={styles.toggleHint}>
-                {isPublic
-                  ? 'Anyone can discover and view this collection.'
-                  : 'Only you can see this collection.'}
+                {isPrivate
+                  ? 'Only you can view this collection.'
+                  : 'Anyone can view this collection.'}
               </Text>
             </View>
             <Switch
-              value={isPublic}
-              onValueChange={setIsPublic}
+              value={isPrivate}
+              onValueChange={(value) => setIsPublic(!value)}
               trackColor={{ true: '#0a7ea4' }}
             />
           </View>

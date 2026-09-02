@@ -163,10 +163,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: GRID_GAP,
   },
+  // borderRadius: 0 — kept in sync with grail-slot-preview.tsx's own
+  // styles.slot (square, 90°-cornered tiles, matching this file's own
+  // "never visibly change shape when data arrives" invariant already
+  // applied to CARD_ASPECT_RATIO above).
   loadingCell: {
     flex: 1,
     aspectRatio: CARD_ASPECT_RATIO,
-    borderRadius: 6,
+    borderRadius: 0,
     backgroundColor: PV2.emptyCardBg,
   },
   errorState: {

@@ -4,6 +4,17 @@ import { copyRegistrySnapshotImage } from '@/lib/registry-images';
 import { supabase } from '@/lib/supabase';
 import type { RegisteredCard } from '@/types';
 
+type RegisterResult = {
+  error: string | null;
+  // Present whenever the registered_cards row itself exists after this
+  // call (including the partial-failure case where the row was created
+  // but the durable image copy failed) — lets a caller distinguish "no row
+  // was ever created, nothing to retry" from "row exists, only the image
+  // copy needs retrying," without depending on this hook's own state
+  // timing (registeredCard is only guaranteed current on the NEXT render).
+  registeredCardId?: string;
+};
+
 type RegisterParams = {
   serialNumber?: string | null;
   gradeCompany?: string | null;
@@ -61,7 +72,7 @@ export function useRegisteredCardForItem(collectionItemId: string | undefined) {
   // error) — a failed call leaves registeredCard exactly as it was, never
   // optimistically flipped.
   const registerItem = useCallback(
-    async (params: RegisterParams = {}): Promise<{ error: string | null }> => {
+    async (params: RegisterParams = {}): Promise<RegisterResult> => {
       if (!collectionItemId) return { error: 'No item to register.' };
       // Defense-in-depth: the calling screen already disables its button
       // while registering, but this hook must not depend on the caller
@@ -112,42 +123,82 @@ export function useRegisteredCardForItem(collectionItemId: string | undefined) {
           return { error: 'Registration did not return a record. Please try again.' };
         }
 
-        setRegisteredCard(data as RegisteredCard);
+        const card = data as RegisteredCard;
+        setRegisteredCard(card);
 
-        // Best-effort durable-image preservation — fired after
-        // registration has already succeeded, never awaited, and never
-        // allowed to affect this function's own result. copyRegistry
-        // SnapshotImage already resolves (never throws) on every outcome
-        // including a network failure, but this is wrapped defensively
-        // anyway: registration must never fail, and the certificate
-        // already has a working provisional image via
-        // snapshot_image_url regardless of whether this succeeds. Logs
-        // only a status/operation/id shape — never a raw exception,
-        // token, or URL.
-        copyRegistrySnapshotImage(data.id)
-          .then((result) => {
-            if (result.status !== 'ready') {
-              console.warn('[useRegisteredCardForItem] snapshot image copy did not complete:', {
-                operation: 'copy_registry_snapshot_image',
-                registeredCardId: data.id,
-                status: result.status,
-              });
-            }
-          })
-          .catch(() => {
-            console.warn('[useRegisteredCardForItem] snapshot image copy threw:', {
+        // Durable-image reliability: register_card seeds
+        // snapshot_image_status to 'pending' only when the linked item
+        // actually had a source image (see
+        // set_snapshot_image_status_in_register_card.sql) — otherwise it's
+        // already correctly 'unavailable' and there is nothing to copy.
+        // Calling copy-registry-snapshot-image for a legitimate no-image
+        // card would incorrectly flip that 'unavailable' status to
+        // 'failed'/source_missing, so it's skipped entirely rather than
+        // called and ignored.
+        if (card.snapshot_image_status === 'pending') {
+          // Awaited (not fire-and-forget): the registration operation
+          // isn't reliably complete until the durable copy actually lands
+          // in the private registry-images bucket, since the new registry
+          // image display path never reads snapshot_image_url. copy-
+          // registry-snapshot-image's own destination path
+          // (`${registeredCardId}/original`, upsert:true) is deterministic
+          // and keyed only by the already-created row's id, so retrying it
+          // — here or later via retrySnapshotImage — is always safe and
+          // never touches register_card again.
+          const copyResult = await copyRegistrySnapshotImage(card.id);
+
+          // The Edge Function (not this client) owns snapshot_image_status
+          // / snapshot_image_storage_path — resync from the database
+          // rather than guessing at the row's post-copy shape here.
+          await load();
+
+          if (copyResult.status !== 'ready') {
+            console.warn('[useRegisteredCardForItem] snapshot image copy did not complete:', {
               operation: 'copy_registry_snapshot_image',
-              registeredCardId: data.id,
+              registeredCardId: card.id,
+              status: copyResult.status,
             });
-          });
+            return {
+              error:
+                'Card registered, but the durable registry image could not be saved. You can retry saving the image from this screen.',
+              registeredCardId: card.id,
+            };
+          }
+        }
 
-        return { error: null };
+        return { error: null, registeredCardId: card.id };
       } finally {
         setRegistering(false);
       }
     },
-    [collectionItemId, registering],
+    [collectionItemId, registering, load],
   );
 
-  return { registeredCard, loading, error, registering, refresh: load, registerItem };
+  // Retries ONLY the durable image copy for an already-registered card —
+  // never re-invokes register_card, so it can never create a duplicate
+  // registration or trip registered_cards_unique_collection_item. Safe to
+  // call repeatedly: the destination storage path is deterministic and
+  // upserted, and every write inside copy-registry-snapshot-image is
+  // re-verified against the row's current owner/linkage before it commits.
+  const retrySnapshotImage = useCallback(
+    async (registeredCardId: string): Promise<{ error: string | null }> => {
+      const result = await copyRegistrySnapshotImage(registeredCardId);
+      await load();
+      if (result.status === 'ready') return { error: null };
+      return {
+        error: 'The durable registry image still could not be saved. Please try again shortly.',
+      };
+    },
+    [load],
+  );
+
+  return {
+    registeredCard,
+    loading,
+    error,
+    registering,
+    refresh: load,
+    registerItem,
+    retrySnapshotImage,
+  };
 }

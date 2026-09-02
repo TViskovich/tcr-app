@@ -12,6 +12,10 @@ type Props = {
   // caller rather than re-fetched here.
   previewItems: Record<string, CollectionItem[]>;
   onOpenFolder: (folder: Folder) => void;
+  // Opens a specific card's item-detail page — tapping a preview tile
+  // should land on that card, not the folder it lives in (matches the
+  // main Collection page's own HorizontalCardPreview behavior).
+  onOpenItem: (item: CollectionItem) => void;
   // Owner-only — omitted when viewing someone else's profile. Folder
   // navigation (above) always works either way; only the "add a card" /
   // "create a folder" actions are gated, since those would otherwise add
@@ -39,6 +43,7 @@ export function ProfileV2Collections({
   folders,
   previewItems,
   onOpenFolder,
+  onOpenItem,
   onAddItem,
   onCreatePress,
 }: Props) {
@@ -69,6 +74,7 @@ export function ProfileV2Collections({
             items={previewItems[folder.id] ?? []}
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
+            onOpenItem={onOpenItem}
             onAddItem={() => onAddItem?.(folder)}
             variant="compact"
           />

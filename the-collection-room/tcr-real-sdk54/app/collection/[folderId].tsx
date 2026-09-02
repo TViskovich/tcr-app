@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
+  Alert,
   FlatList,
+  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -12,6 +14,7 @@ import {
 } from 'react-native';
 
 import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -24,25 +27,28 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { CacheCasePlaceholderShell } from '@/components/collection/cachecase-placeholder-shell';
-import {
-  PREVIEW_CARD_ASPECT_RATIO,
-  PREVIEW_CARD_RADIUS,
-} from '@/components/collection/collection-preview-card';
+import { PREVIEW_CARD_ASPECT_RATIO } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
+import { FolderCoverAdjuster } from '@/components/collection/folder-cover-adjuster';
+import { FolderCoverImage } from '@/components/collection/folder-cover-image';
+import { FolderCoverItemPicker } from '@/components/collection/folder-cover-item-picker';
+import { FolderCoverMenu } from '@/components/collection/folder-cover-menu';
 import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-sheet';
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { FOLDER_COVER_ASPECT_RATIO, FOLDER_COVER_RADIUS } from '@/constants/folder-cover';
 import { NO_PLAYER_KEY, itemMatchesSearch, useItems } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
+import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
-import type { CollectionItem, Folder } from '@/types';
+import type { CollectionItem, Folder, FolderCoverCrop } from '@/types';
 
 // Wraps expo-image's Image so the hero's overlay layer can drive its
 // opacity from a Reanimated shared value on the UI thread.
@@ -60,46 +66,37 @@ const HERO_TRANSITION_DURATION = 240;
 // stays fully visible. Applied identically to every hero image layer.
 const HERO_IMAGE_CONTENT_POSITION = { top: '0%', left: '50%' } as const;
 
+// FOLDER_COVER_ASPECT_RATIO/FOLDER_COVER_RADIUS now live in
+// constants/folder-cover.ts, shared with FolderCoverAdjuster/
+// FolderCoverImage so the adjust-cover preview stays exactly WYSIWYG with
+// this screen's own hero banner (below).
+
 type OwnerProfile = {
   username: string;
   display_name: string | null;
   avatar_url: string | null;
 };
 
-// Dense grid. Gap is applied via FlatList's own contentContainerStyle/
-// columnWrapperStyle gap support — no per-item margin math, no
-// ItemSeparatorComponent (unreliable with numColumns > 1).
+// Dense, edge-to-edge Instagram-profile-grid density. Gap is applied via
+// FlatList's own contentContainerStyle/columnWrapperStyle gap support — no
+// per-item margin math, no ItemSeparatorComponent (unreliable with
+// numColumns > 1). GRID_PAGE_PADDING is 0 (the grid runs flush to both
+// screen edges, like Instagram's) but is named explicitly, rather than left
+// as an implicit assumption, so cardThumbWidth below reads as the exact
+// "(available width - left/right padding - total column gaps) / columns"
+// formula and stays correct if page padding is ever reintroduced.
 const CARD_NUM_COLUMNS = 3;
-const GRID_GAP = 3;
-
-// Restrained fixed target for the "intended initial grid" — real tiles
-// always render first; ghost shells only pad up to this many total slots
-// (or, once real content already meets/exceeds it, just complete whatever
-// row is currently dangling). Never grows into a long trailing field of
-// placeholders down the page.
-const MIN_GRID_SLOTS = 4;
-
-type GridSlot<T> = { kind: 'real'; data: T } | { kind: 'placeholder'; key: string };
-
-function toRealSlots<T>(data: T[]): GridSlot<T>[] {
-  return data.map((item) => ({ kind: 'real', data: item }));
-}
-
-// Pads with generated, local-only CacheCasePlaceholderShell tiles — never
-// persisted, never tappable, never part of counts or search. Below the
-// fixed minimum, pads up to exactly MIN_GRID_SLOTS; at or above it, only
-// completes the currently-dangling row.
-function padToMinimumGrid<T>(data: T[], keyPrefix: string, columns: number): GridSlot<T>[] {
-  if (data.length === 0) return [];
-  const target =
-    data.length >= MIN_GRID_SLOTS ? Math.ceil(data.length / columns) * columns : MIN_GRID_SLOTS;
-  const padCount = Math.max(0, target - data.length);
-  const placeholders: GridSlot<T>[] = Array.from({ length: padCount }, (_, i) => ({
-    kind: 'placeholder',
-    key: `${keyPrefix}-${i}`,
-  }));
-  return [...toRealSlots(data), ...placeholders];
-}
+const GRID_PAGE_PADDING = 0;
+const GRID_GAP = 1;
+// 0 — square, 90-degree tile corners, matching Instagram's own profile
+// grid. Distinct from the shared PREVIEW_CARD_RADIUS (12, used by the
+// Collection tab's horizontal previews, which stays rounded) — scoped to
+// this grid's own `thumb` style only, so the Collection tab's preview
+// cards are unaffected. This is the tile's only radius; `thumb`'s
+// overflow:'hidden' clips both the real Image and the thumbPlaceholder
+// fallback to it (neither sets its own radius), so 0 here squares off
+// both at once.
+const GRID_CARD_RADIUS = 0;
 
 // The gallery for one folder. The default view (no `player` route param)
 // renders every CollectionItem in the folder directly, one tile each — no
@@ -153,6 +150,23 @@ export default function CollectionFolderScreen() {
   const [folderError, setFolderError] = useState<string | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [editVisible, setEditVisible] = useState(false);
+  // Folder cover/hero — FolderCoverMenu (Choose from Folder / Choose from
+  // Photo Library / Remove Cover) opened from FolderEditModal's own
+  // "Change Cover" row; FolderCoverItemPicker is the "Choose from Folder"
+  // sub-flow, reusing this screen's own already-loaded items/signedUrls.
+  const [showCoverMenu, setShowCoverMenu] = useState(false);
+  const [showCoverItemPicker, setShowCoverItemPicker] = useState(false);
+  // "Choose from Folder" -> tap an item opens this (FolderCoverAdjuster)
+  // instead of saving immediately — the item + its already-resolved signed
+  // URL, captured together so the adjuster never has to re-look either up.
+  // Non-null exactly while that adjuster is open.
+  const [adjustingCover, setAdjustingCover] = useState<{ item: CollectionItem; uri: string } | null>(null);
+  const [savingCover, setSavingCover] = useState(false);
+  // iOS only — set right before closing FolderCoverMenu when the user picks
+  // "Choose from Photo Library," then consumed by that Modal's onDismiss
+  // (see runLibraryCoverPick below for why launchImageLibraryAsync can't
+  // just be called synchronously after setShowCoverMenu(false)).
+  const pendingLibraryPickRef = useRef(false);
   const [commentsVisible, setCommentsVisible] = useState(false);
   // Separate from commentsVisible/FolderCommentsSheet (whole-folder
   // comments, grouping mode) — the gallery/card-mode comment thread is its
@@ -268,14 +282,40 @@ export default function CollectionFolderScreen() {
   const isPrivate = folder !== null && !folder.is_public && !isOwner;
 
   const [search, setSearch] = useState('');
+  // The full-width CollectionSearchBar now only mounts once this is true —
+  // toggled by the new header search icon (see headerTopActions below).
+  // Collapsing it also clears `search`, so the grid never stays silently
+  // filtered by a query the (now-hidden) bar isn't showing.
+  const [searchVisible, setSearchVisible] = useState(false);
+
+  function toggleSearch() {
+    setSearchVisible((visible) => {
+      if (visible) setSearch('');
+      return !visible;
+    });
+  }
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
-  const cardThumbWidth = (windowWidth - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
+  const cardThumbWidth =
+    (windowWidth - GRID_PAGE_PADDING * 2 - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
 
   // One batched call covering every item currently loaded for this folder —
   // both the hero carousel (isCardMode) and the default item grid below
   // read from this same map (item-images beta privacy hardening, Phase 3B).
   const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
+
+  // The folder-level cover/hero banner (below, default view only) — same
+  // privacy-enforced signed-delivery hook already used by app/saved.tsx,
+  // claim-folder-picker.tsx, and pick-collection.tsx, not a new resolution
+  // path. A single-folder batch (this screen only ever needs its own).
+  const { urls: coverUrls, statuses: coverStatuses } = useSignedFolderCovers([folderId]);
+  const coverUrl = folderId ? coverUrls.get(folderId) : undefined;
+  const coverStatus = folderId ? coverStatuses.get(folderId) : undefined;
+  // Only takes up layout space once there's an actual cover to show (or one
+  // is still resolving) — a folder that has never had a cover set renders
+  // exactly as it did before this feature existed, no empty placeholder
+  // banner.
+  const showCoverHero = coverStatus === 'loading' || coverStatus === 'ready';
 
   // The item grid's actual source list. With no `player` param (the
   // default view) this is simply every item in the folder — one tile per
@@ -477,13 +517,6 @@ export default function CollectionFolderScreen() {
     return cardItems.filter((item) => itemMatchesSearch(item, q));
   }, [cardItems, search]);
 
-  // No ghost padding while a search is active — placeholders represent
-  // "grow your real collection here," not a layout for search results.
-  const cardSlots = useMemo(() => {
-    if (search.trim()) return toRealSlots(filteredCardItems);
-    return padToMinimumGrid(filteredCardItems, `item-placeholder-${folderId}`, CARD_NUM_COLUMNS);
-  }, [filteredCardItems, search, folderId]);
-
   const isCardMode = !!activePlayer;
   const screenTitle = isCardMode ? (activePlayer === NO_PLAYER_KEY ? 'Other' : activePlayer!) : folderTitle;
   const visibleCount = isCardMode ? cardItems.length : items.length;
@@ -537,6 +570,191 @@ export default function CollectionFolderScreen() {
     } catch {
       // user dismissed share sheet — no-op
     }
+  }
+
+  // Closes Edit Folder and opens FolderCoverMenu in its place — sequential,
+  // not stacked, since Edit Folder has nothing left to show once the owner
+  // has moved on to changing the cover.
+  function openCoverMenu() {
+    setEditVisible(false);
+    setShowCoverMenu(true);
+  }
+
+  // Single write path for every cover change below — always sets all four
+  // cover columns together (never a partial update that could leave e.g.
+  // cover_source out of sync with cover_storage_path/cover_item_id/
+  // cover_crop), then invalidates this folder's cached signed cover so the
+  // hero re-fetches immediately instead of serving a stale cached result
+  // for up to the signed-URL's own TTL. Returns the updated row on success
+  // so callers can do their own best-effort Storage cleanup of whatever the
+  // PREVIOUS cover pointed at — only ever after the DB write actually
+  // succeeds, since deleting that object before confirming the write would
+  // risk orphaning the still-active cover if the write then failed.
+  async function applyCoverUpdate(patch: {
+    cover_source: string;
+    cover_storage_path: string | null;
+    cover_item_id: string | null;
+    cover_image_url: string | null;
+    cover_crop: FolderCoverCrop | null;
+  }): Promise<Folder | null> {
+    if (!folder || !currentUserId) return null;
+    try {
+      const { data, error } = await supabase
+        .from('folders')
+        .update(patch)
+        .eq('id', folder.id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      if (data) {
+        setFolder(data as Folder);
+        invalidateSignedFolderCover(folder.id, currentUserId);
+        return data as Folder;
+      }
+      return null;
+    } catch (e) {
+      Alert.alert('Cover update failed', e instanceof Error ? e.message : 'Something went wrong.');
+      return null;
+    }
+  }
+
+  // "Choose from Folder" -> tap an item no longer saves immediately — it
+  // opens FolderCoverAdjuster (Adjust Cover) so the owner can frame the
+  // item's photo inside the hero's actual aspect ratio first. Reuses this
+  // screen's own already-resolved signedUrls (no second item/image query);
+  // if that item's signed URL genuinely hasn't resolved yet, there's
+  // nothing to adjust yet, so the tap is a no-op rather than opening the
+  // adjuster on a blank image.
+  function handleChooseFromFolderItem(item: CollectionItem) {
+    if (savingCover || !item.primary_image_id) return;
+    const uri = signedUrls.get(item.primary_image_id);
+    if (!uri) return;
+    setShowCoverItemPicker(false);
+    setShowCoverMenu(false);
+    setAdjustingCover({ item, uri });
+  }
+
+  async function handleSaveAdjustedCover(crop: FolderCoverCrop) {
+    if (!adjustingCover || savingCover || !folder || !currentUserId) return;
+    const { item } = adjustingCover;
+    setAdjustingCover(null);
+    setSavingCover(true);
+    const previousUploadPath = folder.cover_source === 'upload' ? folder.cover_storage_path : null;
+    const updated = await applyCoverUpdate({
+      cover_source: 'item',
+      cover_item_id: item.id,
+      cover_storage_path: null,
+      cover_image_url: null,
+      cover_crop: crop,
+    });
+    if (updated && previousUploadPath) {
+      await deleteFolderCover(previousUploadPath, currentUserId);
+    }
+    setSavingCover(false);
+  }
+
+  function handleCancelAdjustCover() {
+    setAdjustingCover(null);
+  }
+
+  // Menu-row press handler — deliberately does NOT call
+  // ImagePicker.launchImageLibraryAsync() itself. FolderCoverMenu's own
+  // <Modal> is still fully presented/mounted at the instant this fires, and
+  // closing it via setShowCoverMenu(false) only *starts* its dismiss
+  // animation — it does not complete synchronously. launchImageLibraryAsync()
+  // on iOS calls through to presenting a native
+  // UIImagePickerController/PHPickerViewController; presenting that while
+  // FolderCoverMenu's own UIViewController-backed Modal is still
+  // mid-dismissal is a documented iOS pitfall ("Attempt to present <X>
+  // while a presentation is in progress") — UIKit can decline the
+  // presentation outright, in which case launchImageLibraryAsync's returned
+  // promise never resolves, since the native completion handler it's
+  // waiting on never fires. Every OTHER expo-image-picker call site in this
+  // app (profile-v2-screen.tsx's avatar picker, item/[id].tsx's add-photos)
+  // either launches from a native Alert.alert (whose own dismissal is
+  // already complete by the time its onPress fires — no RN Modal involved)
+  // or from inline screen UI with no modal to race at all. FolderCoverMenu
+  // is the only RN <Modal> immediately followed by a native picker launch
+  // anywhere in this codebase, so there's no other in-app precedent to
+  // directly copy — this defers to Modal's own onDismiss (iOS-only, but
+  // exactly the class this bug is) instead of guessing at a delay.
+  function handleChooseCoverFromLibrary() {
+    if (savingCover || !folder || !currentUserId) return;
+    if (Platform.OS === 'ios') {
+      pendingLibraryPickRef.current = true;
+      setShowCoverMenu(false);
+    } else {
+      // Android's Modal has no onDismiss callback, and its native photo
+      // picker is a separate Activity (launched via Intent) rather than a
+      // UIViewController presentation racing FolderCoverMenu's own — this
+      // exact failure mode is iOS-specific, so Android keeps the original
+      // immediate close-then-launch sequence.
+      setShowCoverMenu(false);
+      void runLibraryCoverPick();
+    }
+  }
+
+  async function runLibraryCoverPick() {
+    if (!folder || !currentUserId) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your photo library.');
+      return;
+    }
+    // allowsEditing + aspect uses the picker's own native crop UI rather
+    // than this app's custom PhotoAdjuster (item-photo pinch-crop tool,
+    // portrait/square only) — a landscape banner ratio is outside what
+    // that tool supports today, and extending it is out of scope here.
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [Math.round(FOLDER_COVER_ASPECT_RATIO * 100), 100],
+      quality: 0.85,
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    setSavingCover(true);
+    const previousUploadPath = folder.cover_source === 'upload' ? folder.cover_storage_path : null;
+    try {
+      const uploaded = await uploadFolderCover(result.assets[0].uri, currentUserId);
+      const updated = await applyCoverUpdate({
+        cover_source: 'upload',
+        cover_storage_path: uploaded.storagePath,
+        cover_item_id: null,
+        cover_image_url: uploaded.publicUrl,
+        // Only ever meaningful for cover_source = 'item' — an upload
+        // replaces whatever crop framing a previous item-cover had.
+        cover_crop: null,
+      });
+      if (updated && previousUploadPath && previousUploadPath !== uploaded.storagePath) {
+        await deleteFolderCover(previousUploadPath, currentUserId);
+      }
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload cover image.');
+    } finally {
+      setSavingCover(false);
+    }
+  }
+
+  async function handleRemoveCover() {
+    if (savingCover || !folder || !currentUserId) return;
+    setShowCoverMenu(false);
+    setSavingCover(true);
+    const previousUploadPath = folder.cover_source === 'upload' ? folder.cover_storage_path : null;
+    // Reverts to the same implicit default a folder starts with — no
+    // separate "no cover at all" cover_source value exists, and this
+    // matches that existing convention rather than inventing a new one.
+    const updated = await applyCoverUpdate({
+      cover_source: 'first_card',
+      cover_storage_path: null,
+      cover_item_id: null,
+      cover_image_url: null,
+      cover_crop: null,
+    });
+    if (updated && previousUploadPath) {
+      await deleteFolderCover(previousUploadPath, currentUserId);
+    }
+    setSavingCover(false);
   }
 
   const showInitialLoading = loading && items.length === 0;
@@ -798,6 +1016,21 @@ export default function CollectionFolderScreen() {
               </Pressable>
 
               <View style={styles.headerTopActions}>
+                {!showInitialLoading && items.length > 0 && (
+                  <Pressable
+                    onPress={toggleSearch}
+                    hitSlop={10}
+                    style={styles.iconBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Search"
+                    accessibilityState={{ selected: searchVisible }}>
+                    <IconSymbol
+                      name="magnifyingglass"
+                      size={22}
+                      color={searchVisible ? PV2.accent : PV2.textPrimary}
+                    />
+                  </Pressable>
+                )}
                 {isOwner && (
                   <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
                     <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
@@ -811,7 +1044,25 @@ export default function CollectionFolderScreen() {
               </View>
             </View>
 
-            {!showInitialLoading && items.length > 0 && (
+            {/* Folder cover/hero banner — purely a display surface, no
+                editing controls here for anyone, owner included (per the
+                design: cover changes go through Edit Folder → Change
+                Cover, never a tap-to-edit overlay on the banner itself).
+                Renders nothing at all (not even an empty placeholder) for
+                a folder that has never had a cover set, so every existing
+                folder's layout is unchanged until its owner opts in. */}
+            {showCoverHero && (
+              <View style={styles.coverHero}>
+                {coverUrl && (
+                  <FolderCoverImage
+                    uri={coverUrl}
+                    crop={folder?.cover_source === 'item' ? (folder.cover_crop ?? null) : null}
+                  />
+                )}
+              </View>
+            )}
+
+            {!showInitialLoading && items.length > 0 && searchVisible && (
               <CollectionSearchBar
                 value={search}
                 onChange={setSearch}
@@ -857,27 +1108,32 @@ export default function CollectionFolderScreen() {
             )}
 
             <View style={styles.titleRow}>
-              <View style={styles.titleTextArea}>
-                <Text style={styles.title} numberOfLines={1}>
-                  {screenTitle}
-                </Text>
+              <Text style={styles.title} numberOfLines={1}>
+                {screenTitle}
+              </Text>
+            </View>
 
-                <View style={styles.titleInlineActions}>
-                  <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
-                    <IconSymbol
-                      name={liked ? 'heart.fill' : 'heart'}
-                      size={20}
-                      color={liked ? PV2.accent : PV2.textPrimary}
-                    />
-                    <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
-                  </Pressable>
-                  <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                    <IconSymbol name="message" size={20} color={PV2.textPrimary} />
-                  </Pressable>
-                </View>
+            {/* Same balanced left/right two-side layout (and the same
+                galleryActionsRow/galleryActionsSide styles) as the
+                card-mode header above — like+comment grouped left,
+                bookmark+share grouped right — just under the title instead
+                of squeezed onto its row. */}
+            <View style={styles.galleryActionsRow}>
+              <View style={styles.galleryActionsSide}>
+                <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
+                  <IconSymbol
+                    name={liked ? 'heart.fill' : 'heart'}
+                    size={20}
+                    color={liked ? PV2.accent : PV2.textPrimary}
+                  />
+                  <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+                </Pressable>
+                <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                  <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+                </Pressable>
               </View>
 
-              <View style={styles.titleActions}>
+              <View style={styles.galleryActionsSide}>
                 {showBookmark && (
                   <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
                     <IconSymbol
@@ -920,39 +1176,30 @@ export default function CollectionFolderScreen() {
           <>
             {itemsErrorBanner}
             <FlatList
-            data={cardSlots}
+            data={filteredCardItems}
             numColumns={CARD_NUM_COLUMNS}
-            keyExtractor={(slot) => (slot.kind === 'real' ? slot.data.id : slot.key)}
+            keyExtractor={(item) => item.id}
             columnWrapperStyle={styles.row}
             contentContainerStyle={[styles.gridContent, isCardMode && styles.cardGridContent]}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
-            renderItem={({ item: slot }) =>
-              slot.kind === 'placeholder' ? (
-                <CacheCasePlaceholderShell
-                  width={cardThumbWidth}
-                  aspectRatio={PREVIEW_CARD_ASPECT_RATIO}
-                  borderRadius={PREVIEW_CARD_RADIUS}
-                  accessibilityLabel="Empty card slot"
-                />
-              ) : (
-                <Pressable
-                  testID={`collection-item-${slot.data.id}`}
-                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-                  onPress={() => openItem(slot.data)}>
-                  {slot.data.primary_image_id && signedUrls.get(slot.data.primary_image_id) ? (
-                    <Image
-                      source={{ uri: signedUrls.get(slot.data.primary_image_id) }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="cover"
-                      transition={150}
-                    />
-                  ) : (
-                    <View style={styles.thumbPlaceholder} />
-                  )}
-                </Pressable>
-              )
-            }
+            renderItem={({ item }) => (
+              <Pressable
+                testID={`collection-item-${item.id}`}
+                style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+                onPress={() => openItem(item)}>
+                {item.primary_image_id && signedUrls.get(item.primary_image_id) ? (
+                  <Image
+                    source={{ uri: signedUrls.get(item.primary_image_id) }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    transition={150}
+                  />
+                ) : (
+                  <View style={styles.thumbPlaceholder} />
+                )}
+              </Pressable>
+            )}
             ListEmptyComponent={
               search.trim() && cardItems.length > 0 ? (
                 <View style={styles.emptyWrap}>
@@ -984,6 +1231,50 @@ export default function CollectionFolderScreen() {
           onClose={() => setEditVisible(false)}
           onSaved={(updated) => setFolder(updated)}
           onDeleted={() => router.back()}
+          onChangeCover={openCoverMenu}
+        />
+      )}
+
+      {isOwner && (
+        <FolderCoverMenu
+          visible={showCoverMenu}
+          onClose={() => setShowCoverMenu(false)}
+          onDismiss={() => {
+            // iOS only (see runLibraryCoverPick's own comment) — fires once
+            // this Modal's dismiss animation has actually finished, which
+            // is the deterministic signal handleChooseCoverFromLibrary
+            // defers to instead of a guessed delay.
+            if (pendingLibraryPickRef.current) {
+              pendingLibraryPickRef.current = false;
+              void runLibraryCoverPick();
+            }
+          }}
+          onChooseFromFolder={() => {
+            setShowCoverMenu(false);
+            setShowCoverItemPicker(true);
+          }}
+          onChooseFromLibrary={handleChooseCoverFromLibrary}
+          onRemoveCover={handleRemoveCover}
+          hasCover={folder?.cover_source === 'upload' || folder?.cover_source === 'item'}
+        />
+      )}
+
+      {isOwner && (
+        <FolderCoverItemPicker
+          visible={showCoverItemPicker}
+          onClose={() => setShowCoverItemPicker(false)}
+          items={items}
+          signedUrls={signedUrls}
+          onSelect={handleChooseFromFolderItem}
+        />
+      )}
+
+      {isOwner && adjustingCover && (
+        <FolderCoverAdjuster
+          visible
+          uri={adjustingCover.uri}
+          onSave={handleSaveAdjustedCover}
+          onCancel={handleCancelAdjustCover}
         />
       )}
 
@@ -1032,29 +1323,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Title's own full-width row — the like/comment/bookmark/share controls
+  // that used to share this row (squeezing the title's available width)
+  // now live in their own row below (styles.galleryActionsRow, reused from
+  // the card-mode header), which carries the title-row-to-grid gap that
+  // used to live here.
   titleRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingTop: 4,
-    // Bottom padding contributes to the title-row-to-grid gap alongside
-    // the grid's own top padding — together landing in the requested
-    // 18-24px range.
-    paddingBottom: 10,
-    gap: 8,
-  },
-  titleTextArea: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  titleInlineActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    flexShrink: 0,
+    paddingBottom: 6,
   },
   likeBtn: {
     flexDirection: 'row',
@@ -1072,19 +1350,16 @@ const styles = StyleSheet.create({
   likeCountActive: {
     color: PV2.accent,
   },
-  titleActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    flexShrink: 0,
-  },
+  // flex:1 (its only sibling in titleRow was removed) — takes the row's
+  // full width now instead of competing for space with the action icons
+  // that used to share this row.
   title: {
+    flex: 1,
     fontSize: 24,
     fontWeight: '800',
     color: PV2.textPrimary,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
-    flexShrink: 1,
   },
   privateIcon: {
     fontSize: 40,
@@ -1207,6 +1482,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
   },
+  // Folder cover/hero banner — edge-to-edge (no horizontal margin, like
+  // this screen's own grid below), landscape FOLDER_COVER_ASPECT_RATIO,
+  // square corners (FOLDER_COVER_RADIUS = 0) — a banner, not another
+  // rounded trading-card tile. backgroundColor preserves the existing dark
+  // page background showing through while the signed URL is still
+  // resolving (see showCoverHero's own "loading OR ready" gate above).
+  coverHero: {
+    width: '100%',
+    aspectRatio: FOLDER_COVER_ASPECT_RATIO,
+    borderRadius: FOLDER_COVER_RADIUS,
+    overflow: 'hidden',
+    backgroundColor: PV2.bg,
+    marginBottom: 8,
+  },
   searchBar: {
     marginHorizontal: 12,
     marginBottom: 10,
@@ -1221,6 +1510,7 @@ const styles = StyleSheet.create({
   },
   gridContent: {
     gap: GRID_GAP,
+    paddingHorizontal: GRID_PAGE_PADDING,
     paddingTop: 10,
     paddingBottom: 24,
     flexGrow: 1,
@@ -1229,15 +1519,18 @@ const styles = StyleSheet.create({
   cardGridContent: {
     paddingTop: 3,
   },
-  // Same look as CollectionPreviewCard's own tile (bordered dark panel,
-  // rounded corners) so individual-card thumbnails match the Collection
-  // page's photo style exactly, not a separate flatter treatment.
+  // Square-cornered (GRID_CARD_RADIUS = 0), borderless tile — this grid
+  // intentionally reads as a dense, edge-to-edge Instagram-style grid, not
+  // the Collection page's own bordered preview-card look. No borderWidth:
+  // the Image below only fills this tile's padding-box (inside any border),
+  // so even a 1px border here would sit outside the photo and silently
+  // double the real GRID_GAP as visible space between adjacent photos.
+  // backgroundColor is the only remaining paint — just the fallback shown
+  // behind a still-loading/missing image, not a spacing source.
   thumb: {
-    borderRadius: PREVIEW_CARD_RADIUS,
+    borderRadius: GRID_CARD_RADIUS,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,
-    borderWidth: 1,
-    borderColor: PV2.collectorPanelBorder,
   },
   thumbPlaceholder: {
     ...StyleSheet.absoluteFillObject,

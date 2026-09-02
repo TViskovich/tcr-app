@@ -6,6 +6,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -24,6 +25,7 @@ import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { buildItemImageList, ItemImageCarousel } from '@/components/item-detail/item-image-carousel';
 import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gallery-manager';
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
+import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useGrails } from '@/hooks/use-grails';
@@ -159,6 +161,17 @@ export default function ItemDetailScreen() {
   const [fetching, setFetching] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
+  // Item-level privacy (Model A, most-restrictive-wins — see
+  // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
+  // Kept separate from `form`/EditForm (same convention as
+  // folder-edit-modal.tsx's editIsPublic vs. its rename field) since it's a
+  // boolean switch, not a text field. Seeded from the item's own current
+  // value in enterEdit()/cancelEdit() below — this is an existing item
+  // being edited, so it starts from what it already is, not from the
+  // parent folder (that seeding only applies to a brand-new item, in
+  // app/item/new.tsx).
+  const [editItemIsPublic, setEditItemIsPublic] = useState(true);
+  const editItemIsPrivate = !editItemIsPublic;
   const [saving, setSaving] = useState(false);
   const [grailsLoading, setGrailsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -189,6 +202,7 @@ export default function ItemDetailScreen() {
     loading: registryLoading,
     registering,
     registerItem,
+    retrySnapshotImage,
   } = useRegisteredCardForItem(item?.id);
   const {
     images: galleryImages,
@@ -213,14 +227,17 @@ export default function ItemDetailScreen() {
         setItem(data);
         setForm(itemToForm(data));
 
-        if (data.user_id !== currentUserId) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('username, display_name, avatar_url')
-            .eq('id', data.user_id)
-            .single();
-          if (profile) setOwnerProfile(profile as OwnerProfile);
-        }
+        // Always fetched now (not just for non-owners) — the Instagram-style
+        // ItemOwnerRow above the image shows the owner's identity
+        // regardless of viewer, same as the owner-only card further down
+        // still does for non-owners only (that block's own !isOwner check
+        // is unaffected by this).
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('username, display_name, avatar_url')
+          .eq('id', data.user_id)
+          .single();
+        if (profile) setOwnerProfile(profile as OwnerProfile);
       }
       setFetching(false);
     }
@@ -247,7 +264,10 @@ export default function ItemDetailScreen() {
   // that existed at deploy time; this covers the rare gap).
   async function enterEdit() {
     if (!isOwner) return;
-    if (item) setForm(itemToForm(item));
+    if (item) {
+      setForm(itemToForm(item));
+      setEditItemIsPublic(item.is_public);
+    }
     if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
       try {
         await materializeLegacyItemImage(item.id, currentUserId, item.image_url);
@@ -261,7 +281,10 @@ export default function ItemDetailScreen() {
   }
 
   function cancelEdit() {
-    if (item) setForm(itemToForm(item));
+    if (item) {
+      setForm(itemToForm(item));
+      setEditItemIsPublic(item.is_public);
+    }
     setEditMode(false);
   }
 
@@ -283,7 +306,7 @@ export default function ItemDetailScreen() {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsMultipleSelection: true,
       selectionLimit: remaining,
       quality: 0.85,
@@ -349,6 +372,7 @@ export default function ItemDetailScreen() {
           serial_number: form.serialNumber.trim() || null,
           estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
           description: form.description.trim() || null,
+          is_public: editItemIsPublic,
         })
         .eq('id', item.id)
         .select()
@@ -358,6 +382,7 @@ export default function ItemDetailScreen() {
       if (updated) {
         setItem(updated);
         setForm(itemToForm(updated));
+        setEditItemIsPublic(updated.is_public);
       }
       setEditMode(false);
     } catch (e: unknown) {
@@ -372,15 +397,21 @@ export default function ItemDetailScreen() {
   // "committed but the response was lost", and the two are indistinguishable
   // from the client's perspective without an authoritative re-read.
   //
-  // Queries by id only, with no .eq('user_id', ...) filter: collection_items
-  // SELECT is unconditionally public (see supabase/schema.sql's
-  // "items_select_public" policy, USING (true) — confirmed by this same
-  // screen's own fetchItem() above, which already reads any item by id
-  // regardless of viewer). That means a null result here can only mean "this
-  // row does not exist", never "exists but hidden from this viewer" — RLS
-  // does not obscure the answer, so this is authoritative for "does the item
-  // still exist", which is the only question that matters for reconciling a
-  // delete this user already issued.
+  // Queries by id only, with no .eq('user_id', ...) filter — but this is
+  // always the CALLER'S OWN just-attempted delete (handleDelete is
+  // owner-gated), and items_select_public's owner clause (auth.uid() =
+  // collection_items.user_id) grants the owner full read access regardless
+  // of either the folder's or the item's own is_public flag (see
+  // supabase/migrations/20260819120000_enforce_collection_folder_privacy.sql
+  // and 20260825120000_add_collection_item_privacy.sql). So a null result
+  // here still reliably means "this row does not exist" for this specific
+  // caller, never "exists but hidden from this viewer" — this is
+  // authoritative for "does the item still exist", which is the only
+  // question that matters for reconciling a delete this user already
+  // issued. (It is NOT authoritative in general — a non-owner's SELECT can
+  // return null for a row that exists but is private to them; that's an
+  // intentional RLS property, not a bug, and irrelevant here since this
+  // function is never called for anyone but the owner.)
   //
   // Catches its own read failure internally so it never rethrows into a
   // second reconciliation attempt.
@@ -558,12 +589,34 @@ export default function ItemDetailScreen() {
         {
           text: 'Register',
           onPress: async () => {
-            const { error } = await registerItem({
+            const { error, registeredCardId } = await registerItem({
               serialNumber: item.serial_number,
               gradeCompany: item.grading_company,
               grade: item.grade,
             });
-            if (error) {
+            if (!error) return;
+
+            // registeredCardId is only present when the registered_cards
+            // row itself was created — i.e. the failure is scoped to the
+            // durable image copy, not the registration itself. Retrying
+            // here re-invokes only that copy (via retrySnapshotImage), and
+            // never register_card again, so it can't produce a duplicate
+            // registration or the "already registered" rejection a full
+            // re-registration attempt would hit.
+            if (registeredCardId) {
+              Alert.alert('Registry image not saved', error, [
+                { text: 'Later', style: 'cancel' },
+                {
+                  text: 'Retry',
+                  onPress: async () => {
+                    const { error: retryError } = await retrySnapshotImage(registeredCardId);
+                    if (retryError) {
+                      Alert.alert('Retry failed', retryError);
+                    }
+                  },
+                },
+              ]);
+            } else {
               Alert.alert('Registration failed', error);
             }
           },
@@ -704,29 +757,51 @@ export default function ItemDetailScreen() {
           onScroll={navbarOnScroll}
           scrollEventThrottle={navbarScrollEventThrottle}>
 
+          {/* Instagram-style owner identity row — avatar + @username,
+              directly above the hero image below. Shown for every viewer
+              (owner included, same as Instagram's own post header), purely
+              a navigation/identity row: no edit affordance, and it doesn't
+              affect the existing owner-only card further down the screen
+              (that one stays gated to !isOwner). */}
+          {ownerProfile && (
+            <View
+              onLayout={(e) => {
+                if (__DEV__) console.log('[DIAG:OwnerRow] wrapper layout', e.nativeEvent.layout);
+              }}>
+              <ItemOwnerRow username={ownerProfile.username} avatarUrl={ownerProfile.avatar_url} />
+            </View>
+          )}
+
           {/* Hero — edit mode shows the editable gallery manager (add/
               remove/reorder/set cover); view mode shows the swipeable
               carousel. Both read from the same useItemImages data, so what
               you arrange in edit mode is exactly what view mode swipes
               through. The carousel's own tap is reserved for a future
               full-screen viewer. */}
-          {editMode ? (
-            <ItemImageGalleryManager
-              images={galleryImages}
-              loading={galleryLoading}
-              mutating={galleryMutating}
-              maxImages={MAX_ITEM_IMAGES}
-              onAdd={handleAddPhotos}
-              onRemove={handleRemovePhoto}
-              onSetPrimary={handleSetPrimaryPhoto}
-              onReorder={handleReorderPhotos}
-            />
-          ) : (
-            <ItemImageCarousel images={galleryImageUrls} />
-          )}
+          <View
+            onLayout={(e) => {
+              if (__DEV__) console.log('[DIAG:OwnerRow] hero wrapper layout', e.nativeEvent.layout);
+            }}>
+            {editMode ? (
+              <ItemImageGalleryManager
+                images={galleryImages}
+                loading={galleryLoading}
+                mutating={galleryMutating}
+                maxImages={MAX_ITEM_IMAGES}
+                onAdd={handleAddPhotos}
+                onRemove={handleRemovePhoto}
+                onSetPrimary={handleSetPrimaryPhoto}
+                onReorder={handleReorderPhotos}
+              />
+            ) : (
+              <ItemImageCarousel images={galleryImageUrls} />
+            )}
+          </View>
 
           {editMode ? (
-            /* ── Edit Mode (owner only) — unchanged existing form ── */
+            /* ── Edit Mode (owner only) — existing form, plus the Private
+                Item toggle below (same dynamic label/helper pattern as
+                create-folder-modal.tsx / folder-edit-modal.tsx). ── */
             <View style={styles.editSection}>
               <Text style={editStyles.sectionHeader}>Card Details</Text>
               <EditField label="Title" value={form.title} onChange={updateField('title')} />
@@ -756,6 +831,39 @@ export default function ItemDetailScreen() {
                   numberOfLines={4}
                   textAlignVertical="top"
                 />
+              </View>
+
+              {/* Private Item toggle — editItemIsPublic is the field that's
+                  actually persisted (see handleSave's update above);
+                  editItemIsPrivate is display-only. */}
+              <View style={editStyles.toggleRow}>
+                <View style={editStyles.toggleTextArea}>
+                  <Text style={editStyles.toggleTitle}>
+                    {editItemIsPrivate ? 'Private Item' : 'Public Item'}
+                  </Text>
+                  <Text style={editStyles.toggleHint}>
+                    {editItemIsPrivate ? 'Only you can view this item.' : 'Anyone can view this item.'}
+                  </Text>
+                </View>
+                <Switch
+                  value={editItemIsPrivate}
+                  onValueChange={(value) => setEditItemIsPublic(!value)}
+                  trackColor={{ true: '#0a7ea4' }}
+                />
+              </View>
+
+              {/* Delete Item — moved here from the normal Item Detail view
+                  (Save/Cancel live in the header, not this form body, so
+                  this is already well separated from them by scroll
+                  distance alone; the top divider/spacing below adds a
+                  further visual break from the privacy toggle above).
+                  Reuses handleDelete unchanged — same confirmation Alert,
+                  same DB/Storage cleanup, same navigation, same
+                  reconciliation-on-error path as before. */}
+              <View style={editStyles.deleteSection}>
+                <TouchableOpacity style={styles.deleteButton} onPress={handleDelete} disabled={deleting}>
+                  <Text style={styles.deleteText}>Delete Item</Text>
+                </TouchableOpacity>
               </View>
             </View>
           ) : isTransferredOut ? (
@@ -924,9 +1032,6 @@ export default function ItemDetailScreen() {
                       </TouchableOpacity>
                     );
                   })()}
-                  <TouchableOpacity style={styles.deleteButton} onPress={handleDelete} disabled={deleting}>
-                    <Text style={styles.deleteText}>Delete Item</Text>
-                  </TouchableOpacity>
                 </View>
               )}
             </>
@@ -966,6 +1071,40 @@ const editStyles = StyleSheet.create({
     fontSize: 15,
     backgroundColor: '#fafafa',
     color: '#11181C',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 10,
+    padding: 16,
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  toggleTextArea: {
+    flex: 1,
+    marginRight: 12,
+  },
+  toggleTitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#FFFFFF',
+  },
+  toggleHint: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.50)',
+    marginTop: 2,
+  },
+  // Visually separates the destructive Delete Item action (below) from the
+  // normal editable controls above it (fields, then the privacy toggle) —
+  // same top-divider convention as the view-mode ownerActions section.
+  deleteSection: {
+    marginTop: 28,
+    paddingTop: 20,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.12)',
   },
 });
 

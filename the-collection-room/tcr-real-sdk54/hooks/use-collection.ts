@@ -276,8 +276,18 @@ export function useItems(folderId: string | undefined) {
 // regardless of which folder it's filed under. Captures and surfaces
 // `error` (unlike a plain `{ data }` destructure) so a failed query is
 // never indistinguishable from "you have zero cards."
+export type CollectionItemWithFolderVisibility = CollectionItem & {
+  // Parent folder's own is_public — needed alongside the item's own
+  // is_public wherever a caller has to compute effective (most-restrictive-
+  // wins) visibility, e.g. app/share-card/new.tsx deciding what's eligible
+  // to post to the public feed. Not part of the shared CollectionItem type
+  // itself (that's a straight collection_items row shape) — this is a
+  // join result specific to this hook.
+  folder_is_public: boolean;
+};
+
 export function useAllItems(userId: string | undefined) {
-  const [items, setItems] = useState<CollectionItem[]>([]);
+  const [items, setItems] = useState<CollectionItemWithFolderVisibility[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -288,9 +298,14 @@ export function useAllItems(userId: string | undefined) {
     }
     setLoading(true);
     setError(null);
+    // Extends the existing select with one embedded field (folders(is_public))
+    // rather than a second, separate query — every caller of this hook needs
+    // the item's own privacy either way, and this is the smallest addition
+    // that also gives callers the parent folder's, for computing effective
+    // (most-restrictive-wins) visibility without a duplicate lookup.
     const { data, error: queryError } = await supabase
       .from('collection_items')
-      .select('*')
+      .select('*, folders(is_public)')
       .eq('user_id', userId)
       .eq('collection_status', 'active')
       .order('created_at', { ascending: false });
@@ -300,7 +315,12 @@ export function useAllItems(userId: string | undefined) {
       setLoading(false);
       return;
     }
-    setItems(await attachPrimaryImageIds((data ?? []) as CollectionItem[]));
+    const rows = (data ?? []) as (CollectionItem & { folders: { is_public: boolean } | null })[];
+    const withFolderVisibility = rows.map(({ folders, ...item }) => ({
+      ...item,
+      folder_is_public: folders?.is_public ?? false,
+    }));
+    setItems(await attachPrimaryImageIds(withFolderVisibility));
     setLoading(false);
   }, [userId]);
 

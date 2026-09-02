@@ -1710,6 +1710,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     folders={folders}
                     previewItems={previewItems}
                     onOpenFolder={openFolder}
+                    onOpenItem={handleGrailItemPress}
                     onAddItem={isOwnProfile ? addFolderItem : undefined}
                     onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
                   />

@@ -1,15 +1,37 @@
+// Non-destructive pan/zoom framing for a cover_source = 'item' folder cover
+// — see supabase/migrations/20260901130000_add_folder_cover_crop.sql for
+// the full field contract and lib/folder-cover-crop.ts for the shared math
+// that produces/consumes it. x/y are the referenced item image's own
+// normalized focal point (0-1); scale is a zoom multiplier relative to
+// "just covers the hero frame, no gaps" (1 = that baseline).
+export type FolderCoverCrop = {
+  x: number;
+  y: number;
+  scale: number;
+};
+
 export type Folder = {
   id: string;
   user_id: string;
   name: string;
   cover_image_url: string | null;
-  cover_source: string; // 'upload' | 'first_card'
+  cover_source: string; // 'upload' | 'first_card' | 'item'
   // Canonical item-images Storage object path for an 'upload' cover — null
-  // for 'first_card' folders by design (that cover is derived server-side
-  // from the folder's current newest active item, never a folder-owned
-  // object). Added in Phase 3D (item-images beta privacy hardening);
-  // cover_image_url remains for transitional/legacy display only.
+  // for 'first_card'/'item' folders by design (both are derived
+  // server-side from a collection_items row, never a folder-owned object).
+  // Added in Phase 3D (item-images beta privacy hardening); cover_image_url
+  // remains for transitional/legacy display only.
   cover_storage_path: string | null;
+  // The owner-picked item for cover_source = 'item' (see
+  // supabase/migrations/20260901120000_add_folder_cover_item_id.sql) — null
+  // for 'upload'/'first_card' folders by design. ON DELETE SET NULL if the
+  // referenced item is later deleted.
+  cover_item_id: string | null;
+  // Only ever meaningful when cover_source = 'item'; null for
+  // 'upload'/'first_card' covers, and for 'item' covers picked before this
+  // feature existed (those still render with the original centered
+  // contentFit="cover" behavior — see FolderCoverImage).
+  cover_crop: FolderCoverCrop | null;
   color: string | null; // FolderColorKey (components/collection/folder-card.tsx) or null = auto (name-hash)
   is_public: boolean;
   created_at: string;
@@ -31,6 +53,13 @@ export type CollectionItem = {
   image_url: string | null;
   description: string | null;
   created_at: string;
+  // Item-level privacy (Model A, most-restrictive-wins — see
+  // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
+  // Effective visibility to a non-owner is folder.is_public AND this — a
+  // private folder still hides everything inside it regardless of this
+  // flag; an item inside a public folder may independently be private.
+  // The owner always has full access regardless of either flag.
+  is_public: boolean;
   // Sender Transferred-Out Item Lifecycle (supabase/migrations/
   // 20260804120000_add_collection_item_transferred_out_state.sql). Set to
   // 'transferred_out' exactly once, atomically, by accept_ownership_transfer —

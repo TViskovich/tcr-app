@@ -17,6 +17,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Circle, Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
@@ -26,7 +27,7 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { itemMatchesSearch, useFolders } from '@/hooks/use-collection';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
-import type { Folder } from '@/types';
+import type { CollectionItem, Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
 // carousel below scrolls edge-to-edge on purpose), just a fixed inset.
@@ -209,6 +210,7 @@ export default function CollectionScreen() {
   const userId = session?.user?.id ?? '';
   const { folders, loading, error, refresh, previewItems } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
+  const [showAddMenu, setShowAddMenu] = useState(false);
   const [search, setSearch] = useState('');
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
@@ -240,8 +242,39 @@ export default function CollectionScreen() {
       params: { folderId: folder.id, title: folder.name },
     });
 
+  // Same route shape app/collection/[folderId].tsx's own openItem uses —
+  // tapping a preview-row card thumbnail should land on that specific
+  // card, not the folder it lives in (see HorizontalCardPreview below).
+  const openItem = (item: CollectionItem) =>
+    router.push({ pathname: '/item/[id]', params: { id: item.id } });
+
   const addItem = (folder: Folder) =>
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
+
+  // No folder is selected yet at this Collections-level entry point (see
+  // CollectionAddMenu below) — this is preview/navigation only, not a
+  // second real "add item" flow. mode=preview is read by app/item/new.tsx
+  // to disable its final save action; it never receives a folderId, and
+  // must never silently assign the item to one on its own.
+  const addItemPreview = () =>
+    router.push({ pathname: '/item/new', params: { mode: 'preview' } });
+
+  // Shared between the FlatList's own footer (normal list state, so the
+  // button scrolls with the last folder card and sits above the floating
+  // tab bar per the list's TAB_BAR_HEIGHT-based bottom padding below) and
+  // the search-no-matches state, which renders a plain centered View
+  // instead of the FlatList and keeps its own copy outside it.
+  const newFolderButton = (
+    <View style={styles.newFolderRow}>
+      <TouchableOpacity
+        style={styles.newFolderButton}
+        onPress={() => setShowAddMenu(true)}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        activeOpacity={0.7}>
+        <Text style={styles.newFolderText}>+ Add</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -340,6 +373,7 @@ export default function CollectionScreen() {
       ) : filteredFolders.length === 0 ? (
         <View style={styles.center}>
           <Text style={styles.noResultsText}>No matches for &quot;{search}&quot;</Text>
+          {newFolderButton}
         </View>
       ) : (
         <>
@@ -366,6 +400,7 @@ export default function CollectionScreen() {
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
             ItemSeparatorComponent={() => <View style={styles.rowSeparator} />}
+            ListFooterComponent={newFolderButton}
             renderItem={({ item }) => (
               <CollectionPreviewSection
                 folderId={item.id}
@@ -374,6 +409,7 @@ export default function CollectionScreen() {
                 isExpanded={isExpanded(item.id)}
                 onToggle={() => toggle(item.id)}
                 onOpenFolder={() => openFolder(item)}
+                onOpenItem={openItem}
                 onAddItem={() => addItem(item)}
               />
             )}
@@ -381,17 +417,18 @@ export default function CollectionScreen() {
         </>
       )}
 
-      {folders.length > 0 && (
-        <View style={styles.newFolderRow}>
-          <TouchableOpacity
-            style={styles.newFolderButton}
-            onPress={() => setShowModal(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            activeOpacity={0.7}>
-            <Text style={styles.newFolderText}>+ New Folder</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      <CollectionAddMenu
+        visible={showAddMenu}
+        onClose={() => setShowAddMenu(false)}
+        onAddFolder={() => {
+          setShowAddMenu(false);
+          setShowModal(true);
+        }}
+        onAddItem={() => {
+          setShowAddMenu(false);
+          addItemPreview();
+        }}
+      />
 
       <CreateFolderModal
         visible={showModal}

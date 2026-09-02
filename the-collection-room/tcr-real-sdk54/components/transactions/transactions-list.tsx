@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { TransactionRow } from '@/components/transactions/transaction-row';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useSignedRegistryImages } from '@/hooks/use-signed-registry-images';
 import {
   acceptOwnershipTransfer,
   cancelOwnershipTransfer,
@@ -80,6 +81,18 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
   // Per-row action-in-flight guard, keyed by transfer id — never a single
   // screen-wide flag, so acting on one row can't disable an unrelated row.
   const [actionLoadingIds, setActionLoadingIds] = useState<Set<string>>(new Set());
+
+  // One shared signing/cache path for every row's thumbnail — resolved from
+  // the FULL transfer list (not `filtered` below), so switching filter
+  // pills never re-triggers signing for cards already resolved. Each
+  // resolved URL is the card's own immutable registry snapshot
+  // (registered_cards.snapshot_image_storage_path via
+  // get-registry-snapshot-image-url), never the raw legacy
+  // transfer.card.imageUrl field and never derived from a current live
+  // collection item.
+  const { urls: signedRegistryUrls } = useSignedRegistryImages(
+    transfers.map((t) => t.card?.registeredCardId),
+  );
 
   const loadTransfers = useCallback(async (): Promise<{ error: string | null; data: OwnershipTransferView[] }> => {
     if (!currentUserId) {
@@ -395,6 +408,9 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
               onDecline={() => handleDecline(item)}
               onCancel={() => handleCancel(item)}
               onPressCard={() => handleOpenRegistry(item)}
+              signedImageUrl={
+                item.card?.registeredCardId ? signedRegistryUrls.get(item.card.registeredCardId) : undefined
+              }
             />
           </View>
         ))

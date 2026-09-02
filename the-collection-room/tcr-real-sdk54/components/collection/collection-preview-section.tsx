@@ -13,11 +13,15 @@ type Props = {
   // "compact" variant never renders that control, so its callers don't
   // need to pass this.
   onToggle?: () => void;
-  // Required (not just for the header row's own title tap) — every real
-  // preview tile in the expanded HorizontalCardPreview below also opens
-  // the folder itself, since this is a preview of the folder's contents,
-  // not a navigator into any per-item/per-group destination.
+  // Opens the folder itself — used only by CollectionHeaderRow's own
+  // title/chevron tap now. Preview-tile taps open the specific item
+  // instead (see onOpenItem below).
   onOpenFolder: () => void;
+  // Opens a specific card's item-detail page — one real preview tile in
+  // the expanded HorizontalCardPreview below is one distinct
+  // CollectionItem, so tapping it should land on that item, not the
+  // folder it lives in.
+  onOpenItem: (item: CollectionItem) => void;
   onAddItem: () => void;
   // "compact" shrinks dimensions/typography AND drops the collapse
   // chevron entirely — its rows are always expanded (see
@@ -50,6 +54,7 @@ export function CollectionPreviewSection({
   isExpanded,
   onToggle,
   onOpenFolder,
+  onOpenItem,
   onAddItem,
   variant = 'full',
 }: Props) {
@@ -67,7 +72,7 @@ export function CollectionPreviewSection({
         <HorizontalCardPreview
           folderId={folderId}
           items={items}
-          onOpenFolder={onOpenFolder}
+          onOpenItem={onOpenItem}
           onAddItem={onAddItem}
           variant={variant}
         />

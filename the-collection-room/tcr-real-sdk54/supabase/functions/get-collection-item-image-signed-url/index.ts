@@ -1,7 +1,13 @@
 // Issues short-lived signed URLs for collection_item_images rows, enforcing
-// the exact same visibility rule as the folders/collection_items RLS
-// migration (supabase/migrations/20260819120000_enforce_collection_folder_privacy.sql):
-// folders.is_public = true OR authenticated caller id = folders.user_id.
+// the exact same visibility rule as the collection_items/collection_item_images
+// RLS (supabase/migrations/20260819120000_enforce_collection_folder_privacy.sql,
+// tightened by 20260825120000_add_collection_item_privacy.sql to also require
+// the item's own privacy flag):
+//   (folders.is_public = true OR caller = folders.user_id)
+//   AND (collection_items.is_public = true OR caller = collection_items.user_id)
+// This function runs as service-role and therefore bypasses table RLS
+// entirely — canViewItem below is the ONLY authorization boundary for image
+// delivery; the table-level RLS change alone does not protect this path.
 //
 // Part of the item-images beta privacy hardening (Architecture B — see the
 // item-images static/architecture audits). This function is backend-only
@@ -59,18 +65,25 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 type ResolvedRow = {
   id: string;
   storage_path: string;
-  is_public: boolean;
+  folder_is_public: boolean;
+  item_is_public: boolean;
   owner_id: string;
 };
 
-// Mirrors folders_select_public / items_select_public's exact condition —
-// deliberately re-implemented here rather than shared with the database
-// layer (Edge Functions and Postgres RLS policies can't share code
-// directly), matching this app's established per-module RLS-mirroring
-// convention (see canViewRegisteredCard in ../_shared/registry-image.ts).
-function canViewFolder(row: { is_public: boolean; owner_id: string }, callerId: string | null): boolean {
-  if (row.is_public) return true;
-  return callerId !== null && callerId === row.owner_id;
+// Mirrors items_select_public / collection_item_images_select_public's exact
+// condition (Model A, most-restrictive-wins) — deliberately re-implemented
+// here rather than shared with the database layer (Edge Functions and
+// Postgres RLS policies can't share code directly), matching this app's
+// established per-module RLS-mirroring convention (see
+// canViewRegisteredCard in ../_shared/registry-image.ts). Owner override
+// applies regardless of either flag; a non-owner needs BOTH the folder and
+// the item to be public.
+function canViewItem(
+  row: { folder_is_public: boolean; item_is_public: boolean; owner_id: string },
+  callerId: string | null,
+): boolean {
+  if (callerId !== null && callerId === row.owner_id) return true;
+  return row.folder_is_public && row.item_is_public;
 }
 
 Deno.serve(async (req: Request) => {
@@ -111,18 +124,37 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'invalid_token' }, 401);
   }
 
-  // One batched lookup for every requested id, resolving
-  // collection_item_images -> collection_items -> folders in a single
-  // round trip via PostgREST embedded resources. Uses the service-role
-  // client (bypasses RLS entirely), so canViewFolder below is the ONLY
-  // authorization boundary here — nothing about this query's success
-  // implies the caller may view any of these rows.
-  const { data: rows, error } = await client
+  // Three separate, unambiguous batched lookups — collection_item_images
+  // -> collection_items -> folders — rather than one embedded PostgREST
+  // select. An embedded `collection_items!inner(..., folders!inner(...))`
+  // select USED to work here, but folders.cover_item_id (added by
+  // 20260901120000_add_folder_cover_item_id.sql, referencing
+  // collection_items(id) for the folder-cover-picker feature) gave
+  // PostgREST a SECOND foreign-key path between collection_items and
+  // folders (alongside the original collection_items.folder_id ->
+  // folders.id), so it can no longer auto-resolve which relationship
+  // `folders!inner(...)` means and fails the whole query with PGRST201
+  // ("more than one relationship was found"). That failure was silently
+  // swallowed by the `if (error)` branch below, three lines down, which
+  // exists for a DIFFERENT reason (never reporting a query-level failure
+  // per-row) but has the side effect of returning HTTP 200 with every id
+  // marked unavailable — exactly the "200s in the logs, blank previews"
+  // symptom this was diagnosed from. Confirmed by reproducing the exact
+  // broken query directly against the live REST API and getting that same
+  // PGRST201 back, not by inspection alone. Splitting into separate
+  // queries (matching get-folder-cover-signed-url's own already-working
+  // pattern) sidesteps the ambiguity entirely rather than depending on a
+  // PostgREST relationship-hint string that would silently break again the
+  // next time a new FK is added between these two tables. Still uses the
+  // service-role client (bypasses RLS entirely), so canViewItem below is
+  // the ONLY authorization boundary here — nothing about any of these
+  // queries succeeding implies the caller may view any of these rows.
+  const { data: images, error: imagesError } = await client
     .from('collection_item_images')
-    .select('id, storage_path, collection_items!inner(folder_id, folders!inner(is_public, user_id))')
+    .select('id, item_id, storage_path')
     .in('id', imageIds);
 
-  if (error) {
+  if (imagesError) {
     // A query-level failure must not be reported per-row (that would imply
     // some rows were successfully checked and others weren't) — every
     // requested id fails uniformly.
@@ -132,14 +164,44 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  const imageRows = (images ?? []) as { id: string; item_id: string; storage_path: string | null }[];
+
+  type ItemRow = { id: string; folder_id: string; is_public: boolean };
+  const itemById = new Map<string, ItemRow>();
+  const itemIds = [...new Set(imageRows.map((img) => img.item_id))];
+  if (itemIds.length) {
+    const { data: items } = await client.from('collection_items').select('id, folder_id, is_public').in('id', itemIds);
+    for (const it of (items ?? []) as ItemRow[]) {
+      itemById.set(it.id, it);
+    }
+  }
+
+  type FolderRow = { id: string; is_public: boolean; user_id: string };
+  const folderById = new Map<string, FolderRow>();
+  const folderIds = [...new Set([...itemById.values()].map((it) => it.folder_id))];
+  if (folderIds.length) {
+    const { data: folders } = await client.from('folders').select('id, is_public, user_id').in('id', folderIds);
+    for (const f of (folders ?? []) as FolderRow[]) {
+      folderById.set(f.id, f);
+    }
+  }
+
   const resolved = new Map<string, ResolvedRow>();
-  for (const r of (rows ?? []) as any[]) {
-    const folder = r.collection_items?.folders;
+  for (const img of imageRows) {
+    if (!img.storage_path) continue;
+    const item = itemById.get(img.item_id);
+    if (!item) continue;
+    const folder = folderById.get(item.folder_id);
     if (!folder) continue;
-    resolved.set(r.id, {
-      id: r.id,
-      storage_path: r.storage_path,
-      is_public: folder.is_public,
+    resolved.set(img.id, {
+      id: img.id,
+      storage_path: img.storage_path,
+      folder_is_public: folder.is_public,
+      item_is_public: item.is_public,
+      // folders.user_id and collection_items.user_id are always equal for
+      // any legitimately-created row (items_insert_own requires the item's
+      // owner to already own the target folder) — using the folder's is the
+      // established convention here, unchanged from before this pass.
       owner_id: folder.user_id,
     });
   }
@@ -147,7 +209,7 @@ Deno.serve(async (req: Request) => {
   const results = await Promise.all(
     imageIds.map(async (id) => {
       const row = resolved.get(id);
-      if (!row || !canViewFolder(row, userId)) {
+      if (!row || !canViewItem(row, userId)) {
         return { id, ...UNAVAILABLE };
       }
 

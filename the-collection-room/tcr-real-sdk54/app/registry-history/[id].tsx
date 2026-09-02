@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useRegistryEvents } from '@/hooks/use-registry-events';
+import { useSignedRegistryImages } from '@/hooks/use-signed-registry-images';
 import { formatCustodyStatus } from '@/lib/registry-custody-status';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -226,6 +227,11 @@ export default function RegistryHistoryScreen() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Tracks a resolved signed URL that failed to actually load (e.g. expired
+  // between resolution and render) so the identity image falls back to
+  // rendering nothing rather than a permanently blank <Image> — reset
+  // automatically whenever a different URL comes in.
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
   // Re-fetches independently rather than trusting only navigation params —
   // same convention as every other detail route in this app.
@@ -275,6 +281,13 @@ export default function RegistryHistoryScreen() {
     resolveName,
     resolveUsername,
   } = useRegistryEvents(record?.id);
+
+  // The card's own immutable registry snapshot — never derived from the
+  // current live collection item, same reasoning as app/registry/[id].tsx's
+  // own equivalent. Computed unconditionally (not after the early returns
+  // below), same rules-of-hooks reasoning as useRegistryEvents above.
+  const { urls: signedRegistryUrls } = useSignedRegistryImages([record?.id]);
+  const signedImageUrl = record ? signedRegistryUrls.get(record.id) : undefined;
 
   function handleBack() {
     if (router.canGoBack()) {
@@ -345,7 +358,12 @@ export default function RegistryHistoryScreen() {
     !!record.snapshot_image_url;
   const snapshotTitle = buildSnapshotTitle(record);
   const snapshotSubtitle = buildSnapshotSubtitle(record);
-  const image = record.snapshot_image_url ?? item?.image_url ?? null;
+  // The card's own immutable snapshot only — never item?.image_url (the
+  // current live collection item); see app/registry/[id].tsx's identical
+  // reasoning. signedImageUrl is undefined while resolving or when the
+  // snapshot isn't authorized/ready, in which case no image renders, same
+  // as when there was never a snapshot to begin with.
+  const image = signedImageUrl && signedImageUrl !== failedImageUrl ? signedImageUrl : null;
   const title = snapshotTitle || (item ? buildTitle(item) : null);
   const subtitle = hasSnapshotIdentity ? snapshotSubtitle : item ? buildSubtitle(item) : null;
   const ownerName = resolveName(record.current_owner_id);
@@ -358,7 +376,14 @@ export default function RegistryHistoryScreen() {
         style={styles.scroll}
         contentContainerStyle={[styles.content, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}>
         <View style={styles.identityRow}>
-          {image && <Image source={{ uri: image }} style={styles.identityImage} contentFit="cover" />}
+          {image && (
+            <Image
+              source={{ uri: image }}
+              style={styles.identityImage}
+              contentFit="cover"
+              onError={() => setFailedImageUrl(image)}
+            />
+          )}
           <View style={styles.identityText}>
             <Text style={styles.identityCcId}>{record.cc_id}</Text>
             {title && (

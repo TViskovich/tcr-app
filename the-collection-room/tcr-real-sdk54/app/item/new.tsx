@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -23,7 +23,6 @@ import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
-import { copyShareSnapshotImage } from '@/lib/share-snapshots';
 import { uploadItemImage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -72,7 +71,21 @@ function field(label: string, key: keyof FormState, form: FormState, update: (k:
 
 export default function AddItemScreen() {
   const { session } = useAuth();
-  const { folderId, folderName } = useLocalSearchParams<{ folderId: string; folderName: string }>();
+  const { folderId, folderName, mode } = useLocalSearchParams<{
+    folderId: string;
+    folderName: string;
+    // Set only by the Collections screen's "+ Add" → Add Item entry point
+    // (app/(tabs)/collection.tsx), which has no folder selected yet. This
+    // is a preview/navigation-only visit — the user can look around (pick
+    // a photo, crop it, fill in fields) but handleSubmit below refuses to
+    // actually persist anything, and the submit button is disabled with
+    // copy explaining why. Deliberately an explicit mode rather than
+    // inferring "preview" from a missing folderId, since a missing
+    // folderId shouldn't silently change behavior elsewhere if this
+    // screen ever gains another no-folderId entry point.
+    mode?: string;
+  }>();
+  const isPreviewOnly = mode === 'preview';
   const router = useRouter();
   const insets = useSafeAreaInsets();
   // A create/edit form, not a scrollable browsing list — no scroll-hide
@@ -84,8 +97,32 @@ export default function AddItemScreen() {
   const [pendingWidth, setPendingWidth] = useState(0);
   const [pendingHeight, setPendingHeight] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
-  const [shareToFeed, setShareToFeed] = useState(false);
+  // Item-level privacy (Model A, most-restrictive-wins — see
+  // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
+  // Defaults to public; seeded from the parent folder's current is_public
+  // below so the UI starts in a state that matches the folder, then stays
+  // independently editable. There's no parent folder yet in preview mode
+  // (no folderId), so it just stays at its public default there.
+  const [isPublic, setIsPublic] = useState(true);
+  const isPrivate = !isPublic;
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!folderId) return;
+    let cancelled = false;
+    supabase
+      .from('folders')
+      .select('is_public')
+      .eq('id', folderId)
+      .single()
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        setIsPublic(data.is_public);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderId]);
 
   function update(key: keyof FormState) {
     return (value: string) => setForm((prev) => ({ ...prev, [key]: value }));
@@ -98,7 +135,7 @@ export default function AddItemScreen() {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: false,
       quality: 0.85,
     });
@@ -111,6 +148,10 @@ export default function AddItemScreen() {
   }
 
   async function handleSubmit() {
+    // Defense in depth alongside the disabled submit button below — this
+    // Collections-level entry point has no folder assigned yet, so nothing
+    // may be persisted from it regardless of how handleSubmit is reached.
+    if (isPreviewOnly) return;
     if (!imageUri) {
       Alert.alert('Image required', 'Please select an image for this item.');
       return;
@@ -142,6 +183,7 @@ export default function AddItemScreen() {
           serial_number: form.serialNumber.trim() || null,
           estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
           description: form.description.trim() || null,
+          is_public: isPublic,
         })
         .select()
         .single();
@@ -165,30 +207,6 @@ export default function AddItemScreen() {
         });
         if (galleryError) {
           console.error('[handleSubmit] gallery row insert failed:', galleryError.message);
-        }
-      }
-
-      if (shareToFeed && item) {
-        // Copy-before-insert (Phase 3E) — a feed post is never created
-        // pointing at a raw item-images URL. targetId reuses item.id
-        // since no post exists yet at this point (see
-        // lib/share-snapshots.ts's own module comment). A copy failure
-        // aborts the share entirely; the item itself is already saved
-        // either way.
-        const snapshot = await copyShareSnapshotImage(item.id, 'post', item.id);
-        if (snapshot.status !== 'ok') {
-          Alert.alert('Heads up', 'Item saved, but could not share to feed.');
-        } else {
-          const { error: postError } = await supabase.from('posts').insert({
-            user_id: session.user.id,
-            item_id: item.id,
-            post_type: 'item',
-            image_url: snapshot.publicUrl,
-            caption: form.title.trim() || null,
-          });
-          if (postError) {
-            Alert.alert('Heads up', 'Item saved, but could not share to feed.');
-          }
         }
       }
 
@@ -238,8 +256,8 @@ export default function AddItemScreen() {
 
           {/* Card Details */}
           <Text style={styles.sectionHeader}>Card Details</Text>
-          {field('Title', 'title', form, update)}
           {field('Player', 'player', form, update)}
+          {field('Title', 'title', form, update)}
           {field('Team', 'team', form, update)}
           {field('Year', 'year', form, update, { keyboardType: 'number-pad', maxLength: 4 })}
 
@@ -270,29 +288,41 @@ export default function AddItemScreen() {
             />
           </View>
 
-          {/* Share toggle */}
+          {/* Private Item toggle — same dynamic label/helper pattern as
+              create-folder-modal.tsx / folder-edit-modal.tsx. isPublic is
+              the field that's actually persisted (see handleSubmit's
+              insert above); isPrivate is display-only. Sharing an existing
+              item to the feed is a separate, dedicated flow
+              (app/share-card/new.tsx) — this screen only creates the item
+              itself. */}
           <View style={styles.toggleRow}>
-            <View>
-              <Text style={styles.toggleLabel}>Share to feed</Text>
-              <Text style={styles.toggleSub}>Visible to your followers</Text>
+            <View style={styles.toggleTextArea}>
+              <Text style={styles.toggleLabel}>{isPrivate ? 'Private Item' : 'Public Item'}</Text>
+              <Text style={styles.toggleSub}>
+                {isPrivate ? 'Only you can view this item.' : 'Anyone can view this item.'}
+              </Text>
             </View>
             <Switch
-              value={shareToFeed}
-              onValueChange={setShareToFeed}
+              value={isPrivate}
+              onValueChange={(value) => setIsPublic(!value)}
               trackColor={{ false: '#ddd', true: '#0a7ea4' }}
               thumbColor="#fff"
             />
           </View>
 
-          {/* Submit */}
+          {/* Submit — disabled entirely in preview mode (no folder assigned
+              yet), with copy explaining why, so the user can never come
+              away thinking an item was saved when it wasn't. */}
           <TouchableOpacity
-            style={[styles.submitButton, loading && styles.submitDisabled]}
+            style={[styles.submitButton, (loading || isPreviewOnly) && styles.submitDisabled]}
             onPress={handleSubmit}
-            disabled={loading}>
+            disabled={loading || isPreviewOnly}>
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.submitText}>Save Item</Text>
+              <Text style={styles.submitText}>
+                {isPreviewOnly ? 'Folder assignment required' : 'Save Item'}
+              </Text>
             )}
           </TouchableOpacity>
 
@@ -392,6 +422,10 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     borderWidth: 1,
     borderColor: '#ddd',
+  },
+  toggleTextArea: {
+    flex: 1,
+    marginRight: 12,
   },
   toggleLabel: {
     fontSize: 15,

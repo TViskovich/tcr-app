@@ -486,10 +486,20 @@ export function GrailSlotPreview({
 }
 
 const styles = StyleSheet.create({
+  // Square, 90°-cornered tile (borderRadius: 0) — matches the same
+  // Instagram-style treatment now used by the folder card grid, the
+  // Collections preview rows, and the single item image presentation. A
+  // Grail-local override (a plain literal here, not a shared constant), so
+  // this only affects this grid, not those other surfaces. No border was
+  // ever set on this style — the clip boundary is purely overflow:hidden
+  // + this radius, nothing else contributing a "framed" look to remove.
+  // Shared by every slot state (empty, unavailable, item, collection) via
+  // this one Pressable style, so all of them read as uniformly
+  // square-cornered — no separate placeholder radius to reconcile.
   slot: {
     flex: 1,
     aspectRatio: CARD_ASPECT_RATIO,
-    borderRadius: 6,
+    borderRadius: 0,
     overflow: 'hidden',
     backgroundColor: PV2.emptyCardBg,
   },

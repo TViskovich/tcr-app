@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
@@ -34,6 +35,14 @@ type Props = {
   // intent via callback props (onAccept/onDecline/onCancel), never
   // importing expo-router itself.
   onPressCard?: () => void;
+  // Resolved by the caller (TransactionsList) via useSignedRegistryImages,
+  // shared across every visible row rather than re-signed per row. This is
+  // the card's own immutable snapshot (registered_cards.snapshot_image_
+  // storage_path via get-registry-snapshot-image-url), never the raw
+  // legacy transfer.card.imageUrl field and never derived from the current
+  // live collection item — undefined while still resolving/unavailable,
+  // in which case this row falls back to the existing icon placeholder.
+  signedImageUrl?: string;
 };
 
 export function TransactionRow({
@@ -44,7 +53,13 @@ export function TransactionRow({
   onDecline,
   onCancel,
   onPressCard,
+  signedImageUrl,
 }: Props) {
+  // Tracks a URL that failed to actually load (e.g. expired between
+  // resolution and render) so the row falls back to the placeholder
+  // instead of a permanently blank <Image> — reset automatically whenever
+  // a different signedImageUrl comes in, since that's a fresh attempt.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const isPending = transfer.status === 'pending';
   // Direction is already computed relative to whichever user this list was
   // fetched for (see fetchOwnershipTransfersForUser) — but the actual
@@ -71,8 +86,13 @@ export function TransactionRow({
   const cardContent = (
     <>
       <View style={styles.thumb}>
-        {transfer.card?.imageUrl ? (
-          <Image source={{ uri: transfer.card.imageUrl }} style={styles.thumbImage} contentFit="cover" />
+        {signedImageUrl && signedImageUrl !== failedUrl ? (
+          <Image
+            source={{ uri: signedImageUrl }}
+            style={styles.thumbImage}
+            contentFit="cover"
+            onError={() => setFailedUrl(signedImageUrl)}
+          />
         ) : (
           <IconSymbol name="rectangle.stack.fill" size={15} color={PV2.textTertiary} />
         )}

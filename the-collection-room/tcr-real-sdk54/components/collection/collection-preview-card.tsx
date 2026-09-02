@@ -23,6 +23,14 @@ type Props = {
   // to "full" (the default) at any size, per the shared PREVIEW_CARD_*
   // constants below, which never vary by variant.
   variant?: 'full' | 'compact';
+  // Opt-in, preview-local override (default false) — square corners, no
+  // border — instead of touching the shared PREVIEW_CARD_RADIUS/border
+  // used by every other caller of this component (Profile tab's compact
+  // rows, the registry claim picker, the Grails pickers). Only the main
+  // Collections screen's own (non-compact) HorizontalCardPreview rows pass
+  // this, to match the folder-detail grid's Instagram-style square-tile
+  // treatment — everyone else keeps today's rounded, bordered look.
+  squareEdges?: boolean;
   // Optional — callers with a stable, deterministic key (e.g. the folder
   // screen's grouping grid, see app/collection/[folderId].tsx) pass one
   // through for automated-test selection; title/subtitle alone are
@@ -40,6 +48,7 @@ export function CollectionPreviewCard({
   tileWidth,
   onPress,
   variant = 'full',
+  squareEdges = false,
   testID,
 }: Props) {
   const compact = variant === 'compact';
@@ -54,7 +63,7 @@ export function CollectionPreviewCard({
           already there while the image decodes, and what's left showing if
           it fails to load, so there's no white flash and no extra
           error-state plumbing needed. */}
-      <View style={[styles.tile, { width: tileWidth }]}>
+      <View style={[styles.tile, squareEdges && styles.tileSquareEdges, { width: tileWidth }]}>
         {imageUrl && (
           <Image
             source={{ uri: imageUrl }}
@@ -98,6 +107,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: PV2.collectorPanelBorder,
     overflow: 'hidden',
+  },
+  // squareEdges override (see Props) — square corners, no border, matching
+  // the folder-detail grid's tiles. Layered on top of `tile` above rather
+  // than replacing PREVIEW_CARD_RADIUS/the border there, so every other
+  // caller of this component is unaffected.
+  tileSquareEdges: {
+    borderRadius: 0,
+    borderWidth: 0,
   },
   captionBar: {
     position: 'absolute',

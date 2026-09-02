@@ -67,6 +67,20 @@ export default function ShareCardScreen() {
   const { urls: signedItemImageUrls } = useSignedItemImages(
     shareableItems.map((i) => i.primary_image_id),
   );
+
+  // Effective (most-restrictive-wins) public visibility — the same rule
+  // enforced by items_select_public/collection_item_images_select_public
+  // RLS and by app/item/new.tsx's own Share-to-feed gate (see
+  // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
+  // Ownership (useAllItems already scopes this whole list to the caller's
+  // own items) grants private viewing, not permission to create a public
+  // feed representation — a private card stays ineligible here even though
+  // the owner can obviously still see it in this picker.
+  function isPubliclyShareable(item: (typeof shareableItems)[number]) {
+    return item.folder_is_public && item.is_public;
+  }
+
+  const hasPrivateCards = shareableItems.some((i) => !isPubliclyShareable(i));
   const canPost = selectedIds.length >= 1 && !posting;
 
   // No back history when this screen was deep-linked, reloaded directly, or
@@ -80,7 +94,13 @@ export default function ShareCardScreen() {
     }
   }
 
-  function toggleSelect(id: string) {
+  function toggleSelect(item: (typeof shareableItems)[number]) {
+    // Primary prevention — a private card is never added to the selection
+    // in the first place, regardless of how this is invoked (the grid
+    // below also visually disables the Pressable itself as a second,
+    // independent layer).
+    if (!isPubliclyShareable(item)) return;
+    const id = item.id;
     setSelectedIds((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
       if (prev.length >= MAX_CARDS) return prev;
@@ -90,6 +110,17 @@ export default function ShareCardScreen() {
 
   async function handlePost() {
     if (!canPost || !currentUserId) return;
+
+    // Handler-level guard, immediately before any feed-post insert — not
+    // just relying on toggleSelect/the disabled grid state having kept
+    // private cards out of selectedIds. Re-reads the actual item objects'
+    // current privacy flags rather than trusting stale selection state.
+    const selectedItems = shareableItems.filter((i) => selectedIds.includes(i.id));
+    if (selectedItems.length !== selectedIds.length || selectedItems.some((i) => !isPubliclyShareable(i))) {
+      Alert.alert('Cannot share', 'Private cards can’t be shared to the public feed.');
+      return;
+    }
+
     setPosting(true);
 
     try {
@@ -206,23 +237,40 @@ export default function ShareCardScreen() {
             {selectedIds.length >= MAX_CARDS && (
               <Text style={styles.maxHint}>Maximum {MAX_CARDS} cards</Text>
             )}
+            {hasPrivateCards && (
+              <Text style={styles.privateHint}>
+                Dimmed cards are private — only public cards in public collections can be shared.
+              </Text>
+            )}
 
             <View style={styles.grid}>
               {shareableItems.map((item) => {
                 const selectedIndex = selectedIds.indexOf(item.id);
                 const isSelected = selectedIndex !== -1;
+                const shareable = isPubliclyShareable(item);
                 const signedUrl = item.primary_image_id
                   ? signedItemImageUrls.get(item.primary_image_id)
                   : undefined;
                 return (
-                  <Pressable key={item.id} style={styles.slotShadow} onPress={() => toggleSelect(item.id)}>
-                    <View style={[styles.slot, isSelected && styles.slotSelected]}>
+                  <Pressable
+                    key={item.id}
+                    style={styles.slotShadow}
+                    onPress={() => toggleSelect(item)}
+                    disabled={!shareable}
+                    accessibilityState={{ disabled: !shareable, selected: isSelected }}
+                    accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
+                    <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
                       {signedUrl && (
                         <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" transition={150} />
                       )}
                       {isSelected && (
                         <View style={styles.selectedBadge}>
                           <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>
+                        </View>
+                      )}
+                      {!shareable && (
+                        <View style={styles.privateBadge} pointerEvents="none">
+                          <Text style={styles.privateBadgeText}>Private</Text>
                         </View>
                       )}
                     </View>
@@ -294,6 +342,11 @@ const styles = StyleSheet.create({
     color: '#aaa',
     marginTop: -6,
   },
+  privateHint: {
+    fontSize: 12,
+    color: '#687076',
+    marginTop: -6,
+  },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -320,9 +373,31 @@ const styles = StyleSheet.create({
   slotSelected: {
     borderColor: '#0a7ea4',
   },
+  // Private, ineligible-to-share card — dimmed and non-interactive
+  // (Pressable disabled), not removed from the grid entirely, so the user
+  // can still see which of their own cards exist and why each is excluded.
+  slotPrivate: {
+    opacity: 0.55,
+  },
   image: {
     width: '100%',
     height: '100%',
+  },
+  privateBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  privateBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   selectedBadge: {
     position: 'absolute',

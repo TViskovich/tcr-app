@@ -24,6 +24,7 @@ import {
   TransferRecipientPicker,
   type TransferRecipientProfile,
 } from '@/components/registry/transfer-recipient-picker';
+import { useSignedRegistryImages } from '@/hooks/use-signed-registry-images';
 import { useAuth } from '@/lib/auth';
 import { formatCustodyStatus, updateRegistryCustodyStatus } from '@/lib/registry-custody-status';
 import { getRegistryPublicUrl } from '@/lib/registry-links';
@@ -187,6 +188,11 @@ export default function RegistryDetailScreen() {
   const [isQrModalVisible, setIsQrModalVisible] = useState(false);
   const [isCustodyModalVisible, setIsCustodyModalVisible] = useState(false);
   const [updatingCustodyStatus, setUpdatingCustodyStatus] = useState(false);
+  // Tracks a resolved signed URL that failed to actually load (e.g. expired
+  // between resolution and render) so the hero image falls back to the
+  // existing placeholder instead of a permanently blank <Image> — reset
+  // automatically whenever a different URL comes in.
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
   // Ownership Transfer Phase 2 state — all owner-only, all scoped to this
   // one card. pendingTransferId is intentionally just an id, not a full
@@ -210,6 +216,14 @@ export default function RegistryDetailScreen() {
   // every hook in this component runs on every render, regardless of
   // loading/error/not-found state.
   const registryPublicUrl = record ? getRegistryPublicUrl(record.cc_id) : null;
+
+  // The card's own immutable registry snapshot — never derived from the
+  // current live collection item, so this stays correct as a historical
+  // record even after custody/ownership changes. Computed unconditionally
+  // (not after the early returns below), same rules-of-hooks reasoning as
+  // registryPublicUrl above.
+  const { urls: signedRegistryUrls } = useSignedRegistryImages([record?.id]);
+  const signedImageUrl = record ? signedRegistryUrls.get(record.id) : undefined;
 
   // Owner check, computed unconditionally (not after the loading/error/
   // not-found early returns below) so the pending-transfer effect further
@@ -648,7 +662,14 @@ export default function RegistryDetailScreen() {
     !!record.snapshot_image_url;
   const snapshotTitle = buildSnapshotTitle(record);
   const snapshotSubtitle = buildSnapshotSubtitle(record);
-  const image = record.snapshot_image_url ?? item?.image_url ?? null;
+  // The card's own immutable snapshot only — never item?.image_url (the
+  // current live collection item), which would silently make a historical
+  // registry record track present-day ownership/content instead of what
+  // was actually registered. signedImageUrl is undefined while resolving
+  // or when the snapshot isn't authorized/ready, in which case no image
+  // renders at all (existing placeholder-less behavior below), same as
+  // when there was never a snapshot to begin with.
+  const image = signedImageUrl && signedImageUrl !== failedImageUrl ? signedImageUrl : null;
   const title = snapshotTitle || (item ? buildTitle(item) : null);
   const subtitle = hasSnapshotIdentity ? snapshotSubtitle : item ? buildSubtitle(item) : null;
   const ownerName = ownerProfile?.display_name || ownerProfile?.username || 'Unavailable';
@@ -672,7 +693,12 @@ export default function RegistryDetailScreen() {
         contentContainerStyle={[styles.content, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}>
         {image && (
           <View style={styles.imageWrap}>
-            <Image source={{ uri: image }} style={styles.image} contentFit="cover" />
+            <Image
+              source={{ uri: image }}
+              style={styles.image}
+              contentFit="cover"
+              onError={() => setFailedImageUrl(image)}
+            />
           </View>
         )}
 

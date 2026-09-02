@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -43,3 +44,4 @@ app-example
 /android
 
 supabase/.temp/
+.tmp-storage-cleanup/

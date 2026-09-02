@@ -139,14 +139,17 @@ export function ProfileV2HeroCanvas({
 }
 
 const styles = StyleSheet.create({
+  // Tighter, more modern corner radius (was 20) — shape, size, background,
+  // spacing, and everything else about this canvas are otherwise
+  // unchanged. Grail-local literal, not a shared constant.
   canvas: {
     width: '100%',
     overflow: 'hidden',
     backgroundColor: PV2.panel,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
   },
   // Extra themed showcase space above/below the grid — normal padding,
   // not a spacer view, so it's part of the same themed/clipped box as

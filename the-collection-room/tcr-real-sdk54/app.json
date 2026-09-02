@@ -1,15 +1,20 @@
 {
   "expo": {
-    "name": "tcr-real-sdk54",
-    "slug": "tcr-real-sdk54",
+    "name": "CacheCase",
+    "slug": "cachecase",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "tcrrealsdk54",
+    "icon": "./assets/brand/cachecase-app-icon.png",
+    "scheme": "cachecase",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "app.cachecase",
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +24,10 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -30,7 +38,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow The Collection Room to access your photos to add images to your collection."
+          "photosPermission": "Allow CacheCase to access your photos so you can add images to your collection.",
+          "cameraPermission": "Allow CacheCase to use your camera so you can take photos for your collection."
         }
       ],
       [
@@ -49,6 +58,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "bac96d01-6856-45a1-8a0c-a355bb14bc2e"
+      }
+    },
+    "owner": "tvisko"
   }
 }

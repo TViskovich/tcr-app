@@ -15,7 +15,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useSharedValue } from 'react-native-reanimated';
 
-import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { deletePost } from '@/lib/posts';
@@ -25,6 +24,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
 import { fetchCardShareItems, fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 
@@ -42,11 +42,6 @@ function sortPostsByCreatedAtDesc(list: FeedPost[]): FeedPost[] {
 }
 
 const PAGE_SIZE = 20;
-
-// Temporary: feed tabs replaced by a centered wordmark for branding purposes.
-// The segmented control below is untouched — flip this back to true to restore
-// it, no other changes needed.
-const SHOW_FEED_SEGMENT = false;
 
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
@@ -290,6 +285,14 @@ export default function HomeScreen() {
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
+  // Piece 6 — measured label widths for the active-tab underline below, so
+  // it's sized to each tab's own text ("tab-local") instead of one fixed
+  // width that only roughly fit both "For You" and "Following." Purely
+  // visual; feedMode/query behavior is untouched.
+  const [tabLabelWidths, setTabLabelWidths] = useState<{ forYou: number; following: number }>({
+    forYou: 0,
+    following: 0,
+  });
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -511,50 +514,93 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* X-style shell — Piece 1 of the feed redesign: icon row (compose /
+          brand mark / notifications) plus the For You / Following tabs
+          directly below, both on the same flat dark chrome with a single
+          subtle divider beneath the whole thing. As of Piece 5 the page
+          body below shares this same PV2.bg — no more seam. */}
       <View style={styles.header}>
-        {/* Create button — opens the Create menu */}
+        {/* Create button — opens the existing Create menu, same entry
+            point as before (no new posting route). */}
         <TouchableOpacity
           onPress={() => setCreateMenuOpen(true)}
           style={styles.composeBtn}
-          hitSlop={8}>
-          <IconSymbol name="plus" size={26} color="#11181C" weight="semibold" />
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Create post">
+          <IconSymbol name="plus" size={24} color={PV2.textPrimary} weight="semibold" />
         </TouchableOpacity>
 
-        {SHOW_FEED_SEGMENT ? (
-          <View style={styles.headerSegment}>
-            <TouchableOpacity
-              style={[styles.segmentBtn, feedMode === 'for-you' && styles.segmentBtnActive]}
-              onPress={() => setFeedMode('for-you')}>
-              <Text style={[styles.segmentText, feedMode === 'for-you' && styles.segmentTextActive]}>
-                For You
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.segmentBtn, feedMode === 'following' && styles.segmentBtnActive]}
-              onPress={() => setFeedMode('following')}>
-              <Text style={[styles.segmentText, feedMode === 'following' && styles.segmentTextActive]}>
-                Following
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity onPress={scrollToTop} hitSlop={12} accessibilityRole="button" accessibilityLabel="Scroll to top">
-            <CacheCaseLogo variant="dark" size={35} />
-          </TouchableOpacity>
-        )}
+        {/* Brand mark — compact app-header sizing, not the larger marketing
+            lockup. "light" variant (light-colored logo) for this dark
+            header, unlike the previous "dark" variant used on the old
+            light-background header. Piece 6: size 26→28 (~7.7%) — it read
+            slightly small on-device versus the mockup's visual weight;
+            header paddingVertical/height untouched, so this is the only
+            change. */}
+        <TouchableOpacity onPress={scrollToTop} hitSlop={12} accessibilityRole="button" accessibilityLabel="Scroll to top">
+          <CacheCaseLogo variant="light" size={28} />
+        </TouchableOpacity>
+
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/notifications')}
           style={styles.bellBtn}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Notifications">
-          <IconSymbol name="bell.fill" size={24} color="#11181C" />
+          <IconSymbol name="bell.fill" size={22} color={PV2.textPrimary} />
           {notifCount > 0 && (
             <View style={styles.bellBadge}>
               <Text style={styles.bellBadgeText}>
                 {notifCount > 99 ? '99+' : notifCount}
               </Text>
             </View>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* For You / Following — same feedMode state/query behavior as
+          before, restyled from the old pill/card segment to a restrained
+          underline treatment. */}
+      <View style={styles.tabRow}>
+        <TouchableOpacity
+          style={styles.tabBtn}
+          onPress={() => setFeedMode('for-you')}
+          accessibilityRole="button"
+          accessibilityState={{ selected: feedMode === 'for-you' }}>
+          <Text
+            style={[styles.tabText, feedMode === 'for-you' && styles.tabTextActive]}
+            onLayout={(e) => {
+              // Width extracted synchronously, before setState — the
+              // updater below must never touch `e`/`e.nativeEvent`
+              // itself, since the synthetic event can already be
+              // released/pooled by the time a functional updater actually
+              // runs (this was the crash: "Cannot read property 'layout'
+              // of null").
+              const width = e.nativeEvent.layout.width;
+              setTabLabelWidths((prev) => (prev.forYou === width ? prev : { ...prev, forYou: width }));
+            }}>
+            For You
+          </Text>
+          {feedMode === 'for-you' && tabLabelWidths.forYou > 0 && (
+            <View style={[styles.tabUnderline, { width: tabLabelWidths.forYou }]} />
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.tabBtn}
+          onPress={() => setFeedMode('following')}
+          accessibilityRole="button"
+          accessibilityState={{ selected: feedMode === 'following' }}>
+          <Text
+            style={[styles.tabText, feedMode === 'following' && styles.tabTextActive]}
+            onLayout={(e) => {
+              const width = e.nativeEvent.layout.width;
+              setTabLabelWidths((prev) => (prev.following === width ? prev : { ...prev, following: width }));
+            }}>
+            Following
+          </Text>
+          {feedMode === 'following' && tabLabelWidths.following > 0 && (
+            <View style={[styles.tabUnderline, { width: tabLabelWidths.following }]} />
           )}
         </TouchableOpacity>
       </View>
@@ -632,9 +678,11 @@ export default function HomeScreen() {
                 // True alpha-transparent tint is unreliable on iOS — UIRefreshControl
                 // can still paint its spinner glyph even at tintColor alpha 0. Camouflaging
                 // against the screen's real background color hides it completely instead.
-                tintColor={LIGHT_PAGE_BACKGROUND}
-                colors={[LIGHT_PAGE_BACKGROUND]}
-                progressBackgroundColor={LIGHT_PAGE_BACKGROUND}
+                // PV2.bg (Piece 5) — was LIGHT_PAGE_BACKGROUND before the feed body's
+                // dark-theme transition; re-targeted to match, same camouflage technique.
+                tintColor={PV2.bg}
+                colors={[PV2.bg]}
+                progressBackgroundColor={PV2.bg}
               />
             }
           />
@@ -653,37 +701,58 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
+    // Piece 5 — dark-theme transition complete. Was LIGHT_PAGE_BACKGROUND
+    // through Pieces 1-4 (deliberately, per the phased redesign plan); now
+    // matches the header/tabs/posts' own PV2.bg, so there's no remaining
+    // seam anywhere in the feed.
+    backgroundColor: PV2.bg,
   },
+  // Icon row — flat, edge-to-edge, no rounded container. No border here of
+  // its own; the single "subtle bottom divider" the mockup calls for lives
+  // on tabRow below instead, so it reads as one divider under the whole
+  // header area (icon row + tabs) rather than two.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    backgroundColor: PV2.bg,
   },
-  headerSegment: {
+  // For You / Following — restrained underline treatment (tabUnderline
+  // below) replacing the old pill/card segment control. Same feedMode
+  // state/query behavior, restyle only.
+  tabRow: {
     flexDirection: 'row',
-    gap: 4,
+    backgroundColor: PV2.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: PV2.dividerColor,
   },
-  segmentBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
+  tabBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
   },
-  segmentBtnActive: {
-    backgroundColor: '#11181C',
-  },
-  segmentText: {
+  tabText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#687076',
+    color: PV2.textSecondary,
   },
-  segmentTextActive: {
-    color: '#fff',
+  tabTextActive: {
+    color: PV2.textPrimary,
+  },
+  // Piece 6 — height 3→2 (less heavy) and width now supplied per-instance
+  // from the measured label width (tabLabelWidths) instead of one fixed
+  // 56, so it reads as tied to each tab's own text ("For You" vs the
+  // wider "Following") rather than a generic bar. borderRadius 1 stays
+  // fully rounded for a 2px-tall bar (clamped to half the smaller
+  // dimension either way).
+  tabUnderline: {
+    position: 'absolute',
+    bottom: 0,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: PV2.accent,
   },
   composeBtn: {
     position: 'absolute',
@@ -722,12 +791,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
   },
@@ -746,11 +815,13 @@ const styles = StyleSheet.create({
   listWrap: {
     flex: 1,
   },
-  list: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    gap: 12,
-  },
+  // Piece 3 of the X-style redesign — posts are flat/dark/borderless now
+  // (see PostCard's own card style), each separated by its own bottom
+  // hairline divider instead of a gap on all sides; the old
+  // paddingHorizontal/gap here were what made them read as floating cards.
+  // Edge-to-edge, no horizontal inset — PostCard owns its own internal
+  // paddingHorizontal for header/text/media instead.
+  list: {},
   footer: {
     paddingVertical: 24,
     alignItems: 'center',

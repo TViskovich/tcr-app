@@ -13,6 +13,7 @@ import {
 
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { deleteFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
@@ -24,6 +25,11 @@ type Props = {
   onClose: () => void;
   onSaved: (updated: Folder) => void;
   onDeleted: () => void;
+  // Opens the folder detail screen's own FolderCoverMenu (Choose from
+  // Folder / Choose from Photo Library / Remove Cover) — that screen owns
+  // the actual cover-change logic (it already has this folder's items and
+  // signed image URLs loaded), so this modal only needs to hand off to it.
+  onChangeCover: () => void;
 };
 
 // Rename / visibility / delete for one folder — extracted from the legacy
@@ -32,24 +38,28 @@ type Props = {
 // owner-only management surface without inlining ~300 lines into an
 // already-large file.
 //
-// No cover-editing or binder-color UI here (beta product decision — the
-// main Collection screen and folder detail are both item-based today, not
-// cover-image or leather-binder-colored cards, so neither field has any
-// live, user-facing visual effect anywhere reachable — confirmed by
-// tracing every consumer of folders.color/cover_source/cover_image_url/
-// cover_storage_path across the app). This deliberately does NOT touch any
-// of those columns on save — the UPDATE below omits them entirely, so
-// whatever a folder's existing cover/color state already is (frozen from
-// before this UI was hidden) is left exactly as-is. That data, the
-// signed-cover Edge Function, and the underlying Storage objects remain
-// fully live and still render correctly wherever they're still consumed
-// (Saved Collections, the Grail collection picker, the registry claim
-// folder picker) — only the ability to change either from here is gone.
+// Cover-editing UI (the "Change Cover" row below) was reintroduced here —
+// it had been deliberately removed as a beta decision (folders.color/
+// cover_source/cover_image_url/cover_storage_path had no live, user-facing
+// consumer reachable from the main Collection screen or folder detail at
+// the time). That's no longer true: app/collection/[folderId].tsx now
+// renders a hero using this exact same cover data, so an editing entry
+// point belongs here again. Binder color remains untouched/unexposed — it
+// still has no rendered consumer anywhere in the app. This still does NOT
+// touch cover columns on the rename/privacy Save below — cover changes are
+// their own separate update, issued by the parent screen once the owner
+// actually picks something, never bundled into this modal's Save.
 // deleteFolder() below still cleans up a folder's own uploaded cover
 // object on folder deletion, independent of this.
-export function FolderEditModal({ visible, folder, currentUserId, onClose, onSaved, onDeleted }: Props) {
+export function FolderEditModal({ visible, folder, currentUserId, onClose, onSaved, onDeleted, onChangeCover }: Props) {
   const [editName, setEditName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(true);
+  // Display-only derivation — the underlying state/DB field stays
+  // `editIsPublic`/`is_public` (see saveEditFolder's update below); only
+  // the switch's on-screen framing is inverted, matching
+  // create-folder-modal.tsx's identical correction. ON now unambiguously
+  // means private.
+  const editIsPrivate = !editIsPublic;
   const [editSaving, setEditSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -161,19 +171,27 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
             />
           </View>
 
-          {/* Public toggle */}
+          {/* Change Cover — hands off to the parent screen's FolderCoverMenu
+              (Choose from Folder / Choose from Photo Library / Remove
+              Cover); this modal owns none of that logic itself. */}
+          <TouchableOpacity style={styles.modalCoverRow} onPress={onChangeCover} activeOpacity={0.7}>
+            <Text style={styles.modalCoverRowLabel}>Change Cover</Text>
+            <IconSymbol name="chevron.right" size={16} color="#c2c2c2" />
+          </TouchableOpacity>
+
+          {/* Private toggle */}
           <View style={styles.modalToggleRow}>
             <View style={styles.modalToggleLabel}>
-              <Text style={styles.modalLabel}>Public Collection</Text>
+              <Text style={styles.modalLabel}>{editIsPrivate ? 'Private Collection' : 'Public Collection'}</Text>
               <Text style={styles.modalHint}>
-                {editIsPublic
-                  ? 'Anyone can discover and view this collection.'
-                  : 'Only you can see this collection.'}
+                {editIsPrivate
+                  ? 'Only you can view this collection.'
+                  : 'Anyone can view this collection.'}
               </Text>
             </View>
             <Switch
-              value={editIsPublic}
-              onValueChange={setEditIsPublic}
+              value={editIsPrivate}
+              onValueChange={(value) => setEditIsPublic(!value)}
               trackColor={{ true: '#0a7ea4' }}
             />
           </View>
@@ -247,6 +265,21 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    fontSize: 16,
+    color: '#11181C',
+  },
+  modalCoverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#ddd',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  modalCoverRowLabel: {
     fontSize: 16,
     color: '#11181C',
   },
