@@ -27,8 +27,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { PREVIEW_CARD_ASPECT_RATIO } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
 import { FolderCoverAdjuster } from '@/components/collection/folder-cover-adjuster';
 import { FolderCoverImage } from '@/components/collection/folder-cover-image';
@@ -39,7 +41,14 @@ import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { FOLDER_COVER_ASPECT_RATIO, FOLDER_COVER_RADIUS } from '@/constants/folder-cover';
-import { NO_PLAYER_KEY, itemMatchesSearch, useItems } from '@/hooks/use-collection';
+import {
+  type CollectionGridEntry,
+  compareGridEntriesByRecency,
+  NO_PLAYER_KEY,
+  itemMatchesSearch,
+  useChildFolders,
+  useItems,
+} from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useSavedFolder } from '@/hooks/use-saved';
 import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
@@ -133,10 +142,22 @@ export default function CollectionFolderScreen() {
   // and shared by both grouping mode and card mode below.
   const { items, loading, error: itemsError, refresh: refreshItems } = useItems(folderId);
 
+  // Direct children of this folder only (never grandchildren) — nested
+  // Collections Piece 1. RLS (folder_is_effectively_visible) already
+  // enforces recursive ancestor privacy for whoever is viewing, so this
+  // hook does no privacy filtering of its own; see hooks/use-collection.ts.
+  const { folders: childFolders, refresh: refreshChildFolders } = useChildFolders(folderId);
+
   // Legacy app/folder/[id].tsx refreshed on focus so returning here after
   // adding a card (or from any other entry point) shows it immediately —
   // preserved since Profile/Saved/public-profile now land on this screen.
-  useFocusEffect(useCallback(() => { refreshItems(); }, [refreshItems]));
+  // Child folders are refreshed the same way, e.g. after creating one.
+  useFocusEffect(
+    useCallback(() => {
+      refreshItems();
+      refreshChildFolders();
+    }, [refreshItems, refreshChildFolders]),
+  );
 
   // Folder record itself (name, owner, visibility, cover) — this screen used
   // to rely solely on the `title` route param, but now that every folder
@@ -150,6 +171,13 @@ export default function CollectionFolderScreen() {
   const [folderError, setFolderError] = useState<string | null>(null);
   const [ownerProfile, setOwnerProfile] = useState<OwnerProfile | null>(null);
   const [editVisible, setEditVisible] = useState(false);
+  // Add Folder / Add Item chooser (same CollectionAddMenu the root
+  // Collections screen uses) and the folder-creation sheet it can open —
+  // nested Collections Piece 1. Add Item still routes through the existing
+  // addCard() below; Add Folder opens CreateFolderModal with this folder's
+  // id as the new folder's parent_folder_id.
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
   // Folder cover/hero — FolderCoverMenu (Choose from Folder / Choose from
   // Photo Library / Remove Cover) opened from FolderEditModal's own
   // "Change Cover" row; FolderCoverItemPicker is the "Choose from Folder"
@@ -307,8 +335,13 @@ export default function CollectionFolderScreen() {
   // The folder-level cover/hero banner (below, default view only) — same
   // privacy-enforced signed-delivery hook already used by app/saved.tsx,
   // claim-folder-picker.tsx, and pick-collection.tsx, not a new resolution
-  // path. A single-folder batch (this screen only ever needs its own).
-  const { urls: coverUrls, statuses: coverStatuses } = useSignedFolderCovers([folderId]);
+  // path. Batched together with every child folder's own cover below (one
+  // request, not one per tile) since this hook already dedupes/batches by
+  // design — reusing it rather than resolving child covers a second way.
+  const { urls: coverUrls, statuses: coverStatuses } = useSignedFolderCovers([
+    folderId,
+    ...childFolders.map((f) => f.id),
+  ]);
   const coverUrl = folderId ? coverUrls.get(folderId) : undefined;
   const coverStatus = folderId ? coverStatuses.get(folderId) : undefined;
   // Only takes up layout space once there's an actual cover to show (or one
@@ -776,6 +809,28 @@ export default function CollectionFolderScreen() {
       </View>
     ) : null;
 
+  // Mixed grid — nested Collections Piece 2. Child folders are first-class
+  // tiles in the SAME 3-column grid as items (no separate "Folders"
+  // section/heading), interleaved by the exact same newest-first
+  // created_at ordering useItems already applies to collection_items —
+  // compareGridEntriesByRecency (hooks/use-collection.ts) is the one shared
+  // comparator every mixed grid/preview in the app uses, so `kind` never
+  // determines position, only recency does. Not shown in isCardMode (that
+  // per-player filtered gallery is a narrower slice of this folder's own
+  // items, not the right place to also surface child folders).
+  // Grandchildren/descendant items are deliberately never included — only
+  // this folder's own direct children and direct items.
+  const gridEntries = useMemo<CollectionGridEntry[]>(() => {
+    if (isCardMode) {
+      return filteredCardItems.map((item) => ({ kind: 'item' as const, item }));
+    }
+    const combined: CollectionGridEntry[] = [
+      ...childFolders.map((folder) => ({ kind: 'folder' as const, folder })),
+      ...filteredCardItems.map((item) => ({ kind: 'item' as const, item })),
+    ];
+    return combined.sort(compareGridEntriesByRecency);
+  }, [isCardMode, childFolders, filteredCardItems]);
+
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
   // shared links) can reach this screen — folder loading used to be a
@@ -1032,7 +1087,7 @@ export default function CollectionFolderScreen() {
                   </Pressable>
                 )}
                 {isOwner && (
-                  <Pressable onPress={addCard} hitSlop={10} style={styles.iconBtn}>
+                  <Pressable onPress={() => setShowAddMenu(true)} hitSlop={10} style={styles.iconBtn}>
                     <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
                   </Pressable>
                 )}
@@ -1176,30 +1231,64 @@ export default function CollectionFolderScreen() {
           <>
             {itemsErrorBanner}
             <FlatList
-            data={filteredCardItems}
+            data={gridEntries}
             numColumns={CARD_NUM_COLUMNS}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(entry) => (entry.kind === 'folder' ? `folder-${entry.folder.id}` : entry.item.id)}
             columnWrapperStyle={styles.row}
             contentContainerStyle={[styles.gridContent, isCardMode && styles.cardGridContent]}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
-            renderItem={({ item }) => (
-              <Pressable
-                testID={`collection-item-${item.id}`}
-                style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-                onPress={() => openItem(item)}>
-                {item.primary_image_id && signedUrls.get(item.primary_image_id) ? (
-                  <Image
-                    source={{ uri: signedUrls.get(item.primary_image_id) }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="cover"
-                    transition={150}
-                  />
-                ) : (
-                  <View style={styles.thumbPlaceholder} />
-                )}
-              </Pressable>
-            )}
+            renderItem={({ item: entry }) =>
+              entry.kind === 'folder' ? (
+                <Pressable
+                  testID={`child-folder-${entry.folder.id}`}
+                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/collection/[folderId]',
+                      params: { folderId: entry.folder.id, title: entry.folder.name },
+                    })
+                  }>
+                  {coverUrls.get(entry.folder.id) ? (
+                    <Image
+                      source={{ uri: coverUrls.get(entry.folder.id) }}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                      transition={150}
+                    />
+                  ) : (
+                    <View style={styles.thumbPlaceholder} />
+                  )}
+                  {/* Small, subtle upper-right badge — the only thing that
+                      distinguishes a nested-collection tile from an ordinary
+                      item tile. Same dark-scrim-circle language as this
+                      screen's own heroCounterBadge, so it stays consistent
+                      with an existing pattern rather than inventing a new
+                      one, and reads clearly over arbitrary card imagery at
+                      every nesting depth. pointerEvents="none" so it never
+                      steals the tile's own tap target. */}
+                  <View style={styles.folderBadge} pointerEvents="none">
+                    <IconSymbol name="folder.fill" size={12} color="#fff" />
+                  </View>
+                </Pressable>
+              ) : (
+                <Pressable
+                  testID={`collection-item-${entry.item.id}`}
+                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+                  onPress={() => openItem(entry.item)}>
+                  {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
+                    <Image
+                      source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                      transition={150}
+                    />
+                  ) : (
+                    <View style={styles.thumbPlaceholder} />
+                  )}
+                </Pressable>
+              )
+            }
             ListEmptyComponent={
               search.trim() && cardItems.length > 0 ? (
                 <View style={styles.emptyWrap}>
@@ -1222,6 +1311,34 @@ export default function CollectionFolderScreen() {
           </>
         )}
       </SafeAreaView>
+
+      {isOwner && (
+        <CollectionAddMenu
+          visible={showAddMenu}
+          onClose={() => setShowAddMenu(false)}
+          onAddFolder={() => {
+            setShowAddMenu(false);
+            setShowCreateFolderModal(true);
+          }}
+          onAddItem={() => {
+            setShowAddMenu(false);
+            addCard();
+          }}
+        />
+      )}
+
+      {isOwner && currentUserId && (
+        <CreateFolderModal
+          visible={showCreateFolderModal}
+          userId={currentUserId}
+          parentFolderId={folderId}
+          onClose={() => setShowCreateFolderModal(false)}
+          onCreated={() => {
+            setShowCreateFolderModal(false);
+            refreshChildFolders();
+          }}
+        />
+      )}
 
       {isOwner && (
         <FolderEditModal
@@ -1535,6 +1652,21 @@ const styles = StyleSheet.create({
   thumbPlaceholder: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: PV2.collectorPanelBg,
+  },
+  // Nested-collection badge — same rgba(0,0,0,~0.5) dark-scrim-circle
+  // language as heroCounterBadge above, just small and corner-anchored
+  // instead of centered/larger, so it reads as "this tile is a folder"
+  // without competing with the cover photo underneath it.
+  folderBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyWrap: {
     flex: 1,

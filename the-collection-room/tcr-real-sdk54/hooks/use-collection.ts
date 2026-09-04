@@ -65,6 +65,76 @@ async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, Co
   return byFolder;
 }
 
+// One entry in a mixed folder/item grid or preview row — a child folder is
+// a first-class entry alongside collection_items, never faked as one.
+// Shared (exported) so app/collection/[folderId].tsx's full grid and every
+// preview row below build/sort this exact same shape with the exact same
+// comparator, rather than two independently-written "mostly the same"
+// implementations that could drift apart.
+export type CollectionGridEntry =
+  | { kind: 'item'; item: CollectionItem }
+  | { kind: 'folder'; folder: Folder };
+
+// The one ordering rule for a mixed grid/preview: newest created_at first,
+// exactly matching the plain created_at DESC every collection_items query
+// in this file already used before folders could appear alongside items.
+// `kind` never participates in the comparison — only recency decides
+// position, so a folder and an item interleave by timestamp, never by type.
+export function compareGridEntriesByRecency(a: CollectionGridEntry, b: CollectionGridEntry): number {
+  const aTime = new Date(a.kind === 'folder' ? a.folder.created_at : a.item.created_at).getTime();
+  const bTime = new Date(b.kind === 'folder' ? b.folder.created_at : b.item.created_at).getTime();
+  return bTime - aTime;
+}
+
+// Direct child folders of each requested (top-level) folder, capped and
+// ordered exactly like fetchPreviewItems above — same PREVIEW_ITEM_LIMIT,
+// same newest-first order, same one-batched-query-per-caller-id shape (never
+// one request per folder id beyond that). Capping each side to
+// PREVIEW_ITEM_LIMIT independently is sufficient for a correct combined
+// top-PREVIEW_ITEM_LIMIT-by-recency merge below: the final row can never
+// contain more than PREVIEW_ITEM_LIMIT entries of either kind, so neither
+// side ever needs to look further back than its own top PREVIEW_ITEM_LIMIT.
+async function fetchChildFolderPreviews(folderIds: string[]): Promise<Record<string, Folder[]>> {
+  if (!folderIds.length) return {};
+  const results = await Promise.all(
+    folderIds.map((id) =>
+      supabase
+        .from('folders')
+        .select('*')
+        .eq('parent_folder_id', id)
+        .order('created_at', { ascending: false })
+        .limit(PREVIEW_ITEM_LIMIT),
+    ),
+  );
+  const byFolder: Record<string, Folder[]> = {};
+  folderIds.forEach((id, i) => {
+    byFolder[id] = (results[i].data ?? []) as Folder[];
+  });
+  return byFolder;
+}
+
+// Merges each folder's own preview items with its own direct child-folder
+// previews into one recency-sorted, PREVIEW_ITEM_LIMIT-capped list per
+// folder id — the combined cap (not one cap per kind) is what guarantees no
+// slot is ever reserved for either kind; whichever entries are genuinely
+// most recent fill the row, in whatever kind mix that produces.
+function buildPreviewEntries(
+  folderIds: string[],
+  itemsByFolder: Record<string, CollectionItem[]>,
+  childFoldersByFolder: Record<string, Folder[]>,
+): Record<string, CollectionGridEntry[]> {
+  const byFolder: Record<string, CollectionGridEntry[]> = {};
+  for (const id of folderIds) {
+    const combined: CollectionGridEntry[] = [
+      ...(childFoldersByFolder[id] ?? []).map((folder) => ({ kind: 'folder' as const, folder })),
+      ...(itemsByFolder[id] ?? []).map((item) => ({ kind: 'item' as const, item })),
+    ];
+    combined.sort(compareGridEntriesByRecency);
+    byFolder[id] = combined.slice(0, PREVIEW_ITEM_LIMIT);
+  }
+  return byFolder;
+}
+
 // publicOnly restricts the folder list (and everything derived from it —
 // item counts, preview items) to folders.is_public = true, for viewing
 // someone else's profile — the account owner still sees every folder,
@@ -75,6 +145,14 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
   const [folders, setFolders] = useState<Folder[]>([]);
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
   const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>({});
+  // Mixed item/child-folder rows for rendering (see buildPreviewEntries) —
+  // kept separate from previewItems above, which stays items-only and
+  // drives filteredFolders' search matching in app/(tabs)/collection.tsx
+  // unchanged. Combining the two into one field would shrink the pool of
+  // items available to search whenever a folder's recent activity pushes an
+  // item out of the shared cap — previewItems intentionally never competes
+  // with folders for its own slots.
+  const [previewEntries, setPreviewEntries] = useState<Record<string, CollectionGridEntry[]>>({});
   const [loading, setLoading] = useState(true);
   // Captures and surfaces `error` (unlike a plain `{ data }` destructure) so
   // a failed query is never indistinguishable from "you have zero
@@ -93,10 +171,15 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
     }
     setLoading(true);
     try {
+      // Top-level only — nested child folders (parent_folder_id set) are
+      // fetched separately by useChildFolders below, scoped to whichever
+      // folder is currently open. Without this filter every child folder
+      // would also show up flat here, alongside its own parent.
       let query = supabase
         .from('folders')
         .select('*')
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .is('parent_folder_id', null);
       if (publicOnly) query = query.eq('is_public', true);
       const { data, error: queryError } = await query.order('created_at', { ascending: false });
 
@@ -142,13 +225,41 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
             setItemCounts(counts);
           }
 
-          setPreviewItems(await fetchPreviewItems(folderIds));
+          // Item previews come first and stand entirely on their own — this
+          // is the exact same fetchPreviewItems call this hook always made,
+          // so it must keep succeeding/failing independently of anything
+          // else added later. previewEntries is derived from it immediately
+          // (items-only) so the preview is never left empty even if the
+          // child-folder enrichment below never runs or fails.
+          const itemsByFolder = await fetchPreviewItems(folderIds);
+          setPreviewItems(itemsByFolder);
+          setPreviewEntries(buildPreviewEntries(folderIds, itemsByFolder, {}));
+
+          // Child-folder preview entries are additional, best-effort
+          // enrichment on top of the always-reliable item previews above —
+          // isolated in their own try/catch so a failure in this newer,
+          // separate query (e.g. a transient network blip) can never
+          // suppress the item previews that already worked before nested
+          // folders existed. Previously both were awaited together via one
+          // Promise.all, which meant a rejection here discarded the
+          // already-successful item-preview result too and left every
+          // folder's preview empty — this restores independence.
+          try {
+            const childFoldersByFolder = await fetchChildFolderPreviews(folderIds);
+            setPreviewEntries(buildPreviewEntries(folderIds, itemsByFolder, childFoldersByFolder));
+          } catch (childFolderError) {
+            console.error(
+              '[useFolders] child-folder preview enrichment failed (best-effort):',
+              childFolderError,
+            );
+          }
         } catch (enrichError) {
           console.error('[useFolders] item-count/preview enrichment failed (best-effort):', enrichError);
         }
       } else {
         setItemCounts({});
         setPreviewItems({});
+        setPreviewEntries({});
       }
     } catch (e) {
       // A thrown exception from the primary folders query (as opposed to a
@@ -166,7 +277,60 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
     load();
   }, [load]);
 
-  return { folders, loading, error, refresh: load, itemCounts, previewItems };
+  return { folders, loading, error, refresh: load, itemCounts, previewItems, previewEntries };
+}
+
+// Direct children (one level only — never grandchildren) of one folder, for
+// the folder-detail screen's own child-folder section
+// (app/collection/[folderId].tsx). No privacy filtering here: RLS's
+// folder_is_effectively_visible already enforces recursive ancestor privacy
+// server-side for every role (owner/public/anon), so this hook simply
+// renders whatever rows come back — duplicating that check client-side
+// would be redundant at best and a second place for it to drift out of
+// sync at worst.
+export function useChildFolders(parentFolderId: string | undefined) {
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [loading, setLoading] = useState(true);
+  // Same convention as useFolders/useItems above: captures and surfaces
+  // `error` so a failed query is never indistinguishable from "this folder
+  // has no child folders." On failure, `folders` is deliberately left
+  // untouched so a refresh() that fails doesn't wipe an already-loaded list.
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!parentFolderId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data, error: queryError } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('parent_folder_id', parentFolderId)
+        .order('name', { ascending: true });
+
+      if (queryError) {
+        console.error('[useChildFolders] query failed:', queryError.message, queryError);
+        setError(queryError.message);
+        return;
+      }
+
+      setFolders((data ?? []) as Folder[]);
+      setError(null);
+    } catch (e) {
+      console.error('[useChildFolders] load failed:', e);
+      setError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setLoading(false);
+    }
+  }, [parentFolderId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return { folders, loading, error, refresh: load };
 }
 
 // Route-param sentinel for "no player set" — never shown to the user (mapped

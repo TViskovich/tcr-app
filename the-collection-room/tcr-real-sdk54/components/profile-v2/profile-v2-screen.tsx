@@ -304,7 +304,7 @@ export function ProfileV2Screen({ userId }: Props) {
   );
   // Someone else's private folders never load client-side at all — not
   // just hidden in the UI, per hooks/use-collection.ts's publicOnly.
-  const { folders, previewItems, refresh: refreshFolders } = useFolders(userId, {
+  const { folders, previewEntries, refresh: refreshFolders } = useFolders(userId, {
     publicOnly: !isOwnProfile,
   });
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
@@ -1708,9 +1708,10 @@ export function ProfileV2Screen({ userId }: Props) {
                 {section === 'collections' && (
                   <ProfileV2Collections
                     folders={folders}
-                    previewItems={previewItems}
+                    previewEntries={previewEntries}
                     onOpenFolder={openFolder}
                     onOpenItem={handleGrailItemPress}
+                    onOpenChildFolder={openFolder}
                     onAddItem={isOwnProfile ? addFolderItem : undefined}
                     onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
                   />

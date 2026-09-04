@@ -1,9 +1,12 @@
-import { FlatList, useWindowDimensions, View } from 'react-native';
+import { FlatList, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { COMPACT_SECTION_GUTTER, SECTION_GUTTER } from '@/components/collection/collection-header-row';
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import type { CollectionGridEntry } from '@/hooks/use-collection';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
-import type { CollectionItem } from '@/types';
+import type { CollectionItem, Folder } from '@/types';
 
 // Shows ~3.6 cards across the screen width so the next one is always
 // partially visible at rest — the visual cue that the row scrolls, per the
@@ -27,12 +30,18 @@ const PROFILE_COLLECTION_PREVIEW_LIMIT = 4;
 
 type Props = {
   folderId: string;
-  items: CollectionItem[];
+  entries: CollectionGridEntry[];
   // Tapping a real preview tile opens that specific card's own item-detail
   // page (app/item/[id].tsx) — the same destination app/collection/
-  // [folderId].tsx's own openItem uses. Opening the folder itself is
-  // CollectionHeaderRow's title/chevron tap, not this row's job.
+  // [folderId].tsx's own openItem uses. Opening the folder itself via
+  // CollectionHeaderRow's title/chevron tap is a separate action from
+  // either of these.
   onOpenItem: (item: CollectionItem) => void;
+  // Tapping a child-folder entry navigates directly into that folder
+  // (app/collection/[folderId].tsx, recursively) — distinct from
+  // onOpenItem and from CollectionHeaderRow's own "open this row's own
+  // folder" tap.
+  onOpenChildFolder: (folder: Folder) => void;
   onAddItem: () => void;
   // "compact" only shrinks tile size/spacing (see
   // components/profile-v2/profile-v2-collections.tsx) — same slot-filling
@@ -41,20 +50,25 @@ type Props = {
 };
 
 // A free-scrolling (no snap, indicator hidden) horizontal preview of one
-// folder's own distinct CollectionItems — one tile per item, each showing
-// only that item's own primary_image_id signed cover. No data fetching of
-// its own — items are already resolved and capped by the caller (see
-// hooks/use-collection.ts's PREVIEW_ITEM_LIMIT), so this preview reflects
-// only that capped recent sample, not the folder's full total. Shows only
-// real items — a sparse or empty collection just renders fewer (or zero)
-// tiles, no generated filler.
+// folder's own direct contents — a mix of CollectionItems and direct child
+// folders, in the exact same recency order as the full folder-detail grid
+// (compareGridEntriesByRecency, hooks/use-collection.ts) — never folders
+// forced to the front or given a reserved slot. No data fetching of its
+// own for entries themselves — already resolved and capped by the caller
+// (see hooks/use-collection.ts's PREVIEW_ITEM_LIMIT/buildPreviewEntries),
+// so this preview reflects only that capped recent sample, not the
+// folder's full total. This component does own the signed-URL resolution
+// for whichever entries it was actually given (item images vs. folder
+// covers are two different signed-delivery paths — see below). Shows only
+// real entries — a sparse or empty collection just renders fewer (or
+// zero) tiles, no generated filler.
 //
 // Deliberately does NOT group items by player (that's a separate,
 // intentional feature scoped to the folder-detail screen's own top-level
 // grid — see app/collection/[folderId].tsx) — a folder preview must keep
-// filling additional visible positions as more items are added, never
+// filling additional visible positions as more entries are added, never
 // losing positions because several items share a player or have none set.
-export function HorizontalCardPreview({ items, onOpenItem, variant = 'full' }: Props) {
+export function HorizontalCardPreview({ entries, onOpenItem, onOpenChildFolder, variant = 'full' }: Props) {
   const compact = variant === 'compact';
   const { width: windowWidth } = useWindowDimensions();
   const gutter = compact ? COMPACT_SECTION_GUTTER : SECTION_GUTTER;
@@ -63,32 +77,83 @@ export function HorizontalCardPreview({ items, onOpenItem, variant = 'full' }: P
   const visibleWidth = windowWidth - gutter;
   const tileWidth = (visibleWidth - cardGap * Math.floor(cardsVisible)) / cardsVisible;
 
-  // One batched call for every item currently in this preview row (already
-  // capped by the caller, see hooks/use-collection.ts's PREVIEW_ITEM_LIMIT).
-  const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
+  // Two independent, batched signed-delivery paths — item images and
+  // folder covers are resolved by two different Edge Functions/hooks
+  // (item-images beta privacy hardening vs. Phase 3D folder-cover
+  // signing), so a mixed row still issues at most one batched request per
+  // path, never one request per tile.
+  const itemEntries = entries.filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item');
+  const folderEntries = entries.filter(
+    (e): e is Extract<CollectionGridEntry, { kind: 'folder' }> => e.kind === 'folder',
+  );
+  const { urls: signedUrls } = useSignedItemImages(itemEntries.map((e) => e.item.primary_image_id));
+  const { urls: coverUrls } = useSignedFolderCovers(folderEntries.map((e) => e.folder.id));
 
   // Compact (profile) rows never scroll, so they hard-cap to this many real
-  // tiles; the full/scrollable row shows every item the caller passed in.
-  const visibleItems = compact ? items.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : items;
+  // tiles; the full/scrollable row shows every entry the caller passed in.
+  const visibleEntries = compact ? entries.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : entries;
 
   return (
     <FlatList
-      data={visibleItems}
+      data={visibleEntries}
       horizontal
       scrollEnabled={!compact}
       showsHorizontalScrollIndicator={false}
-      keyExtractor={(item) => item.id}
+      keyExtractor={(entry) => (entry.kind === 'folder' ? `folder-${entry.folder.id}` : entry.item.id)}
       contentContainerStyle={{ paddingHorizontal: gutter }}
       ItemSeparatorComponent={() => <View style={{ width: cardGap }} />}
-      renderItem={({ item }) => (
-        <CollectionPreviewCard
-          imageUrl={item.primary_image_id ? (signedUrls.get(item.primary_image_id) ?? null) : null}
-          tileWidth={tileWidth}
-          variant={variant}
-          squareEdges={!compact}
-          onPress={() => onOpenItem(item)}
-        />
-      )}
+      renderItem={({ item: entry }) =>
+        entry.kind === 'folder' ? (
+          <View style={{ width: tileWidth }}>
+            <CollectionPreviewCard
+              testID={`child-folder-preview-${entry.folder.id}`}
+              imageUrl={coverUrls.get(entry.folder.id) ?? null}
+              tileWidth={tileWidth}
+              variant={variant}
+              squareEdges={!compact}
+              onPress={() => onOpenChildFolder(entry.folder)}
+            />
+            {/* Same small, subtle dark-scrim-circle badge language as the
+                folder-detail grid's own folderBadge (app/collection/
+                [folderId].tsx) — the only thing that distinguishes a
+                nested-collection preview tile from an ordinary item
+                preview tile, consistent at every nesting depth.
+                pointerEvents="none" so it never steals the card's own tap
+                target underneath it. */}
+            <View style={styles.folderBadge} pointerEvents="none">
+              <IconSymbol name="folder.fill" size={11} color="#fff" />
+            </View>
+          </View>
+        ) : (
+          <CollectionPreviewCard
+            imageUrl={entry.item.primary_image_id ? (signedUrls.get(entry.item.primary_image_id) ?? null) : null}
+            tileWidth={tileWidth}
+            variant={variant}
+            squareEdges={!compact}
+            onPress={() => onOpenItem(entry.item)}
+          />
+        )
+      }
     />
   );
 }
+
+const styles = StyleSheet.create({
+  // Same rgba(0,0,0,~0.55) dark-scrim-circle language as the folder-detail
+  // grid's own folderBadge (app/collection/[folderId].tsx) — kept as its
+  // own copy rather than a shared import since the two live in otherwise
+  // unrelated StyleSheets with no existing shared "badges" module; the
+  // visual language matching is what needs to stay consistent, not the
+  // style object identity.
+  folderBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});

@@ -208,7 +208,7 @@ function CollectionAtmosphere({ width }: { width: number }) {
 export default function CollectionScreen() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? '';
-  const { folders, loading, error, refresh, previewItems } = useFolders(userId);
+  const { folders, loading, error, refresh, previewItems, previewEntries } = useFolders(userId);
   const [showModal, setShowModal] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [search, setSearch] = useState('');
@@ -247,6 +247,16 @@ export default function CollectionScreen() {
   // card, not the folder it lives in (see HorizontalCardPreview below).
   const openItem = (item: CollectionItem) =>
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
+
+  // Tapping a child-folder preview tile navigates directly into that
+  // folder — the same recursive /collection/[folderId] route openFolder
+  // above uses, just for a folder nested one level under this row's own
+  // top-level folder rather than the row's own folder itself.
+  const openChildFolder = (folder: Folder) =>
+    router.push({
+      pathname: '/collection/[folderId]',
+      params: { folderId: folder.id, title: folder.name },
+    });
 
   const addItem = (folder: Folder) =>
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
@@ -405,11 +415,12 @@ export default function CollectionScreen() {
               <CollectionPreviewSection
                 folderId={item.id}
                 title={item.name}
-                items={previewItems[item.id] ?? []}
+                entries={previewEntries[item.id] ?? []}
                 isExpanded={isExpanded(item.id)}
                 onToggle={() => toggle(item.id)}
                 onOpenFolder={() => openFolder(item)}
                 onOpenItem={openItem}
+                onOpenChildFolder={openChildFolder}
                 onAddItem={() => addItem(item)}
               />
             )}

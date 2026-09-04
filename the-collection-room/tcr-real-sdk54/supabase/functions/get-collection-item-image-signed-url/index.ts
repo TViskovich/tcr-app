@@ -2,12 +2,20 @@
 // the exact same visibility rule as the collection_items/collection_item_images
 // RLS (supabase/migrations/20260819120000_enforce_collection_folder_privacy.sql,
 // tightened by 20260825120000_add_collection_item_privacy.sql to also require
-// the item's own privacy flag):
-//   (folders.is_public = true OR caller = folders.user_id)
+// the item's own privacy flag, then by
+// 20260902120000_recursive_folder_hierarchy_privacy.sql to make the folder
+// leg ancestor-aware):
+//   _folder_is_effectively_visible_for(folders.id, caller)   -- folder AND
+//                                                                every ancestor
+//                                                                public, or
+//                                                                caller owns it
 //   AND (collection_items.is_public = true OR caller = collection_items.user_id)
 // This function runs as service-role and therefore bypasses table RLS
 // entirely — canViewItem below is the ONLY authorization boundary for image
 // delivery; the table-level RLS change alone does not protect this path.
+// The folder leg is resolved via one batched call to
+// folder_effective_visibility_batch() rather than a second,
+// independently-maintained ancestor walk here.
 //
 // Part of the item-images beta privacy hardening (Architecture B — see the
 // item-images static/architecture audits). This function is backend-only
@@ -65,25 +73,48 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 type ResolvedRow = {
   id: string;
   storage_path: string;
-  folder_is_public: boolean;
+  folder_effectively_visible: boolean;
   item_is_public: boolean;
   owner_id: string;
 };
 
 // Mirrors items_select_public / collection_item_images_select_public's exact
-// condition (Model A, most-restrictive-wins) — deliberately re-implemented
-// here rather than shared with the database layer (Edge Functions and
-// Postgres RLS policies can't share code directly), matching this app's
-// established per-module RLS-mirroring convention (see
+// condition (Model A, most-restrictive-wins). The folder leg
+// (folder_effectively_visible) is resolved by the recursive
+// folder_effective_visibility_batch() RPC (supabase/migrations/
+// 20260902120000_recursive_folder_hierarchy_privacy.sql) rather than a
+// second, independently-maintained ancestor walk here — this function only
+// combines that result with the item's own privacy flag, matching this
+// app's established per-module RLS-mirroring convention (see
 // canViewRegisteredCard in ../_shared/registry-image.ts). Owner override
-// applies regardless of either flag; a non-owner needs BOTH the folder and
-// the item to be public.
+// applies regardless of either flag; a non-owner needs BOTH the folder
+// (and every one of its ancestors) and the item to be public.
 function canViewItem(
-  row: { folder_is_public: boolean; item_is_public: boolean; owner_id: string },
+  row: { folder_effectively_visible: boolean; item_is_public: boolean; owner_id: string },
   callerId: string | null,
 ): boolean {
   if (callerId !== null && callerId === row.owner_id) return true;
-  return row.folder_is_public && row.item_is_public;
+  return row.folder_effectively_visible && row.item_is_public;
+}
+
+// One batched call for every distinct folder referenced by this request's
+// items, rather than one RPC round trip per folder.
+async function resolveVisibleFolderIds(
+  client: ReturnType<typeof serviceRoleClient>,
+  folderIds: string[],
+  callerId: string | null,
+): Promise<Set<string>> {
+  if (!folderIds.length) return new Set();
+  const { data, error } = await client.rpc('folder_effective_visibility_batch', {
+    folder_ids: folderIds,
+    caller: callerId,
+  });
+  if (error || !data) return new Set();
+  return new Set(
+    (data as { folder_id: string; visible: boolean }[])
+      .filter((row) => row.visible)
+      .map((row) => row.folder_id),
+  );
 }
 
 Deno.serve(async (req: Request) => {
@@ -176,15 +207,17 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  type FolderRow = { id: string; is_public: boolean; user_id: string };
+  type FolderRow = { id: string; user_id: string };
   const folderById = new Map<string, FolderRow>();
   const folderIds = [...new Set([...itemById.values()].map((it) => it.folder_id))];
   if (folderIds.length) {
-    const { data: folders } = await client.from('folders').select('id, is_public, user_id').in('id', folderIds);
+    const { data: folders } = await client.from('folders').select('id, user_id').in('id', folderIds);
     for (const f of (folders ?? []) as FolderRow[]) {
       folderById.set(f.id, f);
     }
   }
+
+  const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
 
   const resolved = new Map<string, ResolvedRow>();
   for (const img of imageRows) {
@@ -196,7 +229,7 @@ Deno.serve(async (req: Request) => {
     resolved.set(img.id, {
       id: img.id,
       storage_path: img.storage_path,
-      folder_is_public: folder.is_public,
+      folder_effectively_visible: visibleFolderIds.has(folder.id),
       item_is_public: item.is_public,
       // folders.user_id and collection_items.user_id are always equal for
       // any legitimately-created row (items_insert_own requires the item's

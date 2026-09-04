@@ -2,26 +2,35 @@ import { StyleSheet, View } from 'react-native';
 
 import { CollectionHeaderRow } from '@/components/collection/collection-header-row';
 import { HorizontalCardPreview } from '@/components/collection/horizontal-card-preview';
-import type { CollectionItem } from '@/types';
+import type { CollectionGridEntry } from '@/hooks/use-collection';
+import type { CollectionItem, Folder } from '@/types';
 
 type Props = {
   folderId: string;
   title: string;
-  items: CollectionItem[];
+  // Mixed direct items + direct child folders, already recency-sorted by
+  // the caller (hooks/use-collection.ts's buildPreviewEntries) — this
+  // component does no ordering of its own.
+  entries: CollectionGridEntry[];
   isExpanded: boolean;
   // Only reachable via the "full" variant's collapse chevron — the
   // "compact" variant never renders that control, so its callers don't
   // need to pass this.
   onToggle?: () => void;
   // Opens the folder itself — used only by CollectionHeaderRow's own
-  // title/chevron tap now. Preview-tile taps open the specific item
-  // instead (see onOpenItem below).
+  // title/chevron tap now. Preview-tile taps open the specific item/child
+  // folder instead (see onOpenItem/onOpenChildFolder below).
   onOpenFolder: () => void;
   // Opens a specific card's item-detail page — one real preview tile in
   // the expanded HorizontalCardPreview below is one distinct
   // CollectionItem, so tapping it should land on that item, not the
   // folder it lives in.
   onOpenItem: (item: CollectionItem) => void;
+  // Opens a direct child folder (recursively, the same
+  // app/collection/[folderId].tsx route) — distinct from onOpenFolder,
+  // which always opens THIS row's own folder regardless of which preview
+  // tile was tapped.
+  onOpenChildFolder: (folder: Folder) => void;
   onAddItem: () => void;
   // "compact" shrinks dimensions/typography AND drops the collapse
   // chevron entirely — its rows are always expanded (see
@@ -50,11 +59,12 @@ type Props = {
 export function CollectionPreviewSection({
   folderId,
   title,
-  items,
+  entries,
   isExpanded,
   onToggle,
   onOpenFolder,
   onOpenItem,
+  onOpenChildFolder,
   onAddItem,
   variant = 'full',
 }: Props) {
@@ -71,8 +81,9 @@ export function CollectionPreviewSection({
       {isExpanded && (
         <HorizontalCardPreview
           folderId={folderId}
-          items={items}
+          entries={entries}
           onOpenItem={onOpenItem}
+          onOpenChildFolder={onOpenChildFolder}
           onAddItem={onAddItem}
           variant={variant}
         />

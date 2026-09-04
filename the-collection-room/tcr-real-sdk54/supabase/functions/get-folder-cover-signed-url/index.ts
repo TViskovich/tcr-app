@@ -1,7 +1,12 @@
 // Issues short-lived signed URLs for folder covers, enforcing the exact
-// same visibility rule as folders_select_public (the migration at
-// supabase/migrations/20260819120000_enforce_collection_folder_privacy.sql):
-// folders.is_public = true OR authenticated caller id = folders.user_id.
+// same visibility rule as folders_select_public (now the recursive,
+// ancestor-aware check added by supabase/migrations/
+// 20260902120000_recursive_folder_hierarchy_privacy.sql's
+// folder_is_effectively_visible(): a folder is visible to a non-owner only
+// if it AND every ancestor up to the root are public; the owner of the
+// folder sees it regardless of any ancestor's privacy). Resolved via one
+// batched call to that migration's folder_effective_visibility_batch() RPC
+// rather than a second, independently-maintained traversal here.
 //
 // Part of the item-images beta privacy hardening (Phase 3D). item-images
 // remains a PUBLIC bucket while this ships — nothing about this function
@@ -105,14 +110,29 @@ type ResolvedFolder = {
   cover_item_id: string | null;
 };
 
-// Mirrors folders_select_public / items_select_public's exact condition —
-// deliberately re-implemented here rather than shared with the database
-// layer, matching this app's established per-module RLS-mirroring
-// convention (see canViewFolder in get-collection-item-image-signed-url,
-// canViewRegisteredCard in ../_shared/registry-image.ts).
-function canViewFolder(row: { is_public: boolean; user_id: string }, callerId: string | null): boolean {
-  if (row.is_public) return true;
-  return callerId !== null && callerId === row.user_id;
+// Ancestor-aware folder visibility — delegates to the recursive
+// folder_effective_visibility_batch() RPC (supabase/migrations/
+// 20260902120000_recursive_folder_hierarchy_privacy.sql) rather than
+// re-implementing a parent_folder_id walk here. One batched call per
+// request (up to MAX_BATCH_SIZE ids), not one round trip per folder. This
+// runs via the service-role client, so the RPC's own SECURITY DEFINER
+// helper is what actually authorizes each id — nothing about this
+// function's own role bypasses or replaces that.
+async function resolveVisibleFolderIds(
+  client: ReturnType<typeof serviceRoleClient>,
+  folderIds: string[],
+  callerId: string | null,
+): Promise<Set<string>> {
+  const { data, error } = await client.rpc('folder_effective_visibility_batch', {
+    folder_ids: folderIds,
+    caller: callerId,
+  });
+  if (error || !data) return new Set();
+  return new Set(
+    (data as { folder_id: string; visible: boolean }[])
+      .filter((row) => row.visible)
+      .map((row) => row.folder_id),
+  );
 }
 
 // Shared by both item-privacy checks below ('item' and, as of this pass,
@@ -160,9 +180,10 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'invalid_token' }, 401);
   }
 
-  // Uses the service-role client (bypasses RLS entirely), so canViewFolder
-  // below is the ONLY authorization boundary here — nothing about this
-  // query's success implies the caller may view any of these rows.
+  // Uses the service-role client (bypasses RLS entirely), so
+  // resolveVisibleFolderIds below is the ONLY authorization boundary here —
+  // nothing about this query's success implies the caller may view any of
+  // these rows.
   const { data: folders, error: foldersError } = await client
     .from('folders')
     .select('id, is_public, user_id, cover_source, cover_storage_path, cover_item_id')
@@ -183,18 +204,33 @@ Deno.serve(async (req: Request) => {
     folderMap.set(f.id, f);
   }
 
-  const authorizedIds = folderIds.filter((id) => {
-    const f = folderMap.get(id);
-    return !!f && canViewFolder(f, userId);
-  });
+  const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
+  const authorizedIds = folderIds.filter((id) => folderMap.has(id) && visibleFolderIds.has(id));
 
-  const uploadIds = authorizedIds.filter((id) => folderMap.get(id)!.cover_source === 'upload');
+  // A folder can be internally inconsistent — cover_source claims a
+  // specific explicit cover but the field that source actually needs is
+  // missing (cover_source: 'upload' with no cover_storage_path;
+  // cover_source: 'item' with no cover_item_id). This has always been
+  // reachable — folders.cover_source is `NOT NULL DEFAULT 'upload'` at the
+  // DB level, and until create-folder-modal.tsx started setting it
+  // explicitly, every newly-created folder silently inherited that default
+  // with no real upload behind it — but stayed invisible because an
+  // 'unavailable' cover renders as no hero at all elsewhere, never a
+  // visibly blank tile. uploadIds/itemIds below now require the backing
+  // reference to actually be present; anything claiming 'upload' or 'item'
+  // without it falls through to firstCardIds instead of resolving to
+  // 'unavailable' — the exact same newest-active-item resolution every
+  // genuine 'first_card' folder already uses below, not a new fallback
+  // path. This treats a stale/inconsistent explicit-cover folder exactly
+  // like one that never had an explicit cover set, which is what it
+  // actually is.
+  const uploadIds = authorizedIds.filter(
+    (id) => folderMap.get(id)!.cover_source === 'upload' && !!folderMap.get(id)!.cover_storage_path,
+  );
   const itemIds = authorizedIds.filter(
     (id) => folderMap.get(id)!.cover_source === 'item' && !!folderMap.get(id)!.cover_item_id,
   );
-  const firstCardIds = authorizedIds.filter(
-    (id) => folderMap.get(id)!.cover_source !== 'upload' && folderMap.get(id)!.cover_source !== 'item',
-  );
+  const firstCardIds = authorizedIds.filter((id) => !uploadIds.includes(id) && !itemIds.includes(id));
 
   const folderToStoragePath = new Map<string, string>();
 
@@ -215,7 +251,7 @@ Deno.serve(async (req: Request) => {
   // non-owner caller (most-restrictive-wins — see this function's own
   // module comment above); the folder owner sees their own picked item
   // regardless of its privacy flag, same override pattern as
-  // canViewFolder.
+  // isOwnerCaller/resolveVisibleFolderIds.
   if (itemIds.length) {
     const pickedItemIds = itemIds.map((id) => folderMap.get(id)!.cover_item_id!);
     const { data: pickedItems } = await client

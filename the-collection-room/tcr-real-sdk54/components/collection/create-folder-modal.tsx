@@ -21,6 +21,13 @@ type Props = {
   userId: string;
   onClose: () => void;
   onCreated: () => void;
+  // Omitted/undefined (and null) both mean "create a top-level folder."
+  // Passed by app/collection/[folderId].tsx when Add Folder is used from
+  // inside an existing folder. Parent ownership and cycle prevention are
+  // enforced entirely by folders_insert_own's RLS — this modal never
+  // verifies either itself; a mismatched/invalid parent simply surfaces as
+  // the same generic insert error already handled below.
+  parentFolderId?: string | null;
 };
 
 // No Binder Color picker here (beta product decision, same reasoning as
@@ -31,7 +38,7 @@ type Props = {
 // semantics already treat null as a perfectly valid, meaningful value
 // ("null = auto (name-hash)") — so the insert below simply omits `color`
 // entirely rather than assigning any value on the new folder's behalf.
-export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props) {
+export function CreateFolderModal({ visible, userId, onClose, onCreated, parentFolderId }: Props) {
   const [name, setName] = useState('');
   // Defaults to private (false) — the live folders.is_public column
   // default is true, but nothing in this codebase documents that as an
@@ -54,9 +61,26 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated }: Props
   async function handleCreate() {
     if (!name.trim()) return;
     setLoading(true);
-    const { error } = await supabase
-      .from('folders')
-      .insert({ user_id: userId, name: name.trim(), is_public: isPublic });
+    const { error } = await supabase.from('folders').insert({
+      user_id: userId,
+      name: name.trim(),
+      is_public: isPublic,
+      parent_folder_id: parentFolderId ?? null,
+      // folders.cover_source is `NOT NULL DEFAULT 'upload'` at the DB level
+      // (a pre-existing default, not one this app ever intended — see
+      // folder-edit-modal.tsx/[folderId].tsx's own handleRemoveCover, which
+      // resets to 'first_card' and calls it "the same implicit default a
+      // folder starts with"). Leaving cover_source unset here silently
+      // inherited that wrong DB default, producing a folder that claims an
+      // uploaded cover exists (cover_source: 'upload') while
+      // cover_storage_path/cover_image_url are both null — exactly the
+      // invalid combination that made new folders' own cover previews
+      // render blank. Setting it explicitly on every insert is what
+      // actually prevents a newly-created folder from ever entering that
+      // state, rather than relying on the column default to happen to
+      // match.
+      cover_source: 'first_card',
+    });
     if (error) {
       Alert.alert('Error', error.message);
     } else {

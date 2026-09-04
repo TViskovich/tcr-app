@@ -35,6 +35,14 @@ export type Folder = {
   color: string | null; // FolderColorKey (components/collection/folder-card.tsx) or null = auto (name-hash)
   is_public: boolean;
   created_at: string;
+  // Self-referencing "category" parent (supabase/migrations/
+  // 20260715120000_folder_hierarchy.sql) — null for a top-level folder.
+  // Arbitrarily nestable (no DB depth limit); ownership-of-parent and
+  // cycle prevention are enforced server-side via RLS
+  // (folders_insert_own/folders_update_own), never re-checked client-side.
+  // Privacy is inherited recursively up the chain — also enforced entirely
+  // server-side (folder_is_effectively_visible), never duplicated here.
+  parent_folder_id: string | null;
 };
 
 export type CollectionItem = {

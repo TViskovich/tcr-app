@@ -2,6 +2,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
+import type { CollectionGridEntry } from '@/hooks/use-collection';
 import type { CollectionItem, Folder } from '@/types';
 import { PV2 } from './profile-v2-theme';
 
@@ -9,13 +10,19 @@ type Props = {
   folders: Folder[];
   // Keyed by folder id — same shape hooks/use-collection.ts's useFolders()
   // returns for app/(tabs)/collection.tsx, passed straight through by the
-  // caller rather than re-fetched here.
-  previewItems: Record<string, CollectionItem[]>;
+  // caller rather than re-fetched here. Mixed item/child-folder entries,
+  // already recency-sorted (buildPreviewEntries) — this component does no
+  // ordering of its own.
+  previewEntries: Record<string, CollectionGridEntry[]>;
   onOpenFolder: (folder: Folder) => void;
   // Opens a specific card's item-detail page — tapping a preview tile
   // should land on that card, not the folder it lives in (matches the
   // main Collection page's own HorizontalCardPreview behavior).
   onOpenItem: (item: CollectionItem) => void;
+  // Opens a direct child folder from a mixed preview row — the same
+  // recursive /collection/[folderId] route, distinct from onOpenFolder
+  // (which always opens the row's own top-level folder).
+  onOpenChildFolder: (folder: Folder) => void;
   // Owner-only — omitted when viewing someone else's profile. Folder
   // navigation (above) always works either way; only the "add a card" /
   // "create a folder" actions are gated, since those would otherwise add
@@ -41,9 +48,10 @@ type Props = {
 // doesn't conflict.
 export function ProfileV2Collections({
   folders,
-  previewItems,
+  previewEntries,
   onOpenFolder,
   onOpenItem,
+  onOpenChildFolder,
   onAddItem,
   onCreatePress,
 }: Props) {
@@ -71,10 +79,11 @@ export function ProfileV2Collections({
           <CollectionPreviewSection
             folderId={folder.id}
             title={folder.name}
-            items={previewItems[folder.id] ?? []}
+            entries={previewEntries[folder.id] ?? []}
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
             onOpenItem={onOpenItem}
+            onOpenChildFolder={onOpenChildFolder}
             onAddItem={() => onAddItem?.(folder)}
             variant="compact"
           />
