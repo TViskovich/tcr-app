@@ -45,6 +45,27 @@ export async function copyShareSnapshotImage(
   return { status: 'ok', publicUrl: data.public_url };
 }
 
+// Standard text post's optional single attached photo (app/post/new.tsx)
+// — a freshly-uploaded, caller-owned item-images object (from
+// uploadItemImage(), lib/storage.ts), copied server-side into the durable
+// share-snapshots bucket. Unlike copyShareSnapshotImage above, there is no
+// collection_items row behind this photo at all; the Edge Function
+// authorizes purely on the source object's own path being inside the
+// caller's own item-images/{userId}/ namespace. MUST be called and
+// confirmed 'ok' BEFORE inserting the post row that will carry its
+// result — same call-before-insert rule as copyShareSnapshotImage, for the
+// same reason (never leave a post pointing at a fragile item-images URL).
+export async function copyPostPhotoToShareSnapshots(sourceUrl: string): Promise<CopyShareSnapshotImageResult> {
+  const { data, error } = await supabase.functions.invoke('copy-post-photo-to-share-snapshots', {
+    body: { source_url: sourceUrl },
+  });
+  if (error || data?.status !== 'ok' || typeof data?.public_url !== 'string') {
+    if (__DEV__) console.warn('[copyPostPhotoToShareSnapshots] failed:', error ?? data);
+    return { status: 'failed' };
+  }
+  return { status: 'ok', publicUrl: data.public_url };
+}
+
 export type MultiItemSnapshotType = Extract<SnapshotType, 'card_share' | 'rate_my_grails'>;
 
 export type CreateSnapshotPostResult =

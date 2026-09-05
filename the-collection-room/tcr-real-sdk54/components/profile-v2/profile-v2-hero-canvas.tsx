@@ -153,11 +153,15 @@ const styles = StyleSheet.create({
   },
   // Extra themed showcase space above/below the grid — normal padding,
   // not a spacer view, so it's part of the same themed/clipped box as
-  // the grid itself rather than a separately colored region. Always
-  // 32/32 now — same for owner and public view mode.
+  // the grid itself rather than a separately colored region. Same for
+  // owner and public view mode. paddingBottom was reduced from 32 to 16
+  // (Profile V3 spacing pass) — together with ProfileV2TabRow's own
+  // marginTop (10) that's the Grails→tab-row gap (26px), matched by
+  // profile-v2-screen.tsx's TAB_CONTENT_TOP_GAP on the other side of the
+  // tab row.
   gridStage: {
     paddingTop: 32,
-    paddingBottom: 32,
+    paddingBottom: 16,
   },
   // Same visual values as profile-v2-hero.tsx's own topRow/textBtn* —
   // copied, not redesigned. Only `position`/`top`/`left`/`right`

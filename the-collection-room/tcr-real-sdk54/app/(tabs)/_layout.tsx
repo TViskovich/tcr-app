@@ -2,7 +2,8 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { Tabs, usePathname, useRouter } from 'expo-router';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -14,16 +15,21 @@ import { useMessageBadgeCount, useMessageBadgeRefresh } from '@/lib/message-badg
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
-const HIDDEN_TABS = new Set(['notifications']);
+// Discover (search) and Messages are routes/screens we intentionally keep
+// wired up (still reachable via router.push/navigate, badges etc. all still
+// work) but hide from the visible bottom nav for now — same pattern already
+// used for notifications below. Remove an entry here (and the matching
+// href:null on its Tabs.Screen) to restore it to the visible bar.
+const HIDDEN_TABS = new Set(['search', 'messages', 'notifications']);
 
-const CacheCaseLogoNav = require('@/assets/icons/cachecase-logo-nav.png');
+const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
 
 // Floating capsule shell — was a full-width bar flush with the screen
 // bottom, now an inset pill raised above the safe area. Height comes from
 // TAB_BAR_HEIGHT (lib/tab-visibility-context) — the single source of truth
 // screens also use to reserve enough bottom padding to clear it.
 const BAR_HEIGHT = TAB_BAR_HEIGHT;
-const BAR_HORIZONTAL_INSET = 18;
+const BAR_HORIZONTAL_INSET = 22;
 const BAR_BOTTOM_GAP = 8;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 // Same dark surface as before, fully opaque — no see-through content
@@ -59,13 +65,22 @@ const TAB_LABELS: Record<string, string> = {
 const FEATURED_TAB = 'collection';
 
 // The CacheCase logo replaces both the icon and label for the center tab,
-// so it renders substantially larger than the other four icons (which stay
-// at ICON_SIZE) — the vertical space the removed label used to occupy goes
-// to the logo instead. 71x53 matches the source PNG's own aspect ratio
-// (1447x1087 ≈ 1.33:1) so contentFit="contain" never letterboxes it.
-// Comfortably inside BAR_HEIGHT (78) with room to spare on both edges.
-const CENTER_BADGE_WIDTH = 71;
-const CENTER_BADGE_HEIGHT = 53;
+// so it renders larger than the other four icons (which stay at ICON_SIZE)
+// — the vertical space the removed label used to occupy goes to the logo
+// instead. The source PNG (842x343, ≈2.45:1) is the wordmark alone with the
+// surrounding bracket mark cropped out. 72x29 keeps that aspect ratio (so
+// contentFit="contain" never letterboxes it) at a size still visibly larger
+// than the plain ICON_SIZE icons either side of it — CacheCase stays the
+// featured tab without dominating the now-more-compact pill.
+// Comfortably inside BAR_HEIGHT (68) with room to spare on both edges.
+const CENTER_BADGE_WIDTH = 72;
+const CENTER_BADGE_HEIGHT = 29;
+
+// Instagram-style drag/scrub selection: how far (in px) the finger can
+// stray above/below the bar's own height before we stop treating the drag
+// as a scrub over it. Generous enough that a natural arc-shaped swipe still
+// tracks, tight enough that dragging up into the screen content cancels it.
+const DRAG_VERTICAL_CANCEL_MARGIN = 40;
 
 // Only used for the small Android glow assist now (see glowAssist below).
 function glowAssistColorFor(accent: string) {
@@ -182,7 +197,99 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     opacity: opacity.value,
   }));
 
+  // Drag/scrub state for the Instagram-style bottom nav gesture below.
+  // rowWidth is measured by a single onLayout on the exact same row View
+  // the drag gesture is attached to (see the GestureDetector below) — one
+  // measurement, one coordinate frame, no per-child aggregation to drift
+  // out of sync with the gesture's own x. dragSelectedTab remembers which
+  // tab the current gesture last selected so continued movement inside the
+  // same third doesn't re-navigate.
+  const rowWidth = useSharedValue(0);
+  const dragSelectedTab = useSharedValue<string | null>(null);
+
   if (hideTabBar) return null;
+
+  // Shared by both a normal tap (via each TabBarItem's onPress below) and
+  // the drag/scrub gesture — same tabPress-event/featured/isFocused logic
+  // either way, so dragging onto a tab behaves identically to tapping it.
+  const selectRoute = (route: any, featured: boolean, isFocused: boolean) => {
+    if (process.env.EXPO_OS === 'ios') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    const event = navigation.emit({
+      type: 'tabPress',
+      target: route.key,
+      canPreventDefault: true,
+    });
+    if (event.defaultPrevented) return;
+    if (featured) {
+      // Always land on the Collection root — never stacked on top of, and
+      // never preserving, a nested collection screen.
+      router.replace(COLLECTION_ROOT_ROUTE as any);
+      return;
+    }
+    if (!isFocused) {
+      navigation.navigate(route.name, route.params);
+    }
+  };
+
+  // Looked up by name rather than closed over route/index, since this is
+  // invoked from the pan gesture via runOnJS, which can only round-trip
+  // plain serializable values across the worklet boundary.
+  const selectRouteByName = (name: string) => {
+    const idx = state.routes.findIndex((r: any) => r.name === name);
+    if (idx === -1) return;
+    const route = state.routes[idx];
+    const featured = route.name === FEATURED_TAB;
+    const isFocused = state.index === idx || (featured && isCacheCaseRoute(pathname));
+    selectRoute(route, featured, isFocused);
+  };
+
+  // Left-to-right names of the tabs actually rendered below (Feed,
+  // CacheCase, Profile today) — derived from the same state.routes/
+  // HIDDEN_TABS source of truth the render loop uses, so the drag zones
+  // below can never disagree with what's actually on screen or include a
+  // hidden tab. Recomputed each render (cheap: 6 routes), same as the
+  // gesture callbacks themselves.
+  const visibleTabOrder = state.routes
+    .filter((r: any) => !HIDDEN_TABS.has(r.name))
+    .map((r: any) => r.name as string);
+
+  const dragGesture = Gesture.Pan()
+    // Only activates once the finger has actually moved horizontally —
+    // a plain tap never crosses this, so it never steals the touch from
+    // the tab buttons' own TouchableOpacity/onPress below.
+    .activeOffsetX([-10, 10])
+    // Fails (leaving the touch to the buttons) if the movement is
+    // predominantly vertical, so small vertical jitter can't select a tab.
+    .failOffsetY([-20, 20])
+    .onUpdate((e) => {
+      if (e.y < -DRAG_VERTICAL_CANCEL_MARGIN || e.y > BAR_HEIGHT + DRAG_VERTICAL_CANCEL_MARGIN) {
+        // Strayed too far above/below the pill — ignore this update rather
+        // than selecting anything; resumes if the finger comes back in.
+        return;
+      }
+      const width = rowWidth.value;
+      const tabCount = visibleTabOrder.length;
+      if (width <= 0 || tabCount === 0) return;
+      // e.x is relative to this same row View (see the GestureDetector
+      // below and rowWidth's onLayout) — clamp so a finger that's strayed
+      // slightly into the row's own horizontal padding still resolves to
+      // the nearest tab instead of falling outside every zone.
+      const clampedX = Math.min(Math.max(e.x, 0), width);
+      const zoneWidth = width / tabCount;
+      let zoneIndex = Math.floor(clampedX / zoneWidth);
+      if (zoneIndex >= tabCount) zoneIndex = tabCount - 1;
+      if (zoneIndex < 0) zoneIndex = 0;
+      const matched = visibleTabOrder[zoneIndex];
+      if (matched !== dragSelectedTab.value) {
+        dragSelectedTab.value = matched;
+        runOnJS(selectRouteByName)(matched);
+      }
+    })
+    .onFinalize(() => {
+      dragSelectedTab.value = null;
+    });
 
   return (
     <Animated.View
@@ -193,8 +300,18 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
           both on one view would clip the shadow along with the corners. */}
       <View style={styles.tabBarShadow}>
         <View style={styles.tabBarShell}>
-          <View style={styles.tabBarContent}>
-            {state.routes.map((route: any, index: number) => {
+          <GestureDetector gesture={dragGesture}>
+            {/* This is the exact view the drag gesture above is attached to
+                (via GestureDetector) and whose width it measures below —
+                e.x in dragGesture.onUpdate is guaranteed relative to this
+                same box, so the two can never drift into different
+                coordinate spaces. */}
+            <View
+              style={styles.tabBarContent}
+              onLayout={(e) => {
+                rowWidth.value = e.nativeEvent.layout.width;
+              }}>
+              {state.routes.map((route: any, index: number) => {
             if (HIDDEN_TABS.has(route.name)) return null;
 
             const { options } = descriptors[route.key];
@@ -211,26 +328,7 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
             const accent = TAB_ACCENTS[route.name] ?? DEFAULT_ACCENT;
             const color = isFocused ? accent : featured ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR;
 
-            const onPress = () => {
-              if (process.env.EXPO_OS === 'ios') {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }
-              const event = navigation.emit({
-                type: 'tabPress',
-                target: route.key,
-                canPreventDefault: true,
-              });
-              if (event.defaultPrevented) return;
-              if (featured) {
-                // Always land on the Collection root — never stacked on
-                // top of, and never preserving, a nested collection screen.
-                router.replace(COLLECTION_ROOT_ROUTE as any);
-                return;
-              }
-              if (!isFocused) {
-                navigation.navigate(route.name, route.params);
-              }
-            };
+            const onPress = () => selectRoute(route, featured, isFocused);
 
             return (
               <TabBarItem
@@ -248,8 +346,9 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
                 centered={featured}
               />
             );
-          })}
-          </View>
+              })}
+            </View>
+          </GestureDetector>
         </View>
       </View>
     </Animated.View>
@@ -300,6 +399,7 @@ export default function TabLayout() {
           name="search"
           options={{
             title: 'Search',
+            href: null,
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
           }}
         />
@@ -322,6 +422,7 @@ export default function TabLayout() {
           name="messages"
           options={{
             title: 'Messages',
+            href: null,
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="message" color={color} />,
             tabBarBadge: messageBadge,
           }}
@@ -415,12 +516,11 @@ const styles = StyleSheet.create({
   iconWrap: {
     position: 'relative',
   },
-  // CacheCase tab only — same role as iconWrap, plus the small optical
-  // nudge the larger, asymmetric bracket mark needs to sit visually
-  // centered.
+  // CacheCase tab only — same role as iconWrap. (No optical nudge needed
+  // now that the mark is the plain wordmark rather than the taller,
+  // asymmetric bracket badge.)
   iconWrapCenter: {
     position: 'relative',
-    transform: [{ translateY: 1 }],
   },
   cacheCaseLogo: {
     width: CENTER_BADGE_WIDTH,

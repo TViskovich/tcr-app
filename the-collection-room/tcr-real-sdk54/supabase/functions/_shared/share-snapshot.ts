@@ -153,3 +153,54 @@ export async function copyHistoricalUrlIntoShareSnapshots(
   }
   return downloadValidateUpload(client, sourcePath, destinationPath, true);
 }
+
+// Copies a freshly-uploaded, caller-owned item-images object into
+// share-snapshots for a standard text post's optional single attached
+// photo (app/post/new.tsx / copy-post-photo-to-share-snapshots). Unlike
+// copyItemImageIntoShareSnapshots above, there is no collection_items row
+// backing this photo at all — authorization is instead purely "the source
+// object's own path lives inside the caller's own item-images/{userId}/
+// namespace," the same path-prefix-ownership convention lib/storage.ts's
+// pathMatchesOwnedKind already applies client-side, mirrored here as the
+// actual server-side authorization boundary (callers must not trust a
+// client-supplied path directly — parseItemImagesStoragePath both extracts
+// and validates it against this project's own item-images bucket first).
+//
+// destinationPath is share-snapshots/{callerId}/post-upload/{uuid} (the
+// download/upload tail below appends the real .{ext}) — its own namespace,
+// distinct from copyItemImageIntoShareSnapshots' {snapshotType}/{targetId}/
+// {itemId}-{uuid} shape, since there is no snapshotType/targetId/itemId
+// here.
+//
+// On a successful copy, the source item-images object is deleted
+// (best-effort, never fails the copy itself) — it was uploaded solely as a
+// staging step for this one copy and is never referenced by any row, so
+// removing it can never orphan anything else. Same "never throws on
+// cleanup" convention as lib/storage.ts's deleteProfileImage/
+// deleteFolderCover.
+export async function copyOwnedItemImageIntoShareSnapshots(
+  client: SupabaseClient,
+  callerId: string,
+  sourceUrl: string,
+): Promise<CopyItemImageResult> {
+  const projectUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const sourcePath = parseItemImagesStoragePath(sourceUrl, projectUrl);
+  if (!sourcePath) {
+    return { ok: false };
+  }
+  if (sourcePath.split('/')[0] !== callerId) {
+    return { ok: false };
+  }
+
+  const destinationPath = `${callerId}/post-upload/${crypto.randomUUID()}`;
+  const result = await downloadValidateUpload(client, sourcePath, destinationPath);
+
+  if (result.ok) {
+    const { error: removeError } = await client.storage.from('item-images').remove([sourcePath]);
+    if (removeError) {
+      console.error('[copyOwnedItemImageIntoShareSnapshots] source cleanup failed:', removeError.message);
+    }
+  }
+
+  return result;
+}

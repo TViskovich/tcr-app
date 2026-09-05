@@ -17,11 +17,11 @@ type Props = {
   subtitle?: string | null;
   tileWidth: number;
   onPress: () => void;
-  // "compact" only shrinks the caption typography (see
-  // components/profile-v2/profile-v2-collections.tsx) — corner radius,
-  // border, gradients/scrim, and the placeholder treatment are identical
-  // to "full" (the default) at any size, per the shared PREVIEW_CARD_*
-  // constants below, which never vary by variant.
+  // "compact" shrinks the caption typography AND squares off the tile's
+  // corners (see compactSquareCorners below) while keeping its border —
+  // border, gradients/scrim, and the placeholder treatment are otherwise
+  // identical to "full" (the default) at any size, per the shared
+  // PREVIEW_CARD_* constants below, which never vary by variant.
   variant?: 'full' | 'compact';
   // Opt-in, preview-local override (default false) — square corners, no
   // border — instead of touching the shared PREVIEW_CARD_RADIUS/border
@@ -63,7 +63,13 @@ export function CollectionPreviewCard({
           already there while the image decodes, and what's left showing if
           it fails to load, so there's no white flash and no extra
           error-state plumbing needed. */}
-      <View style={[styles.tile, squareEdges && styles.tileSquareEdges, { width: tileWidth }]}>
+      <View
+        style={[
+          styles.tile,
+          squareEdges && styles.tileSquareEdges,
+          compact && styles.compactSquareCorners,
+          { width: tileWidth },
+        ]}>
         {imageUrl && (
           <Image
             source={{ uri: imageUrl }}
@@ -115,6 +121,16 @@ const styles = StyleSheet.create({
   tileSquareEdges: {
     borderRadius: 0,
     borderWidth: 0,
+  },
+  // Profile V3 Collection-tab refinement — square corners for the compact
+  // variant too, but (unlike tileSquareEdges above) KEEPING the existing
+  // border thickness/color, so this tile reads as a sharp-cornered card
+  // rather than a borderless Instagram-style tile. Scoped to `compact`
+  // specifically (not `variant` generally, and independent of
+  // `squareEdges`), so app/(tabs)/collection.tsx's own "full" rows — the
+  // only other real caller of this component — are entirely unaffected.
+  compactSquareCorners: {
+    borderRadius: 0,
   },
   captionBar: {
     position: 'absolute',

@@ -82,6 +82,14 @@ export function ProfileV2Collections({
             entries={previewEntries[folder.id] ?? []}
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
+            // Rows here never actually collapse (isExpanded is always
+            // true above) — passing onToggle isn't wiring real
+            // expand/collapse, it's what makes CollectionHeaderRow render
+            // its trailing chevron at all (see the `{onToggle && (...)}`
+            // guard there), so the reference's right-edge "expand
+            // indicator" appears. Pointed at the same onOpenFolder as the
+            // title tap, since there's nothing to actually toggle.
+            onToggle={() => onOpenFolder(folder)}
             onOpenItem={onOpenItem}
             onOpenChildFolder={onOpenChildFolder}
             onAddItem={() => onAddItem?.(folder)}
@@ -94,9 +102,11 @@ export function ProfileV2Collections({
 }
 
 const styles = StyleSheet.create({
-  list: {
-    marginTop: 14,
-  },
+  // No top margin — the starting offset below the sticky tab row is now
+  // owned entirely by profile-v2-screen.tsx's shared TAB_CONTENT_TOP_GAP
+  // (tabBodyWrap), so every tab body begins at the same height. Spacing
+  // BETWEEN sections (rowSeparator below) is unrelated and untouched.
+  list: {},
   // Tighter than app/(tabs)/collection.tsx's own 22px rowSeparator — this
   // is the "tighten vertical spacing between entries" compaction, same
   // idea, smaller value.

@@ -31,7 +31,7 @@ import {
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
-import { useFolders } from '@/hooks/use-collection';
+import { useAllItems, useFolders } from '@/hooks/use-collection';
 import {
   expectedRefIdForSlot,
   removeGrailSlot,
@@ -54,21 +54,47 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
-import { ProfileV2CollectorPanel } from './profile-v2-collector-panel';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2Grid } from './profile-v2-grid';
 import { ProfileV2HeroCanvas } from './profile-v2-hero-canvas';
 import { ProfileV2Identity } from './profile-v2-identity';
+import { ProfileV2IdentityCard } from './profile-v2-identity-card';
+import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
 import { ProfileV2Preferences } from './profile-v2-preferences';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
-import { ProfileV2Selector, type ProfileV2Section } from './profile-v2-selector';
 import { ProfileV2Stats } from './profile-v2-stats';
+import { ProfileV2TabRow, type ProfileV2Section } from './profile-v2-tab-row';
 import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
 import { PV2 } from './profile-v2-theme';
 
 const TAGLINE_MAX_LENGTH = 80;
 const LOCATION_MAX_LENGTH = 80;
+
+// TEMP (Profile V3 cleanup pass) — the owner-only Settings cog and Saved
+// bookmark shortcut are hidden from the rendered UI while these controls
+// wait on a new home elsewhere in the redesigned layout. Nothing behind
+// them (routes, handlers, the icons' own JSX) was removed — flip this back
+// to true to restore them exactly as they were. Deliberately does not
+// affect the public-viewer branch of the same row (Back + the Grails
+// bookmark toggle), which isn't part of this pass.
+const SHOW_OWNER_SETTINGS_AND_SAVED_ICONS = false;
+
+// The one place the "tab row → tab content" gap is defined — matches the
+// Grails→tab-row gap (ProfileV2HeroCanvas's gridStage paddingBottom 16 +
+// ProfileV2TabRow's own row marginTop 10 = 26) so the tab row reads as a
+// symmetric divider, gap-for-gap, between the shared showcase above it and
+// whichever tab's content is below it. Both sides were brought in together
+// from an initial, too-large 42/42 pass — still one shared, deliberately
+// small value, not two independently-tuned numbers. Previously this same
+// conceptual gap was split across tabRowInner's paddingBottom and
+// tabBodyWrap's marginTop, AND each tab body (ProfileV2Posts/
+// ProfileV2Collections/ProfileV2ItemsGrid) added its own additional top
+// margin on top of that — three different totals for three tabs.
+// Posts/Collection/Items/Tagged must all rely on this single value alone
+// for their starting offset; none of them should carry their own separate
+// top margin/padding before their first element.
+const TAB_CONTENT_TOP_GAP = 26;
 
 // Deliberately does NOT use `new URL(...)` as the validator. React
 // Native's actual global URL (node_modules/react-native/Libraries/Blob/URL.js,
@@ -307,6 +333,37 @@ export function ProfileV2Screen({ userId }: Props) {
   const { folders, previewEntries, refresh: refreshFolders } = useFolders(userId, {
     publicOnly: !isOwnProfile,
   });
+  // Profile V3's Items tab — flat, all-folders view of this profile's own
+  // items (see ProfileV2ItemsGrid below). Same publicOnly convention as
+  // useFolders just above, so a visitor never loads a private item
+  // client-side either.
+  const {
+    items: allItems,
+    loading: allItemsLoading,
+    error: allItemsError,
+    refresh: refreshAllItems,
+  } = useAllItems(userId, {
+    publicOnly: !isOwnProfile,
+  });
+  // TEMP DIAGNOSTIC (Items tab black-screen investigation) — remove once
+  // the root cause is confirmed and fixed. Logs every render, not just on
+  // change, so it also shows whether this ever re-fires after userId
+  // resolves. allItemsError is the critical field here: useAllItems already
+  // unconditionally console.errors a query failure on its own (see
+  // hooks/use-collection.ts), but that error was never previously
+  // surfaced/read by this screen at all — a silently-failed query (items
+  // stays [], loading becomes false) renders as an empty grid with no
+  // visible error state, which looks identical to "genuinely zero items."
+  if (__DEV__) {
+    console.log('[ProfileV3 DIAG] useAllItems result', {
+      userId,
+      isOwnProfile,
+      publicOnlyPassed: !isOwnProfile,
+      allItemsCount: allItems.length,
+      allItemsLoading,
+      allItemsError,
+    });
+  }
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   // This profile's post history for the "posts" section — chronological
@@ -347,10 +404,13 @@ export function ProfileV2Screen({ userId }: Props) {
     }
   }, [userId, currentUserId]);
 
-  const [section, setSection] = useState<ProfileV2Section>('cachecase');
-  // Measured once off the cachecase section's real rendered height (see
-  // ProfileV2SectionPage below) — cachecase is both the default tab and the
-  // tallest, so this captures a real "Grails" dimension rather than a
+  // Profile V3 shell: the new ProfileV2TabRow's four pills are posts/
+  // collections/items/tagged — 'cachecase' (the old default) has no pill in
+  // that row anymore, so 'posts' is now the default/first-selected tab.
+  const [section, setSection] = useState<ProfileV2Section>('posts');
+  // Measured once off the posts section's real rendered height (see
+  // ProfileV2SectionPage below) — posts is now both the default tab and the
+  // tallest reachable one, so this captures a real dimension rather than a
   // hardcoded guess, with no visible flash since it's measured before the
   // user can switch to a shorter section.
   const [sectionMinHeight, setSectionMinHeight] = useState<number | undefined>(undefined);
@@ -406,15 +466,16 @@ export function ProfileV2Screen({ userId }: Props) {
       refresh();
       refreshGrailSlots();
       refreshFolders();
+      refreshAllItems();
       refreshPosts();
       return () => {
         // Only cancels the fetchUserPosts batch owned by postsControllerRef
-        // — refresh/refreshGrailSlots/refreshFolders own their own
-        // cancellation internally (see their respective hooks) and are
-        // deliberately left untouched here.
+        // — refresh/refreshGrailSlots/refreshFolders/refreshAllItems own
+        // their own cancellation internally (see their respective hooks)
+        // and are deliberately left untouched here.
         postsControllerRef.current?.abort();
       };
-    }, [refresh, refreshGrailSlots, refreshFolders, refreshPosts]),
+    }, [refresh, refreshGrailSlots, refreshFolders, refreshAllItems, refreshPosts]),
   );
 
   useFocusEffect(
@@ -1375,6 +1436,18 @@ export function ProfileV2Screen({ userId }: Props) {
 
   const displayName = profile?.hero_display_name || profile?.display_name || profile?.username || '';
 
+  // TEMP DIAGNOSTIC (Items tab black-screen investigation) — remove once
+  // the root cause is confirmed and fixed.
+  if (__DEV__ && section === 'items') {
+    console.log('[ProfileV3 DIAG] section === "items" — about to render ProfileV2ItemsGrid branch', {
+      allItemsCount: allItems.length,
+      allItemsLoading,
+      allItemsError,
+      editMode,
+      sectionMinHeight,
+    });
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
@@ -1384,131 +1457,181 @@ export function ProfileV2Screen({ userId }: Props) {
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           showsVerticalScrollIndicator={false}
           onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}>
+          scrollEventThrottle={scrollEventThrottle}
+          stickyHeaderIndices={[1]}>
 
-          {profile && (
-            <ProfileV2CollectorPanel
-              avatarUri={avatarUri}
-              displayName={displayName}
-              vaultTotal={stats.itemCount}
-              graded={stats.gradedCount}
-              onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
-            />
-          )}
+          {/* index 0 — shared profile showcase: identity card, Grails, and
+              the owner/public action row. Grails renders here now — above
+              the tab row, identically for every tab — instead of below it
+              and hidden specifically for 'items' (the bug this restructure
+              fixes). Always a stable top-level ScrollView child (never
+              conditionally omitted), so stickyHeaderIndices={[1]} below
+              always resolves to the tab row, regardless of
+              profile/editMode state. */}
+          <View>
+            {profile && (
+              <ProfileV2IdentityCard
+                username={profile.username}
+                title={displayName}
+                itemCount={stats.itemCount}
+                avatarUri={avatarUri}
+                profileId={profile.id}
+                onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
+              />
+            )}
 
-          {profile && (
-            <View style={styles.heroCanvasWrap}>
-            <ProfileV2HeroCanvas
-              heroTheme={heroTheme}
-              themeFallbackSwatch={themeFallbackSwatch}
-              editMode={editMode}
-              saving={saving}
-              onCancelPress={cancelEdit}
-              onSavePress={handleEditProfileSave}>
-              {!editMode && (
-                <ProfileV2Grid
-                  slots={grailSlots}
-                  loading={grailSlotsLoading}
-                  error={grailSlotsError}
-                  onRetry={refreshGrailSlots}
-                  isOwnProfile={isOwnProfile}
-                  onPressEmpty={openGrailAdd}
-                  onPressItem={handleGrailItemPress}
-                  onPressCollection={handleGrailCollectionPress}
-                  onReplace={openGrailReplace}
-                  onRemove={handleRemoveGrailSlot}
-                />
-              )}
-            </ProfileV2HeroCanvas>
-            </View>
-          )}
+            {/* No longer conditioned on `section` — Grails is shared
+                content above every tab now, not a per-section block, so
+                the old (editMode || section !== 'items') exclusion is
+                gone. Still renders during edit mode too, unchanged: the
+                canvas itself owns the Cancel/Save row regardless of which
+                tab was active when Edit Profile was opened. */}
+            {profile && (
+              <View style={styles.heroCanvasWrap}>
+                <ProfileV2HeroCanvas
+                  heroTheme={heroTheme}
+                  themeFallbackSwatch={themeFallbackSwatch}
+                  editMode={editMode}
+                  saving={saving}
+                  onCancelPress={cancelEdit}
+                  onSavePress={handleEditProfileSave}>
+                  {!editMode && (
+                    <ProfileV2Grid
+                      slots={grailSlots}
+                      loading={grailSlotsLoading}
+                      error={grailSlotsError}
+                      onRetry={refreshGrailSlots}
+                      isOwnProfile={isOwnProfile}
+                      onPressEmpty={openGrailAdd}
+                      onPressItem={handleGrailItemPress}
+                      onPressCollection={handleGrailCollectionPress}
+                      onReplace={openGrailReplace}
+                      onRemove={handleRemoveGrailSlot}
+                    />
+                  )}
+                </ProfileV2HeroCanvas>
+              </View>
+            )}
 
-          {/* Owner/public control row — moved out of ProfileV2HeroCanvas
-              so the canvas itself is dimensionally identical for owner
-              and public view mode (same gridStage 32/32 padding, no
-              action row inside either way). Owner sees Settings/Saved;
-              public sees Back/Grails-bookmark. Both branches share styles.ownerActionRow/
-              ownerIconBtn (not two independently-maintained style
-              objects) so their outer spacing footprint is guaranteed
-              identical — identity content begins at the same vertical
-              offset below the canvas either way. Same handlers, icons,
-              size, hitSlop, and activeOpacity as when Back lived inside
-              the canvas. Hidden during edit mode — neither ever coexisted
-              with Cancel/Save when it lived inside the canvas either. */}
-          {profile && !editMode && (
-            <View style={styles.ownerActionRow}>
-              {isOwnProfile ? (
-                <>
-                  <TouchableOpacity
-                    onPress={() => router.push('/settings')}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="Settings"
-                    testID="profile-settings-button">
-                    <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
-                  </TouchableOpacity>
-                  {/* Saved screen (app/saved.tsx) — fully built (Saved
-                      Collections/Cards/Grails, already on the signed-image
-                      architecture) but had no reachable entry point
-                      anywhere in the app; this row's own justifyContent:
-                      'space-between' plus this doc comment block's
-                      "Owner sees Settings/Saved" already assumed a second
-                      icon here. */}
-                  <TouchableOpacity
-                    onPress={() => router.push('/saved')}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="Saved"
-                    testID="profile-saved-button">
-                    <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  <TouchableOpacity
-                    onPress={() => router.back()}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="Back">
-                    <IconSymbol name="chevron.left" size={18} color="#fff" />
-                  </TouchableOpacity>
-                  {/* Save/unsave this profile's whole Grails showcase
-                      (saved_grails via useSavedGrails above) — the visible
-                      control the live QA pass couldn't find, since it was
-                      only ever wired into app/grails/[userId].tsx, a route
-                      nothing in normal browsing actually navigates to.
-                      This profile screen is the real, live surface a
-                      non-owner views someone else's Grails on. */}
-                  {currentUserId && (
+            {/* Owner/public control row — moved out of ProfileV2HeroCanvas
+                so the canvas itself is dimensionally identical for owner
+                and public view mode (same gridStage 32/32 padding, no
+                action row inside either way). Owner sees Settings/Saved;
+                public sees Back/Grails-bookmark. Both branches share styles.ownerActionRow/
+                ownerIconBtn (not two independently-maintained style
+                objects) so their outer spacing footprint is guaranteed
+                identical — identity content begins at the same vertical
+                offset below the canvas either way. Same handlers, icons,
+                size, hitSlop, and activeOpacity as when Back lived inside
+                the canvas. Hidden during edit mode — neither ever coexisted
+                with Cancel/Save when it lived inside the canvas either. */}
+            {/* isOwnProfile's two controls (Settings, Saved) are gated by
+                SHOW_OWNER_SETTINGS_AND_SAVED_ICONS above — false hides them
+                without leaving an empty, padded row behind: the whole row
+                only has content in the owner case, so skipping the row
+                outright (rather than rendering it empty) is what lets
+                everything below reclaim that space. The public-viewer case
+                (Back + Grails bookmark toggle) is untouched — its half of
+                this condition is always true. */}
+            {profile && !editMode && (!isOwnProfile || SHOW_OWNER_SETTINGS_AND_SAVED_ICONS) && (
+              <View style={styles.ownerActionRow}>
+                {isOwnProfile ? (
+                  <>
                     <TouchableOpacity
-                      onPress={toggleGrailsSave}
-                      disabled={savingGrails}
+                      onPress={() => router.push('/settings')}
                       hitSlop={10}
                       style={styles.ownerIconBtn}
                       activeOpacity={0.75}
                       accessibilityRole="button"
-                      accessibilityLabel={isGrailsSaved ? 'Remove Grails bookmark' : 'Bookmark Grails'}
-                      accessibilityState={{ selected: isGrailsSaved, disabled: savingGrails }}
-                      testID="profile-grails-bookmark-button">
-                      <IconSymbol
-                        name={isGrailsSaved ? 'bookmark.fill' : 'bookmark'}
-                        size={18}
-                        color={isGrailsSaved ? PV2.accent : '#fff'}
-                        accessible={false}
-                      />
+                      accessibilityLabel="Settings"
+                      testID="profile-settings-button">
+                      <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
                     </TouchableOpacity>
-                  )}
-                </>
-              )}
-            </View>
-          )}
+                    {/* Saved screen (app/saved.tsx) — fully built (Saved
+                        Collections/Cards/Grails, already on the signed-image
+                        architecture) but had no reachable entry point
+                        anywhere in the app; this row's own justifyContent:
+                        'space-between' plus this doc comment block's
+                        "Owner sees Settings/Saved" already assumed a second
+                        icon here. */}
+                    <TouchableOpacity
+                      onPress={() => router.push('/saved')}
+                      hitSlop={10}
+                      style={styles.ownerIconBtn}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel="Saved"
+                      testID="profile-saved-button">
+                      <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      onPress={() => router.back()}
+                      hitSlop={10}
+                      style={styles.ownerIconBtn}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel="Back">
+                      <IconSymbol name="chevron.left" size={18} color="#fff" />
+                    </TouchableOpacity>
+                    {/* Save/unsave this profile's whole Grails showcase
+                        (saved_grails via useSavedGrails above) — the visible
+                        control the live QA pass couldn't find, since it was
+                        only ever wired into app/grails/[userId].tsx, a route
+                        nothing in normal browsing actually navigates to.
+                        This profile screen is the real, live surface a
+                        non-owner views someone else's Grails on. */}
+                    {currentUserId && (
+                      <TouchableOpacity
+                        onPress={toggleGrailsSave}
+                        disabled={savingGrails}
+                        hitSlop={10}
+                        style={styles.ownerIconBtn}
+                        activeOpacity={0.75}
+                        accessibilityRole="button"
+                        accessibilityLabel={isGrailsSaved ? 'Remove Grails bookmark' : 'Bookmark Grails'}
+                        accessibilityState={{ selected: isGrailsSaved, disabled: savingGrails }}
+                        testID="profile-grails-bookmark-button">
+                        <IconSymbol
+                          name={isGrailsSaved ? 'bookmark.fill' : 'bookmark'}
+                          size={18}
+                          color={isGrailsSaved ? PV2.accent : '#fff'}
+                          accessible={false}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </>
+                )}
+              </View>
+            )}
+          </View>
 
+          {/* index 1 — sticky tab row. A stable slot (an empty, zero-height
+              View, never an omitted one) whenever it has nothing to show —
+              edit mode, or before `profile` has loaded — so
+              stickyHeaderIndices={[1]} above always pins the tab row
+              specifically, not whichever child happens to be second that
+              render. Opaque PV2.bg background is required once this pins
+              to the top: ProfileV2TabRow's own row has no background
+              between/around its pills, so without this, content scrolling
+              underneath would show through the gaps once pinned.
+              tabRowStickyFilled adds extra opaque space BELOW the pills
+              (paddingBottom only — the pills' own position is set by
+              ProfileV2TabRow's own marginTop, unaffected by padding added
+              after it) so bright scrolling imagery has a solid buffer
+              before it reaches the pill borders, without moving the pills
+              themselves. Applied only alongside a real ProfileV2TabRow, so
+              an empty tabRowSticky (edit mode, or before `profile` loads)
+              still collapses to true zero height. */}
+          <View style={[styles.tabRowSticky, profile && !editMode && styles.tabRowStickyFilled]}>
+            {profile && !editMode && <ProfileV2TabRow active={section} onChange={setSection} />}
+          </View>
+
+          {/* index 2 — selected tab body (or the edit form), scrolling
+              underneath the sticky tab row above. */}
+          <View style={styles.tabBodyWrap}>
           {editMode ? (
             /* ── Edit Mode (owner only — unreachable otherwise, since
                  enterEdit early-returns and nothing renders the trigger
@@ -1652,20 +1775,22 @@ export function ProfileV2Screen({ userId }: Props) {
               />
             </View>
           ) : (
-            /* ── View Mode ── */
+            /* ── View Mode ──
+                 ProfileV2TabRow (the four pills) now renders up top, directly
+                 under ProfileV2IdentityCard — see the Profile V3 shell block
+                 near the start of this ScrollView. Nothing here selects a
+                 section anymore; this block only renders whichever
+                 section's content is currently active. */
             <>
-              <ProfileV2Selector active={section} onChange={setSection} isOwnProfile={isOwnProfile} />
-
               {/* One shared, fixed-minHeight container for whichever section
-                  is active — measured once off the cachecase section (now
-                  the profile identity/stats overview), since cachecase is
-                  still the default/starting tab. Other sections then hold
-                  the same floor instead of shrinking the page and shifting
-                  everything below it. */}
+                  is active — measured once off the posts section (now the
+                  default/starting tab). Other sections then hold the same
+                  floor instead of shrinking the page and shifting everything
+                  below it. */}
               <ProfileV2SectionPage
                 minHeight={sectionMinHeight}
                 onLayout={(e) => {
-                  if (section === 'cachecase' && sectionMinHeight === undefined) {
+                  if (section === 'posts' && sectionMinHeight === undefined) {
                     setSectionMinHeight(e.nativeEvent.layout.height);
                   }
                 }}>
@@ -1721,6 +1846,14 @@ export function ProfileV2Screen({ userId }: Props) {
                   <TransactionsList currentUserId={currentUserId} onViewAll={handleOpenTransfers} />
                 )}
 
+                {section === 'items' && (
+                  <ProfileV2ItemsGrid
+                    items={allItems}
+                    loading={allItemsLoading}
+                    onPressItem={handleGrailItemPress}
+                  />
+                )}
+
               </ProfileV2SectionPage>
 
               {/* Own read-only Collector Profile section — same data for
@@ -1736,6 +1869,7 @@ export function ProfileV2Screen({ userId }: Props) {
               />
             </>
           )}
+          </View>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1763,6 +1897,33 @@ const styles = StyleSheet.create({
   // position within the ScrollView moves.
   heroCanvasWrap: {
     marginTop: 12,
+  },
+  // Opaque backdrop for the sticky tab row (ScrollView's stickyHeaderIndices
+  // index 1) — matches the screen's own background so scrolled content
+  // underneath doesn't show through ProfileV2TabRow's own transparent gaps
+  // once this is pinned to the top. No height/padding of its own: when
+  // empty (edit mode, or before `profile` loads) it must collapse to zero,
+  // not just render an empty colored strip.
+  tabRowSticky: {
+    backgroundColor: PV2.bg,
+  },
+  // Extra solid space below the pills only — does not move them (their own
+  // marginTop, inside ProfileV2TabRow, is untouched) and does not affect
+  // the sticky pin threshold (governed by this wrapper's own top edge,
+  // unaffected by its bottom padding). Trimmed from 8 to 4 — 8 read as too
+  // much extra box beneath the pills.
+  tabRowStickyFilled: {
+    paddingBottom: 4,
+  },
+  // The one shared gap between the (sticky) tab row and whichever tab's
+  // content follows — TAB_CONTENT_TOP_GAP, matching the Grails→tab-row gap
+  // for a symmetric divider. Every tab body relies on this alone for its
+  // starting offset now; ProfileV2Posts/ProfileV2Collections/
+  // ProfileV2ItemsGrid no longer carry their own separate top margin (that
+  // was the actual source of the three tabs starting at three different
+  // heights).
+  tabBodyWrap: {
+    marginTop: TAB_CONTENT_TOP_GAP,
   },
   ownerActionRow: {
     flexDirection: 'row',

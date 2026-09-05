@@ -2,7 +2,8 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -19,10 +20,15 @@ import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 // as its own copy (same constants, same shell/glow styling) rather than
 // sharing code with the tabs-group version, so that working bar is left
 // untouched.
-const CacheCaseLogoNav = require('@/assets/icons/cachecase-logo-nav.png');
+const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
+
+// Discover (search) and Messages stay in TABS below (routes/navigation
+// untouched, still reachable) but are hidden from this bar for now — mirrors
+// HIDDEN_TABS in app/(tabs)/_layout.tsx. Remove an entry here to restore it.
+const HIDDEN_GLOBAL_TABS = new Set<GlobalTabName>(['search', 'messages']);
 
 const BAR_HEIGHT = TAB_BAR_HEIGHT;
-const BAR_HORIZONTAL_INSET = 18;
+const BAR_HORIZONTAL_INSET = 22;
 const BAR_BOTTOM_GAP = 8;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 const BAR_BG = 'rgba(9,10,16,1)';
@@ -36,8 +42,10 @@ const FEATURED_TAB: GlobalTabName = 'collection';
 // Matches app/(tabs)/_layout.tsx's CENTER_BADGE_WIDTH/HEIGHT — the
 // CacheCase tab has no label here either, so the logo gets the same
 // larger size.
-const CENTER_BADGE_WIDTH = 71;
-const CENTER_BADGE_HEIGHT = 53;
+const CENTER_BADGE_WIDTH = 72;
+const CENTER_BADGE_HEIGHT = 29;
+// Matches app/(tabs)/_layout.tsx's DRAG_VERTICAL_CANCEL_MARGIN.
+const DRAG_VERTICAL_CANCEL_MARGIN = 40;
 // Matches TAB_ACCENTS.collection in app/(tabs)/_layout.tsx — the CacheCase
 // tab's active color, used here when the current screen belongs to the
 // collection hierarchy (see lib/cachecase-navigation.ts).
@@ -85,6 +93,15 @@ export function GlobalFloatingTabBar() {
     opacity: opacity.value,
   }));
 
+  // Drag/scrub state for the Instagram-style bottom nav gesture below — see
+  // app/(tabs)/_layout.tsx's AnimatedTabBar for the full rationale (kept in
+  // sync here). rowWidth is measured by a single onLayout on the exact same
+  // row View the drag gesture is attached to — one measurement, one
+  // coordinate frame, no per-tab aggregation to drift out of sync with the
+  // gesture's own x.
+  const rowWidth = useSharedValue(0);
+  const dragSelectedTab = useSharedValue<GlobalTabName | null>(null);
+
   if (TAB_COVERED_PATHS.has(pathname)) return null;
 
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
@@ -93,28 +110,94 @@ export function GlobalFloatingTabBar() {
   // not just when the pathname literally equals the Collection tab route.
   const cacheCaseActive = isCacheCaseRoute(pathname);
 
+  // Shared by both a normal tap (via each tab's onPress below) and the
+  // drag/scrub gesture, so dragging onto a tab behaves identically to
+  // tapping it.
+  const selectTab = (tab: (typeof TABS)[number]) => {
+    if (process.env.EXPO_OS === 'ios') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    if (tab.name === FEATURED_TAB) {
+      // Always land on the Collection root — never the nested screen the
+      // user happened to be on, and never stacked on top of it.
+      router.replace(COLLECTION_ROOT_ROUTE as any);
+      return;
+    }
+    router.navigate(tab.route as any);
+  };
+
+  // Looked up by name rather than closed over `tab`, since this is invoked
+  // from the pan gesture via runOnJS, which can only round-trip plain
+  // serializable values across the worklet boundary.
+  const selectTabByName = (name: GlobalTabName) => {
+    const tab = TABS.find((t) => t.name === name);
+    if (tab) selectTab(tab);
+  };
+
+  // Left-to-right names of the tabs actually rendered below (Feed,
+  // CacheCase, Profile today) — derived from the same TABS/
+  // HIDDEN_GLOBAL_TABS source of truth the render loop uses, so the drag
+  // zones below can never disagree with what's actually on screen or
+  // include a hidden tab.
+  const visibleTabOrder = TABS.filter((t) => !HIDDEN_GLOBAL_TABS.has(t.name)).map((t) => t.name);
+
+  const dragGesture = Gesture.Pan()
+    // Only activates once the finger has actually moved horizontally — a
+    // plain tap never crosses this, so it never steals the touch from the
+    // tab buttons' own TouchableOpacity/onPress below.
+    .activeOffsetX([-10, 10])
+    // Fails (leaving the touch to the buttons) if the movement is
+    // predominantly vertical, so small vertical jitter can't select a tab.
+    .failOffsetY([-20, 20])
+    .onUpdate((e) => {
+      if (e.y < -DRAG_VERTICAL_CANCEL_MARGIN || e.y > BAR_HEIGHT + DRAG_VERTICAL_CANCEL_MARGIN) {
+        // Strayed too far above/below the pill — ignore this update rather
+        // than selecting anything; resumes if the finger comes back in.
+        return;
+      }
+      const width = rowWidth.value;
+      const tabCount = visibleTabOrder.length;
+      if (width <= 0 || tabCount === 0) return;
+      // e.x is relative to this same row View (see the GestureDetector
+      // below and rowWidth's onLayout) — clamp so a finger that's strayed
+      // slightly into the row's own horizontal padding still resolves to
+      // the nearest tab instead of falling outside every zone.
+      const clampedX = Math.min(Math.max(e.x, 0), width);
+      const zoneWidth = width / tabCount;
+      let zoneIndex = Math.floor(clampedX / zoneWidth);
+      if (zoneIndex >= tabCount) zoneIndex = tabCount - 1;
+      if (zoneIndex < 0) zoneIndex = 0;
+      const matched = visibleTabOrder[zoneIndex];
+      if (matched !== dragSelectedTab.value) {
+        dragSelectedTab.value = matched;
+        runOnJS(selectTabByName)(matched);
+      }
+    })
+    .onFinalize(() => {
+      dragSelectedTab.value = null;
+    });
+
   return (
     <Animated.View
       style={[styles.rootWrap, { bottom: insets.bottom + BAR_BOTTOM_GAP }, animStyle]}
       pointerEvents="box-none">
       <View style={styles.tabBarShadow}>
         <View style={styles.tabBarShell}>
-          <View style={styles.tabBarContent}>
+          <GestureDetector gesture={dragGesture}>
+            {/* This is the exact view the drag gesture above is attached to
+                (via GestureDetector) and whose width it measures below —
+                e.x in dragGesture.onUpdate is guaranteed relative to this
+                same box, so the two can never drift into different
+                coordinate spaces. */}
+            <View
+              style={styles.tabBarContent}
+              onLayout={(e) => {
+                rowWidth.value = e.nativeEvent.layout.width;
+              }}>
             {TABS.map((tab) => {
+              if (HIDDEN_GLOBAL_TABS.has(tab.name)) return null;
               const centered = tab.name === FEATURED_TAB;
-              const onPress = () => {
-                if (process.env.EXPO_OS === 'ios') {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }
-                if (centered) {
-                  // Always land on the Collection root — never the nested
-                  // screen the user happened to be on, and never stacked
-                  // on top of it.
-                  router.replace(COLLECTION_ROOT_ROUTE as any);
-                  return;
-                }
-                router.navigate(tab.route as any);
-              };
+              const onPress = () => selectTab(tab);
               const logoColor = cacheCaseActive ? CACHECASE_ACCENT : FEATURED_INACTIVE_COLOR;
               return (
                 <TouchableOpacity
@@ -182,7 +265,8 @@ export function GlobalFloatingTabBar() {
                 </TouchableOpacity>
               );
             })}
-          </View>
+            </View>
+          </GestureDetector>
         </View>
       </View>
     </Animated.View>
@@ -249,7 +333,6 @@ const styles = StyleSheet.create({
   },
   iconWrapCenter: {
     position: 'relative',
-    transform: [{ translateY: 1 }],
   },
   cacheCaseLogo: {
     width: CENTER_BADGE_WIDTH,

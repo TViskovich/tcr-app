@@ -1,5 +1,14 @@
-import { useRef, useState } from 'react';
-import { Alert, Animated, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  Animated,
+  Image as RNImage,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 import { Image } from 'expo-image';
 
@@ -237,6 +246,38 @@ export function PostCard({
   const isCardShare = post.post_type === 'card_share';
   const isOwner = !!currentUserId && currentUserId === post.user_id;
 
+  // Natural aspect ratio of the standard image path's image, measured
+  // client-side — nothing in the schema stores source width/height, so
+  // this is the only way to size the box to the image's real shape rather
+  // than force-cropping every post into a fixed 5:7 box. null until
+  // measured (or on failure), meaning "use MEDIA_DEFAULT_ASPECT_RATIO".
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
+
+  useEffect(() => {
+    setMediaAspectRatio(null);
+    // Text posts CAN now carry an optional attached photo (app/post/new.tsx)
+    // and reuse this exact responsive sizing — only rate_my_grails/
+    // card_share (which render their own distinct multi-image bodies,
+    // unrelated to post.image_url) are excluded here.
+    if (isRateMyGrails || isCardShare || !post.image_url) return;
+    let cancelled = false;
+    RNImage.getSize(
+      post.image_url,
+      (width, height) => {
+        if (!cancelled && height > 0) setMediaAspectRatio(width / height);
+      },
+      () => {
+        // Left as null (MEDIA_DEFAULT_ASPECT_RATIO fallback) — a failed
+        // measurement here is not the same failure as the image itself
+        // failing to load (that's handled by the Image's own onError /
+        // imageError state below), so this must never trip that path.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [post.image_url, isRateMyGrails, isCardShare]);
+
   const rating = useGrailRating({
     postId: post.id,
     postOwnerId: post.user_id,
@@ -321,7 +362,8 @@ export function PostCard({
         )}
       </View>
 
-      {/* Post body — text block for text posts, grails grid for Rate My
+      {/* Post body — text block for text posts (optionally followed by an
+          attached photo, see app/post/new.tsx), grails grid for Rate My
           Grails, image otherwise. The standard image path (final branch
           below) gets the new X-style indented content column —
           caption/hashtag text directly above a large, edge-forward image
@@ -329,11 +371,7 @@ export function PostCard({
           under the avatar). CardShare/Rate My Grails keep their previous
           caption-after-media positioning and full-bleed wrapper, unchanged
           this pass. */}
-      {isTextPost ? (
-        <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
-          <Text style={styles.cardTextContent}>{post.content}</Text>
-        </TouchableOpacity>
-      ) : isRateMyGrails ? (
+      {isRateMyGrails ? (
         <View style={styles.cardGrailsWrap}>
           <GrailsPostBody
             cards={post.grailCards}
@@ -364,20 +402,49 @@ export function PostCard({
           )}
         </View>
       ) : (
-        <View style={styles.mediaContentColumn}>
-          {(post.caption || post.item_name) && (
-            <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
+        <>
+          {isTextPost && (
+            <TouchableOpacity style={styles.cardTextWrap} onPress={onPostPress} activeOpacity={0.95}>
+              <Text style={styles.cardTextContent}>{post.content}</Text>
+            </TouchableOpacity>
           )}
-          <TouchableOpacity style={styles.mediaImageWrap} onPress={onPostPress} activeOpacity={0.95}>
-            <Image
-              source={{ uri: post.image_url! }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-              transition={200}
-              onError={() => setImageError(true)}
-            />
-          </TouchableOpacity>
-        </View>
+          {/* A text post's optional attached photo (app/post/new.tsx) reuses
+              this exact box/sizing — the only thing gated by isTextPost
+              here is the caption line above it, since a text post's body
+              already rendered as cardTextContent just above; caption/
+              item_name are item-post-only fields. Its image_url points at
+              share-snapshots (copy-post-photo-to-share-snapshots), the
+              same durable, always-public surface every other post image
+              already renders from — no special signed-image branch needed
+              here. */}
+          {post.image_url && (
+            <View style={styles.mediaContentColumn}>
+              {!isTextPost && (post.caption || post.item_name) && (
+                <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.mediaImageWrap,
+                  {
+                    aspectRatio:
+                      mediaAspectRatio != null
+                        ? clampMediaAspectRatio(mediaAspectRatio)
+                        : MEDIA_DEFAULT_ASPECT_RATIO,
+                  },
+                ]}
+                onPress={onPostPress}
+                activeOpacity={0.95}>
+                <Image
+                  source={{ uri: post.image_url }}
+                  style={StyleSheet.absoluteFill}
+                  contentFit="cover"
+                  transition={200}
+                  onError={() => setImageError(true)}
+                />
+              </TouchableOpacity>
+            </View>
+          )}
+        </>
       )}
 
       {/* Caption — CardShare only (its previous, un-indented position and
@@ -436,6 +503,27 @@ export function PostCard({
 // avatar-to-identity gap (10), so that column's content lines up exactly
 // under the identity text above it, never under the avatar.
 const MEDIA_CONTENT_LEFT_INSET = 12 + 36 + 10;
+
+// X/Twitter-inspired responsive single-image sizing (standard image-path
+// posts only — text/rate_my_grails/card_share are unaffected). Bounds are
+// expressed as width/height ratios, not a raw pixel ceiling: clamping the
+// ratio's lower end (3/4 — "3:4 portrait") IS the max-height guard an
+// extremely tall upload needs, since height = width / ratio is capped at
+// width / (3/4) once clamped, however tall the source image actually is.
+// The upper end (2/1 — "2:1 landscape") keeps very wide/panoramic uploads
+// from going too short. Used as the actual style only once the source
+// image's natural size has been measured (see useEffect below); until
+// then (or if measuring fails), MEDIA_DEFAULT_ASPECT_RATIO — the same 5/7
+// this path used unconditionally before — is used as a same-as-before
+// fallback so there's no layout jump for the common case and no broken
+// box if getSize ever errors.
+const MEDIA_MIN_ASPECT_RATIO = 3 / 4;
+const MEDIA_MAX_ASPECT_RATIO = 2 / 1;
+const MEDIA_DEFAULT_ASPECT_RATIO = 5 / 7;
+
+function clampMediaAspectRatio(ratio: number): number {
+  return Math.min(MEDIA_MAX_ASPECT_RATIO, Math.max(MEDIA_MIN_ASPECT_RATIO, ratio));
+}
 
 const styles = StyleSheet.create({
   // X-style Piece 2 — flat, edge-to-edge, single unified dark surface (no
@@ -559,12 +647,11 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     lineHeight: 19,
   },
-  // Same aspect ratio as before (5/7, unchanged) — only the corner
-  // treatment (modest 11px radius, was square) and background (dark
-  // placeholder instead of light-theme gray) changed; no shadow, no extra
-  // card/frame around it.
+  // aspectRatio no longer lives here — it's now set inline per-post from
+  // the measured (and clamped) natural ratio, or MEDIA_DEFAULT_ASPECT_RATIO
+  // before that measurement resolves (see the JSX and useEffect above).
+  // Corner treatment (11px radius) and placeholder background unchanged.
   mediaImageWrap: {
-    aspectRatio: 5 / 7,
     borderRadius: 11,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,

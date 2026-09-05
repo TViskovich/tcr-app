@@ -450,7 +450,16 @@ export type CollectionItemWithFolderVisibility = CollectionItem & {
   folder_is_public: boolean;
 };
 
-export function useAllItems(userId: string | undefined) {
+// publicOnly mirrors useFolders' own option above — explicit client-side
+// filter as defense-in-depth alongside items_select_public's own recursive
+// folder-chain + item.is_public RLS check (supabase/migrations/
+// 20260902120000_recursive_folder_hierarchy_privacy.sql), which already
+// authoritatively restricts a non-owner's read to public items in public
+// folder trees. Defaults to false so the existing Share Card picker call
+// site (always the signed-in user's own id) is unaffected; a caller viewing
+// someone else's profile (Profile V2/V3's own isOwnProfile) should pass true.
+export function useAllItems(userId: string | undefined, options?: { publicOnly?: boolean }) {
+  const publicOnly = options?.publicOnly ?? false;
   const [items, setItems] = useState<CollectionItemWithFolderVisibility[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -467,12 +476,22 @@ export function useAllItems(userId: string | undefined) {
     // the item's own privacy either way, and this is the smallest addition
     // that also gives callers the parent folder's, for computing effective
     // (most-restrictive-wins) visibility without a duplicate lookup.
-    const { data, error: queryError } = await supabase
+    //
+    // Explicit !collection_items_folder_id_fkey — folders.cover_item_id
+    // (20260901120000_add_folder_cover_item_id.sql) gave PostgREST a SECOND
+    // foreign-key path between collection_items and folders (alongside this
+    // one, the item's actual containing folder), so a bare `folders(...)`
+    // embed here is now ambiguous and fails with PGRST201. This must always
+    // resolve via the item's folder_id, never via folders.cover_item_id —
+    // that FK answers "which item is this folder's cover", not "which
+    // folder is this item in".
+    let query = supabase
       .from('collection_items')
-      .select('*, folders(is_public)')
+      .select('*, folders!collection_items_folder_id_fkey(is_public)')
       .eq('user_id', userId)
-      .eq('collection_status', 'active')
-      .order('created_at', { ascending: false });
+      .eq('collection_status', 'active');
+    if (publicOnly) query = query.eq('is_public', true);
+    const { data, error: queryError } = await query.order('created_at', { ascending: false });
     if (queryError) {
       console.error('[useAllItems] query failed:', queryError.message, queryError);
       setError(queryError.message);
@@ -486,7 +505,7 @@ export function useAllItems(userId: string | undefined) {
     }));
     setItems(await attachPrimaryImageIds(withFolderVisibility));
     setLoading(false);
-  }, [userId]);
+  }, [userId, publicOnly]);
 
   useEffect(() => {
     load();

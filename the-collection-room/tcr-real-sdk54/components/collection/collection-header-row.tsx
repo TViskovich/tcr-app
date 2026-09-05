@@ -40,11 +40,12 @@ type Props = {
   // folder — a separate touch target from the collapse chevron, which sits
   // at the far right of the row.
   onOpenFolder?: () => void;
-  // "compact" only shrinks dimensions/typography EXCEPT for the far-right
-  // collapse chevron, which it omits entirely (see
-  // components/profile-v2/profile-v2-collections.tsx) — the profile
-  // version's category rows are always expanded and don't support
-  // collapsing. Everything else (title, left nav chevron, tap targets) is
+  // "compact" only shrinks dimensions/typography — it does NOT control
+  // whether the far-right chevron renders; that's gated on `onToggle`
+  // being passed at all (see below), so a compact caller can opt in to
+  // showing it (e.g. as a static "expand indicator" pointed at
+  // onOpenFolder rather than a real collapse toggle) without changing
+  // variant. Everything else (title, left nav chevron, tap targets) is
   // the same structure/interactions as "full" (the default).
   variant?: 'full' | 'compact';
 };
@@ -100,7 +101,7 @@ export function CollectionHeaderRow({
         />
       </Pressable>
 
-      {!compact && (
+      {onToggle && (
         <Pressable
           style={({ pressed }) => [styles.chevronTouch, pressed && styles.pressed]}
           onPress={onToggle}
@@ -149,8 +150,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
   },
+  // 16 → 18 (Profile V3 Collection-tab refinement) — a little more presence
+  // for scanning section titles like "Bowman Chrome 1st's" without
+  // approaching the full variant's own 20px. Weight/color/family/alignment
+  // all still inherit unchanged from the base `title` style above.
   titleCompact: {
-    fontSize: 16,
+    fontSize: 18,
   },
   chevron: {
     color: PV2.textTertiary,

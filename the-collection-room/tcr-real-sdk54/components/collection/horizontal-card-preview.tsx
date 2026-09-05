@@ -18,15 +18,14 @@ const CARDS_VISIBLE = 3.6;
 // applied here to this row's real tiles instead of a fixed grid.
 const CARD_GAP = 1;
 
-// Compact (variant="compact", see profile-v2-collections.tsx) shows more,
-// smaller tiles — same non-integer-on-purpose reasoning as CARDS_VISIBLE,
-// just scaled for a narrower row rather than the full-width carousel.
-const COMPACT_CARDS_VISIBLE = 4.6;
-const COMPACT_CARD_GAP = 8;
-
-// Compact (profile) rows never scroll, so they hard-cap to this many real
-// tiles rather than showing every item in the folder.
-const PROFILE_COLLECTION_PREVIEW_LIMIT = 4;
+// Compact (variant="compact", see profile-v2-collections.tsx) — same
+// non-integer-on-purpose reasoning as CARDS_VISIBLE, tuned to match the
+// Profile V3 Collection tab reference: ~3 tiles fully visible with the
+// next one partially peeking past the edge. COMPACT_CARD_GAP is now 0
+// (was 4, then 1 to match CARD_GAP) — tiles sit fully edge-to-edge, tighter
+// than the main Collection screen's own 1px, per follow-up request.
+const COMPACT_CARDS_VISIBLE = 3.6;
+const COMPACT_CARD_GAP = 0;
 
 type Props = {
   folderId: string;
@@ -89,15 +88,11 @@ export function HorizontalCardPreview({ entries, onOpenItem, onOpenChildFolder, 
   const { urls: signedUrls } = useSignedItemImages(itemEntries.map((e) => e.item.primary_image_id));
   const { urls: coverUrls } = useSignedFolderCovers(folderEntries.map((e) => e.folder.id));
 
-  // Compact (profile) rows never scroll, so they hard-cap to this many real
-  // tiles; the full/scrollable row shows every entry the caller passed in.
-  const visibleEntries = compact ? entries.slice(0, PROFILE_COLLECTION_PREVIEW_LIMIT) : entries;
-
   return (
     <FlatList
-      data={visibleEntries}
+      data={entries}
       horizontal
-      scrollEnabled={!compact}
+      scrollEnabled
       showsHorizontalScrollIndicator={false}
       keyExtractor={(entry) => (entry.kind === 'folder' ? `folder-${entry.folder.id}` : entry.item.id)}
       contentContainerStyle={{ paddingHorizontal: gutter }}

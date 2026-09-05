@@ -61,9 +61,13 @@ export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress,
 }
 
 const styles = StyleSheet.create({
+  // No top margin — the starting offset below the sticky tab row is now
+  // owned entirely by profile-v2-screen.tsx's shared TAB_CONTENT_TOP_GAP
+  // (tabBodyWrap), so every tab body begins at the same height. The gap
+  // between posts (`gap: 12`) and each PostCard's own internal padding are
+  // unrelated to this and untouched.
   list: {
     paddingHorizontal: 16,
-    marginTop: 14,
     gap: 12,
   },
   empty: {
