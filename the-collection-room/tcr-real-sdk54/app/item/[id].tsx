@@ -764,12 +764,7 @@ export default function ItemDetailScreen() {
               affect the existing owner-only card further down the screen
               (that one stays gated to !isOwner). */}
           {ownerProfile && (
-            <View
-              onLayout={(e) => {
-                if (__DEV__) console.log('[DIAG:OwnerRow] wrapper layout', e.nativeEvent.layout);
-              }}>
-              <ItemOwnerRow username={ownerProfile.username} avatarUrl={ownerProfile.avatar_url} />
-            </View>
+            <ItemOwnerRow username={ownerProfile.username} avatarUrl={ownerProfile.avatar_url} />
           )}
 
           {/* Hero — edit mode shows the editable gallery manager (add/
@@ -778,25 +773,20 @@ export default function ItemDetailScreen() {
               you arrange in edit mode is exactly what view mode swipes
               through. The carousel's own tap is reserved for a future
               full-screen viewer. */}
-          <View
-            onLayout={(e) => {
-              if (__DEV__) console.log('[DIAG:OwnerRow] hero wrapper layout', e.nativeEvent.layout);
-            }}>
-            {editMode ? (
-              <ItemImageGalleryManager
-                images={galleryImages}
-                loading={galleryLoading}
-                mutating={galleryMutating}
-                maxImages={MAX_ITEM_IMAGES}
-                onAdd={handleAddPhotos}
-                onRemove={handleRemovePhoto}
-                onSetPrimary={handleSetPrimaryPhoto}
-                onReorder={handleReorderPhotos}
-              />
-            ) : (
-              <ItemImageCarousel images={galleryImageUrls} />
-            )}
-          </View>
+          {editMode ? (
+            <ItemImageGalleryManager
+              images={galleryImages}
+              loading={galleryLoading}
+              mutating={galleryMutating}
+              maxImages={MAX_ITEM_IMAGES}
+              onAdd={handleAddPhotos}
+              onRemove={handleRemovePhoto}
+              onSetPrimary={handleSetPrimaryPhoto}
+              onReorder={handleReorderPhotos}
+            />
+          ) : (
+            <ItemImageCarousel images={galleryImageUrls} />
+          )}
 
           {editMode ? (
             /* ── Edit Mode (owner only) — existing form, plus the Private

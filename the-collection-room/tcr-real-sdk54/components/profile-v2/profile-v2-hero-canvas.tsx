@@ -1,17 +1,13 @@
 import type { ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
-
-import { getHeroCanvasImageAsset, type HeroCanvasThemeId } from '@/components/profile/hero-canvas-themes';
+import type { HeroCanvasThemeId } from '@/components/profile/hero-canvas-themes';
 import { PV2 } from './profile-v2-theme';
 
 type Props = {
+  // Accepted but currently unused — see the "Background simplification
+  // pass" comment below.
   heroTheme: HeroCanvasThemeId;
-  // Only actually used for procedural themes (LinearGradient colors) — an
-  // image-kind theme renders its own bundled artwork instead (see
-  // getHeroCanvasImageAsset below), never this swatch.
   themeFallbackSwatch: [string, string];
   editMode: boolean;
   saving: boolean;
@@ -35,8 +31,8 @@ type Props = {
 // this pass needs to be reverted.
 //
 // Owner/public normalization pass: this canvas is now DIMENSIONALLY
-// IDENTICAL for owner and public view mode — same gridStage 32/32
-// padding, no action row inside it either way. The public Back button
+// IDENTICAL for owner and public view mode — same gridStage padding
+// (6/16, see below), no action row inside it either way. The public Back button
 // (previously rendered here) and the owner Settings/Saved row both live
 // entirely in profile-v2-screen.tsx now, as their own control row below
 // this canvas, sharing the same outer spacing footprint so identity
@@ -50,20 +46,16 @@ type Props = {
 // owner-only, so this is the only remaining owner/public asymmetry, and
 // it doesn't affect either profile's shared VIEW-mode canvas dimensions.
 //
-// Background is always the profile's currently selected hero THEME —
-// never the former custom-uploaded hero photo (hero_image_url), which has
-// no role in this layout (see the Pass 2 plan's own explicit note on
-// this). getHeroCanvasImageAsset already existed, already exported, and
-// was already fully designed for exactly this (its own comments describe
-// rendering it "full-bleed as-is") but had no live call site anywhere in
-// the app until now — this wires up an existing, already-designed
-// capability, not new visual language. No radial vignette here (unlike
-// the old Hero): nothing overlays this canvas except the opaque grid and
-// the action row, which already has its own dark pill button backgrounds
-// — there's no bottom-anchored text left to protect.
+// Background simplification pass (Profile V3) — this canvas no longer
+// renders the profile's hero THEME (image asset or procedural gradient)
+// behind the grid; it's a plain PV2.bg fill now, same as the rest of the
+// screen, so the grid reads as sitting directly on the app's own
+// background rather than inside a themed display case. heroTheme/
+// themeFallbackSwatch are still accepted (the caller — profile-v2-screen.tsx
+// — and the hero theme picker/profile column are all untouched) so this is
+// a one-file, easily-reversible change: reintroducing the themed
+// background here is the only thing a revert would need to touch.
 export function ProfileV2HeroCanvas({
-  heroTheme,
-  themeFallbackSwatch,
   editMode,
   saving,
   onCancelPress,
@@ -71,46 +63,16 @@ export function ProfileV2HeroCanvas({
   identityHeader,
   children,
 }: Props) {
-  const imageAsset = getHeroCanvasImageAsset(heroTheme);
-
   return (
     <View style={styles.canvas}>
-      {imageAsset ? (
-        <>
-          <Image
-            source={imageAsset.source}
-            style={StyleSheet.absoluteFillObject}
-            contentFit="cover"
-            contentPosition={imageAsset.focalPoint}
-          />
-          {imageAsset.vignetteOpacity != null && (
-            <View
-              style={[
-                StyleSheet.absoluteFillObject,
-                { backgroundColor: '#000000', opacity: imageAsset.vignetteOpacity },
-              ]}
-              pointerEvents="none"
-            />
-          )}
-        </>
-      ) : (
-        <LinearGradient
-          colors={themeFallbackSwatch}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={StyleSheet.absoluteFillObject}
-        />
-      )}
-
-      {/* Themed breathing room around the grid — padding, not a solid
-          spacer, so the hero-theme background stays visible above/below
-          the grid. Gated on `children` (not always-rendered) because
+      {/* Breathing room around the grid — padding, not a solid spacer.
+          Gated on `children` (not always-rendered) because
           children is `false` during edit mode (see profile-v2-screen.tsx,
           which omits ProfileV2Grid there) — an unconditional wrapper
           would still contribute its own padding as empty height even
-          with nothing inside it. Always the same 32/32 padding now — no
-          per-caller override — so owner and public view-mode canvases are
-          dimensionally identical. */}
+          with nothing inside it. Always the same gridStage padding now —
+          no per-caller override — so owner and public view-mode canvases
+          are dimensionally identical. */}
       {children && <View style={styles.gridStage}>{children}</View>}
 
       {/* Action rail — normal flow, below the grid, never overlapping any
@@ -139,28 +101,27 @@ export function ProfileV2HeroCanvas({
 }
 
 const styles = StyleSheet.create({
-  // Tighter, more modern corner radius (was 20) — shape, size, background,
-  // spacing, and everything else about this canvas are otherwise
-  // unchanged. Grail-local literal, not a shared constant.
+  // Plain PV2.bg fill, no radius — background simplification pass. The
+  // radius (previously 12, framing the themed image/gradient) is dropped
+  // rather than kept at the old value: with gridStage's paddingTop now
+  // small (6, see below), a rounded corner here would clip the top
+  // corners of the outer grid cells; since the box no longer has a
+  // visible fill distinct from the screen behind it, the radius had
+  // nothing left to frame anyway.
   canvas: {
     width: '100%',
     overflow: 'hidden',
-    backgroundColor: PV2.panel,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
+    backgroundColor: PV2.bg,
   },
-  // Extra themed showcase space above/below the grid — normal padding,
-  // not a spacer view, so it's part of the same themed/clipped box as
-  // the grid itself rather than a separately colored region. Same for
-  // owner and public view mode. paddingBottom was reduced from 32 to 16
-  // (Profile V3 spacing pass) — together with ProfileV2TabRow's own
-  // marginTop (10) that's the Grails→tab-row gap (26px), matched by
-  // profile-v2-screen.tsx's TAB_CONTENT_TOP_GAP on the other side of the
-  // tab row.
+  // Space above/below the grid — normal padding, not a solid spacer.
+  // paddingTop reduced from 32 to 6 (Profile V3 background-removal pass)
+  // so the grid sits almost flush under the identity header above it,
+  // per the current design direction; paddingBottom (16) is unrelated and
+  // untouched — together with ProfileV2TabRow's own marginTop (10) that's
+  // still the Grails→tab-row gap (26px), matched by profile-v2-screen.tsx's
+  // TAB_CONTENT_TOP_GAP on the other side of the tab row.
   gridStage: {
-    paddingTop: 32,
+    paddingTop: 6,
     paddingBottom: 16,
   },
   // Same visual values as profile-v2-hero.tsx's own topRow/textBtn* —

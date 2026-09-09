@@ -20,10 +20,7 @@ export function ItemOwnerRow({ username, avatarUrl }: Props) {
       style={styles.row}
       onPress={() => router.push({ pathname: '/user/[username]', params: { username } })}
       accessibilityRole="button"
-      accessibilityLabel={`View @${username}'s profile`}
-      onLayout={(e) => {
-        if (__DEV__) console.log('[DIAG:OwnerRow] row layout', e.nativeEvent.layout);
-      }}>
+      accessibilityLabel={`View @${username}'s profile`}>
       <View style={styles.avatar}>
         {avatarUrl ? (
           <Image source={{ uri: avatarUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />

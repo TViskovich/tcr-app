@@ -9,8 +9,11 @@ import { PV2 } from './profile-v2-theme';
 // working; the new tab row below just never sets state to either of them,
 // same as it already can't reach Discover/Messages-style hidden tabs
 // elsewhere in this app. 'items' and 'tagged' are new: this piece only
-// wires them up as selectable states — see profile-v2-screen.tsx, neither
-// has section content yet.
+// wires them up as selectable states — see profile-v2-screen.tsx for each
+// one's actual content (ProfileV2ItemsGrid and ProfileV2Tagged
+// respectively). 'tagged' keeps its "Tagged" label here even though its
+// content is the existing bookmark/save repository, not literal tags —
+// this file only owns the tab strip, not what renders below it.
 export type ProfileV2Section = 'posts' | 'collections' | 'items' | 'tagged' | 'cachecase' | 'transfer';
 
 const TABS: { section: ProfileV2Section; label: string }[] = [

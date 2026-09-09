@@ -7,12 +7,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
@@ -55,17 +57,18 @@ import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/type
 
 import { GrailSlotChooser } from './grail-slot-chooser';
 import { ProfileV2Collections } from './profile-v2-collections';
+import { ProfileV2ExpandedDetails } from './profile-v2-expanded-details';
 import { ProfileV2Grid } from './profile-v2-grid';
 import { ProfileV2HeroCanvas } from './profile-v2-hero-canvas';
 import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2IdentityCard } from './profile-v2-identity-card';
 import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
-import { ProfileV2Preferences } from './profile-v2-preferences';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Stats } from './profile-v2-stats';
 import { ProfileV2TabRow, type ProfileV2Section } from './profile-v2-tab-row';
 import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
+import { ProfileV2Tagged } from './profile-v2-tagged';
 import { PV2 } from './profile-v2-theme';
 
 const TAGLINE_MAX_LENGTH = 80;
@@ -340,30 +343,10 @@ export function ProfileV2Screen({ userId }: Props) {
   const {
     items: allItems,
     loading: allItemsLoading,
-    error: allItemsError,
     refresh: refreshAllItems,
   } = useAllItems(userId, {
     publicOnly: !isOwnProfile,
   });
-  // TEMP DIAGNOSTIC (Items tab black-screen investigation) — remove once
-  // the root cause is confirmed and fixed. Logs every render, not just on
-  // change, so it also shows whether this ever re-fires after userId
-  // resolves. allItemsError is the critical field here: useAllItems already
-  // unconditionally console.errors a query failure on its own (see
-  // hooks/use-collection.ts), but that error was never previously
-  // surfaced/read by this screen at all — a silently-failed query (items
-  // stays [], loading becomes false) renders as an empty grid with no
-  // visible error state, which looks identical to "genuinely zero items."
-  if (__DEV__) {
-    console.log('[ProfileV3 DIAG] useAllItems result', {
-      userId,
-      isOwnProfile,
-      publicOnlyPassed: !isOwnProfile,
-      allItemsCount: allItems.length,
-      allItemsLoading,
-      allItemsError,
-    });
-  }
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
   // This profile's post history for the "posts" section — chronological
@@ -414,6 +397,18 @@ export function ProfileV2Screen({ userId }: Props) {
   // hardcoded guess, with no visible flash since it's measured before the
   // user can switch to a shorter section.
   const [sectionMinHeight, setSectionMinHeight] = useState<number | undefined>(undefined);
+
+  // ProfileV2IdentityCard's expandable details panel (ProfileV2ExpandedDetails,
+  // rendered directly beneath it) — a plain, ephemeral, per-screen-instance
+  // toggle. Not persisted: collapses again on next visit, same as any other
+  // "revealed" UI state (e.g. `editMode` below) in this screen. Forced back
+  // to false on entering edit mode (see enterEdit) — while editing, the
+  // canvas's own Cancel/Save row is the profile's one active control
+  // surface, so a stale expanded Edit Profile/Follow/Message row underneath
+  // it would be confusing and, for the owner's "Edit Profile" button
+  // specifically, an active footgun (tapping it would re-run enterEdit and
+  // silently discard any in-progress unsaved edit).
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -562,6 +557,28 @@ export function ProfileV2Screen({ userId }: Props) {
       Alert.alert('Couldn’t start conversation', 'Please try again.');
     } finally {
       setMsgLoading(false);
+    }
+  }
+
+  // Expandable profile-details panel (below ProfileV2IdentityCard) — see
+  // `detailsExpanded` state below. Share follows the exact same
+  // Share.share(...) + deep-link-in-message pattern already used by
+  // app/collection/[folderId].tsx's own handleShare, just pointed at this
+  // profile's route (app/user/[username].tsx) instead of a folder's.
+  async function handleShareProfile() {
+    if (!profile) return;
+    // Same hero_display_name → display_name → username fallback used for
+    // the rest of this screen (see the `displayName` const near the
+    // bottom of this component) — recomputed here rather than referenced
+    // across the function body's early-return boundaries.
+    const shareName = profile.hero_display_name || profile.display_name || profile.username;
+    try {
+      await Share.share({
+        title: shareName,
+        message: `Check out @${profile.username} on CacheCase\ncachecase://user/${profile.username}`,
+      });
+    } catch {
+      // user dismissed share sheet — no-op
     }
   }
 
@@ -788,6 +805,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setNewHeroUri(null);
     setRemoveHero(false);
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
+    setDetailsExpanded(false);
     setEditMode(true);
   }
 
@@ -1436,18 +1454,6 @@ export function ProfileV2Screen({ userId }: Props) {
 
   const displayName = profile?.hero_display_name || profile?.display_name || profile?.username || '';
 
-  // TEMP DIAGNOSTIC (Items tab black-screen investigation) — remove once
-  // the root cause is confirmed and fixed.
-  if (__DEV__ && section === 'items') {
-    console.log('[ProfileV3 DIAG] section === "items" — about to render ProfileV2ItemsGrid branch', {
-      allItemsCount: allItems.length,
-      allItemsLoading,
-      allItemsError,
-      editMode,
-      sectionMinHeight,
-    });
-  }
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
@@ -1477,7 +1483,43 @@ export function ProfileV2Screen({ userId }: Props) {
                 avatarUri={avatarUri}
                 profileId={profile.id}
                 onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
+                onPress={!editMode ? () => setDetailsExpanded((v) => !v) : undefined}
+                expanded={detailsExpanded}
               />
+            )}
+
+            {/* Expandable profile-details panel — opens directly beneath
+                ProfileV2IdentityCard when it's tapped, closes on a second
+                tap. A plain conditional render (not absolute-positioned),
+                so it pushes ProfileV2HeroCanvas/the Grails grid/tab row
+                down while open and lets them return to their normal
+                position when it collapses — no overlay, no modal, no
+                separate route. Animated.View's entering/exiting fade
+                (react-native-reanimated, already a dependency elsewhere in
+                this app — grail-slot-preview.tsx, premium-empty-card.tsx —
+                not a new one added for this) gives the mount/unmount a
+                short, smooth transition instead of an abrupt cut. */}
+            {profile && detailsExpanded && !editMode && (
+              <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(150)}>
+                <ProfileV2ExpandedDetails
+                  location={profile.location ?? null}
+                  bio={profile.bio ?? null}
+                  collectingCategories={profile.collecting_categories ?? []}
+                  website={profile.website ?? null}
+                  followers={stats.followerCount}
+                  following={stats.followingCount}
+                  mode={isOwnProfile ? 'owner' : 'public'}
+                  onEditPress={isOwnProfile ? enterEdit : undefined}
+                  onToggleFollow={isOwnProfile ? undefined : toggleFollow}
+                  onMessagePress={isOwnProfile ? undefined : handleMessage}
+                  isFollowing={isFollowing}
+                  followLoading={followLoading}
+                  messageLoading={msgLoading}
+                  onSharePress={handleShareProfile}
+                  onFollowersPress={() => router.push({ pathname: '/followers/[userId]', params: { userId } })}
+                  onFollowingPress={() => router.push({ pathname: '/following/[userId]', params: { userId } })}
+                />
+              </Animated.View>
             )}
 
             {/* No longer conditioned on `section` — Grails is shared
@@ -1487,7 +1529,13 @@ export function ProfileV2Screen({ userId }: Props) {
                 canvas itself owns the Cancel/Save row regardless of which
                 tab was active when Edit Profile was opened. */}
             {profile && (
-              <View style={styles.heroCanvasWrap}>
+              // Animated.View + layout (not a plain View) purely so this
+              // slides smoothly to its new position when the expandable
+              // details panel above it mounts/unmounts, instead of
+              // snapping straight there — the panel itself still owns the
+              // actual expand/collapse (this has no entering/exiting of
+              // its own, nothing here renders conditionally).
+              <Animated.View style={styles.heroCanvasWrap} layout={LinearTransition.duration(200)}>
                 <ProfileV2HeroCanvas
                   heroTheme={heroTheme}
                   themeFallbackSwatch={themeFallbackSwatch}
@@ -1510,7 +1558,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     />
                   )}
                 </ProfileV2HeroCanvas>
-              </View>
+              </Animated.View>
             )}
 
             {/* Owner/public control row — moved out of ProfileV2HeroCanvas
@@ -1854,19 +1902,21 @@ export function ProfileV2Screen({ userId }: Props) {
                   />
                 )}
 
-              </ProfileV2SectionPage>
+                {/* "Tagged" tab label unchanged — its content is now the
+                    existing bookmark/save repository (hooks/use-saved.ts),
+                    not the old (never-implemented) tagged-content path.
+                    Same navigation handlers Grails already uses for an
+                    item/collection tap — no parallel navigation path. */}
+                {section === 'tagged' && (
+                  <ProfileV2Tagged
+                    userId={userId}
+                    isOwnProfile={isOwnProfile}
+                    onPressItem={handleGrailItemPress}
+                    onPressFolder={handleGrailCollectionPress}
+                  />
+                )}
 
-              {/* Own read-only Collector Profile section — same data for
-                  owner and visitor. Moved to be the final profile section,
-                  below all selector/tab content, per the requested layout.
-                  Renders nothing at all (including its own header) when
-                  every preference array is empty. */}
-              <ProfileV2Preferences
-                favoriteSports={profile?.favorite_sports ?? []}
-                favoriteTeams={profile?.favorite_teams ?? []}
-                collectingCategories={profile?.collecting_categories ?? []}
-                collectorTags={profile?.collector_tags ?? []}
-              />
+              </ProfileV2SectionPage>
             </>
           )}
           </View>
@@ -1890,14 +1940,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scroll: {},
-  // Shifts the whole ProfileV2HeroCanvas (theme background, Top 9, and
-  // its identityHeader/action rail) down as one unit, off the very top
-  // edge of the screen. Deliberately outside profile-v2-hero-canvas.tsx
-  // itself — the canvas has no padding/height changes here, only its
-  // position within the ScrollView moves.
-  heroCanvasWrap: {
-    marginTop: 12,
-  },
+  // No margin — the identity header→grid gap is now owned entirely by
+  // ProfileV2HeroCanvas's own gridStage.paddingTop (Profile V3
+  // background-removal/spacing pass), so the grid sits almost flush
+  // under the header instead of being pushed down an extra step here.
+  heroCanvasWrap: {},
   // Opaque backdrop for the sticky tab row (ScrollView's stickyHeaderIndices
   // index 1) — matches the screen's own background so scrolled content
   // underneath doesn't show through ProfileV2TabRow's own transparent gaps

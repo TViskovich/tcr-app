@@ -20,9 +20,26 @@ const RADIUS = 0;
 // (no padding around it, per the reference), so this is also the avatar's
 // own height.
 const CARD_HEIGHT = 80;
+// Historical left inset `card` no longer has (see `card`'s own
+// paddingRight below — there's no matching paddingLeft any more). Kept
+// only as the amount AVATAR_WIDTH below compensates by, so the avatar's
+// right edge stays exactly where it was before that padding was removed
+// from the left side of `card`.
+const AVATAR_WIDTH_COMPENSATION = 20;
 // Wide, not square — roughly matches the reference's photo proportions,
-// deliberately much wider than a typical circular-avatar footprint.
-const AVATAR_WIDTH = 116;
+// deliberately much wider than a typical circular-avatar footprint. Widened
+// by exactly AVATAR_WIDTH_COMPENSATION (was 116, flush against `card`'s own
+// former left padding) so the avatar's LEFT edge extends into the space
+// that padding used to reserve — flush against the border now, with no
+// gap — while its RIGHT edge (where the username/text column begins)
+// lands in the same place as before that change.
+const AVATAR_WIDTH = 116 + AVATAR_WIDTH_COMPENSATION;
+// Right-side inset for rightCol's content (logo/ACCT#) off the inside of
+// the right gradient border — the ONLY source of that gap (rightCol
+// itself no longer contributes its own right-side padding; see rightCol's
+// paddingLeft-only spec below), so this one value is exactly the visual
+// gap between the logo/ACCT# and the border.
+const CARD_PADDING_RIGHT = 10;
 const CACHECASE_LOGO_HEIGHT = 33;
 
 // No dedicated account/collector-number column exists on Profile yet (see
@@ -45,6 +62,13 @@ type Props = {
   // this replaces — omitted entirely for a visitor, leaving the avatar
   // non-interactive.
   onAvatarPress?: () => void;
+  // Toggles the expanded profile-details panel the caller renders directly
+  // below this card (profile-v2-screen.tsx's ProfileV2ExpandedDetails).
+  // The avatar keeps its own nested Pressable above (RN's responder system
+  // gives a tap inside it to that Pressable, never bubbling out to this
+  // one), so avatar-editing and expand/collapse never conflict.
+  onPress?: () => void;
+  expanded?: boolean;
 };
 
 // Compact horizontal identity header — Profile V3's shared top shell. A
@@ -54,7 +78,16 @@ type Props = {
 // credential/pass rather than a social hero banner. Intentionally small and
 // self-contained: no scroll/section logic, no data fetching, just
 // presentation over props the caller already has.
-export function ProfileV2IdentityCard({ username, title, itemCount, avatarUri, profileId, onAvatarPress }: Props) {
+export function ProfileV2IdentityCard({
+  username,
+  title,
+  itemCount,
+  avatarUri,
+  profileId,
+  onAvatarPress,
+  onPress,
+  expanded,
+}: Props) {
   const acctCode = accountCodeFromId(profileId);
 
   return (
@@ -63,7 +96,13 @@ export function ProfileV2IdentityCard({ username, title, itemCount, avatarUri, p
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 0 }}
       style={styles.borderWrap}>
-      <View style={styles.card}>
+      <Pressable
+        style={styles.card}
+        onPress={onPress}
+        disabled={!onPress}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityState={onPress ? { expanded: !!expanded } : undefined}
+        accessibilityLabel={onPress ? 'Profile details' : undefined}>
         <Pressable
           style={styles.avatar}
           onPress={onAvatarPress}
@@ -99,7 +138,7 @@ export function ProfileV2IdentityCard({ username, title, itemCount, avatarUri, p
           <CacheCaseLogo variant="light" size={CACHECASE_LOGO_HEIGHT} placement="header" />
           <Text style={styles.acctText}>ACCT# {acctCode}</Text>
         </View>
-      </View>
+      </Pressable>
     </LinearGradient>
   );
 }
@@ -107,15 +146,24 @@ export function ProfileV2IdentityCard({ username, title, itemCount, avatarUri, p
 const styles = StyleSheet.create({
   // Gradient rect showing through as the card's thin border — same
   // padding-equals-border-width trick as ProfileV2Selector's cachecaseBorder.
+  // No marginHorizontal — the header runs edge-to-edge across the screen;
+  // `card`'s own paddingRight is what keeps rightCol off the right screen
+  // edge (the avatar deliberately has no matching left inset — see `card`
+  // below).
   borderWrap: {
-    marginHorizontal: 16,
     marginTop: 12,
     borderRadius: RADIUS,
     padding: BORDER_WIDTH,
   },
-  // No padding of its own — the avatar below is meant to sit flush against
-  // the top/left/bottom edges (only the middle/right columns carry their
-  // own inset). Fixed CARD_HEIGHT rather than content-driven, since the
+  // paddingRight (not paddingHorizontal) keeps rightCol's content off the
+  // right screen edge now that borderWrap runs full-width. Deliberately no
+  // paddingLeft: the avatar is this row's first child, so with no left
+  // inset here it starts flush against the card's own left edge — i.e.
+  // flush against the inside of the gradient border, no blank gap (see
+  // AVATAR_WIDTH's own comment for the matching width change that keeps
+  // its right edge in place). paddingVertical is 0 so the avatar's
+  // height: '100%' still fills the row edge-to-edge top/bottom, matching
+  // the reference. Fixed CARD_HEIGHT rather than content-driven, since the
   // avatar needs a concrete height to fill edge-to-edge.
   card: {
     flexDirection: 'row',
@@ -123,6 +171,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS,
     backgroundColor: PV2.bg,
     overflow: 'hidden',
+    paddingRight: CARD_PADDING_RIGHT,
   },
   avatar: {
     width: AVATAR_WIDTH,
@@ -192,10 +241,16 @@ const styles = StyleSheet.create({
   // that's indented), so left-aligning ACCT# to the logo's shrink-wrapped
   // box lines its own left edge up with "Case" — an intentional visual
   // match, not a numeric one (ACCT# is shorter than the logo either way).
+  // paddingLeft only (was paddingHorizontal 14) — a right-side value here
+  // used to stack on top of `card`'s own paddingRight, pushing the logo/
+  // ACCT# further from the border than intended. `card`'s paddingRight
+  // (CARD_PADDING_RIGHT) is now the single source of that gap; this
+  // paddingLeft is purely the separation from `middleCol`'s text, unrelated
+  // to the border.
   rightCol: {
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
+    paddingLeft: 14,
     paddingTop: 12,
     paddingBottom: 4,
   },

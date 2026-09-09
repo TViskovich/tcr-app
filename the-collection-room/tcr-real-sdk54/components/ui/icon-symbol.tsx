@@ -47,6 +47,8 @@ const MAPPING = {
   'star.fill': 'star',
   'ellipsis': 'more-horiz',
   'xmark': 'close',
+  // Profile expanded-details location row (profile-v2-expanded-details.tsx).
+  'mappin': 'place',
 } as IconMapping;
 
 /**

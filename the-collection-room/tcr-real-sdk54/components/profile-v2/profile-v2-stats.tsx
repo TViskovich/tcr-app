@@ -1,26 +1,47 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { formatCount, PV2 } from './profile-v2-theme';
 
 type Props = {
   followers: number;
   following: number;
+  // Optional — omitted entirely (e.g. the old, unreachable `section ===
+  // 'cachecase'` call site in profile-v2-screen.tsx) leaves each stat a
+  // plain, non-interactive View exactly as before. When provided (the
+  // expanded-details panel), each stat becomes tappable — no visible
+  // button background, just a bigger hitSlop over the same visual size.
+  onFollowersPress?: () => void;
+  onFollowingPress?: () => void;
 };
 
 // Real counts — hooks/use-profile.ts's ProfileStats already queries the
 // follows table for both directions, no new data source needed here.
-export function ProfileV2Stats({ followers, following }: Props) {
+export function ProfileV2Stats({ followers, following, onFollowersPress, onFollowingPress }: Props) {
   return (
     <View style={styles.row}>
-      <View style={styles.stat}>
+      <TouchableOpacity
+        style={styles.stat}
+        onPress={onFollowersPress}
+        disabled={!onFollowersPress}
+        hitSlop={8}
+        activeOpacity={0.6}
+        accessibilityRole={onFollowersPress ? 'button' : undefined}
+        accessibilityLabel="Followers">
         <Text style={styles.value}>{formatCount(followers)}</Text>
         <Text style={styles.label}>Followers</Text>
-      </View>
+      </TouchableOpacity>
       <View style={styles.divider} />
-      <View style={styles.stat}>
+      <TouchableOpacity
+        style={styles.stat}
+        onPress={onFollowingPress}
+        disabled={!onFollowingPress}
+        hitSlop={8}
+        activeOpacity={0.6}
+        accessibilityRole={onFollowingPress ? 'button' : undefined}
+        accessibilityLabel="Following">
         <Text style={styles.value}>{formatCount(following)}</Text>
         <Text style={styles.label}>Following</Text>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 }

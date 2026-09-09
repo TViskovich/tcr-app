@@ -13,7 +13,6 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 
-import { IconSymbol } from '@/components/ui/icon-symbol';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { PV2 } from './profile-v2-theme';
@@ -418,13 +417,13 @@ export function GrailSlotPreview({
       onLongPress={canOpenOwnerMenu ? handleLongPress : undefined}
       disabled={!isInteractive}>
       {!slot ? (
-        isOwnProfile ? (
-          <View style={styles.slotEmptyOwner}>
-            <IconSymbol name="plus" size={18} color="rgba(255,255,255,0.20)" />
-          </View>
-        ) : (
-          <View style={styles.slotEmpty} />
-        )
+        // Background simplification pass (Profile V3) — the dashed border
+        // + "+" icon that used to mark an owner-addable empty slot are
+        // removed; the slot itself is still tappable (isInteractive/
+        // canPressEmpty above are unchanged), it just has no visual
+        // affordance drawing attention to it for now. Same plain fill for
+        // owner and visitor, where previously only the visitor got this.
+        <View style={styles.slotEmpty} />
       ) : missingSource ? (
         <View style={styles.slotUnavailable}>
           <Text style={styles.unavailableText}>Unavailable</Text>
@@ -502,14 +501,6 @@ const styles = StyleSheet.create({
     borderRadius: 0,
     overflow: 'hidden',
     backgroundColor: PV2.emptyCardBg,
-  },
-  slotEmptyOwner: {
-    flex: 1,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   slotEmpty: {
     flex: 1,

@@ -50,29 +50,9 @@ type Props = {
 export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
   // One batched signing call for the whole visible grid, same convention as
   // ProfileV2Grid — never one request per tile.
-  const { urls: signedImageUrls, statuses: signedImageStatuses } = useSignedItemImages(
+  const { urls: signedImageUrls } = useSignedItemImages(
     items.map((i) => i.primary_image_id),
   );
-
-  // TEMP DIAGNOSTIC (Items tab black-screen investigation) — remove once
-  // the root cause is confirmed and fixed. Confirms this component actually
-  // mounted, how many items it received, and — for the first few — whether
-  // each has a primary_image_id at all and whether that id's signed URL has
-  // resolved yet ('ready'/'loading'/'unavailable', per useSignedItemImages).
-  useEffect(() => {
-    if (!__DEV__) return;
-    const sample = items.slice(0, 5).map((item) => ({
-      id: item.id,
-      primary_image_id: item.primary_image_id,
-      signedStatus: item.primary_image_id ? (signedImageStatuses.get(item.primary_image_id) ?? 'not-requested') : 'no-primary-image-id',
-      hasResolvedUrl: item.primary_image_id ? signedImageUrls.has(item.primary_image_id) : false,
-    }));
-    console.log('[ProfileV3 DIAG] ProfileV2ItemsGrid mounted/updated', {
-      itemCount: items.length,
-      loading,
-      sample,
-    });
-  }, [items, signedImageUrls, signedImageStatuses, loading]);
 
   // Same shared-prefetch warm-up as ProfileV2Grid, for the same reason: a
   // grid's worth of tiles resolving their signed URLs near-simultaneously

@@ -62,7 +62,7 @@ type Props = {
 // exactly http/https — including a bare "hostname:port" value, which
 // would otherwise read its hostname as a fake "scheme" the same way the
 // naive version of this check once did in the edit-mode normalizer.
-function getSafeWebsiteUrl(raw: string): string | null {
+export function getSafeWebsiteUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!/^https?:\/\//i.test(trimmed)) return null;
   return trimmed;
@@ -72,11 +72,11 @@ function getSafeWebsiteUrl(raw: string): string | null {
 // leading scheme and exactly one trailing slash, matching the spec's two
 // explicit display rules and nothing more (no further casing/path
 // rewriting).
-function formatWebsiteLabel(url: string): string {
+export function formatWebsiteLabel(url: string): string {
   return url.replace(/^https?:\/\//i, '').replace(/\/$/, '');
 }
 
-async function openWebsite(url: string) {
+export async function openWebsite(url: string) {
   const safeUrl = getSafeWebsiteUrl(url);
   if (!safeUrl) return;
   try {
