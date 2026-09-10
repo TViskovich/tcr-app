@@ -1,14 +1,16 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { useRegistryEvents } from '@/hooks/use-registry-events';
 import { useSignedRegistryImages } from '@/hooks/use-signed-registry-images';
+import { useAuth } from '@/lib/auth';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { formatCustodyStatus } from '@/lib/registry-custody-status';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -48,29 +50,39 @@ function getEventLabel(eventType: string): string {
 // with no route-safe username, and never for a raw id.
 function ProfileNameLink({
   name,
+  id,
   username,
   onPress,
   style,
 }: {
   name: string;
+  id: string;
   username: string;
-  onPress: (username: string) => void;
+  onPress: (id: string, username: string) => void;
   style?: StyleProp<TextStyle>;
 }) {
   return (
-    <Text style={[style, styles.profileNameLink]} onPress={() => onPress(username)}>
+    <Text style={[style, styles.profileNameLink]} onPress={() => onPress(id, username)}>
       {name}
     </Text>
   );
 }
 
 // Shared by every getEventDetail branch below — a resolved name becomes
-// tappable only when its username also resolved; otherwise it renders as
-// plain, non-interactive text (same visible string either way, since the
-// displayed name always comes from resolveName, never from username).
-function renderName(name: string, username: string | null, onPress: (username: string) => void): ReactNode {
-  if (!username) return name;
-  return <ProfileNameLink name={name} username={username} onPress={onPress} />;
+// tappable only when its id and username also resolved; otherwise it
+// renders as plain, non-interactive text (same visible string either way,
+// since the displayed name always comes from resolveName, never from
+// username). onPress receives the owner-record id itself (actor_id/
+// from_owner_id/to_owner_id — never a raw display value) so the caller can
+// route self vs. other-user without a second lookup.
+function renderName(
+  name: string,
+  id: string | null,
+  username: string | null,
+  onPress: (id: string, username: string) => void,
+): ReactNode {
+  if (!id || !username) return name;
+  return <ProfileNameLink name={name} id={id} username={username} onPress={onPress} />;
 }
 
 // Only ever built from actor_id/from_owner_id/to_owner_id (or, for
@@ -89,14 +101,14 @@ function getEventDetail(
   event: RegistryEvent,
   resolveName: (id: string | null) => string | null,
   resolveUsername: (id: string | null) => string | null,
-  onProfilePress: (username: string) => void,
+  onProfilePress: (id: string, username: string) => void,
 ): ReactNode {
   if (event.event_type === 'registered') {
     const actorName = resolveName(event.actor_id);
     const name = actorName ?? resolveName(event.to_owner_id);
     if (!name) return null;
     const resolvedId = actorName ? event.actor_id : event.to_owner_id;
-    return <>Registered by {renderName(name, resolveUsername(resolvedId), onProfilePress)}</>;
+    return <>Registered by {renderName(name, resolvedId, resolveUsername(resolvedId), onProfilePress)}</>;
   }
 
   if (event.event_type === 'ownership_transferred') {
@@ -105,26 +117,26 @@ function getEventDetail(
     if (fromName && toName) {
       return (
         <>
-          From {renderName(fromName, resolveUsername(event.from_owner_id), onProfilePress)} →{' '}
-          {renderName(toName, resolveUsername(event.to_owner_id), onProfilePress)}
+          From {renderName(fromName, event.from_owner_id, resolveUsername(event.from_owner_id), onProfilePress)} →{' '}
+          {renderName(toName, event.to_owner_id, resolveUsername(event.to_owner_id), onProfilePress)}
         </>
       );
     }
-    if (toName) return <>To {renderName(toName, resolveUsername(event.to_owner_id), onProfilePress)}</>;
-    if (fromName) return <>From {renderName(fromName, resolveUsername(event.from_owner_id), onProfilePress)}</>;
+    if (toName) return <>To {renderName(toName, event.to_owner_id, resolveUsername(event.to_owner_id), onProfilePress)}</>;
+    if (fromName) return <>From {renderName(fromName, event.from_owner_id, resolveUsername(event.from_owner_id), onProfilePress)}</>;
     return null;
   }
 
   if (event.event_type === 'item_linked') {
     const actorName = resolveName(event.actor_id);
     if (!actorName) return null;
-    return <>Linked by {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
+    return <>Linked by {renderName(actorName, event.actor_id, resolveUsername(event.actor_id), onProfilePress)}</>;
   }
 
   if (event.event_type === 'item_unlinked') {
     const actorName = resolveName(event.actor_id);
     if (!actorName) return null;
-    return <>Unlinked by {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
+    return <>Unlinked by {renderName(actorName, event.actor_id, resolveUsername(event.actor_id), onProfilePress)}</>;
   }
 
   // Registry Status v1 — old_custody_status/new_custody_status only, never
@@ -149,7 +161,7 @@ function getEventDetail(
 
   const actorName = resolveName(event.actor_id);
   if (!actorName) return null;
-  return <>By {renderName(actorName, resolveUsername(event.actor_id), onProfilePress)}</>;
+  return <>By {renderName(actorName, event.actor_id, resolveUsername(event.actor_id), onProfilePress)}</>;
 }
 
 function formatDateTime(iso: string) {
@@ -222,6 +234,8 @@ export default function RegistryHistoryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { session } = useAuth();
+  const currentUserId = session?.user?.id;
 
   const [record, setRecord] = useState<RegisteredCardWithItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -289,22 +303,16 @@ export default function RegistryHistoryScreen() {
   const { urls: signedRegistryUrls } = useSignedRegistryImages([record?.id]);
   const signedImageUrl = record ? signedRegistryUrls.get(record.id) : undefined;
 
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)');
+  // Same shared owner-aware helper used throughout the app (app/item/[id].tsx,
+  // app/(tabs)/index.tsx, app/(tabs)/search.tsx, app/(tabs)/notifications.tsx,
+  // follow-list-screen.tsx) — no new route, and a link pointing at the
+  // signed-in viewer's own record (e.g. "Registered by <you>") opens the
+  // owner Profile tab instead of the public route.
+  function handleProfilePress(profileId: string, username: string) {
+    navigateToProfile(router, currentUserId, profileId, username);
   }
 
-  // Same route/pattern already used throughout the app (app/item/[id].tsx,
-  // app/collection/[folderId].tsx, app/(tabs)/index.tsx,
-  // app/(tabs)/search.tsx, app/(tabs)/notifications.tsx) — no new route.
-  function handleProfilePress(username: string) {
-    router.push({ pathname: '/user/[username]', params: { username } });
-  }
-
-  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+  const headerBackLeft = () => <BackButton fallbackHref="/(tabs)" />;
 
   if (loading) {
     return (
@@ -402,6 +410,7 @@ export default function RegistryHistoryScreen() {
                 {ownerUsername ? (
                   <ProfileNameLink
                     name={ownerName}
+                    id={record.current_owner_id ?? ''}
                     username={ownerUsername}
                     onPress={handleProfilePress}
                     style={styles.identityOwnerValue}

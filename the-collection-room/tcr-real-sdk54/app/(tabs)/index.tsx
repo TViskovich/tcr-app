@@ -18,6 +18,7 @@ import { useSharedValue } from 'react-native-reanimated';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { deletePost } from '@/lib/posts';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -633,12 +634,7 @@ export default function HomeScreen() {
               <PostCard
                 post={item}
                 currentUserId={currentUserId}
-                onUserPress={() =>
-                  router.push({
-                    pathname: '/user/[username]',
-                    params: { username: item.username },
-                  })
-                }
+                onUserPress={() => navigateToProfile(router, currentUserId, item.user_id, item.username)}
                 onPostPress={() => {
                   router.push({
                     pathname: '/post/[id]',

@@ -16,12 +16,12 @@ import {
   View,
 } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { uuid } from 'expo-modules-core';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { BackButton } from '@/components/ui/back-button';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
@@ -88,7 +88,6 @@ export default function ConversationScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const refreshMessageBadge = useMessageBadgeRefresh();
   // A chat thread, not a browsing list — no scroll-hide effect (would
   // fight the thread's own auto-scroll-to-bottom behavior), but still
@@ -189,15 +188,7 @@ export default function ConversationScreen() {
   // Fallback pattern: canGoBack() is false when this screen was reached via
   // a deep link or otherwise has no real navigation history to pop —
   // replacing onto the inbox keeps the back action reliable either way.
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)/messages');
-  }
-
-  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+  const headerBackLeft = () => <BackButton fallbackHref="/(tabs)/messages" />;
 
   // Shared authoritative messages fetch — called from onRefresh (manual
   // pull-to-refresh), the focus/poll effect below (initial focus, every 5s

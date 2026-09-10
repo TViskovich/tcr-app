@@ -1,11 +1,11 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { TransactionsList } from '@/components/transactions/transactions-list';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { BackButton } from '@/components/ui/back-button';
 import { useAuth } from '@/lib/auth';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -27,31 +27,20 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 // route-param ownership check.
 export default function TransactionsScreen() {
   const { userId } = useLocalSearchParams<{ userId: string }>();
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
 
   const isOwnRoute = !!currentUserId && currentUserId === userId;
 
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)');
-  }
-
   if (!isOwnRoute) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.header}>
-          <Pressable style={styles.headerButton} onPress={handleBack} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
-            <IconSymbol name="chevron.left" size={20} color={PV2.textPrimary} />
-          </Pressable>
+          <BackButton fallbackHref="/(tabs)" />
           <Text style={styles.headerTitle}>Transactions</Text>
-          <View style={styles.headerButton} />
+          <View style={styles.headerSpacer} />
         </View>
         <View style={styles.centerState}>
           <Text style={styles.emptyTitle}>Not available</Text>
@@ -70,11 +59,9 @@ export default function TransactionsScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       <View style={styles.header}>
-        <Pressable style={styles.headerButton} onPress={handleBack} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
-          <IconSymbol name="chevron.left" size={20} color={PV2.textPrimary} />
-        </Pressable>
+        <BackButton fallbackHref="/(tabs)" />
         <Text style={styles.headerTitle}>Transactions</Text>
-        <View style={styles.headerButton} />
+        <View style={styles.headerSpacer} />
       </View>
 
       <ScrollView
@@ -86,7 +73,10 @@ export default function TransactionsScreen() {
   );
 }
 
-const HEADER_BUTTON_SIZE = 36;
+// Matches BackButton's own fixed 44x44 touch target — this right-side
+// spacer has no button of its own, it exists purely so headerTitle stays
+// centered between two equal-width slots.
+const HEADER_SPACER_SIZE = 44;
 
 const styles = StyleSheet.create({
   container: {
@@ -102,11 +92,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: PV2.panelBorder,
   },
-  headerButton: {
-    width: HEADER_BUTTON_SIZE,
-    height: HEADER_BUTTON_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerSpacer: {
+    width: HEADER_SPACER_SIZE,
+    height: HEADER_SPACER_SIZE,
   },
   headerTitle: {
     color: PV2.textPrimary,

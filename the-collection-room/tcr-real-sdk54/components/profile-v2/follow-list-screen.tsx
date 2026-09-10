@@ -3,9 +3,10 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from '
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { BackButton } from '@/components/ui/back-button';
 import { type FollowListDirection, useFollowList } from '@/hooks/use-follow-list';
 import { useAuth } from '@/lib/auth';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 import { FollowListRow } from './follow-list-row';
@@ -43,29 +44,14 @@ export function FollowListScreen({ userId, direction }: Props) {
   const currentUserId = session?.user?.id;
   const { users, loading, error, refresh } = useFollowList(userId, direction, currentUserId);
 
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)/profile');
-  }
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <Stack.Screen options={{ headerShown: false }} />
 
       <View style={styles.header}>
-        <Pressable
-          style={styles.headerButton}
-          onPress={handleBack}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Back">
-          <IconSymbol name="chevron.left" size={20} color={PV2.textPrimary} />
-        </Pressable>
+        <BackButton fallbackHref="/(tabs)/profile" />
         <Text style={styles.headerTitle}>{TITLE[direction]}</Text>
-        <View style={styles.headerButton} />
+        <View style={styles.headerSpacer} />
       </View>
 
       {loading && users.length === 0 ? (
@@ -91,7 +77,7 @@ export function FollowListScreen({ userId, direction }: Props) {
             <FollowListRow
               user={item}
               currentUserId={currentUserId}
-              onPress={() => router.push({ pathname: '/user/[username]', params: { username: item.username } })}
+              onPress={() => navigateToProfile(router, currentUserId, item.id, item.username)}
             />
           )}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -103,7 +89,10 @@ export function FollowListScreen({ userId, direction }: Props) {
   );
 }
 
-const HEADER_BUTTON_SIZE = 36;
+// Matches BackButton's own fixed 44x44 touch target — this right-side
+// spacer has no button of its own, it exists purely so headerTitle stays
+// centered between two equal-width slots.
+const HEADER_SPACER_SIZE = 44;
 
 const styles = StyleSheet.create({
   container: {
@@ -119,11 +108,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: PV2.panelBorder,
   },
-  headerButton: {
-    width: HEADER_BUTTON_SIZE,
-    height: HEADER_BUTTON_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerSpacer: {
+    width: HEADER_SPACER_SIZE,
+    height: HEADER_SPACER_SIZE,
   },
   headerTitle: {
     color: PV2.textPrimary,

@@ -1,13 +1,12 @@
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
 import { useMessageBadgeCount } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
@@ -20,7 +19,18 @@ import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 // as its own copy (same constants, same shell/glow styling) rather than
 // sharing code with the tabs-group version, so that working bar is left
 // untouched.
-const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
+// Standalone icon mark (3x3 gradient tile grid), not the wordmark —
+// rendered at its own natural colors always (no tintColor; see the render
+// loop below). assets/brand/cachecase-app-icon.png (the first asset tried
+// here) turned out to be a flat RGB PNG with NO alpha channel — verified
+// via its PNG color type (2, not 6/RGBA) — i.e. its near-black square
+// canvas is a real, opaque, baked-in background, not transparent padding,
+// so it rendered as a visible dark box behind the mark. cachecase-icon.png
+// is a genuine RGBA asset (verified: alpha 0 at all four corners, 255 at
+// center) with the same mark tightly cropped (visible content ~93%x89% of
+// its own canvas, vs. app-icon's ~79%x60%). Same asset as
+// app/(tabs)/_layout.tsx's AnimatedTabBar.
+const CacheCaseIconMark = require('@/assets/brand/cachecase-icon.png');
 
 // Discover (search) and Messages stay in TABS below (routes/navigation
 // untouched, still reachable) but are hidden from this bar for now — mirrors
@@ -28,55 +38,69 @@ const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
 const HIDDEN_GLOBAL_TABS = new Set<GlobalTabName>(['search', 'messages']);
 
 const BAR_HEIGHT = TAB_BAR_HEIGHT;
-const BAR_HORIZONTAL_INSET = 22;
+// Matches app/(tabs)/_layout.tsx's own BAR_HORIZONTAL_INSET — see that
+// file's comment for the full rationale (was 22, then 56; narrowing/
+// widening the pill is also what sets the spacing between the 3 flex:1
+// tab items, since there's no other spacing mechanism between them).
+const BAR_HORIZONTAL_INSET = 42;
 const BAR_BOTTOM_GAP = 8;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';
-const ICON_SIZE = 25;
+const ICON_SIZE = 28;
 const INACTIVE_COLOR = '#555762';
-// The Collection tab ("CacheCase") gets a touch more default-state
-// prominence than the other four — matches app/(tabs)/_layout.tsx.
-const FEATURED_INACTIVE_COLOR = '#8A8DA0';
-const FEATURED_TAB: GlobalTabName = 'collection';
-// Matches app/(tabs)/_layout.tsx's CENTER_BADGE_WIDTH/HEIGHT — the
-// CacheCase tab has no label here either, so the logo gets the same
-// larger size.
-const CENTER_BADGE_WIDTH = 72;
-const CENTER_BADGE_HEIGHT = 29;
+// The owner's own collector profile (/(tabs)/profile) — not the Collection
+// grid anymore. See app/(tabs)/_layout.tsx's matching FEATURED_TAB for the
+// full rationale.
+const FEATURED_TAB: GlobalTabName = 'profile';
+// Matches app/(tabs)/_layout.tsx's CENTER_BADGE_WIDTH/HEIGHT — see that
+// file's own comment for the full sizing rationale (cachecase-icon.png's
+// 454x359 canvas, ≈1.265:1, with the mark tightly cropped inside it).
+const CENTER_BADGE_WIDTH = 50;
+const CENTER_BADGE_HEIGHT = 40;
 // Matches app/(tabs)/_layout.tsx's DRAG_VERTICAL_CANCEL_MARGIN.
 const DRAG_VERTICAL_CANCEL_MARGIN = 40;
-// Matches TAB_ACCENTS.collection in app/(tabs)/_layout.tsx — the CacheCase
-// tab's active color, used here when the current screen belongs to the
-// collection hierarchy (see lib/cachecase-navigation.ts).
-const CACHECASE_ACCENT = '#A97BFF';
 
-function glowAssistColorFor(accent: string) {
-  const hex = accent.replace('#', '');
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  return `rgba(${r},${g},${b},0.18)`;
-}
+type GlobalTabName = 'index' | 'profile' | 'search' | 'messages' | 'dashboard';
 
-type GlobalTabName = 'index' | 'collection' | 'search' | 'messages' | 'profile';
-
+// 'profile' here is the CENTER/CacheCase destination (the owner's own
+// collector profile, /(tabs)/profile) — not the right-hand Profile/
+// Dashboard icon. 'dashboard' is the new right-hand destination
+// (/(tabs)/dashboard). Route/icon/label values are otherwise unchanged
+// from before this rename; only which logical destination each name/route
+// points at has moved. See app/(tabs)/_layout.tsx's matching Tabs.Screen
+// list for the same mapping inside the tabs group.
 const TABS: {
   name: GlobalTabName;
-  route: '/' | '/collection' | '/search' | '/messages' | '/profile';
+  route: '/' | '/profile' | '/search' | '/messages' | '/dashboard';
   icon: 'house' | 'square.grid.2x2' | 'magnifyingglass' | 'message' | 'person';
+  // Accessibility-only now — no longer rendered as visible text under the
+  // icon (the bar is icon-only), read via accessibilityLabel below instead.
   label: string;
 }[] = [
   { name: 'index', route: '/', icon: 'house', label: 'Feed' },
   { name: 'search', route: '/search', icon: 'magnifyingglass', label: 'Discover' },
-  { name: 'collection', route: '/collection', icon: 'square.grid.2x2', label: 'CacheCase' },
+  { name: 'profile', route: '/profile', icon: 'square.grid.2x2', label: 'CacheCase' },
   { name: 'messages', route: '/messages', icon: 'message', label: 'Messages' },
-  { name: 'profile', route: '/profile', icon: 'person', label: 'Profile' },
+  { name: 'dashboard', route: '/dashboard', icon: 'person', label: 'Profile' },
 ];
 
 // Paths that already have the Tabs-navigator's own floating bar rendered —
-// don't stack a second one on top of those.
-const TAB_COVERED_PATHS = new Set(['/', '/collection', '/search', '/messages', '/profile', '/notifications']);
+// don't stack a second one on top of those. '/collection' stays here even
+// though it's no longer a visible bottom-nav button (see HIDDEN_TABS in
+// app/(tabs)/_layout.tsx): it's still a real, still-mounted Tabs.Screen —
+// AnimatedTabBar still renders while viewing it, just without its own
+// button in the row — so this bar must still skip it too, to avoid a
+// duplicate.
+const TAB_COVERED_PATHS = new Set([
+  '/',
+  '/collection',
+  '/search',
+  '/messages',
+  '/profile',
+  '/notifications',
+  '/dashboard',
+]);
 
 export function GlobalFloatingTabBar() {
   const pathname = usePathname();
@@ -102,13 +126,25 @@ export function GlobalFloatingTabBar() {
   const rowWidth = useSharedValue(0);
   const dragSelectedTab = useSharedValue<GlobalTabName | null>(null);
 
-  if (TAB_COVERED_PATHS.has(pathname)) return null;
+  // Public/non-owner profile (app/user/[username].tsx) — outside the tabs
+  // group like every other route this bar covers, but unlike those it must
+  // render with no floating nav at all (its own standalone back chevron is
+  // the only nav control there). Prefix match, not TAB_COVERED_PATHS' exact
+  // match, since the username segment is dynamic; no username is ever
+  // compared here.
+  if (TAB_COVERED_PATHS.has(pathname) || pathname.startsWith('/user/')) return null;
 
   const messageBadge = unreadMessages === 0 ? undefined : unreadMessages > 99 ? '99+' : unreadMessages;
-  // True on every screen pushed outside the tabs group that still belongs
-  // to the collection-browsing hierarchy (folder, item, gallery, etc.) —
-  // not just when the pathname literally equals the Collection tab route.
-  const cacheCaseActive = isCacheCaseRoute(pathname);
+  // Unlike AnimatedTabBar (which lights the CacheCase center button up via
+  // state.index === index whenever the Tabs navigator is actually on
+  // /profile), this bar's own center button can never show as active: the
+  // early return above already excludes every path in TAB_COVERED_PATHS,
+  // which includes '/profile' itself — so by the time this component
+  // renders anything, pathname is guaranteed not to be the owner-profile
+  // route. There's no equivalent "profile-adjacent" pushed-screen
+  // hierarchy the way collection/folder/item pages were for the old
+  // Collection-tab behavior, so the center button here just always renders
+  // in its default (inactive) state.
 
   // Shared by both a normal tap (via each tab's onPress below) and the
   // drag/scrub gesture, so dragging onto a tab behaves identically to
@@ -118,9 +154,11 @@ export function GlobalFloatingTabBar() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     if (tab.name === FEATURED_TAB) {
-      // Always land on the Collection root — never the nested screen the
-      // user happened to be on, and never stacked on top of it.
-      router.replace(COLLECTION_ROOT_ROUTE as any);
+      // Always land on the owner's own profile — same reset-to-root
+      // mechanism the Collection tab used before this button's
+      // destination changed, so a screen reached outside the tabs group
+      // (folder, item, etc.) always replaces cleanly onto it.
+      router.replace('/(tabs)/profile');
       return;
     }
     router.navigate(tab.route as any);
@@ -198,7 +236,6 @@ export function GlobalFloatingTabBar() {
               if (HIDDEN_GLOBAL_TABS.has(tab.name)) return null;
               const centered = tab.name === FEATURED_TAB;
               const onPress = () => selectTab(tab);
-              const logoColor = cacheCaseActive ? CACHECASE_ACCENT : FEATURED_INACTIVE_COLOR;
               return (
                 <TouchableOpacity
                   key={tab.name}
@@ -206,7 +243,6 @@ export function GlobalFloatingTabBar() {
                   style={centered ? styles.tabItemCenter : styles.tabItem}
                   activeOpacity={0.7}
                   accessibilityRole="button"
-                  accessibilityState={centered && cacheCaseActive ? { selected: true } : {}}
                   accessibilityLabel={centered ? 'CacheCase' : tab.label}>
                   <View
                     style={[
@@ -218,28 +254,11 @@ export function GlobalFloatingTabBar() {
                           : null,
                     ]}>
                     <View style={centered ? styles.iconWrapCenter : styles.iconWrap}>
-                      {centered && cacheCaseActive && Platform.OS !== 'ios' && (
-                        <View
-                          style={[
-                            styles.glowAssistCenter,
-                            { backgroundColor: glowAssistColorFor(CACHECASE_ACCENT) },
-                          ]}
-                          pointerEvents="none"
-                        />
-                      )}
-                      <View
-                        style={
-                          centered && cacheCaseActive
-                            ? [styles.iconLitWrap, styles.iconLit, { shadowColor: CACHECASE_ACCENT }]
-                            : styles.iconLitWrap
-                        }>
+                      <View style={styles.iconLitWrap}>
                         {centered ? (
-                          <Image
-                            source={CacheCaseLogoNav}
-                            contentFit="contain"
-                            tintColor={logoColor}
-                            style={styles.cacheCaseLogo}
-                          />
+                          // No tintColor — full RGB gradient graphic;
+                          // see CacheCaseIconMark's own comment above.
+                          <Image source={CacheCaseIconMark} contentFit="contain" style={styles.cacheCaseLogo} />
                         ) : (
                           <IconSymbol size={ICON_SIZE} name={tab.icon} color={INACTIVE_COLOR} />
                         )}
@@ -250,17 +269,6 @@ export function GlobalFloatingTabBar() {
                         </View>
                       ) : null}
                     </View>
-                    {centered ? null : (
-                      <Text
-                        style={[
-                          styles.tabLabel,
-                          tab.name === FEATURED_TAB && styles.tabLabelFeatured,
-                          { color: tab.name === FEATURED_TAB ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR },
-                        ]}
-                        numberOfLines={1}>
-                        {tab.label}
-                      </Text>
-                    )}
                   </View>
                 </TouchableOpacity>
               );
@@ -310,23 +318,16 @@ const styles = StyleSheet.create({
     flex: 1,
     alignSelf: 'stretch',
   },
+  // Icon-only content, centered as a unit — no gap here now that there's
+  // no label underneath it to space away from.
   tabContent: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
   },
   centerTabContent: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '500',
-    letterSpacing: 0.1,
-  },
-  tabLabelFeatured: {
-    fontWeight: '600',
   },
   iconWrap: {
     position: 'relative',
@@ -341,19 +342,6 @@ const styles = StyleSheet.create({
   iconLitWrap: {
     shadowOffset: { width: 0, height: 0 },
     shadowRadius: 8,
-  },
-  iconLit: {
-    shadowOpacity: 0.85,
-  },
-  // Android/web fallback only — matches app/(tabs)/_layout.tsx's
-  // glowAssistCenter, sized to the (larger) CacheCase logo.
-  glowAssistCenter: {
-    position: 'absolute',
-    top: -4,
-    left: -4,
-    width: CENTER_BADGE_WIDTH + 8,
-    height: CENTER_BADGE_HEIGHT + 8,
-    borderRadius: 14,
   },
   badge: {
     position: 'absolute',

@@ -12,13 +12,13 @@ import {
   View,
 } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   TransferRecipientPicker,
@@ -357,14 +357,6 @@ export default function RegistryDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record?.id, isOwner, checkPendingTransfer]);
 
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)');
-  }
-
   function handleQrPanelPress() {
     if (!registryPublicUrl) return;
     setIsQrModalVisible(true);
@@ -609,7 +601,7 @@ export default function RegistryDetailScreen() {
     }
   }
 
-  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+  const headerBackLeft = () => <BackButton fallbackHref="/(tabs)" />;
 
   if (loading) {
     return (

@@ -1,24 +1,26 @@
-import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { Image } from 'expo-image';
 
 type Props = {
   username: string;
   avatarUrl: string | null;
+  onPress: () => void;
 };
 
 // Instagram-style post header — circular avatar + @username, left-aligned,
 // directly above the item's image/carousel in app/item/[id].tsx. Purely an
-// identity/navigation row (taps through to the owner's public profile);
+// identity/navigation row (taps through to the owner's profile — owner-
+// aware routing decided by the caller via onPress, same as PostCard's
+// onUserPress, since this row is shown to the item's own owner too and
+// must not force the public-profile route/chrome onto their own profile);
 // carries no edit affordance of its own — the existing owner/edit controls
 // elsewhere on the screen are untouched by this row.
-export function ItemOwnerRow({ username, avatarUrl }: Props) {
-  const router = useRouter();
-
+export function ItemOwnerRow({ username, avatarUrl, onPress }: Props) {
   return (
     <Pressable
       style={styles.row}
-      onPress={() => router.push({ pathname: '/user/[username]', params: { username } })}
+      onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`View @${username}'s profile`}>
       <View style={styles.avatar}>

@@ -49,7 +49,14 @@ export function ProfileV2FollowMenu({ isFollowing, loading, onToggleFollow }: Pr
       </Pressable>
 
       <AnchoredMenu visible={open} anchor={anchor} onRequestClose={closeMenu}>
-        <Pressable style={menuStyles.item} onPress={selectAction}>
+        {/* menuStyles.item's own visual box lands around 34-35px tall
+            (matching actionBtn's compact height) — hitSlop extends the
+            actual tappable area to a comfortable ~44px+ without growing
+            the visible pill beyond the button it hangs from. */}
+        <Pressable
+          style={menuStyles.item}
+          onPress={selectAction}
+          hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}>
           <Text style={isFollowing ? menuStyles.itemDestructive : menuStyles.itemLabel}>
             {isFollowing ? 'Unfollow' : 'Follow'}
           </Text>

@@ -12,11 +12,11 @@ import {
   View,
 } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import { ClaimFolderPicker } from '@/components/registry/claim-folder-picker';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { useAuth } from '@/lib/auth';
 import { claimRegisteredCard, copyRegistrySnapshotImageToNewItem } from '@/lib/registry-claim';
 import { supabase } from '@/lib/supabase';
@@ -235,7 +235,7 @@ export default function ClaimCardScreen() {
     else router.replace({ pathname: '/item/[id]', params: { id: newItemId } });
   }
 
-  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+  const headerBackLeft = () => <BackButton onPress={handleBack} />;
 
   if (loading) {
     return (

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,7 +15,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { BackButton } from '@/components/ui/back-button';
 import { resolveCovers } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
@@ -281,9 +280,7 @@ export default function PickGrailCollectionScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={[styles.headerTop, { paddingTop: insets.top ? 4 : 10 }]}>
-          <Pressable onPress={leaveScreen} hitSlop={12} style={styles.iconBtn}>
-            <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-          </Pressable>
+          <BackButton fallbackHref="/" />
           <Text style={styles.headerTitle}>{target?.mode === 'replace' ? 'Replace Collection' : 'Choose Collection'}</Text>
           <TouchableOpacity onPress={handleConfirm} disabled={!canConfirm} hitSlop={12}>
             {saving ? (
@@ -358,12 +355,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingBottom: 10,
-  },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   headerTitle: {
     fontSize: 16,

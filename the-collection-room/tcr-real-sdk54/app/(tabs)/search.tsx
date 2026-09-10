@@ -20,6 +20,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { attachPrimaryImageIds } from '@/lib/item-images';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -512,9 +513,7 @@ export default function SearchScreen() {
             renderItem={({ item }) => (
               <UserRow
                 profile={item}
-                onPress={() =>
-                  router.push({ pathname: '/user/[username]', params: { username: item.username } })
-                }
+                onPress={() => navigateToProfile(router, currentUserId, item.id, item.username)}
               />
             )}
             refreshControl={

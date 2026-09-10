@@ -10,7 +10,6 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
-import { COLLECTION_ROOT_ROUTE, isCacheCaseRoute } from '@/lib/cachecase-navigation';
 import { useMessageBadgeCount, useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
@@ -20,8 +19,29 @@ import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 // work) but hide from the visible bottom nav for now — same pattern already
 // used for notifications below. Remove an entry here (and the matching
 // href:null on its Tabs.Screen) to restore it to the visible bar.
-const HIDDEN_TABS = new Set(['search', 'messages', 'notifications']);
+// 'collection' joined this set when the CacheCase center button was
+// repointed at the owner profile instead of the Collection grid — the
+// route/screen itself (app/(tabs)/collection.tsx) is untouched and still
+// reachable via direct links elsewhere in the app, it's just no longer one
+// of the three primary bottom-nav destinations.
+const HIDDEN_TABS = new Set(['search', 'messages', 'notifications', 'collection']);
 
+// Standalone icon mark (3x3 gradient tile grid), not the wordmark —
+// rendered at its own natural colors (no tintColor; see the Tabs.Screen
+// below). assets/brand/cachecase-app-icon.png (the first asset tried here)
+// turned out to be a flat RGB PNG with NO alpha channel — verified via its
+// PNG color type (2, not 6/RGBA) — i.e. its near-black square canvas is a
+// real, opaque, baked-in background, not transparent padding, so it
+// rendered as a visible dark box behind the mark. cachecase-icon.png is a
+// genuine RGBA asset (verified: alpha 0 at all four corners, 255 at
+// center) with the same mark tightly cropped (visible content ~93%x89%
+// of its own canvas, vs. app-icon's ~79%x60%), so it needs a much smaller
+// container to read at the same visual size — see CENTER_BADGE_WIDTH/
+// HEIGHT below. Used by the visible 'profile' (CacheCase) Tabs.Screen.
+const CacheCaseIconMark = require('@/assets/brand/cachecase-icon.png');
+// Still used by the 'collection' Tabs.Screen's own tabBarIcon — that
+// screen is hidden from the bar (see HIDDEN_TABS above) and not part of
+// this artwork swap, so it keeps the wordmark it always had.
 const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
 
 // Floating capsule shell — was a full-width bar flush with the screen
@@ -29,52 +49,73 @@ const CacheCaseLogoNav = require('@/assets/icons/cachecase-wordmark-nav.png');
 // TAB_BAR_HEIGHT (lib/tab-visibility-context) — the single source of truth
 // screens also use to reserve enough bottom padding to clear it.
 const BAR_HEIGHT = TAB_BAR_HEIGHT;
-const BAR_HORIZONTAL_INSET = 22;
+// Was 22, then 56 — with only 3 visible tabs now (down from 5 before the
+// label/route rework) and all of them flex:1 within tabBarContent (see
+// below), a wide inset pill left the outer two icons stretched out near
+// the screen edges, far from the center CacheCase icon. Since flex:1
+// items divide the pill into equal thirds with no other gap mechanism,
+// this one constant is the only lever needed to both size the pill AND
+// set the distance between all three icons at once — each third's center
+// (and so each icon's position) moves with it. 56 (a ~20% narrowing pass)
+// read as slightly too tight on a second look, so this settled at 42 — a
+// ~9-11% widening back from 56 across common device widths (e.g. 375pt:
+// 263→291, +10.6%; 390pt: 278→306, +10.1%; 430pt: 318→346, +8.8%), inside
+// the intended 8-12% range and still well short of the original 22's
+// near-edge-to-edge width. Each of the 3 equal-width tap zones still
+// comes out to roughly 97-115pt wide, nowhere near the ~44pt minimum
+// touch-target floor, with no risk of the zones overlapping each other.
+const BAR_HORIZONTAL_INSET = 42;
 const BAR_BOTTOM_GAP = 8;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 // Same dark surface as before, fully opaque — no see-through content
 // behind the floating pill.
 const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';
-const ICON_SIZE = 25;
+const ICON_SIZE = 28;
 const INACTIVE_COLOR = '#555762';
-// The Collection tab ("CacheCase") gets a touch more default-state
-// prominence than the other four — a brighter muted gray rather than the
-// standard inactive gray — so it draws the eye without changing size.
+// The CacheCase tab (now the owner's own profile, not the Collection grid
+// — see FEATURED_TAB below) gets a touch more default-state prominence
+// than the other four — a brighter muted gray rather than the standard
+// inactive gray — so it draws the eye without changing size.
 const FEATURED_INACTIVE_COLOR = '#8A8DA0';
 
 // Per-tab active accent, used both to tint the icon and to color its glow —
-// one distinct color per tab.
+// one distinct color per tab. Keyed by Tabs.Screen name, not by visual
+// position — 'profile' is the CENTER/CacheCase destination (own collector
+// profile) and 'dashboard' is the RIGHT/person-icon destination, per the
+// Tabs.Screen list below.
 const DEFAULT_ACCENT = '#A97BFF';
 const TAB_ACCENTS: Record<string, string> = {
   index: '#74F5C8', // Home — mint/green
-  collection: '#A97BFF', // Collection — purple
+  profile: '#A97BFF', // CacheCase (own profile) — purple
   search: '#4DA6FF', // Search — blue
   messages: '#FF5C5C', // Messages — red
-  profile: '#FFD84D', // Profile — yellow
+  dashboard: '#FFD84D', // Dashboard — yellow (same accent the old Profile tab used)
 };
 
-const TAB_LABELS: Record<string, string> = {
-  index: 'Feed',
-  collection: 'CacheCase',
-  search: 'Discover',
-  messages: 'Messages',
-  profile: 'Profile',
-};
+// The owner's own collector profile (/(tabs)/profile) is now the featured/
+// center destination — not the Collection grid. The route itself
+// (app/(tabs)/profile.tsx) is unchanged and unmoved; only which visual
+// slot in the bar renders it has changed. See HIDDEN_TABS above for where
+// the old 'collection' featured tab went.
+const FEATURED_TAB = 'profile';
 
-const FEATURED_TAB = 'collection';
-
-// The CacheCase logo replaces both the icon and label for the center tab,
-// so it renders larger than the other four icons (which stay at ICON_SIZE)
-// — the vertical space the removed label used to occupy goes to the logo
-// instead. The source PNG (842x343, ≈2.45:1) is the wordmark alone with the
-// surrounding bracket mark cropped out. 72x29 keeps that aspect ratio (so
-// contentFit="contain" never letterboxes it) at a size still visibly larger
-// than the plain ICON_SIZE icons either side of it — CacheCase stays the
-// featured tab without dominating the now-more-compact pill.
-// Comfortably inside BAR_HEIGHT (68) with room to spare on both edges.
-const CENTER_BADGE_WIDTH = 72;
-const CENTER_BADGE_HEIGHT = 29;
+// The CacheCase icon mark replaces both the icon and label for the center
+// tab, so it renders larger than the other four icons (which stay at
+// ICON_SIZE) — the vertical space the removed label used to occupy goes
+// to the icon instead. cachecase-icon.png's own canvas is 454x359
+// (≈1.265:1) with the visible mark tightly cropped inside it (~93%x89% of
+// the canvas — sampled via the asset's actual alpha channel, not
+// guessed), so — unlike the old app-icon.png asset this replaced, whose
+// opaque square needed a much bigger container to compensate for its own
+// baked-in padding — this container can be sized close to the actual
+// target visual size directly. 50x40 (matching the canvas's own aspect,
+// so contentFit="contain" doesn't letterbox) puts the visible mark at
+// roughly 35px tall, clearly bigger than ICON_SIZE (28) and comfortably
+// inside BAR_HEIGHT (68) even with the +8px Android glow-assist box (see
+// glowAssistCenter below): 40 + 8 = 48, well clear.
+const CENTER_BADGE_WIDTH = 50;
+const CENTER_BADGE_HEIGHT = 40;
 
 // Instagram-style drag/scrub selection: how far (in px) the finger can
 // stray above/below the bar's own height before we stop treating the drag
@@ -108,8 +149,6 @@ function glowAssistColorFor(accent: string) {
 function TabBarItem({
   isFocused,
   icon,
-  label,
-  color,
   accent,
   featured,
   badge,
@@ -120,19 +159,17 @@ function TabBarItem({
 }: {
   isFocused: boolean;
   icon: React.ReactNode;
-  // Omitted (the CacheCase center tab) means: no visible label — the badge
-  // itself is the destination's identity, so nothing renders underneath it.
-  label?: string;
-  color: string;
   accent: string;
   featured?: boolean;
   badge?: string | number;
   accessibilityLabel?: string;
   onPress: () => void;
   offsetX?: number;
-  // The CacheCase tab only: no label row, so its icon+content stretches to
-  // fill and center within the tab's full touch target instead of the
-  // shrink-wrapped icon-over-label column the other four tabs use.
+  // The CacheCase tab only: icon+content stretches to fill and center
+  // within the tab's full touch target instead of the shrink-wrapped
+  // column the other tabs use — a holdover from when only the CacheCase
+  // tab had no label row; now that none of them do, this is still what
+  // gives it its larger, unshrunk footprint.
   centered?: boolean;
 }) {
   return (
@@ -172,13 +209,6 @@ function TabBarItem({
             </View>
           ) : null}
         </View>
-        {label != null ? (
-          <Text
-            style={[styles.tabLabel, featured && styles.tabLabelFeatured, { color }]}
-            numberOfLines={1}>
-            {label}
-          </Text>
-        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -223,9 +253,10 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     });
     if (event.defaultPrevented) return;
     if (featured) {
-      // Always land on the Collection root — never stacked on top of, and
-      // never preserving, a nested collection screen.
-      router.replace(COLLECTION_ROOT_ROUTE as any);
+      // Always land on the owner's own profile — same reset-to-root
+      // mechanism the Collection tab used before this button's
+      // destination changed.
+      router.replace('/(tabs)/profile');
       return;
     }
     if (!isFocused) {
@@ -241,7 +272,7 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     if (idx === -1) return;
     const route = state.routes[idx];
     const featured = route.name === FEATURED_TAB;
-    const isFocused = state.index === idx || (featured && isCacheCaseRoute(pathname));
+    const isFocused = state.index === idx;
     selectRoute(route, featured, isFocused);
   };
 
@@ -316,14 +347,13 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
 
             const { options } = descriptors[route.key];
             const featured = route.name === FEATURED_TAB;
-            // The CacheCase tab also lights up for any screen belonging to
-            // the collection hierarchy (see lib/cachecase-navigation.ts) —
-            // in practice this bar is only ever visible when pathname is
-            // exactly one of the 5 tab routes (nested screens like
-            // /folder/[id] are pushed on top and cover it), so this is
-            // equivalent to state.index === index today, but keeps the
-            // logic centralized and correct if that ever changes.
-            const isFocused = state.index === index || (featured && isCacheCaseRoute(pathname));
+            // Plain react-navigation focus matching — the CacheCase
+            // (profile) tab no longer inherits an extra "lit while browsing
+            // a whole route hierarchy" rule the way the old Collection tab
+            // did (there's no equivalent nested-screen hierarchy for the
+            // profile destination), so this is now the same check every
+            // other tab uses.
+            const isFocused = state.index === index;
             const badge = options.tabBarBadge;
             const accent = TAB_ACCENTS[route.name] ?? DEFAULT_ACCENT;
             const color = isFocused ? accent : featured ? FEATURED_INACTIVE_COLOR : INACTIVE_COLOR;
@@ -335,8 +365,6 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
                 key={route.key}
                 isFocused={isFocused}
                 icon={options.tabBarIcon?.({ color, size: ICON_SIZE, focused: isFocused })}
-                label={featured ? undefined : (TAB_LABELS[route.name] ?? route.name)}
-                color={color}
                 accent={accent}
                 featured={featured}
                 badge={badge}
@@ -392,6 +420,10 @@ export default function TabLayout() {
           name="index"
           options={{
             title: 'Home',
+            // Explicit now that the visible "Feed" label under the icon is
+            // gone — without this, TouchableOpacity had nothing else to
+            // read for screen readers besides that text.
+            tabBarAccessibilityLabel: 'Feed',
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="house" color={color} />,
           }}
         />
@@ -403,10 +435,17 @@ export default function TabLayout() {
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="magnifyingglass" color={color} />,
           }}
         />
+        {/* Collection grid — no longer one of the three primary bottom-nav
+            destinations (the CacheCase center button below now opens the
+            owner profile instead), so this is hidden from the bar like
+            search/messages/notifications. The route/screen itself is
+            unchanged and still reachable via direct links elsewhere in the
+            app (e.g. profile-v2-screen.tsx's "create" action). */}
         <Tabs.Screen
           name="collection"
           options={{
             title: 'Collection',
+            href: null,
             tabBarAccessibilityLabel: 'CacheCase',
             tabBarIcon: ({ color }) => (
               <Image
@@ -428,10 +467,37 @@ export default function TabLayout() {
           }}
         />
         <Tabs.Screen name="notifications" options={{ href: null }} />
+        {/* CENTER/featured bar button — the owner's own collector profile
+            (app/(tabs)/profile.tsx, unchanged/reused). Was the RIGHT
+            person-icon button; now takes the CacheCase logo treatment the
+            Collection tab used to have (see FEATURED_TAB above). */}
         <Tabs.Screen
           name="profile"
           options={{
+            title: 'CacheCase',
+            tabBarAccessibilityLabel: 'CacheCase',
+            // No tintColor — this is the standalone app-icon mark, a full
+            // RGB gradient graphic with no alpha channel, rendered at its
+            // own natural cyan/purple/pink colors always. Active vs.
+            // inactive state still reads through the same glow/shadow
+            // treatment every featured-tab render already applies (see
+            // TabBarItem's iconLitWrap/iconLit below), not a color swap.
+            tabBarIcon: () => (
+              <Image source={CacheCaseIconMark} contentFit="contain" style={styles.cacheCaseLogo} />
+            ),
+          }}
+        />
+        {/* RIGHT bar button — new personal Dashboard destination
+            (app/(tabs)/dashboard.tsx). Takes over the plain person-icon
+            treatment the Profile tab used to have. */}
+        <Tabs.Screen
+          name="dashboard"
+          options={{
             title: 'Profile',
+            // Explicit now that the visible "Profile" label under the icon
+            // is gone — same reasoning as index's tabBarAccessibilityLabel
+            // above.
+            tabBarAccessibilityLabel: 'Profile',
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
           }}
         />
@@ -482,36 +548,27 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  // CacheCase tab only — no label row underneath, so this stretches to the
-  // bar's full height (tabBarContent's cross-axis) instead of shrink-
-  // wrapping to its own content like the other four tabs.
+  // CacheCase tab only — stretches to the bar's full height
+  // (tabBarContent's cross-axis) instead of shrink-wrapping like the other
+  // tabs, so its larger badge/touch target still reads as the featured
+  // one now that none of the tabs have a label row to size against.
   tabItemCenter: {
     flex: 1,
     alignSelf: 'stretch',
   },
-  // Vertical icon-over-label stack — centers as one unit within the taller
-  // bar, replacing the old icon-only layout.
+  // Icon-only content, centered as a unit within the bar — no gap here
+  // now that there's no label underneath it to space away from (icons are
+  // icon-only across the whole bar; see TabBarItem).
   tabContent: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
   },
-  // CacheCase tab only — fills tabItemCenter and centers the (larger,
-  // label-less) badge within the tab's full touch target.
+  // CacheCase tab only — fills tabItemCenter and centers the (larger)
+  // badge within the tab's full touch target.
   centerTabContent: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '500',
-    letterSpacing: 0.1,
-  },
-  // CacheCase (Collection) tab only — a touch heavier so it reads with
-  // slightly more presence, same size/spacing as the other four.
-  tabLabelFeatured: {
-    fontWeight: '600',
   },
   iconWrap: {
     position: 'relative',

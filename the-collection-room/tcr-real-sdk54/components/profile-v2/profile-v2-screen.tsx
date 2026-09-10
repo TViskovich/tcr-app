@@ -26,6 +26,7 @@ import type { PostgrestError } from '@supabase/supabase-js';
 
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { TransactionsList } from '@/components/transactions/transactions-list';
+import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   getHeroCanvasPickerThemes,
@@ -45,6 +46,7 @@ import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import {
   deleteProfileImage,
   uploadAvatar,
@@ -78,9 +80,11 @@ const LOCATION_MAX_LENGTH = 80;
 // bookmark shortcut are hidden from the rendered UI while these controls
 // wait on a new home elsewhere in the redesigned layout. Nothing behind
 // them (routes, handlers, the icons' own JSX) was removed — flip this back
-// to true to restore them exactly as they were. Deliberately does not
-// affect the public-viewer branch of the same row (Back + the Grails
-// bookmark toggle), which isn't part of this pass.
+// to true to restore them exactly as they were. The row this gates is
+// owner-only now (see ownerActionRow below) — the public viewer's Back and
+// Grails-bookmark controls both moved up to the top action row above the
+// identity card (publicBackRow), so there's no public-viewer branch left
+// for this flag to interact with.
 const SHOW_OWNER_SETTINGS_AND_SAVED_ICONS = false;
 
 // The one place the "tab row → tab content" gap is defined — matches the
@@ -348,6 +352,13 @@ export function ProfileV2Screen({ userId }: Props) {
     publicOnly: !isOwnProfile,
   });
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
+  // The one outer scroll container for this whole screen (identity card,
+  // Grails grid, sticky tab row, and every tab's body all scroll inside
+  // this single ScrollView — see the render below) — ref'd only so the
+  // focus-lifecycle effect further down can reset its position back to
+  // top on blur. Not used for anything else (navbarOnScroll above is a
+  // separate onScroll handler, not this ref).
+  const scrollRef = useRef<ScrollView>(null);
 
   // This profile's post history for the "posts" section — chronological
   // (posts.created_at DESC), scoped to the profile being viewed
@@ -409,6 +420,45 @@ export function ProfileV2Screen({ userId }: Props) {
   // specifically, an active footgun (tapping it would re-run enterEdit and
   // silently discard any in-progress unsaved edit).
   const [detailsExpanded, setDetailsExpanded] = useState(false);
+
+  // Defensive reset alongside the useFocusEffect cleanup below: if this
+  // screen instance is ever reused for a different profile (e.g. router
+  // navigation changes to setParams/replace on the same route instance
+  // instead of always pushing a fresh one), detailsExpanded/scroll
+  // position must not carry over from whichever profile was previously
+  // viewed in it. scrollTo here (not just on blur) covers the same-
+  // instance-different-userId case directly, since a blur/focus cycle
+  // isn't guaranteed to happen in between.
+  useEffect(() => {
+    setDetailsExpanded(false);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [userId]);
+
+  // Screen-local, transient only (never persisted) — collapses again the
+  // moment this screen loses focus, so returning to a profile (this one or
+  // another) always starts collapsed. Switching Posts/Collection/Items/
+  // Tagged via `section` doesn't blur this screen, so detailsExpanded is
+  // untouched by that.
+  useFocusEffect(
+    useCallback(() => {
+      return () => setDetailsExpanded(false);
+    }, []),
+  );
+
+  // Same blur-triggered reset as detailsExpanded above, for scroll
+  // position instead of expanded state — the profile route lives inside
+  // the Tabs navigator and can stay mounted (not unmounted) when switching
+  // tabs, so this can't rely on remount-on-return; the reset has to
+  // happen explicitly on blur. animated: false so the jump back to top
+  // happens off-screen, while this tab is blurred, rather than animating
+  // visibly the moment the user returns. Switching Posts/Collection/Items/
+  // Tagged via `section` doesn't blur this screen, so scroll position is
+  // untouched by that — matches detailsExpanded's own behavior.
+  useFocusEffect(
+    useCallback(() => {
+      return () => scrollRef.current?.scrollTo({ y: 0, animated: false });
+    }, []),
+  );
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -1458,6 +1508,7 @@ export function ProfileV2Screen({ userId }: Props) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
@@ -1475,6 +1526,47 @@ export function ProfileV2Screen({ userId }: Props) {
               always resolves to the tab row, regardless of
               profile/editMode state. */}
           <View>
+            {/* Standalone top action row — public/visitor view only. Back
+                (shared BackButton, components/ui/back-button.tsx — bare
+                chevron, no pill/circle/background) on the left, the Grails
+                bookmark toggle on the right, vertically aligned and at the
+                same bare/borderless visible scale. The bookmark used to
+                live in its own row below the Grails grid (see
+                ownerActionRow further down) — moved up here so the top row
+                reads as one balanced back/bookmark pair, mirroring the
+                reference layout this app's back buttons are standardized
+                on. Owner view is untouched — this whole row doesn't
+                render, so the identity card's own borderWrap.marginTop: 12
+                is the only spacing above it, same as before this change. */}
+            {!isOwnProfile && (
+              <View style={styles.publicBackRow}>
+                <BackButton fallbackHref="/(tabs)" />
+                {/* Save/unsave this profile's whole Grails showcase
+                    (saved_grails via useSavedGrails above) — same handler/
+                    state/data source as always, only the position and bare
+                    (no ownerIconBtn pill) styling changed. */}
+                {currentUserId && (
+                  <TouchableOpacity
+                    onPress={toggleGrailsSave}
+                    disabled={savingGrails}
+                    hitSlop={10}
+                    style={styles.publicBookmarkBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel={isGrailsSaved ? 'Remove Grails bookmark' : 'Bookmark Grails'}
+                    accessibilityState={{ selected: isGrailsSaved, disabled: savingGrails }}
+                    testID="profile-grails-bookmark-button">
+                    <IconSymbol
+                      name={isGrailsSaved ? 'bookmark.fill' : 'bookmark'}
+                      size={24}
+                      color={isGrailsSaved ? PV2.accent : PV2.textPrimary}
+                      accessible={false}
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+
             {profile && (
               <ProfileV2IdentityCard
                 username={profile.username}
@@ -1535,7 +1627,9 @@ export function ProfileV2Screen({ userId }: Props) {
               // snapping straight there — the panel itself still owns the
               // actual expand/collapse (this has no entering/exiting of
               // its own, nothing here renders conditionally).
-              <Animated.View style={styles.heroCanvasWrap} layout={LinearTransition.duration(200)}>
+              <Animated.View
+                style={[styles.heroCanvasWrap, !isOwnProfile && styles.heroCanvasWrapPublic]}
+                layout={LinearTransition.duration(200)}>
                 <ProfileV2HeroCanvas
                   heroTheme={heroTheme}
                   themeFallbackSwatch={themeFallbackSwatch}
@@ -1561,97 +1655,49 @@ export function ProfileV2Screen({ userId }: Props) {
               </Animated.View>
             )}
 
-            {/* Owner/public control row — moved out of ProfileV2HeroCanvas
-                so the canvas itself is dimensionally identical for owner
-                and public view mode (same gridStage 32/32 padding, no
-                action row inside either way). Owner sees Settings/Saved;
-                public sees Back/Grails-bookmark. Both branches share styles.ownerActionRow/
-                ownerIconBtn (not two independently-maintained style
-                objects) so their outer spacing footprint is guaranteed
-                identical — identity content begins at the same vertical
-                offset below the canvas either way. Same handlers, icons,
-                size, hitSlop, and activeOpacity as when Back lived inside
-                the canvas. Hidden during edit mode — neither ever coexisted
-                with Cancel/Save when it lived inside the canvas either. */}
-            {/* isOwnProfile's two controls (Settings, Saved) are gated by
-                SHOW_OWNER_SETTINGS_AND_SAVED_ICONS above — false hides them
-                without leaving an empty, padded row behind: the whole row
-                only has content in the owner case, so skipping the row
-                outright (rather than rendering it empty) is what lets
-                everything below reclaim that space. The public-viewer case
-                (Back + Grails bookmark toggle) is untouched — its half of
-                this condition is always true. */}
-            {profile && !editMode && (!isOwnProfile || SHOW_OWNER_SETTINGS_AND_SAVED_ICONS) && (
+            {/* Owner-only control row — moved out of ProfileV2HeroCanvas so
+                the canvas itself is dimensionally identical for owner and
+                public view mode (same gridStage 32/32 padding, no action
+                row inside either way). Used to also carry the public
+                viewer's Back + Grails-bookmark controls; both moved up to
+                the standalone top action row above the identity card (see
+                publicBackRow), so this row is owner-only now — skipped
+                entirely for a public viewer rather than rendered empty, so
+                the grid→tab-row gap below can close up to its normal
+                spacing instead of reserving room for a row with nothing in
+                it. Gated by SHOW_OWNER_SETTINGS_AND_SAVED_ICONS — false
+                hides Settings/Saved without leaving an empty, padded row
+                behind; flip it back to true to restore them exactly as
+                they were. Hidden during edit mode — never coexisted with
+                Cancel/Save when Back lived inside the canvas either. */}
+            {profile && !editMode && isOwnProfile && SHOW_OWNER_SETTINGS_AND_SAVED_ICONS && (
               <View style={styles.ownerActionRow}>
-                {isOwnProfile ? (
-                  <>
-                    <TouchableOpacity
-                      onPress={() => router.push('/settings')}
-                      hitSlop={10}
-                      style={styles.ownerIconBtn}
-                      activeOpacity={0.75}
-                      accessibilityRole="button"
-                      accessibilityLabel="Settings"
-                      testID="profile-settings-button">
-                      <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
-                    </TouchableOpacity>
-                    {/* Saved screen (app/saved.tsx) — fully built (Saved
-                        Collections/Cards/Grails, already on the signed-image
-                        architecture) but had no reachable entry point
-                        anywhere in the app; this row's own justifyContent:
-                        'space-between' plus this doc comment block's
-                        "Owner sees Settings/Saved" already assumed a second
-                        icon here. */}
-                    <TouchableOpacity
-                      onPress={() => router.push('/saved')}
-                      hitSlop={10}
-                      style={styles.ownerIconBtn}
-                      activeOpacity={0.75}
-                      accessibilityRole="button"
-                      accessibilityLabel="Saved"
-                      testID="profile-saved-button">
-                      <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  <>
-                    <TouchableOpacity
-                      onPress={() => router.back()}
-                      hitSlop={10}
-                      style={styles.ownerIconBtn}
-                      activeOpacity={0.75}
-                      accessibilityRole="button"
-                      accessibilityLabel="Back">
-                      <IconSymbol name="chevron.left" size={18} color="#fff" />
-                    </TouchableOpacity>
-                    {/* Save/unsave this profile's whole Grails showcase
-                        (saved_grails via useSavedGrails above) — the visible
-                        control the live QA pass couldn't find, since it was
-                        only ever wired into app/grails/[userId].tsx, a route
-                        nothing in normal browsing actually navigates to.
-                        This profile screen is the real, live surface a
-                        non-owner views someone else's Grails on. */}
-                    {currentUserId && (
-                      <TouchableOpacity
-                        onPress={toggleGrailsSave}
-                        disabled={savingGrails}
-                        hitSlop={10}
-                        style={styles.ownerIconBtn}
-                        activeOpacity={0.75}
-                        accessibilityRole="button"
-                        accessibilityLabel={isGrailsSaved ? 'Remove Grails bookmark' : 'Bookmark Grails'}
-                        accessibilityState={{ selected: isGrailsSaved, disabled: savingGrails }}
-                        testID="profile-grails-bookmark-button">
-                        <IconSymbol
-                          name={isGrailsSaved ? 'bookmark.fill' : 'bookmark'}
-                          size={18}
-                          color={isGrailsSaved ? PV2.accent : '#fff'}
-                          accessible={false}
-                        />
-                      </TouchableOpacity>
-                    )}
-                  </>
-                )}
+                <TouchableOpacity
+                  onPress={() => router.push('/settings')}
+                  hitSlop={10}
+                  style={styles.ownerIconBtn}
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                  testID="profile-settings-button">
+                  <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
+                </TouchableOpacity>
+                {/* Saved screen (app/saved.tsx) — fully built (Saved
+                    Collections/Cards/Grails, already on the signed-image
+                    architecture) but had no reachable entry point anywhere
+                    in the app; this row's own justifyContent: 'space-between'
+                    plus this doc comment block's "Owner sees Settings/Saved"
+                    already assumed a second icon here. */}
+                <TouchableOpacity
+                  onPress={() => router.push('/saved')}
+                  hitSlop={10}
+                  style={styles.ownerIconBtn}
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Saved"
+                  testID="profile-saved-button">
+                  <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -1869,7 +1915,7 @@ export function ProfileV2Screen({ userId }: Props) {
                   <ProfileV2Posts
                     posts={profilePosts}
                     currentUserId={currentUserId}
-                    onUserPress={(username) => router.push({ pathname: '/user/[username]', params: { username } })}
+                    onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
                     onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
                     onLike={handleLike}
                     onDelete={handleDeletePost}
@@ -1945,6 +1991,19 @@ const styles = StyleSheet.create({
   // background-removal/spacing pass), so the grid sits almost flush
   // under the header instead of being pushed down an extra step here.
   heroCanvasWrap: {},
+  // Public viewer only — pulls the tab row up so it sits ~8px below the
+  // grid instead of the owner case's full 26px design gap
+  // (gridStage.paddingBottom 16 + ProfileV2TabRow's own marginTop 10, see
+  // TAB_CONTENT_TOP_GAP above). That 26px gap used to also have
+  // ownerActionRow's public Back/bookmark row stacked on top of it (another
+  // ~50-60px) before both those controls moved to the top action row —
+  // this closes the resulting oversized gap without touching the shared
+  // 26px constant/TabRow marginTop themselves, since those also govern the
+  // owner case and the tab-row→tab-body gap for all four tabs, neither of
+  // which this pass touches.
+  heroCanvasWrapPublic: {
+    marginBottom: -18,
+  },
   // Opaque backdrop for the sticky tab row (ScrollView's stickyHeaderIndices
   // index 1) — matches the screen's own background so scrolled content
   // underneath doesn't show through ProfileV2TabRow's own transparent gaps
@@ -1972,12 +2031,42 @@ const styles = StyleSheet.create({
   tabBodyWrap: {
     marginTop: TAB_CONTENT_TOP_GAP,
   },
+  // Owner-only now (see the render site) — Settings/Saved, gated by
+  // SHOW_OWNER_SETTINGS_AND_SAVED_ICONS.
   ownerActionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 8,
+  },
+  // Top action row, public/visitor profile only — BackButton on the left,
+  // the Grails-bookmark toggle on the right (see publicBookmarkBtn below),
+  // vertically centered and balanced across the row. Neither carries a
+  // background/border/radius (contrast ownerIconBtn's filled circle below,
+  // used for Settings/Saved), matching the reference layout this app's
+  // back buttons are standardized on. SafeAreaView(edges: ['top']) on the
+  // screen's own container already clears the status bar/notch, so this
+  // only needs a small amount of its own breathing room above
+  // ProfileV2IdentityCard (borderWrap.marginTop: 12 in
+  // profile-v2-identity-card.tsx) below it.
+  publicBackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 8,
+  },
+  // Same 44x44 invisible touch target / bare-icon treatment as the shared
+  // BackButton (components/ui/back-button.tsx) it sits opposite — no
+  // background/border/radius, only size and centering, so the two ends of
+  // publicBackRow read as one balanced pair.
+  publicBookmarkBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   ownerIconBtn: {
     width: 34,

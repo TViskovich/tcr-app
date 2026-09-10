@@ -9,10 +9,12 @@ import { PV2 } from './profile-v2-theme';
 // Left-to-right neon signature — cyan/blue into purple into pink. A
 // horizontal (not diagonal) 3-stop gradient, distinct from
 // ProfileV2Selector's diagonal IRIDESCENT_BORDER: this card's border reads
-// left-to-right on purpose, matching the reference design.
-const NEON_BORDER = ['#3FD8FF', '#8B5CF6', '#FF5FA2'] as const;
+// left-to-right on purpose, matching the reference design. Pink stop
+// pushed more saturated/magenta (was #FF5FA2, a softer rose) to match a
+// later reference screenshot more closely — cyan/purple were already close.
+const NEON_BORDER = ['#2DD4FF', '#8B5CF6', '#FF3CAC'] as const;
 
-const BORDER_WIDTH = 2.5;
+const BORDER_WIDTH = 4;
 // Square, 90°-corner frame — no rounding anywhere in this card, outer
 // border or inner content.
 const RADIUS = 0;
@@ -144,8 +146,13 @@ export function ProfileV2IdentityCard({
 }
 
 const styles = StyleSheet.create({
-  // Gradient rect showing through as the card's thin border — same
+  // Gradient rect showing through as the card's border — same
   // padding-equals-border-width trick as ProfileV2Selector's cachecaseBorder.
+  // BORDER_WIDTH (4) is the sole source of the border's visible thickness;
+  // `card` beneath it has a fixed CARD_HEIGHT and its own opaque
+  // background, so thickening this padding only grows borderWrap's own
+  // outer frame — it never squeezes or shifts any of card's inner content
+  // (avatar/text/logo/ACCT#), which is sized and positioned independently.
   // No marginHorizontal — the header runs edge-to-edge across the screen;
   // `card`'s own paddingRight is what keeps rightCol off the right screen
   // edge (the avatar deliberately has no matching left inset — see `card`

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,7 +13,6 @@ import {
   View,
 } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -28,6 +27,7 @@ import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -36,6 +36,7 @@ import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem } from '@/types';
@@ -140,6 +141,75 @@ function EditField({
   );
 }
 
+// Custom header bar — replaces the native Stack header entirely for this
+// screen (every Stack.Screen below sets headerShown: false). react-navigation's
+// native header picks up the OS's own rounded/"Liquid Glass" pill chrome
+// around header bar items on iOS 18+ — confirmed on-device, and not
+// something any headerLeft/headerRight style prop can suppress, since it's
+// applied by the native header itself rather than by anything this app
+// controls (see components/ui/back-button.tsx's own doc comment on the same
+// finding). Rendering the header row as plain in-screen content is the only
+// way to guarantee a bare chevron here. leftSlot/rightSlot are both
+// HEADER_SIDE_WIDTH wide regardless of their actual content (a 44px
+// BackButton vs. "Cancel"/"Edit"/"Save" text) so the title in between is
+// truly centered on the row, not just centered between two unequal-width
+// controls.
+const HEADER_SIDE_WIDTH = 70;
+const HEADER_ROW_HEIGHT = 44;
+
+function ItemDetailHeaderBar({
+  insetsTop,
+  title,
+  left,
+  right,
+}: {
+  insetsTop: number;
+  title: string;
+  left: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <View style={[headerBarStyles.bar, { paddingTop: insetsTop }]}>
+      <View style={headerBarStyles.row}>
+        <View style={headerBarStyles.slotLeft}>{left}</View>
+        <Text style={headerBarStyles.title} numberOfLines={1}>
+          {title}
+        </Text>
+        <View style={headerBarStyles.slotRight}>{right}</View>
+      </View>
+    </View>
+  );
+}
+
+const headerBarStyles = StyleSheet.create({
+  bar: {
+    backgroundColor: PV2.bg,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: HEADER_ROW_HEIGHT,
+  },
+  slotLeft: {
+    width: HEADER_SIDE_WIDTH,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  slotRight: {
+    width: HEADER_SIDE_WIDTH,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    paddingRight: 12,
+  },
+  title: {
+    flex: 1,
+    textAlign: 'center',
+    color: PV2.textPrimary,
+    fontSize: 17,
+    fontWeight: '600',
+  },
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Permanent layout/component architecture for the item detail screen — see
 // components/item-detail/*. Order: hero image → action bar (placeholder,
@@ -243,18 +313,6 @@ export default function ItemDetailScreen() {
     }
     fetchItem();
   }, [id, currentUserId]);
-
-  // Guarded back handler — every entry point into this screen uses
-  // router.push (never replace), so a stack entry should normally exist.
-  // canGoBack() is checked anyway as a safety net for the rare case this
-  // screen is the root of its stack (e.g. opened via a deep link).
-  function handleBack() {
-    if (router.canGoBack()) {
-      router.back();
-      return;
-    }
-    router.replace('/(tabs)');
-  }
 
   // Legacy items (and, defensively, any item whose creation-time gallery
   // row is somehow missing) predate this feature and only have
@@ -679,23 +737,33 @@ export default function ItemDetailScreen() {
 
   if (fetching) {
     return (
-      <>
-        <Stack.Screen options={{ title: 'Item Detail' }} />
+      <View style={styles.screen}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <ItemDetailHeaderBar
+          insetsTop={insets.top}
+          title="Item Detail"
+          left={<BackButton fallbackHref="/(tabs)" />}
+        />
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
-      </>
+      </View>
     );
   }
 
   if (!item || !form) {
     return (
-      <>
-        <Stack.Screen options={{ title: 'Item Not Found' }} />
+      <View style={styles.screen}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <ItemDetailHeaderBar
+          insetsTop={insets.top}
+          title="Item Not Found"
+          left={<BackButton fallbackHref="/(tabs)" />}
+        />
         <View style={styles.center}>
           <Text style={styles.errorText}>Item not found.</Text>
         </View>
-      </>
+      </View>
     );
   }
 
@@ -704,43 +772,43 @@ export default function ItemDetailScreen() {
   const transferredOutDateLabel = formatTransferredOutDate(item.transferred_out_at);
 
   return (
-    <>
-      <Stack.Screen
-        options={{
-          title: headerTitle,
-          headerBackButtonDisplayMode: 'minimal',
-          // Non-owner viewers no longer get a header-right control at all —
-          // the ItemActionBar bookmark (lower on the screen) is now the
-          // sole bookmark entry point; see that component for the
-          // cardSaved/toggleCardSave/savingCard wiring, still owned by
-          // this same useSavedCard() call below.
-          headerRight: isOwner && !isTransferredOut
-            ? () =>
-                editMode ? (
-                  <TouchableOpacity
-                    onPress={handleSave}
-                    disabled={saving}
-                    style={styles.headerBtn}>
-                    {saving ? (
-                      <ActivityIndicator size="small" color="#0a7ea4" />
-                    ) : (
-                      <Text style={styles.headerBtnText}>Save</Text>
-                    )}
-                  </TouchableOpacity>
+    <View style={styles.screen}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      {/* Non-owner viewers no longer get a header-right control at all —
+          the ItemActionBar bookmark (lower on the screen) is now the sole
+          bookmark entry point; see that component for the
+          cardSaved/toggleCardSave/savingCard wiring, still owned by this
+          same useSavedCard() call below. */}
+      <ItemDetailHeaderBar
+        insetsTop={insets.top}
+        title={headerTitle}
+        left={
+          editMode ? (
+            <TouchableOpacity onPress={cancelEdit} style={styles.headerBtn}>
+              <Text style={[styles.headerBtnText, styles.cancelBtnText]}>Cancel</Text>
+            </TouchableOpacity>
+          ) : (
+            <BackButton fallbackHref="/(tabs)" />
+          )
+        }
+        right={
+          isOwner && !isTransferredOut ? (
+            editMode ? (
+              <TouchableOpacity onPress={handleSave} disabled={saving} style={styles.headerBtn}>
+                {saving ? (
+                  <ActivityIndicator size="small" color="#0a7ea4" />
                 ) : (
-                  <TouchableOpacity onPress={enterEdit} style={styles.headerBtn}>
-                    <Text style={styles.headerBtnText}>Edit</Text>
-                  </TouchableOpacity>
-                )
-            : undefined,
-          headerLeft: editMode
-            ? () => (
-                <TouchableOpacity onPress={cancelEdit} style={styles.headerBtn}>
-                  <Text style={[styles.headerBtnText, styles.cancelBtnText]}>Cancel</Text>
-                </TouchableOpacity>
-              )
-            : () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />,
-        }}
+                  <Text style={styles.headerBtnText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={enterEdit} style={styles.headerBtn}>
+                <Text style={styles.headerBtnText}>Edit</Text>
+              </TouchableOpacity>
+            )
+          ) : undefined
+        }
       />
 
       <KeyboardAvoidingView
@@ -764,7 +832,13 @@ export default function ItemDetailScreen() {
               affect the existing owner-only card further down the screen
               (that one stays gated to !isOwner). */}
           {ownerProfile && (
-            <ItemOwnerRow username={ownerProfile.username} avatarUrl={ownerProfile.avatar_url} />
+            <ItemOwnerRow
+              username={ownerProfile.username}
+              avatarUrl={ownerProfile.avatar_url}
+              onPress={() =>
+                navigateToProfile(router, currentUserId, item?.user_id ?? '', ownerProfile.username)
+              }
+            />
           )}
 
           {/* Hero — edit mode shows the editable gallery manager (add/
@@ -1029,7 +1103,7 @@ export default function ItemDetailScreen() {
 
         </ScrollView>
       </KeyboardAvoidingView>
-    </>
+    </View>
   );
 }
 
@@ -1099,6 +1173,10 @@ const editStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: PV2.bg,
+  },
   center: {
     flex: 1,
     alignItems: 'center',

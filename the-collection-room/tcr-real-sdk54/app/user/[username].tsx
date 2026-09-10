@@ -71,8 +71,9 @@ export default function UserProfileScreen() {
   return (
     <>
       {/* ProfileV2Screen is full-bleed from the very top (same as the
-          profile tab) and supplies its own back button in its hero's top
-          row — no native header on top of it. */}
+          profile tab) and supplies its own standalone back chevron,
+          top-left above the identity card, when it renders someone else's
+          profile — no native header on top of it. */}
       <Stack.Screen options={{ headerShown: false }} />
       <ProfileV2Screen userId={userId} />
     </>

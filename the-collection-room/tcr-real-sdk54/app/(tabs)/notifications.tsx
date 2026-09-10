@@ -14,10 +14,11 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { BackButton } from '@/components/ui/back-button';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 
 type NotificationType =
@@ -411,7 +412,7 @@ export default function NotificationsScreen() {
 
     switch (notif.type) {
       case 'follow':
-        router.push({ pathname: '/user/[username]', params: { username: notif.actorUsername } });
+        navigateToProfile(router, currentUserId, notif.actorId, notif.actorUsername);
         break;
       case 'like':
       case 'comment':
@@ -460,15 +461,11 @@ export default function NotificationsScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.headerSide}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Back">
-            <View style={styles.backCircle}>
-              <IconSymbol name="chevron.left" size={18} color="#fff" />
-            </View>
-          </TouchableOpacity>
+          {/* Dark headerTitle-matching color, not the app-wide PV2.textPrimary
+              (white) default — this is the one screen in the app with a
+              light (#fff) background instead of the PV2 dark theme, so a
+              white glyph would be invisible here. */}
+          <BackButton fallbackHref="/(tabs)" color="#11181C" />
         </View>
         <Text style={styles.headerTitle}>Notifications</Text>
         <View style={[styles.headerSide, styles.headerSideRight]}>
@@ -556,14 +553,6 @@ const styles = StyleSheet.create({
   },
   headerSideRight: {
     alignItems: 'flex-end',
-  },
-  backCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   headerTitle: {
     fontSize: 20,

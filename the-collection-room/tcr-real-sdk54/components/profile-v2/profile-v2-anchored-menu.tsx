@@ -67,29 +67,42 @@ export function AnchoredMenu({ visible, anchor, onRequestClose, children }: Prop
 }
 
 export const menuStyles = StyleSheet.create({
+  // paddingVertical 9 + centered content matches ProfileV2FollowMenu's own
+  // actionBtn spec (profile-v2-follow-menu.tsx) exactly, so a single-item
+  // menu (the only case today — Follow/Unfollow) reads as a compact
+  // extension of the trigger button rather than a left-aligned list row.
   item: {
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   itemLabel: {
     color: PV2.textPrimary,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   // Same color this design system already reserves for destructive actions
   // elsewhere (Remove Avatar, Stolen/Missing custody status, Unfollow).
   itemDestructive: {
     color: PV2.accent,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
 });
 
 const styles = StyleSheet.create({
+  // borderRadius 20 matches actionBtn/messageBtn's own radius (both
+  // profile-v2-follow-menu.tsx and profile-v2-expanded-details.tsx) — with
+  // this menu's own compact height (paddingVertical 4 here + item's own
+  // paddingVertical 9 + a ~13px line, landing well under 2*20), RN clips
+  // the radius to a true stadium/pill regardless, so this reads as the
+  // same pill language as the trigger button above it, not a rounded-rect
+  // card.
   menu: {
     position: 'absolute',
     backgroundColor: '#161616',
-    borderRadius: 12,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: PV2.panelBorder,
     paddingVertical: 4,

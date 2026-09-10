@@ -15,13 +15,13 @@ import {
   View,
 } from 'react-native';
 
-import { HeaderBackButton } from '@react-navigation/elements';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { BackButton } from '@/components/ui/back-button';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -646,7 +646,7 @@ export default function PostDetailScreen() {
     );
   }
 
-  const headerBackLeft = () => <HeaderBackButton onPress={handleBack} displayMode="minimal" />;
+  const headerBackLeft = () => <BackButton fallbackHref="/(tabs)" />;
 
   if (loading && !post) {
     return (

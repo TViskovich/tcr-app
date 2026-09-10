@@ -39,6 +39,7 @@ import { FolderCoverMenu } from '@/components/collection/folder-cover-menu';
 import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-sheet';
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { FOLDER_COVER_ASPECT_RATIO, FOLDER_COVER_RADIUS } from '@/constants/folder-cover';
 import {
@@ -858,14 +859,10 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-            <Pressable
-              onPress={() => router.back()}
-              hitSlop={12}
-              style={styles.iconBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Back">
-              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-            </Pressable>
+            {/* '/collection' — COLLECTION_ROOT_ROUTE in lib/cachecase-navigation.ts,
+                the tabs group's Collection root — not '/(tabs)' (Feed), since a
+                folder route's natural fallback is the collection it lives in. */}
+            <BackButton fallbackHref="/collection" />
           </View>
           <View style={styles.center}>
             <Text style={styles.emptyTitle}>Couldn&apos;t load this collection</Text>
@@ -885,14 +882,10 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-            <Pressable
-              onPress={() => router.back()}
-              hitSlop={12}
-              style={styles.iconBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Back">
-              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-            </Pressable>
+            {/* '/collection' — COLLECTION_ROOT_ROUTE in lib/cachecase-navigation.ts,
+                the tabs group's Collection root — not '/(tabs)' (Feed), since a
+                folder route's natural fallback is the collection it lives in. */}
+            <BackButton fallbackHref="/collection" />
           </View>
           <View style={styles.center}>
             <Text style={styles.emptyTitle}>Collection not found</Text>
@@ -908,14 +901,10 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-            <Pressable
-              onPress={() => router.back()}
-              hitSlop={12}
-              style={styles.iconBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Back">
-              <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-            </Pressable>
+            {/* '/collection' — COLLECTION_ROOT_ROUTE in lib/cachecase-navigation.ts,
+                the tabs group's Collection root — not '/(tabs)' (Feed), since a
+                folder route's natural fallback is the collection it lives in. */}
+            <BackButton fallbackHref="/collection" />
           </View>
           <View style={styles.center}>
             <Text style={styles.privateIcon}>🔒</Text>
@@ -941,14 +930,7 @@ export default function CollectionFolderScreen() {
           // else reuses the folder-level actions already wired below.
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              <Pressable
-                onPress={() => router.back()}
-                hitSlop={12}
-                style={styles.heroBackCircleBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Back">
-                <IconSymbol name="chevron.left" size={20} color="#fff" />
-              </Pressable>
+              <BackButton fallbackHref="/collection" />
 
               <View style={styles.headerTopActions}>
                 {isOwner && (
@@ -1061,14 +1043,7 @@ export default function CollectionFolderScreen() {
         ) : (
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              <Pressable
-                onPress={() => router.back()}
-                hitSlop={12}
-                style={styles.iconBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Back">
-                <IconSymbol name="chevron.left" size={26} color={PV2.textPrimary} />
-              </Pressable>
+              <BackButton fallbackHref="/collection" />
 
               <View style={styles.headerTopActions}>
                 {!showInitialLoading && items.length > 0 && (
@@ -1573,16 +1548,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
-  },
-  // Back button in card-mode's headerTop — same circular treatment the old
-  // floating-over-the-image button used, just inline in the row now.
-  heroBackCircleBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   // Like/comment on the left, search/bookmark/share on the right — layout
   // only for now, see chat for which of these still need real handlers.
