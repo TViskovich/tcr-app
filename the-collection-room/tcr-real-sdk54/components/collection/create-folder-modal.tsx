@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { supabase } from '@/lib/supabase';
 
 type Props = {
@@ -40,16 +41,19 @@ type Props = {
 // entirely rather than assigning any value on the new folder's behalf.
 export function CreateFolderModal({ visible, userId, onClose, onCreated, parentFolderId }: Props) {
   const [name, setName] = useState('');
-  // Defaults to private (false) — the live folders.is_public column
-  // default is true, but nothing in this codebase documents that as an
-  // intentional product decision (confirmed against supabase/migrations/
-  // 20260819120000_enforce_collection_folder_privacy.sql, the only
-  // migration that discusses is_public's semantics — it's entirely about
-  // RLS enforcement, silent on what a new folder's starting value should
-  // be). A user should explicitly opt into public discoverability rather
-  // than a new collection starting exposed; the DB column default itself
-  // is untouched — this client just always sends an explicit value.
-  const [isPublic, setIsPublic] = useState(false);
+  // Defaults to public (true) — matches the live folders.is_public column
+  // default (NOT NULL DEFAULT true, unchanged since the column was added;
+  // see supabase/schema.sql), which this client previously overrode down
+  // to false on every insert. That override is gone now: a new folder
+  // created without touching this toggle saves as public, same as the DB
+  // would produce on its own; explicitly sending is_public below (rather
+  // than omitting it and relying on the column default) is still correct
+  // and unchanged — it just now agrees with that default instead of
+  // fighting it. Users can still flip this to private before creating, or
+  // afterward via folder-edit-modal.tsx's own Private Collection toggle
+  // (unaffected by this — it always loads from the folder's actual saved
+  // is_public value, never this default).
+  const [isPublic, setIsPublic] = useState(true);
   // Display-only derivation — the underlying state/DB field stays
   // `isPublic`/`is_public` (see above and handleCreate's insert below);
   // only the switch's on-screen framing is inverted, since "Public
@@ -85,7 +89,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
       Alert.alert('Error', error.message);
     } else {
       setName('');
-      setIsPublic(false);
+      setIsPublic(true);
       onCreated();
     }
     setLoading(false);
@@ -93,7 +97,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
 
   function handleClose() {
     setName('');
-    setIsPublic(false);
+    setIsPublic(true);
     onClose();
   }
 
@@ -113,7 +117,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
           <TextInput
             style={styles.input}
             placeholder="Folder name"
-            placeholderTextColor="#999"
+            placeholderTextColor={PV2.textTertiary}
             value={name}
             onChangeText={setName}
             autoFocus
@@ -135,7 +139,8 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
             <Switch
               value={isPrivate}
               onValueChange={(value) => setIsPublic(!value)}
-              trackColor={{ true: '#0a7ea4' }}
+              trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
+              thumbColor="#fff"
             />
           </View>
 
@@ -144,7 +149,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
             onPress={handleCreate}
             disabled={loading || !name.trim()}>
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={PV2.textPrimary} />
             ) : (
               <Text style={styles.buttonText}>Create Folder</Text>
             )}
@@ -167,7 +172,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   sheet: {
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 24,
@@ -178,7 +183,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#ddd',
+    backgroundColor: PV2.border,
     alignSelf: 'center',
     marginBottom: 8,
   },
@@ -194,39 +199,39 @@ const styles = StyleSheet.create({
   toggleTitle: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   toggleHint: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
     lineHeight: 18,
     marginTop: 2,
   },
   title: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 4,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 16,
-    backgroundColor: '#fafafa',
-    color: '#11181C',
+    backgroundColor: PV2.collectorPanelBg,
+    color: PV2.textPrimary,
   },
   button: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 4,
   },
   buttonDisabled: {
-    backgroundColor: '#b0d4e3',
+    backgroundColor: PV2.accentSoft,
   },
   buttonText: {
     color: '#fff',
@@ -238,7 +243,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   cancelText: {
-    color: '#687076',
+    color: PV2.textSecondary,
     fontSize: 15,
   },
 });

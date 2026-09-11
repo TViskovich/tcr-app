@@ -15,7 +15,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
-import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
@@ -458,7 +458,7 @@ export default function SearchScreen() {
           value={query}
           onChangeText={handleQueryChange}
           placeholder={mode === 'users' ? 'Search collectors...' : 'Search cards, players, teams...'}
-          placeholderTextColor="#999"
+          placeholderTextColor={PV2.textTertiary}
           autoCapitalize="none"
           autoCorrect={false}
           returnKeyType="search"
@@ -472,11 +472,11 @@ export default function SearchScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : !hasSearched ? (
         <View style={styles.center}>
-          <CacheCaseLogo variant="dark" size={48} placement="emptyState" style={styles.emptyLogoSpacing} />
+          <CacheCaseLogo variant="light" size={48} placement="emptyState" style={styles.emptyLogoSpacing} />
           <Text style={styles.emptyTitle}>Search for collectors or cards</Text>
           <Text style={styles.emptyBody}>{emptyBody}</Text>
         </View>
@@ -517,7 +517,7 @@ export default function SearchScreen() {
               />
             )}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
             }
           />
         </>
@@ -541,7 +541,7 @@ export default function SearchScreen() {
               />
             )}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
             }
           />
         </>
@@ -553,7 +553,7 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
+    backgroundColor: PV2.bg,
   },
   header: {
     flexDirection: 'row',
@@ -562,22 +562,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: PV2.dividerColor,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   toggleRow: {
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: PV2.dividerColor,
   },
   toggle: {
     flexDirection: 'row',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: PV2.collectorPanelBg,
     borderRadius: 8,
     padding: 3,
     alignSelf: 'flex-start',
@@ -588,7 +588,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   toggleBtnActive: {
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
@@ -598,10 +598,10 @@ const styles = StyleSheet.create({
   toggleText: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   toggleTextActive: {
-    color: '#11181C',
+    color: PV2.textPrimary,
     fontWeight: '600',
   },
   searchRow: {
@@ -609,13 +609,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     margin: 12,
     paddingHorizontal: 12,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: PV2.collectorPanelBg,
     borderRadius: 10,
   },
   input: {
     flex: 1,
     fontSize: 15,
-    color: '#11181C',
+    color: PV2.textPrimary,
     paddingVertical: 10,
   },
   clearBtn: {
@@ -624,7 +624,7 @@ const styles = StyleSheet.create({
   },
   clearText: {
     fontSize: 14,
-    color: '#999',
+    color: PV2.textTertiary,
   },
   center: {
     flex: 1,
@@ -642,33 +642,36 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
     textAlign: 'center',
   },
   emptyBody: {
     fontSize: 14,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 20,
   },
-  // Full-panel error-state Retry button — same convention as Feed's own
-  // retryButton (app/(tabs)/index.tsx).
+  // Full-panel error-state Retry button — same accentSoft-fill +
+  // accent-border convention as app/collection/[folderId].tsx's own
+  // emptyButton, not a solid fill.
   retryButton: {
     marginTop: 16,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 12,
     paddingHorizontal: 24,
   },
   retryButtonText: {
-    color: '#fff',
+    color: PV2.textPrimary,
     fontSize: 15,
     fontWeight: '600',
   },
   // Inline banner for a failed refresh when results are already on
-  // screen — same shape as the Collections-tab/Folder-detail
-  // refreshErrorRow, adapted to this screen's light theme/accent.
+  // screen — same accentSoft-fill / accent-tinted-border convention as
+  // app/collection/[folderId].tsx's own refreshErrorRow.
   refreshErrorRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -679,20 +682,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: '#fdecea',
+    backgroundColor: PV2.accentSoft,
     borderWidth: 1,
-    borderColor: '#f5c6c0',
+    borderColor: 'rgba(232,24,26,0.35)',
   },
   refreshErrorText: {
     flex: 1,
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
     marginRight: 12,
   },
   refreshErrorRetry: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#0a7ea4',
+    color: PV2.accent,
   },
   row: {
     flexDirection: 'row',
@@ -700,7 +703,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: PV2.dividerColor,
     gap: 12,
   },
   // User avatar
@@ -709,7 +712,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   avatarPlaceholder: {
@@ -719,7 +722,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#1565C0',
+    color: PV2.textPrimary,
   },
   // Card thumbnail
   cardThumb: {
@@ -727,7 +730,7 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 6,
     overflow: 'hidden',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   cardThumbPlaceholder: {
@@ -745,15 +748,15 @@ const styles = StyleSheet.create({
   primaryText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   secondaryText: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   tertiaryText: {
     fontSize: 12,
-    color: '#aaa',
+    color: PV2.textTertiary,
     marginTop: 1,
   },
 });

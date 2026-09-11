@@ -2,6 +2,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import type { CollectionGridEntry } from '@/hooks/use-collection';
 import type { CollectionItem, Folder } from '@/types';
 import { PV2 } from './profile-v2-theme';
@@ -30,6 +31,15 @@ type Props = {
   // the profile being viewed.
   onAddItem?: (folder: Folder) => void;
   onCreatePress?: () => void;
+  // Owner-only, same gating as onCreatePress/onAddItem above — the small
+  // "+" rendered at the end of this tab's real content (see the render
+  // below), distinct from onCreatePress: this opens the actual
+  // CreateFolderModal in place (profile-v2-screen.tsx owns that state),
+  // rather than navigating away to the old Collection page the way
+  // onCreatePress's empty-state button still does. Kept as a separate prop
+  // rather than repointing onCreatePress itself, so that existing button's
+  // behavior is left untouched.
+  onCreateFolderPress?: () => void;
 };
 
 // A compact, vertically-stacked preview of the same folder rows the main
@@ -54,6 +64,7 @@ export function ProfileV2Collections({
   onOpenChildFolder,
   onAddItem,
   onCreatePress,
+  onCreateFolderPress,
 }: Props) {
   if (folders.length === 0) {
     return (
@@ -66,6 +77,16 @@ export function ProfileV2Collections({
         {onCreatePress && (
           <TouchableOpacity style={styles.emptyButton} onPress={onCreatePress} activeOpacity={0.85}>
             <Text style={styles.emptyButtonText}>Create First Collection</Text>
+          </TouchableOpacity>
+        )}
+        {onCreateFolderPress && (
+          <TouchableOpacity
+            style={styles.addFolderButton}
+            onPress={onCreateFolderPress}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Create new collection">
+            <IconSymbol name="plus" size={30} color={PV2.textPrimary} />
           </TouchableOpacity>
         )}
       </View>
@@ -97,6 +118,24 @@ export function ProfileV2Collections({
           />
         </View>
       ))}
+
+      {/* Owner-only "+" — create-new-folder action, directly after the real
+          folder content. Plain content flow (not absolutely positioned, no
+          extra spacer/minHeight), so it's simply the last thing in this
+          tab's own intrinsic height — profile-v2-screen.tsx's ScrollView
+          nav-clearance padding (TAB_BAR_HEIGHT + insets.bottom + 24,
+          unchanged) is what lets it clear the floating nav, the same as
+          every other tab. */}
+      {onCreateFolderPress && (
+        <TouchableOpacity
+          style={styles.addFolderButton}
+          onPress={onCreateFolderPress}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Create new collection">
+          <IconSymbol name="plus" size={30} color={PV2.textPrimary} />
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -154,5 +193,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#fff',
+  },
+  // Just a "+" glyph — no pill, no label, no filled circle, transparent
+  // background. 44x44 touch target (accessibility minimum) even though the
+  // glyph itself (size 30, within the requested 28-34px range) is smaller;
+  // centered horizontally as the last thing in this tab's content, with
+  // enough top spacing to read as a distinct action below the real content
+  // above it, not squeezed against it.
+  addFolderButton: {
+    alignSelf: 'center',
+    marginTop: 20,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

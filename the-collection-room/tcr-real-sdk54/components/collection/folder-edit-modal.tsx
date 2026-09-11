@@ -13,6 +13,7 @@ import {
 
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { deleteFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -150,7 +151,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           <Text style={styles.modalTitle}>Edit Folder</Text>
           <TouchableOpacity onPress={saveEditFolder} disabled={editSaving || !editName.trim()} hitSlop={8}>
             {editSaving
-              ? <ActivityIndicator size="small" color="#0a7ea4" />
+              ? <ActivityIndicator size="small" color={PV2.link} />
               : <Text style={[styles.modalSave, !editName.trim() && styles.modalSaveDisabled]}>Save</Text>
             }
           </TouchableOpacity>
@@ -165,7 +166,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               value={editName}
               onChangeText={setEditName}
               placeholder="Folder name"
-              placeholderTextColor="#999"
+              placeholderTextColor={PV2.textTertiary}
               autoFocus
               maxLength={80}
             />
@@ -176,7 +177,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               Cover); this modal owns none of that logic itself. */}
           <TouchableOpacity style={styles.modalCoverRow} onPress={onChangeCover} activeOpacity={0.7}>
             <Text style={styles.modalCoverRowLabel}>Change Cover</Text>
-            <IconSymbol name="chevron.right" size={16} color="#c2c2c2" />
+            <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
           </TouchableOpacity>
 
           {/* Private toggle */}
@@ -192,7 +193,8 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
             <Switch
               value={editIsPrivate}
               onValueChange={(value) => setEditIsPublic(!value)}
-              trackColor={{ true: '#0a7ea4' }}
+              trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
+              thumbColor="#fff"
             />
           </View>
 
@@ -203,7 +205,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               onPress={confirmDeleteFolder}
               disabled={deleting}>
               {deleting
-                ? <ActivityIndicator size="small" color="#e53935" />
+                ? <ActivityIndicator size="small" color={PV2.accent} />
                 : <Text style={styles.modalDeleteButtonText}>Delete Folder</Text>
               }
             </TouchableOpacity>
@@ -217,7 +219,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
 const styles = StyleSheet.create({
   modal: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -225,26 +227,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: PV2.dividerColor,
   },
   modalTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   modalCancel: {
     fontSize: 16,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   modalSave: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   modalSaveDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
   modalBody: {
     padding: 16,
@@ -253,35 +255,35 @@ const styles = StyleSheet.create({
   modalLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#687076',
+    color: PV2.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 8,
   },
   modalInput: {
-    backgroundColor: '#fff',
+    backgroundColor: PV2.collectorPanelBg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   modalCoverRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
+    backgroundColor: PV2.collectorPanelBg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
   modalCoverRowLabel: {
     fontSize: 16,
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   modalToggleRow: {
     flexDirection: 'row',
@@ -294,26 +296,26 @@ const styles = StyleSheet.create({
   },
   modalHint: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
     lineHeight: 18,
     marginTop: 4,
   },
   modalDangerZone: {
     paddingTop: 20,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: PV2.dividerColor,
   },
   modalDeleteButton: {
     paddingVertical: 12,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#e53935',
+    borderColor: PV2.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalDeleteButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#e53935',
+    color: PV2.accent,
   },
 });

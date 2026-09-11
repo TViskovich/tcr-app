@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -152,7 +153,12 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     .map((p) => p.id as string);
 
   const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', userId).abortSignal(signal).single(),
+    supabase
+      .from('profiles')
+      .select('id, username, display_name, hero_display_name, avatar_url')
+      .eq('id', userId)
+      .abortSignal(signal)
+      .single(),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
@@ -198,7 +204,15 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
       created_at: post.created_at,
       item_name: (item as any).name ?? null,
       username: profile.username ?? 'user',
-      display_name: profile.display_name ?? null,
+      // Hero/display name first, matching the profile identity card's own
+      // source of truth (profile-v2-screen.tsx's `hero_display_name ||
+      // display_name || ...`) — same fallback queryFeed/queryFollowingFeed
+      // in app/(tabs)/index.tsx now use, so every PostCard consumer (Feed,
+      // and this file's own fetchUserPosts for a profile's Posts tab)
+      // resolves the author name identically. PostCard's own
+      // `post.display_name || post.username` (unchanged) completes the
+      // fallback down to username.
+      display_name: profile.hero_display_name || profile.display_name || null,
       avatar_url: profile.avatar_url ?? null,
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
@@ -246,23 +260,53 @@ export function PostCard({
   const isCardShare = post.post_type === 'card_share';
   const isOwner = !!currentUserId && currentUserId === post.user_id;
 
-  // Natural aspect ratio of the standard image path's image, measured
+  // Single-card ('item') post media height cap — SINGLE_CARD_MAX_HEIGHT_FRACTION
+  // of the actual device viewport, not a fixed pixel value, so this scales
+  // sensibly across phone sizes. useWindowDimensions (not a one-time
+  // Dimensions.get('window') snapshot) so this stays correct if the window
+  // ever changes (rotation, split-view) without needing a remount. Applied
+  // as an explicit maxHeight below, on top of aspectRatio sizing — see
+  // mediaImageWrapSingle's own comment for why both are needed together.
+  const { height: windowHeight } = useWindowDimensions();
+  const singleCardMaxHeight = windowHeight * SINGLE_CARD_MAX_HEIGHT_FRACTION;
+
+  // Natural aspect ratio of the current post's LEAD image, measured
   // client-side — nothing in the schema stores source width/height, so
   // this is the only way to size the box to the image's real shape rather
   // than force-cropping every post into a fixed 5:7 box. null until
   // measured (or on failure), meaning "use MEDIA_DEFAULT_ASPECT_RATIO".
+  // Shared by the standard image path AND card-share: a card-share post's
+  // outer Feed frame is now derived from its FIRST card's image, using the
+  // exact same measure→clamp→maxHeight pipeline a single-photo post uses
+  // (see clampSingleCardAspectRatio and its own call sites below) — the
+  // carousel itself still swipes internally between differently-shaped
+  // cards without ever resizing (see cardImageWrap's own comment), but the
+  // Feed footprint it presents is now sized the same way a single-photo
+  // post's is, rather than an independent, always-5/7 rule that existed
+  // only because this was a carousel. rate_my_grails is still excluded —
+  // GrailsPostBody is a static grid with its own layout, not part of this
+  // single/multi-photo frame unification.
   const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
+
+  // Stable primitive (a URL string, or null) rather than depending on
+  // post.cardShareItems (a fresh array reference on every parent re-render
+  // even when its content is unchanged) — keeps the effect below from
+  // re-measuring on every render that doesn't actually change which image
+  // is the lead card.
+  const cardShareLeadImageUrl = isCardShare ? (post.cardShareItems[0]?.snapshot_image_url ?? null) : null;
 
   useEffect(() => {
     setMediaAspectRatio(null);
-    // Text posts CAN now carry an optional attached photo (app/post/new.tsx)
-    // and reuse this exact responsive sizing — only rate_my_grails/
-    // card_share (which render their own distinct multi-image bodies,
-    // unrelated to post.image_url) are excluded here.
-    if (isRateMyGrails || isCardShare || !post.image_url) return;
+    if (isRateMyGrails) return;
+    // Text posts CAN carry an optional attached photo (app/post/new.tsx)
+    // and reuse this exact responsive sizing via post.image_url; card-share
+    // posts have no top-level image_url at all and measure their first
+    // card's snapshot instead (see cardShareLeadImageUrl above).
+    const uri = isCardShare ? cardShareLeadImageUrl : post.image_url;
+    if (!uri) return;
     let cancelled = false;
     RNImage.getSize(
-      post.image_url,
+      uri,
       (width, height) => {
         if (!cancelled && height > 0) setMediaAspectRatio(width / height);
       },
@@ -276,7 +320,7 @@ export function PostCard({
     return () => {
       cancelled = true;
     };
-  }, [post.image_url, isRateMyGrails, isCardShare]);
+  }, [post.image_url, cardShareLeadImageUrl, isRateMyGrails, isCardShare]);
 
   const rating = useGrailRating({
     postId: post.id,
@@ -365,12 +409,24 @@ export function PostCard({
       {/* Post body — text block for text posts (optionally followed by an
           attached photo, see app/post/new.tsx), grails grid for Rate My
           Grails, image otherwise. The standard image path (final branch
-          below) gets the new X-style indented content column —
-          caption/hashtag text directly above a large, edge-forward image
-          whose left edge lines up with the identity text above it (never
-          under the avatar). CardShare/Rate My Grails keep their previous
-          caption-after-media positioning and full-bleed wrapper, unchanged
-          this pass. */}
+          below) gets the X-style indented content column — caption/
+          hashtag text directly above a large, edge-forward image whose
+          left edge lines up with the identity text above it (never under
+          the avatar). Rate My Grails keeps its own previous full-bleed
+          grid wrapper, unchanged — GrailsPostBody is a static grid, not a
+          swipeable carousel, and wasn't part of the single/multi-photo
+          sizing mismatch this pass fixes. CardShare's own wrapper below now
+          reuses the exact same content column, media box, AND aspect-ratio
+          sizing rule as the standard single-photo path (mediaContentColumn/
+          mediaContentColumnFull/mediaImageWrapSingle/singleCardMaxHeight/
+          clampSingleCardAspectRatio) rather than its own independent,
+          always-5/7 frame — the frame is measured once from the first
+          card's image (see mediaAspectRatio's own comment above) and then
+          held fixed while swiping, so the two post types now present the
+          same outer Feed footprint by construction, not by two separately
+          tuned sizing systems that happen to look similar. Its caption
+          still renders separately, after the media (see cardBody below) —
+          only the outer media footprint changed here. */}
       {isRateMyGrails ? (
         <View style={styles.cardGrailsWrap}>
           <GrailsPostBody
@@ -392,14 +448,33 @@ export function PostCard({
         // for this specific post, distinct from the whole fetch failing —
         // see fetchCardShareItems) gets a controlled fallback instead of
         // silently rendering nothing.
-        <View style={styles.cardImageWrap}>
-          {post.cardShareItems.length > 0 ? (
-            <CardSharePostBody cards={post.cardShareItems} />
-          ) : (
-            <View style={styles.cardShareUnavailable}>
-              <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
-            </View>
-          )}
+        <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
+          <View
+            style={[
+              styles.cardImageWrap,
+              styles.mediaImageWrapSingle,
+              {
+                // Same measure→clamp→maxHeight pipeline the single-photo
+                // path uses (clampSingleCardAspectRatio, singleCardMaxHeight)
+                // — see mediaAspectRatio's own comment above for why this is
+                // measured from the FIRST card specifically. Fixed for the
+                // lifetime of this render regardless of which card is
+                // currently swiped to; only the image inside changes
+                // per-slide (contentFit="contain" in CardSharePostBody), the
+                // outer frame does not.
+                aspectRatio:
+                  mediaAspectRatio != null ? clampSingleCardAspectRatio(mediaAspectRatio) : MEDIA_DEFAULT_ASPECT_RATIO,
+                maxHeight: singleCardMaxHeight,
+              },
+            ]}>
+            {post.cardShareItems.length > 0 ? (
+              <CardSharePostBody cards={post.cardShareItems} mediaBorderRadius={MEDIA_CORNER_RADIUS} />
+            ) : (
+              <View style={styles.cardShareUnavailable}>
+                <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
+              </View>
+            )}
+          </View>
         </View>
       ) : (
         <>
@@ -408,28 +483,46 @@ export function PostCard({
               <Text style={styles.cardTextContent}>{post.content}</Text>
             </TouchableOpacity>
           )}
-          {/* A text post's optional attached photo (app/post/new.tsx) reuses
-              this exact box/sizing — the only thing gated by isTextPost
-              here is the caption line above it, since a text post's body
-              already rendered as cardTextContent just above; caption/
-              item_name are item-post-only fields. Its image_url points at
-              share-snapshots (copy-post-photo-to-share-snapshots), the
-              same durable, always-public surface every other post image
-              already renders from — no special signed-image branch needed
-              here. */}
+          {/* A text post's optional attached photo (app/post/new.tsx) now
+              shares the exact same outer horizontal frame (mediaContentColumnFull's
+              12px inset + mediaImageWrapSingle's 86%-centered width) as a
+              genuine single-card share and card-share's carousel, so every
+              media-bearing post type lines up on one common left/right edge
+              in Feed — only the aspect-ratio RULE and contentFit still differ
+              by type (clampMediaAspectRatio + 'cover' here vs.
+              clampSingleCardAspectRatio + 'contain' for !isTextPost), not the
+              frame's position/width. caption/item_name are item-post-only
+              fields. Its image_url points at share-snapshots
+              (copy-post-photo-to-share-snapshots), the same durable,
+              always-public surface every other post image already renders
+              from — no special signed-image branch needed here. */}
           {post.image_url && (
-            <View style={styles.mediaContentColumn}>
+            <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
               {!isTextPost && (post.caption || post.item_name) && (
                 <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
               )}
               <TouchableOpacity
                 style={[
                   styles.mediaImageWrap,
+                  styles.mediaImageWrapSingle,
                   {
                     aspectRatio:
                       mediaAspectRatio != null
-                        ? clampMediaAspectRatio(mediaAspectRatio)
+                        ? isTextPost
+                          ? clampMediaAspectRatio(mediaAspectRatio)
+                          : clampSingleCardAspectRatio(mediaAspectRatio)
                         : MEDIA_DEFAULT_ASPECT_RATIO,
+                    // Viewport-relative height cap, single-card posts only
+                    // (see singleCardMaxHeight's own comment above) — Yoga
+                    // resolves this alongside aspectRatio as a true cap:
+                    // the box is min(width / aspectRatio, this), never
+                    // taller. When that cap is what actually binds (a tall
+                    // portrait card at typical widths), the box's
+                    // rendered shape no longer exactly matches the image's
+                    // own ratio — contentFit="contain" (below) is what
+                    // keeps the full card visible in that case, via
+                    // letterboxing instead of a crop.
+                    ...(isTextPost ? null : { maxHeight: singleCardMaxHeight }),
                   },
                 ]}
                 onPress={onPostPress}
@@ -437,7 +530,15 @@ export function PostCard({
                 <Image
                   source={{ uri: post.image_url }}
                   style={StyleSheet.absoluteFill}
-                  contentFit="cover"
+                  // 'contain' for a single-card share (never crops — an
+                  // aspect mismatch against the box below only ever
+                  // letterboxes, so the full card is always visible even
+                  // for an unusually-cropped upload); text posts keep
+                  // 'cover' exactly as before — that path's own tighter
+                  // clamp (clampMediaAspectRatio) already keeps cropping
+                  // minor there, and this isn't the behavior being changed
+                  // for text posts.
+                  contentFit={isTextPost ? 'cover' : 'contain'}
                   transition={200}
                   onError={() => setImageError(true)}
                 />
@@ -504,26 +605,76 @@ export function PostCard({
 // under the identity text above it, never under the avatar.
 const MEDIA_CONTENT_LEFT_INSET = 12 + 36 + 10;
 
-// X/Twitter-inspired responsive single-image sizing (standard image-path
-// posts only — text/rate_my_grails/card_share are unaffected). Bounds are
-// expressed as width/height ratios, not a raw pixel ceiling: clamping the
-// ratio's lower end (3/4 — "3:4 portrait") IS the max-height guard an
+// Single source of truth for the feed media frame's corner rounding —
+// shared by mediaImageWrap (single-photo) and cardImageWrap (card-share),
+// and passed down into CardSharePostBody itself (mediaBorderRadius prop)
+// so each carousel slide is clipped to the same radius directly, not only
+// via this outer wrapper's own overflow: 'hidden'. Previously each of the
+// two outer styles carried its own independent `11` literal — visually
+// identical, but two numbers that could silently drift apart; now there is
+// exactly one.
+const MEDIA_CORNER_RADIUS = 11;
+
+// X/Twitter-inspired responsive single-image sizing — the standard
+// image-path AND card-share (measured from its lead card) both use this;
+// rate_my_grails is the one exception, keeping its own separate
+// GrailsPostBody grid wrapper untouched. Bounds are expressed as width/height ratios, not a raw pixel
+// ceiling: clamping the ratio's lower end IS the max-height guard an
 // extremely tall upload needs, since height = width / ratio is capped at
-// width / (3/4) once clamped, however tall the source image actually is.
-// The upper end (2/1 — "2:1 landscape") keeps very wide/panoramic uploads
-// from going too short. Used as the actual style only once the source
-// image's natural size has been measured (see useEffect below); until
-// then (or if measuring fails), MEDIA_DEFAULT_ASPECT_RATIO — the same 5/7
-// this path used unconditionally before — is used as a same-as-before
-// fallback so there's no layout jump for the common case and no broken
-// box if getSize ever errors.
+// width / MIN once clamped, however tall the source image actually is. The
+// upper end (2/1 — "2:1 landscape") keeps very wide/panoramic uploads from
+// going too short — shared by both bounds below, unchanged. Used as the
+// actual style only once the source image's natural size has been measured
+// (see useEffect below); until then (or if measuring fails),
+// MEDIA_DEFAULT_ASPECT_RATIO — 5/7, which also happens to already match a
+// standard 2.5"x3.5" trading card almost exactly — is used as a
+// same-as-before fallback so there's no layout jump for the common case
+// and no broken box if getSize ever errors.
 const MEDIA_MIN_ASPECT_RATIO = 3 / 4;
 const MEDIA_MAX_ASPECT_RATIO = 2 / 1;
 const MEDIA_DEFAULT_ASPECT_RATIO = 5 / 7;
 
+// Text-post-with-photo path only — unchanged bound, paired with
+// contentFit="cover" (a mismatch here crops slightly; 3/4 keeps that crop
+// minor). Not used by single-card ('item') posts any more — see
+// clampSingleCardAspectRatio below.
 function clampMediaAspectRatio(ratio: number): number {
   return Math.min(MEDIA_MAX_ASPECT_RATIO, Math.max(MEDIA_MIN_ASPECT_RATIO, ratio));
 }
+
+// Single-card ("item"-type) share posts — and, as of the single/multi-photo
+// frame unification, card-share posts' lead-card frame too — get a much
+// more permissive lower bound than the text-post path — real trading-card
+// photos already hover
+// right around MEDIA_DEFAULT_ASPECT_RATIO (5/7 ≈ a standard 2.5x3.5" card),
+// so this rarely even triggers; it exists purely as a safety net against a
+// pathological upload (e.g. an accidentally cropped tall sliver) making a
+// feed post absurdly tall, not as an everyday crop guard the way the
+// text-post bound is. Safe to be this loose specifically because this path
+// pairs it with contentFit="contain" (see the JSX) — an aspect mismatch
+// against this box only ever letterboxes, never crops, so a looser bound
+// can never cut off part of the card the way it would under 'cover'.
+const SINGLE_CARD_MIN_ASPECT_RATIO = 1 / 2;
+
+function clampSingleCardAspectRatio(ratio: number): number {
+  return Math.min(MEDIA_MAX_ASPECT_RATIO, Math.max(SINGLE_CARD_MIN_ASPECT_RATIO, ratio));
+}
+
+// Corrective pass — the width/height combination above (near-full-width
+// column + a lower aspect-ratio bound loose enough to permit a 2:1
+// portrait) had no ceiling on the RESULTING pixel height at all, so a
+// typical tall card photo rendered at roughly screen_width * 2 tall —
+// visually a near-fullscreen viewer, not a Feed post. Two independent caps
+// fix this together (neither alone is enough): a width fraction, so the
+// box's own baseline width is smaller to begin with, and a viewport-height
+// fraction (singleCardMaxHeight, computed in the component from
+// useWindowDimensions), so even a tall card can't exceed a fixed share of
+// the visible screen regardless of width. mediaImageWrapSingle applies the
+// width half of this; the height half is applied inline (see the JSX) since
+// it depends on the live window height, not a static value StyleSheet.create
+// can hold.
+const SINGLE_CARD_WIDTH_FRACTION = 0.86;
+const SINGLE_CARD_MAX_HEIGHT_FRACTION = 0.58;
 
 const styles = StyleSheet.create({
   // X-style Piece 2 — flat, edge-to-edge, single unified dark surface (no
@@ -610,12 +761,21 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
     flexShrink: 0,
   },
-  // CardShare's own wrapper — layout/position unchanged this pass; only
-  // the placeholder tint moved off the old light-theme gray (#e9ecef, a
-  // holdover from the white-card era) so it doesn't flash light against
-  // the now-dark card while CardSharePostBody's images load.
+  // CardShare's own media box. aspectRatio no longer lives here as a fixed
+  // literal — like mediaImageWrap, it's set inline per-post from
+  // mediaAspectRatio (measured from the FIRST card, clamped via
+  // clampSingleCardAspectRatio — see the JSX and the mediaAspectRatio
+  // useEffect above) or MEDIA_DEFAULT_ASPECT_RATIO before that resolves.
+  // The frame still stays fixed for the lifetime of this render regardless
+  // of which card is swiped to — only ever measured once, from the lead
+  // card — so swiping between differently-shaped cards never resizes the
+  // outer post. Sizing (width/centering/max-height) comes from
+  // mediaImageWrapSingle + the inline maxHeight applied alongside this at
+  // the JSX call site — the exact same rules the single-photo path uses —
+  // so this style object only still owns the background, corner radius,
+  // and clipping.
   cardImageWrap: {
-    aspectRatio: 5 / 7,
+    borderRadius: MEDIA_CORNER_RADIUS,
     backgroundColor: PV2.collectorPanelBg,
     overflow: 'hidden',
   },
@@ -631,7 +791,10 @@ const styles = StyleSheet.create({
   // Standard image path only (Piece 3) — caption/hashtag text directly
   // above a large, edge-forward image, indented to MEDIA_CONTENT_LEFT_INSET
   // so its left edge lines up with the identity text above rather than the
-  // avatar; right edge matches cardHeader's own 12px right inset.
+  // avatar; right edge matches cardHeader's own 12px right inset. Still the
+  // base style for a text post's attached photo (mediaContentColumnFull
+  // below only ever applies ON TOP of this, and only for a genuine
+  // single-card share).
   mediaContentColumn: {
     paddingLeft: MEDIA_CONTENT_LEFT_INSET,
     paddingRight: 12,
@@ -640,6 +803,24 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
     // Piece 6 — 6→4, a few more px off the caption→image gap.
     gap: 4,
+  },
+  // X/Twitter reference sizing — applied to EVERY media-bearing post in the
+  // standard image path (single-card 'item' posts, card-share via its own
+  // JSX call site, and text posts' optional attached photo) so all three
+  // share one horizontal frame. Overrides just paddingLeft, from
+  // MEDIA_CONTENT_LEFT_INSET (58 — aligned under the identity TEXT, not the
+  // avatar) down to 12, the same horizontal inset cardHeader/actionsRow's
+  // own paddingRight already use — so the image spans nearly the full post
+  // width, gutter-to-gutter with the header above and actions below,
+  // instead of being indented an extra ~46px past them (still true for a
+  // text post's photo now too). Caption text for single-card posts shares
+  // this same column; a text post's own caption/content lives in the
+  // separate cardTextWrap above, not here. Aspect-ratio sizing and
+  // contentFit are controlled separately, at the mediaImageWrap/Image level
+  // in the JSX, and still differ by post type — only this horizontal frame
+  // is now shared.
+  mediaContentColumnFull: {
+    paddingLeft: 12,
   },
   mediaCaption: {
     fontSize: 14,
@@ -652,9 +833,29 @@ const styles = StyleSheet.create({
   // before that measurement resolves (see the JSX and useEffect above).
   // Corner treatment (11px radius) and placeholder background unchanged.
   mediaImageWrap: {
-    borderRadius: 11,
+    borderRadius: MEDIA_CORNER_RADIUS,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,
+  },
+  // Shared outer media frame — single-card ('item') posts, card-share's
+  // carousel frame, AND a text post's optional attached photo all apply
+  // this now, so every media-bearing Feed post gets the exact same
+  // left/right edges (this is the single source of truth for that; see
+  // mediaContentColumnFull's own comment for the matching column-padding
+  // half of the pair). Only the maxHeight cap alongside this (see the JSX)
+  // still differs — applied for !isTextPost, omitted for text posts — that
+  // is a height-only exception, not a width/position one. '86%' is
+  // relative to mediaContentColumn (this box's flex parent), which is
+  // already inset 12px each side — not the raw screen width — so the image
+  // reads as visibly narrower than the post's own header/caption row, with
+  // real margins on both sides, rather than stretching to fill it.
+  // alignSelf: 'center' is required here: mediaContentColumn is a plain
+  // flex column (default alignItems: 'stretch'), so without this the box
+  // would still stretch to 100% width before the percentage even applied
+  // against a meaningfully smaller box.
+  mediaImageWrapSingle: {
+    width: `${SINGLE_CARD_WIDTH_FRACTION * 100}%`,
+    alignSelf: 'center',
   },
   // Padding (10, all sides) deliberately untouched — GrailsPostBody
   // renders a media grid, and any padding change would shift its internal

@@ -14,6 +14,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -461,11 +462,7 @@ export default function NotificationsScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.headerSide}>
-          {/* Dark headerTitle-matching color, not the app-wide PV2.textPrimary
-              (white) default — this is the one screen in the app with a
-              light (#fff) background instead of the PV2 dark theme, so a
-              white glyph would be invisible here. */}
-          <BackButton fallbackHref="/(tabs)" color="#11181C" />
+          <BackButton fallbackHref="/(tabs)" />
         </View>
         <Text style={styles.headerTitle}>Notifications</Text>
         <View style={[styles.headerSide, styles.headerSideRight]}>
@@ -479,7 +476,7 @@ export default function NotificationsScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : notifications.length === 0 && loadError ? (
         // Real query/network failure with nothing already on screen —
@@ -525,7 +522,7 @@ export default function NotificationsScreen() {
               <NotificationRow item={item} onPress={() => handlePress(item)} />
             )}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
             }
           />
         </>
@@ -537,7 +534,7 @@ export default function NotificationsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   header: {
     flexDirection: 'row',
@@ -546,7 +543,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: PV2.dividerColor,
   },
   headerSide: {
     flex: 1,
@@ -557,12 +554,12 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   markAllText: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   center: {
     flex: 1,
@@ -573,32 +570,35 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
   },
-  // Full-panel error-state Retry button — same convention as Feed's own
-  // retryButton (app/(tabs)/index.tsx).
+  // Full-panel error-state Retry button — same accentSoft-fill +
+  // accent-border convention as app/collection/[folderId].tsx's own
+  // emptyButton.
   retryButton: {
     marginTop: 16,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accentSoft,
+    borderWidth: 1,
+    borderColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 12,
     paddingHorizontal: 24,
   },
   retryButtonText: {
-    color: '#fff',
+    color: PV2.textPrimary,
     fontSize: 15,
     fontWeight: '600',
   },
   // Inline banner for a failed refresh when notifications are already on
-  // screen — same shape as the Collections-tab/Folder-detail/Search
-  // refreshErrorRow, adapted to this screen's light theme/accent.
+  // screen — same accentSoft-fill / accent-tinted-border convention as
+  // app/collection/[folderId].tsx's own refreshErrorRow.
   refreshErrorRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -609,20 +609,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: '#fdecea',
+    backgroundColor: PV2.accentSoft,
     borderWidth: 1,
-    borderColor: '#f5c6c0',
+    borderColor: 'rgba(232,24,26,0.35)',
   },
   refreshErrorText: {
     flex: 1,
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
     marginRight: 12,
   },
   refreshErrorRetry: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#0a7ea4',
+    color: PV2.accent,
   },
   row: {
     flexDirection: 'row',
@@ -630,19 +630,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    backgroundColor: '#fff',
+    borderBottomColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
     gap: 12,
   },
+  // Unread rows get a faint tint of the app's own accent rather than the
+  // previous light-mode pale blue — reads as "highlighted" against the
+  // dark background the same way the light version did against white.
   rowUnread: {
-    backgroundColor: '#f0f8ff',
+    backgroundColor: PV2.accentSoft,
   },
   avatar: {
     width: 44,
     height: 44,
     borderRadius: 22,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   avatarPlaceholder: {
@@ -652,7 +655,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1565C0',
+    color: PV2.textPrimary,
   },
   rowBody: {
     flex: 1,
@@ -660,22 +663,22 @@ const styles = StyleSheet.create({
   },
   rowText: {
     fontSize: 14,
-    color: '#333',
+    color: PV2.textSecondary,
     lineHeight: 20,
   },
   rowActor: {
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   rowTime: {
     fontSize: 12,
-    color: '#aaa',
+    color: PV2.textTertiary,
   },
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     flexShrink: 0,
   },
 });

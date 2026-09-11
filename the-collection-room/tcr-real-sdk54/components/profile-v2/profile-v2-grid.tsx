@@ -12,7 +12,10 @@ import { PV2 } from './profile-v2-theme';
 const SLOT_COUNT = 9;
 const COLS = 3;
 
-const GRID_HORIZONTAL_MARGIN = 3;
+// Exported so profile-v2-identity-card.tsx can align the identity photo's
+// left edge to this exact same value, rather than a second, independently
+// hardcoded number that could drift out of sync with this one.
+export const GRID_HORIZONTAL_MARGIN = 3;
 const GRID_GAP = 2;
 const GRID_WIDTH = Dimensions.get('window').width - GRID_HORIZONTAL_MARGIN * 2;
 
@@ -30,7 +33,13 @@ const CARD_ASPECT_RATIO = 2.5 / 3.5;
 // height — used so the initial-error state reserves the same
 // approximate height as the normal loaded/loading grid, and Retry
 // succeeding doesn't visibly jump the rest of the profile layout.
-const GRID_CELL_WIDTH = (GRID_WIDTH - GRID_GAP * 2) / COLS;
+// Exported for the same reason as GRID_HORIZONTAL_MARGIN above —
+// profile-v2-identity-card.tsx sizes the identity photo to this exact
+// value so its right edge lands exactly where the first grid cell's right
+// edge does, rather than a second, independently hardcoded width that can
+// only coincidentally match on some device widths and drift on others
+// (this cell width is a device-width-proportional fraction, not fixed).
+export const GRID_CELL_WIDTH = (GRID_WIDTH - GRID_GAP * 2) / COLS;
 const GRID_CELL_HEIGHT = GRID_CELL_WIDTH / CARD_ASPECT_RATIO;
 const GRID_HEIGHT = GRID_CELL_HEIGHT * 3 + GRID_GAP * 2;
 

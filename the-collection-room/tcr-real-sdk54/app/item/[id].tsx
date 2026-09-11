@@ -1128,13 +1128,13 @@ const editStyles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
-    backgroundColor: '#fafafa',
-    color: '#11181C',
+    backgroundColor: PV2.collectorPanelBg,
+    color: PV2.textPrimary,
   },
   toggleRow: {
     flexDirection: 'row',

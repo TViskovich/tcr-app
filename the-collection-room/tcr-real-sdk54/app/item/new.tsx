@@ -20,6 +20,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
@@ -61,7 +62,7 @@ function field(label: string, key: keyof FormState, form: FormState, update: (k:
         style={fieldStyles.input}
         value={form[key]}
         onChangeText={update(key)}
-        placeholderTextColor="#999"
+        placeholderTextColor={PV2.textTertiary}
         placeholder={label}
         {...extra}
       />
@@ -281,7 +282,7 @@ export default function AddItemScreen() {
               value={form.description}
               onChangeText={update('description')}
               placeholder="Description"
-              placeholderTextColor="#999"
+              placeholderTextColor={PV2.textTertiary}
               multiline
               numberOfLines={4}
               textAlignVertical="top"
@@ -305,7 +306,7 @@ export default function AddItemScreen() {
             <Switch
               value={isPrivate}
               onValueChange={(value) => setIsPublic(!value)}
-              trackColor={{ false: '#ddd', true: '#0a7ea4' }}
+              trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
               thumbColor="#fff"
             />
           </View>
@@ -318,7 +319,7 @@ export default function AddItemScreen() {
             onPress={handleSubmit}
             disabled={loading || isPreviewOnly}>
             {loading ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={PV2.textPrimary} />
             ) : (
               <Text style={styles.submitText}>
                 {isPreviewOnly ? 'Folder assignment required' : 'Save Item'}
@@ -352,25 +353,25 @@ const fieldStyles = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#687076',
+    color: PV2.textSecondary,
     marginBottom: 4,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
-    backgroundColor: '#fafafa',
-    color: '#11181C',
+    backgroundColor: PV2.collectorPanelBg,
+    color: PV2.textPrimary,
   },
 });
 
 const styles = StyleSheet.create({
   scroll: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   content: {
     padding: 16,
@@ -383,7 +384,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     width: '60%',
     aspectRatio: 5 / 7,
-    backgroundColor: '#e9ecef',
+    backgroundColor: PV2.collectorPanelBg,
   },
   imagePlaceholder: {
     flex: 1,
@@ -396,12 +397,12 @@ const styles = StyleSheet.create({
   },
   imagePlaceholderText: {
     fontSize: 14,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   sectionHeader: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#687076',
+    color: PV2.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginTop: 8,
@@ -415,13 +416,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     borderRadius: 10,
     padding: 16,
     marginTop: 8,
     marginBottom: 24,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
   },
   toggleTextArea: {
     flex: 1,
@@ -430,21 +431,21 @@ const styles = StyleSheet.create({
   toggleLabel: {
     fontSize: 15,
     fontWeight: '500',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   toggleSub: {
     fontSize: 12,
-    color: '#687076',
+    color: PV2.textSecondary,
     marginTop: 2,
   },
   submitButton: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',
   },
   submitDisabled: {
-    backgroundColor: '#b0d4e3',
+    backgroundColor: PV2.accentSoft,
   },
   submitText: {
     color: '#fff',

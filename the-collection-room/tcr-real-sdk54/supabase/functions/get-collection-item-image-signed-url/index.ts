@@ -10,6 +10,11 @@
 //                                                                public, or
 //                                                                caller owns it
 //   AND (collection_items.is_public = true OR caller = collection_items.user_id)
+// OR the item is Grail-showcased (20260910120000_grail_slot_visibility_
+// exception.sql — "Grail placement = implicit publish": an item referenced
+// by its owner's own entry_type='item' profile_grail_slots row is signable
+// for any caller regardless of its folder/own privacy, scoped to that exact
+// item only — see canViewItem/ResolvedRow.grail_showcased below).
 // This function runs as service-role and therefore bypasses table RLS
 // entirely — canViewItem below is the ONLY authorization boundary for image
 // delivery; the table-level RLS change alone does not protect this path.
@@ -72,29 +77,46 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type ResolvedRow = {
   id: string;
+  item_id: string;
   storage_path: string;
   folder_effectively_visible: boolean;
   item_is_public: boolean;
   owner_id: string;
+  // Grail-slot visibility exception (Option B, "Grail placement = implicit
+  // publish" — see supabase/migrations/20260910120000_
+  // grail_slot_visibility_exception.sql). True when this row's item_id is
+  // referenced by an entry_type='item' profile_grail_slots row belonging to
+  // the same owner — resolved below via one batched query, mirroring the
+  // equivalent additional OR branch added to items_select_public /
+  // collection_item_images_select_public in that migration. Independent of
+  // folder_effectively_visible/item_is_public: a Grail-showcased item signs
+  // successfully even when its folder is private and/or the item's own
+  // is_public is false, but this flag never widens beyond the exact item a
+  // Grail slot names — no sibling item in the same folder gets it.
+  grail_showcased: boolean;
 };
 
 // Mirrors items_select_public / collection_item_images_select_public's exact
-// condition (Model A, most-restrictive-wins). The folder leg
+// condition (Model A, most-restrictive-wins), PLUS the narrow Grail-slot
+// exception added alongside those same policies (see this file's
+// ResolvedRow.grail_showcased doc comment above). The folder leg
 // (folder_effectively_visible) is resolved by the recursive
 // folder_effective_visibility_batch() RPC (supabase/migrations/
 // 20260902120000_recursive_folder_hierarchy_privacy.sql) rather than a
 // second, independently-maintained ancestor walk here — this function only
-// combines that result with the item's own privacy flag, matching this
-// app's established per-module RLS-mirroring convention (see
-// canViewRegisteredCard in ../_shared/registry-image.ts). Owner override
-// applies regardless of either flag; a non-owner needs BOTH the folder
-// (and every one of its ancestors) and the item to be public.
+// combines that result with the item's own privacy flag and the Grail
+// exception, matching this app's established per-module RLS-mirroring
+// convention (see canViewRegisteredCard in ../_shared/registry-image.ts).
+// Owner override applies regardless of any other flag; a non-owner needs
+// EITHER (the folder, and every one of its ancestors, AND the item to be
+// public) OR (this exact item to be Grail-showcased by its own owner).
 function canViewItem(
-  row: { folder_effectively_visible: boolean; item_is_public: boolean; owner_id: string },
+  row: { folder_effectively_visible: boolean; item_is_public: boolean; owner_id: string; grail_showcased: boolean },
   callerId: string | null,
 ): boolean {
   if (callerId !== null && callerId === row.owner_id) return true;
-  return row.folder_effectively_visible && row.item_is_public;
+  if (row.folder_effectively_visible && row.item_is_public) return true;
+  return row.grail_showcased;
 }
 
 // One batched call for every distinct folder referenced by this request's
@@ -219,6 +241,27 @@ Deno.serve(async (req: Request) => {
 
   const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
 
+  // Grail-slot visibility exception — one batched lookup covering every
+  // distinct item this request's images belong to, mirroring the narrow OR
+  // branch added to items_select_public/collection_item_images_select_public
+  // (supabase/migrations/20260910120000_grail_slot_visibility_exception.sql).
+  // Cross-checked against each item's own owner below (gs.user_id vs.
+  // folder.user_id) as the same defense-in-depth that migration's policies
+  // apply — a slot can never legitimately reference another user's item
+  // (profile_grail_slots_insert_own), but this never trusts that
+  // structurally alone.
+  const grailShowcasedOwnerByItemId = new Map<string, string>();
+  if (itemIds.length) {
+    const { data: grailRows } = await client
+      .from('profile_grail_slots')
+      .select('item_id, user_id')
+      .eq('entry_type', 'item')
+      .in('item_id', itemIds);
+    for (const row of (grailRows ?? []) as { item_id: string | null; user_id: string }[]) {
+      if (row.item_id) grailShowcasedOwnerByItemId.set(row.item_id, row.user_id);
+    }
+  }
+
   const resolved = new Map<string, ResolvedRow>();
   for (const img of imageRows) {
     if (!img.storage_path) continue;
@@ -228,6 +271,7 @@ Deno.serve(async (req: Request) => {
     if (!folder) continue;
     resolved.set(img.id, {
       id: img.id,
+      item_id: img.item_id,
       storage_path: img.storage_path,
       folder_effectively_visible: visibleFolderIds.has(folder.id),
       item_is_public: item.is_public,
@@ -236,6 +280,7 @@ Deno.serve(async (req: Request) => {
       // owner to already own the target folder) — using the folder's is the
       // established convention here, unchanged from before this pass.
       owner_id: folder.user_id,
+      grail_showcased: grailShowcasedOwnerByItemId.get(img.item_id) === folder.user_id,
     });
   }
 

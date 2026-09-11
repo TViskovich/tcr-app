@@ -205,7 +205,37 @@ Deno.serve(async (req: Request) => {
   }
 
   const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
-  const authorizedIds = folderIds.filter((id) => folderMap.has(id) && visibleFolderIds.has(id));
+
+  // Grail-slot visibility exception ("Grail placement = implicit publish" —
+  // supabase/migrations/20260910120000_grail_slot_visibility_exception.sql):
+  // a folder referenced by its own owner's entry_type='collection'
+  // profile_grail_slots row authorizes resolving THAT folder's cover,
+  // independent of folder_effective_visibility_batch's normal ancestor-chain
+  // result. Scoped to the exact folder id only — this never widens to that
+  // folder's children, ancestors, or contents, and the cover-source
+  // resolution below (uploadIds/itemIds/firstCardIds) still independently
+  // requires a non-owner's resolved item to be public, same as for a
+  // normally-visible folder. Cross-checked against the folder's own owner
+  // (gs.user_id vs. folder.user_id) as defense-in-depth, mirroring the same
+  // check in that migration's RLS policies and in
+  // get-collection-item-image-signed-url.
+  const grailShowcasedFolderIds = new Set<string>();
+  {
+    const { data: grailRows } = await client
+      .from('profile_grail_slots')
+      .select('collection_id, user_id')
+      .eq('entry_type', 'collection')
+      .in('collection_id', folderIds);
+    for (const row of (grailRows ?? []) as { collection_id: string | null; user_id: string }[]) {
+      if (!row.collection_id) continue;
+      const folder = folderMap.get(row.collection_id);
+      if (folder && folder.user_id === row.user_id) grailShowcasedFolderIds.add(row.collection_id);
+    }
+  }
+
+  const authorizedIds = folderIds.filter(
+    (id) => folderMap.has(id) && (visibleFolderIds.has(id) || grailShowcasedFolderIds.has(id)),
+  );
 
   // A folder can be internally inconsistent — cover_source claims a
   // specific explicit cover but the field that source actually needs is

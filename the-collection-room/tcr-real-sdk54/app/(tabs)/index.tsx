@@ -13,8 +13,6 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useSharedValue } from 'react-native-reanimated';
-
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { deletePost } from '@/lib/posts';
@@ -22,7 +20,6 @@ import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
-import { CacheCaseRefreshControl, PULL_THRESHOLD } from '@/components/feed/cachecase-refresh-control';
 import { CreateMenu } from '@/components/create/create-menu';
 import { fetchCardShareItems, fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
@@ -91,7 +88,11 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     .map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds).abortSignal(signal),
+    supabase
+      .from('profiles')
+      .select('id, username, display_name, hero_display_name, avatar_url')
+      .in('id', userIds)
+      .abortSignal(signal),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
@@ -145,7 +146,15 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
       created_at: post.created_at,
       item_name: (item as any).name ?? null,
       username: profile.username ?? 'user',
-      display_name: profile.display_name ?? null,
+      // Hero/display name is what the profile screen's own identity card
+      // shows as the large primary name (profile-v2-screen.tsx's own
+      // `profile?.hero_display_name || profile?.display_name || ...`
+      // fallback) — Feed's author row now matches that same source of
+      // truth instead of the plain display_name column, falling through to
+      // display_name only when no hero name is set. PostCard's own
+      // `post.display_name || post.username` (unchanged) is what completes
+      // the fallback chain down to username.
+      display_name: profile.hero_display_name || profile.display_name || null,
       avatar_url: profile.avatar_url ?? null,
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
@@ -209,7 +218,11 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
     .map((p) => p.id as string);
 
   const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
-    supabase.from('profiles').select('id, username, display_name, avatar_url').in('id', userIds).abortSignal(signal),
+    supabase
+      .from('profiles')
+      .select('id, username, display_name, hero_display_name, avatar_url')
+      .in('id', userIds)
+      .abortSignal(signal),
     itemIds.length > 0
       ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
@@ -254,7 +267,9 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
       created_at: post.created_at,
       item_name: (item as any).name ?? null,
       username: profile.username ?? 'user',
-      display_name: profile.display_name ?? null,
+      // See queryFeed's matching comment above — same hero-name-first
+      // fallback, same shared source of truth as the profile screen.
+      display_name: profile.hero_display_name || profile.display_name || null,
       avatar_url: profile.avatar_url ?? null,
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
@@ -277,7 +292,6 @@ export default function HomeScreen() {
 
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   const insets = useSafeAreaInsets();
-  const pullProgress = useSharedValue(0);
   const listRef = useRef<FlatList<FeedPost>>(null);
 
   function scrollToTop() {
@@ -647,17 +661,7 @@ export default function HomeScreen() {
             )}
             contentContainerStyle={[styles.list, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             scrollEventThrottle={scrollEventThrottle}
-            onScroll={(e) => {
-              // Shared navbar hide/show-on-scroll behavior (see
-              // hooks/use-scroll-responsive-navbar.ts — this screen is its
-              // source-of-truth implementation, now extracted there).
-              navbarOnScroll(e);
-
-              // Overscroll-only (y < 0, iOS pull bounce) drives the custom
-              // refresh icon below — purely visual, doesn't touch refresh logic.
-              const y = e.nativeEvent.contentOffset.y;
-              pullProgress.value = y < 0 ? Math.min(1.15, -y / PULL_THRESHOLD) : 0;
-            }}
+            onScroll={navbarOnScroll}
             onEndReached={loadMore}
             onEndReachedThreshold={0.4}
             ListFooterComponent={
@@ -667,22 +671,8 @@ export default function HomeScreen() {
                 </View>
               ) : null
             }
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                // True alpha-transparent tint is unreliable on iOS — UIRefreshControl
-                // can still paint its spinner glyph even at tintColor alpha 0. Camouflaging
-                // against the screen's real background color hides it completely instead.
-                // PV2.bg (Piece 5) — was LIGHT_PAGE_BACKGROUND before the feed body's
-                // dark-theme transition; re-targeted to match, same camouflage technique.
-                tintColor={PV2.bg}
-                colors={[PV2.bg]}
-                progressBackgroundColor={PV2.bg}
-              />
-            }
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           />
-          <CacheCaseRefreshControl pullProgress={pullProgress} refreshing={refreshing} />
         </View>
       )}
 

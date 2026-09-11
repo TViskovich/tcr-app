@@ -13,6 +13,7 @@ import { Image } from 'expo-image';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -54,7 +55,7 @@ export default function SavedScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : isEmpty ? (
         <View style={styles.center}>
@@ -71,7 +72,7 @@ export default function SavedScreen() {
           onScroll={navbarOnScroll}
           scrollEventThrottle={scrollEventThrottle}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
           }>
 
           {folders.length > 0 && (
@@ -235,24 +236,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
     textAlign: 'center',
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
   },
   scroll: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   content: {
     paddingBottom: 40,
@@ -263,27 +264,27 @@ const styles = StyleSheet.create({
   sectionHeader: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#687076',
+    color: PV2.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
     paddingHorizontal: 16,
     marginBottom: 6,
   },
   sectionBody: {
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: PV2.dividerColor,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: PV2.dividerColor,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: PV2.dividerColor,
     gap: 12,
   },
   thumb: {
@@ -291,7 +292,7 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: 6,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   thumbCard: {
@@ -312,7 +313,7 @@ const styles = StyleSheet.create({
   thumbInitial: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#1565C0',
+    color: PV2.textPrimary,
   },
   thumbEmoji: {
     fontSize: 22,
@@ -324,15 +325,15 @@ const styles = StyleSheet.create({
   rowTitle: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   rowSub: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   chevron: {
     fontSize: 22,
-    color: '#ccc',
+    color: PV2.textTertiary,
     flexShrink: 0,
   },
 });

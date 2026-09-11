@@ -16,6 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -144,7 +145,7 @@ export default function NewPostScreen() {
           headerRight: () => (
             <TouchableOpacity onPress={handlePost} disabled={!canPost} hitSlop={8}>
               {posting ? (
-                <ActivityIndicator size="small" color="#0a7ea4" />
+                <ActivityIndicator size="small" color={PV2.link} />
               ) : (
                 <Text style={[styles.headerPost, !canPost && styles.headerPostDisabled]}>
                   Post
@@ -172,7 +173,7 @@ export default function NewPostScreen() {
         <TextInput
           style={styles.input}
           placeholder="What are you collecting?"
-          placeholderTextColor="#999"
+          placeholderTextColor={PV2.textTertiary}
           multiline
           autoFocus
           value={text}
@@ -198,7 +199,7 @@ export default function NewPostScreen() {
                 style={styles.photoRemoveBtn}
                 accessibilityRole="button"
                 accessibilityLabel="Remove photo">
-                <IconSymbol name="xmark" size={14} color="#fff" />
+                <IconSymbol name="xmark" size={14} color={PV2.textPrimary} />
               </TouchableOpacity>
             </View>
           </View>
@@ -209,7 +210,7 @@ export default function NewPostScreen() {
             activeOpacity={0.75}
             accessibilityRole="button"
             accessibilityLabel="Add photo">
-            <IconSymbol name="camera.fill" size={18} color="#0a7ea4" />
+            <IconSymbol name="camera.fill" size={18} color={PV2.link} />
             <Text style={styles.addPhotoLabel}>Add Photo</Text>
           </TouchableOpacity>
         )}
@@ -232,24 +233,24 @@ export default function NewPostScreen() {
 const styles = StyleSheet.create({
   headerCancel: {
     fontSize: 16,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   headerPost: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   headerPostDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   input: {
     flex: 1,
     fontSize: 17,
-    color: '#11181C',
+    color: PV2.textPrimary,
     padding: 16,
     lineHeight: 24,
   },
@@ -258,17 +259,17 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'flex-end',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: PV2.dividerColor,
   },
   counter: {
     fontSize: 13,
-    color: '#aaa',
+    color: PV2.textTertiary,
   },
   counterAmber: {
     color: '#F59E0B',
   },
   counterRed: {
-    color: '#E53935',
+    color: PV2.accent,
   },
   addPhotoBtn: {
     flexDirection: 'row',
@@ -281,7 +282,7 @@ const styles = StyleSheet.create({
   addPhotoLabel: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   photoPreviewWrap: {
     paddingHorizontal: 16,
@@ -292,7 +293,7 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     borderRadius: 10,
     overflow: 'hidden',
-    backgroundColor: '#eee',
+    backgroundColor: PV2.collectorPanelBg,
   },
   photoRemoveBtn: {
     position: 'absolute',

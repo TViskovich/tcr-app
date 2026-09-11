@@ -498,7 +498,50 @@ export function useAllItems(userId: string | undefined, options?: { publicOnly?:
       setLoading(false);
       return;
     }
-    const rows = (data ?? []) as (CollectionItem & { folders: { is_public: boolean } | null })[];
+    let rows = (data ?? []) as (CollectionItem & { folders: { is_public: boolean } | null })[];
+
+    // Grail-slot visibility exception (supabase/migrations/20260910120000_
+    // grail_slot_visibility_exception.sql, "Grail placement = implicit
+    // publish") adds a narrow OR branch to items_select_public that lets a
+    // Grail-showcased item's row come back from THIS query even when its
+    // folder chain isn't actually public — deliberately, so
+    // profile_grail_slots' own embedded item:collection_items(*) join can
+    // resolve it for the Grails showcase. That exception is scoped to
+    // rendering Grails only; it must never leak into this general,
+    // all-folders Items tab (collection_items.is_public defaults to true,
+    // so a Grail-referenced item in an otherwise-private folder would
+    // otherwise pass this query's own `.eq('is_public', true)` filter and
+    // appear here regardless of its folder's real privacy). Re-derive the
+    // ORIGINAL folder-chain visibility per distinct folder via the
+    // ancestor-aware folder_is_effectively_visible RPC (granted to anon/
+    // authenticated; takes no explicit caller argument, so it can't be
+    // spoofed — see that migration's own revision note) and drop any row
+    // whose folder isn't actually visible under that rule — i.e. any row
+    // that only came back because of the Grail exception. A no-op, and
+    // skipped entirely, when publicOnly is false (the owner's own view,
+    // and the Share Card picker's call site, are unaffected). One RPC call
+    // per distinct folder actually present in this result (typically a
+    // handful), run in parallel — never one per item.
+    if (publicOnly && rows.length) {
+      const distinctFolderIds = [...new Set(rows.map((r) => r.folder_id))];
+      const visibilityEntries = await Promise.all(
+        distinctFolderIds.map(async (folderId) => {
+          const { data: visible, error: visibilityError } = await supabase.rpc(
+            'folder_is_effectively_visible',
+            { target_folder_id: folderId },
+          );
+          if (visibilityError) {
+            console.error('[useAllItems] folder_is_effectively_visible failed:', visibilityError.message, visibilityError);
+          }
+          // Fail closed: an RPC error drops the row rather than risking a
+          // Grail-only-visible item slipping through unverified.
+          return [folderId, visible === true] as const;
+        }),
+      );
+      const folderVisibleById = new Map(visibilityEntries);
+      rows = rows.filter((r) => folderVisibleById.get(r.folder_id) === true);
+    }
+
     const withFolderVisibility = rows.map(({ folders, ...item }) => ({
       ...item,
       folder_is_public: folders?.is_public ?? false,

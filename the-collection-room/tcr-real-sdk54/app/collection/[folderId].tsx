@@ -58,6 +58,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useAuth } from '@/lib/auth';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, FolderCoverCrop } from '@/types';
 
 // Wraps expo-image's Image so the hero's overlay layer can drive its
@@ -107,6 +108,22 @@ const GRID_GAP = 1;
 // fallback to it (neither sets its own radius), so 0 here squares off
 // both at once.
 const GRID_CARD_RADIUS = 0;
+
+// Default (non-card-mode) grid only — the FlatList's own `data` there is no
+// longer CollectionGridEntry[] directly (which relied on FlatList's built-in
+// numColumns row-grouping). To get a native sticky header (stickyHeaderIndices)
+// for the black title/info panel, that panel has to be a real, independently
+// addressable row inside the SAME FlatList as the grid — not a sibling
+// rendered above it — so numColumns/columnWrapperStyle's automatic grouping
+// (which only ever produces uniform item rows) is replaced with rows chunked
+// by hand ahead of time, with the sticky bar prepended as its own row. Card
+// mode (isCardMode) is untouched and still uses the original
+// numColumns-based FlatList — this type/the grid-row chunking below is not
+// used there.
+type FolderGridRow =
+  | { kind: 'sticky' }
+  | { kind: 'row'; entries: CollectionGridEntry[]; isLast: boolean }
+  | { kind: 'empty' };
 
 // The gallery for one folder. The default view (no `player` route param)
 // renders every CollectionItem in the folder directly, one tile each — no
@@ -832,6 +849,26 @@ export default function CollectionFolderScreen() {
     return combined.sort(compareGridEntriesByRecency);
   }, [isCardMode, childFolders, filteredCardItems]);
 
+  // Default (non-card-mode) grid only — see FolderGridRow's own comment.
+  // Chunked once here (not inside renderItem) so identical chunking logic
+  // isn't repeated per render pass, and so isLast (for exact-parity bottom
+  // spacing, see styles.manualGridRow) is known up front.
+  const gridRows = useMemo(() => {
+    const rows: CollectionGridEntry[][] = [];
+    for (let i = 0; i < gridEntries.length; i += CARD_NUM_COLUMNS) {
+      rows.push(gridEntries.slice(i, i + CARD_NUM_COLUMNS));
+    }
+    return rows;
+  }, [gridEntries]);
+
+  const stickyRowsData = useMemo<FolderGridRow[]>(() => {
+    if (gridRows.length === 0) return [{ kind: 'sticky' }, { kind: 'empty' }];
+    return [
+      { kind: 'sticky' },
+      ...gridRows.map((entries, index) => ({ kind: 'row' as const, entries, isLast: index === gridRows.length - 1 })),
+    ];
+  }, [gridRows]);
+
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
   // shared links) can reach this screen — folder loading used to be a
@@ -917,6 +954,233 @@ export default function CollectionFolderScreen() {
   }
 
   const showBookmark = !!currentUserId;
+
+  // Default (non-card-mode) grid's FlatList ListHeaderComponent — cover
+  // banner + search bar, exactly the same JSX/styles that used to render as
+  // plain siblings above the grid (see the removed block's comment further
+  // up). Non-sticky: this scrolls away normally, which is what makes it
+  // ListHeaderComponent rather than part of the sticky data[0] row below.
+  // Always passed to FlatList (never conditionally omitted) even when both
+  // conditions below are false and it renders nothing visible — omitting
+  // the prop itself would shift every ScrollView child index down by one,
+  // breaking stickyHeaderIndices={[1]}, which assumes this occupies index 0.
+  function renderFolderListHeader() {
+    return (
+      <>
+        {/* Folder cover/hero banner — purely a display surface, no editing
+            controls here for anyone, owner included (per the design: cover
+            changes go through Edit Folder → Change Cover, never a
+            tap-to-edit overlay on the banner itself). Renders nothing at
+            all (not even an empty placeholder) for a folder that has never
+            had a cover set, so every existing folder's layout is unchanged
+            until its owner opts in. */}
+        {showCoverHero && (
+          <View style={styles.coverHero}>
+            {coverUrl && (
+              <FolderCoverImage
+                uri={coverUrl}
+                crop={folder?.cover_source === 'item' ? (folder.cover_crop ?? null) : null}
+              />
+            )}
+          </View>
+        )}
+
+        {!showInitialLoading && items.length > 0 && searchVisible && (
+          <CollectionSearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Search players, teams..."
+            style={styles.searchBar}
+          />
+        )}
+      </>
+    );
+  }
+
+  // Default (non-card-mode) grid's sticky FlatList row (data[0], kind:
+  // 'sticky') — the entire black identity/title/actions panel as ONE
+  // pinned unit, per the "do not split the black panel into multiple
+  // independently sticky pieces" requirement. Exactly the same JSX/styles
+  // as before (compactUserRow/titleRow/galleryActionsRow, unchanged) — only
+  // wrapped in one extra View (styles.folderStickyBar) so it has an opaque
+  // background (matches styles.container's own PV2.bg) and the 10px gap to
+  // whatever follows it (previously gridContent's own paddingTop:10; now
+  // that this panel — not the grid's first row — is what directly precedes
+  // that gap, the gap moved onto this wrapper instead, see
+  // styles.folderStickyBar's own comment).
+  function renderFolderStickyBar() {
+    return (
+      <View style={styles.folderStickyBar}>
+        {/* Compact identity row — non-owner viewing someone else's folder
+            only (public profiles, Saved). Sits above the title row now, per
+            the reorganized header order; a single content-sized press
+            target (not the full row width) opens that user's profile. */}
+        {!isOwner && ownerProfile && (
+          <View style={styles.compactUserRow}>
+            <Pressable
+              style={styles.compactUserPress}
+              hitSlop={8}
+              onPress={() =>
+                router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
+              }>
+              <View style={styles.compactAvatar}>
+                {ownerProfile.avatar_url ? (
+                  <Image
+                    source={{ uri: ownerProfile.avatar_url }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    transition={200}
+                  />
+                ) : (
+                  <View style={[StyleSheet.absoluteFill, styles.compactAvatarPlaceholder]}>
+                    <Text style={styles.compactAvatarInitial}>
+                      {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.compactUsername} numberOfLines={1}>
+                @{ownerProfile.username}
+              </Text>
+            </Pressable>
+          </View>
+        )}
+
+        <View style={styles.titleRow}>
+          <Text style={styles.title} numberOfLines={1}>
+            {screenTitle}
+          </Text>
+        </View>
+
+        {/* Same balanced left/right two-side layout (and the same
+            galleryActionsRow/galleryActionsSide styles) as the card-mode
+            header above — like+comment grouped left, bookmark+share grouped
+            right — just under the title instead of squeezed onto its row. */}
+        <View style={styles.galleryActionsRow}>
+          <View style={styles.galleryActionsSide}>
+            <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
+              <IconSymbol
+                name={liked ? 'heart.fill' : 'heart'}
+                size={20}
+                color={liked ? PV2.accent : PV2.textPrimary}
+              />
+              <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+            </Pressable>
+            <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+              <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+
+          <View style={styles.galleryActionsSide}>
+            {showBookmark && (
+              <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
+                <IconSymbol
+                  name={isSaved ? 'bookmark.fill' : 'bookmark'}
+                  size={20}
+                  color={isSaved ? PV2.accent : PV2.textPrimary}
+                />
+              </Pressable>
+            )}
+            <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+              <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  // Single-tile renderer shared by BOTH grids below — card mode's original
+  // numColumns-based FlatList (key supplied by its own keyExtractor, this
+  // component's key prop is simply unused/harmless there) and the default
+  // mode's manually-chunked rows (key required there, since those tiles are
+  // built via a raw .map(), not FlatList's own renderItem+keyExtractor
+  // pairing). Exactly the same JSX/styles/logic as before — only extracted
+  // into a function so it isn't duplicated between the two grids.
+  function renderGridTile(entry: CollectionGridEntry, key: string) {
+    if (entry.kind === 'folder') {
+      return (
+        <Pressable
+          key={key}
+          testID={`child-folder-${entry.folder.id}`}
+          style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+          onPress={() =>
+            router.push({
+              pathname: '/collection/[folderId]',
+              params: { folderId: entry.folder.id, title: entry.folder.name },
+            })
+          }>
+          {coverUrls.get(entry.folder.id) ? (
+            <Image
+              source={{ uri: coverUrls.get(entry.folder.id) }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={150}
+            />
+          ) : (
+            <View style={styles.thumbPlaceholder} />
+          )}
+          {/* Small, subtle upper-right badge — the only thing that
+              distinguishes a nested-collection tile from an ordinary item
+              tile. Same dark-scrim-circle language as this screen's own
+              heroCounterBadge, so it reads as "this tile is a folder"
+              without competing with the cover photo underneath it.
+              pointerEvents="none" so it never steals the tile's own tap
+              target. */}
+          <View style={styles.folderBadge} pointerEvents="none">
+            <IconSymbol name="folder.fill" size={12} color="#fff" />
+          </View>
+        </Pressable>
+      );
+    }
+    return (
+      <Pressable
+        key={key}
+        testID={`collection-item-${entry.item.id}`}
+        style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+        onPress={() => openItem(entry.item)}>
+        {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
+          <Image
+            source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+          />
+        ) : (
+          <View style={styles.thumbPlaceholder} />
+        )}
+      </Pressable>
+    );
+  }
+
+  function gridTileKey(entry: CollectionGridEntry) {
+    return entry.kind === 'folder' ? `folder-${entry.folder.id}` : entry.item.id;
+  }
+
+  // Exactly the same two empty states as before (same copy/styles) — now a
+  // plain JSX value instead of a ListEmptyComponent function, since the
+  // default grid's FlatList always has at least one row (the sticky bar),
+  // so FlatList's own "data.length === 0" ListEmptyComponent trigger would
+  // never fire there; this is rendered directly as data[1]'s content (kind:
+  // 'empty') instead. Card mode's FlatList still has no other guaranteed
+  // row, so it keeps using this via the real ListEmptyComponent prop.
+  const emptyStateContent =
+    search.trim() && cardItems.length > 0 ? (
+      <View style={styles.emptyWrap}>
+        <Text style={styles.emptyTitle}>No matches</Text>
+        <Text style={styles.emptyBody}>Try a different search term.</Text>
+      </View>
+    ) : (
+      <View style={styles.emptyWrap}>
+        <Text style={styles.emptyTitle}>No cards yet</Text>
+        <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
+        {isOwner && (
+          <Pressable style={styles.emptyButton} onPress={addCard}>
+            <Text style={styles.emptyButtonText}>Add Card</Text>
+          </Pressable>
+        )}
+      </View>
+    );
 
   return (
     <>
@@ -1074,110 +1338,20 @@ export default function CollectionFolderScreen() {
               </View>
             </View>
 
-            {/* Folder cover/hero banner — purely a display surface, no
-                editing controls here for anyone, owner included (per the
-                design: cover changes go through Edit Folder → Change
-                Cover, never a tap-to-edit overlay on the banner itself).
-                Renders nothing at all (not even an empty placeholder) for
-                a folder that has never had a cover set, so every existing
-                folder's layout is unchanged until its owner opts in. */}
-            {showCoverHero && (
-              <View style={styles.coverHero}>
-                {coverUrl && (
-                  <FolderCoverImage
-                    uri={coverUrl}
-                    crop={folder?.cover_source === 'item' ? (folder.cover_crop ?? null) : null}
-                  />
-                )}
-              </View>
-            )}
-
-            {!showInitialLoading && items.length > 0 && searchVisible && (
-              <CollectionSearchBar
-                value={search}
-                onChange={setSearch}
-                placeholder="Search players, teams..."
-                style={styles.searchBar}
-              />
-            )}
-
-            {/* Compact identity row — non-owner viewing someone else's
-                folder only (public profiles, Saved). Sits above the title
-                row now, per the reorganized header order; a single
-                content-sized press target (not the full row width) opens
-                that user's profile. */}
-            {!isOwner && ownerProfile && (
-              <View style={styles.compactUserRow}>
-                <Pressable
-                  style={styles.compactUserPress}
-                  hitSlop={8}
-                  onPress={() =>
-                    router.push({ pathname: '/user/[username]', params: { username: ownerProfile.username } })
-                  }>
-                  <View style={styles.compactAvatar}>
-                    {ownerProfile.avatar_url ? (
-                      <Image
-                        source={{ uri: ownerProfile.avatar_url }}
-                        style={StyleSheet.absoluteFill}
-                        contentFit="cover"
-                        transition={200}
-                      />
-                    ) : (
-                      <View style={[StyleSheet.absoluteFill, styles.compactAvatarPlaceholder]}>
-                        <Text style={styles.compactAvatarInitial}>
-                          {(ownerProfile.display_name || ownerProfile.username).charAt(0).toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.compactUsername} numberOfLines={1}>
-                    @{ownerProfile.username}
-                  </Text>
-                </Pressable>
-              </View>
-            )}
-
-            <View style={styles.titleRow}>
-              <Text style={styles.title} numberOfLines={1}>
-                {screenTitle}
-              </Text>
-            </View>
-
-            {/* Same balanced left/right two-side layout (and the same
-                galleryActionsRow/galleryActionsSide styles) as the
-                card-mode header above — like+comment grouped left,
-                bookmark+share grouped right — just under the title instead
-                of squeezed onto its row. */}
-            <View style={styles.galleryActionsRow}>
-              <View style={styles.galleryActionsSide}>
-                <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
-                  <IconSymbol
-                    name={liked ? 'heart.fill' : 'heart'}
-                    size={20}
-                    color={liked ? PV2.accent : PV2.textPrimary}
-                  />
-                  <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
-                </Pressable>
-                <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="message" size={20} color={PV2.textPrimary} />
-                </Pressable>
-              </View>
-
-              <View style={styles.galleryActionsSide}>
-                {showBookmark && (
-                  <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
-                    <IconSymbol
-                      name={isSaved ? 'bookmark.fill' : 'bookmark'}
-                      size={20}
-                      color={isSaved ? PV2.accent : PV2.textPrimary}
-                    />
-                  </Pressable>
-                )}
-                <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
-                </Pressable>
-              </View>
-            </View>
+            {/* Cover/search (non-sticky) and the identity/title/actions
+                "black panel" (sticky) used to render here as plain
+                siblings, directly above the grid's own FlatList. They now
+                render INSIDE that same FlatList instead — cover+search via
+                ListHeaderComponent (renderFolderListHeader), the panel as
+                the FlatList's own first data row (renderFolderStickyBar,
+                data[0], kind: 'sticky') — so FlatList's native
+                stickyHeaderIndices can pin the panel natively once it
+                reaches the top, without a second nested scroll container or
+                manual scrollY tracking. See renderFolderListHeader/
+                renderFolderStickyBar below and the FlatList render further
+                down for the actual JSX (unchanged in content/styling, only
+                moved). isCardMode's own hero/actions above this branch is
+                untouched — it keeps its original fixed-header layout. */}
           </>
         )}
 
@@ -1196,92 +1370,62 @@ export default function CollectionFolderScreen() {
               <Text style={styles.emptyButtonText}>Retry</Text>
             </Pressable>
           </View>
-        ) : (
-          // Unified item grid — the only grid this screen renders now. By
-          // default (no `player` param) cardItems is every item in the
-          // folder, so this is simultaneously "the default contents view"
-          // and (when a `player` param is present) the still-supported
-          // filtered view; there is deliberately no second, parallel grid
-          // for the filtered case.
+        ) : isCardMode ? (
+          // Card mode's original grid — untouched: numColumns/
+          // columnWrapperStyle's automatic row-grouping, gridEntries
+          // directly as data, ListEmptyComponent for the empty state. Card
+          // mode has its own fixed (non-scrolling) header rendered above
+          // (heroSection/galleryActionsRow) and was never part of this
+          // request — no sticky behavior applies here.
           <>
             {itemsErrorBanner}
             <FlatList
-            data={gridEntries}
-            numColumns={CARD_NUM_COLUMNS}
-            keyExtractor={(entry) => (entry.kind === 'folder' ? `folder-${entry.folder.id}` : entry.item.id)}
-            columnWrapperStyle={styles.row}
-            contentContainerStyle={[styles.gridContent, isCardMode && styles.cardGridContent]}
-            onScroll={navbarOnScroll}
-            scrollEventThrottle={scrollEventThrottle}
-            renderItem={({ item: entry }) =>
-              entry.kind === 'folder' ? (
-                <Pressable
-                  testID={`child-folder-${entry.folder.id}`}
-                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-                  onPress={() =>
-                    router.push({
-                      pathname: '/collection/[folderId]',
-                      params: { folderId: entry.folder.id, title: entry.folder.name },
-                    })
-                  }>
-                  {coverUrls.get(entry.folder.id) ? (
-                    <Image
-                      source={{ uri: coverUrls.get(entry.folder.id) }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="cover"
-                      transition={150}
-                    />
-                  ) : (
-                    <View style={styles.thumbPlaceholder} />
-                  )}
-                  {/* Small, subtle upper-right badge — the only thing that
-                      distinguishes a nested-collection tile from an ordinary
-                      item tile. Same dark-scrim-circle language as this
-                      screen's own heroCounterBadge, so it stays consistent
-                      with an existing pattern rather than inventing a new
-                      one, and reads clearly over arbitrary card imagery at
-                      every nesting depth. pointerEvents="none" so it never
-                      steals the tile's own tap target. */}
-                  <View style={styles.folderBadge} pointerEvents="none">
-                    <IconSymbol name="folder.fill" size={12} color="#fff" />
+              data={gridEntries}
+              numColumns={CARD_NUM_COLUMNS}
+              keyExtractor={(entry) => gridTileKey(entry)}
+              columnWrapperStyle={styles.row}
+              contentContainerStyle={[
+                styles.gridContent,
+                styles.cardGridContent,
+                { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
+              ]}
+              onScroll={navbarOnScroll}
+              scrollEventThrottle={scrollEventThrottle}
+              renderItem={({ item: entry }) => renderGridTile(entry, gridTileKey(entry))}
+              ListEmptyComponent={() => emptyStateContent}
+            />
+          </>
+        ) : (
+          // Default (non-card-mode) grid — the same visual grid as before,
+          // now sharing one FlatList with the cover/search header
+          // (ListHeaderComponent, non-sticky) and the black identity/title/
+          // actions panel (data[0], kind: 'sticky') so stickyHeaderIndices
+          // can pin that panel natively. See FolderGridRow/
+          // renderFolderListHeader/renderFolderStickyBar's own comments.
+          <>
+            {itemsErrorBanner}
+            <FlatList<FolderGridRow>
+              data={stickyRowsData}
+              keyExtractor={(row, index) =>
+                row.kind === 'sticky' ? 'sticky-header' : row.kind === 'empty' ? 'empty-state' : `row-${index}`
+              }
+              ListHeaderComponent={renderFolderListHeader}
+              stickyHeaderIndices={[1]}
+              contentContainerStyle={[
+                styles.gridContentSticky,
+                { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
+              ]}
+              onScroll={navbarOnScroll}
+              scrollEventThrottle={scrollEventThrottle}
+              renderItem={({ item: row }) => {
+                if (row.kind === 'sticky') return renderFolderStickyBar();
+                if (row.kind === 'empty') return emptyStateContent;
+                return (
+                  <View style={[styles.manualGridRow, !row.isLast && styles.manualGridRowGap]}>
+                    {row.entries.map((entry) => renderGridTile(entry, gridTileKey(entry)))}
                   </View>
-                </Pressable>
-              ) : (
-                <Pressable
-                  testID={`collection-item-${entry.item.id}`}
-                  style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-                  onPress={() => openItem(entry.item)}>
-                  {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
-                    <Image
-                      source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="cover"
-                      transition={150}
-                    />
-                  ) : (
-                    <View style={styles.thumbPlaceholder} />
-                  )}
-                </Pressable>
-              )
-            }
-            ListEmptyComponent={
-              search.trim() && cardItems.length > 0 ? (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyTitle}>No matches</Text>
-                  <Text style={styles.emptyBody}>Try a different search term.</Text>
-                </View>
-              ) : (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyTitle}>No cards yet</Text>
-                  <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
-                  {isOwner && (
-                    <Pressable style={styles.emptyButton} onPress={addCard}>
-                      <Text style={styles.emptyButtonText}>Add Card</Text>
-                    </Pressable>
-                  )}
-                </View>
-              )
-            }
+                );
+              }}
             />
           </>
         )}
@@ -1582,6 +1726,24 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     marginBottom: 10,
   },
+  // Default (non-card-mode) grid only — wraps compactUserRow/titleRow/
+  // galleryActionsRow (rendered by renderFolderStickyBar) as ONE sticky
+  // FlatList row. backgroundColor: PV2.bg matches styles.container's own
+  // background exactly (this app's dark theme background IS the "black
+  // panel" look — there's no separate/lighter panel color to preserve) —
+  // needed explicitly here now, since once pinned this row visually floats
+  // above grid rows scrolling underneath it and must stay opaque rather
+  // than letting them show through. marginBottom: 10 replicates the exact
+  // gap that used to come from gridContent's own paddingTop: 10, back when
+  // this panel was a sibling before the FlatList and that padding applied
+  // to the grid's first row instead — now that this panel is what directly
+  // precedes that gap, the 10px moved here with it; gridContentSticky
+  // itself carries no paddingTop for this same reason (see its own
+  // comment).
+  folderStickyBar: {
+    backgroundColor: PV2.bg,
+    marginBottom: 10,
+  },
   center: {
     flex: 1,
     alignItems: 'center',
@@ -1594,8 +1756,46 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
     paddingHorizontal: GRID_PAGE_PADDING,
     paddingTop: 10,
-    paddingBottom: 24,
+    // paddingBottom intentionally omitted — always overridden at the
+    // FlatList call site with TAB_BAR_HEIGHT + insets.bottom + 24 (this
+    // app's standard floating-nav clearance, see every other tab/stack
+    // screen's own contentContainerStyle for the same pattern), so a
+    // static value here would just be dead/misleading.
     flexGrow: 1,
+  },
+  // Default (non-card-mode) grid's own contentContainerStyle — deliberately
+  // NOT gridContent (that style's `gap` would insert GRID_GAP between
+  // EVERY direct FlatList child, including between ListHeaderComponent and
+  // the sticky bar, and between the sticky bar and the first grid row,
+  // neither of which existed before this restructuring). Vertical spacing
+  // here instead comes from each row's own margin — folderStickyBar's
+  // marginBottom above (sticky bar → first row) and manualGridRowGap below
+  // (row → row) — reproducing gridContent's old spacing exactly rather than
+  // approximating it.
+  gridContentSticky: {
+    paddingHorizontal: GRID_PAGE_PADDING,
+    // paddingBottom intentionally omitted — see gridContent's own comment;
+    // overridden the same way at this FlatList's own call site.
+    flexGrow: 1,
+  },
+  // Default (non-card-mode) grid only — the manually-chunked replacement
+  // for FlatList's own numColumns+columnWrapperStyle row grouping (see
+  // FolderGridRow's comment for why). Same gap value as styles.row's own
+  // (GRID_GAP) for the horizontal gap between columns within a row;
+  // flexDirection: 'row' is spelled out here because, unlike
+  // columnWrapperStyle (where FlatList itself supplies flexDirection:
+  // 'row' and columnWrapperStyle only adds to it), this row is a plain View
+  // this screen builds and styles entirely itself.
+  manualGridRow: {
+    flexDirection: 'row',
+    gap: GRID_GAP,
+  },
+  // Applied to every row except the last (see stickyRowsData's own isLast)
+  // — reproduces gridContent's old inter-row `gap` exactly, without also
+  // adding a trailing gap after the final row that plain `gap` never would
+  // have.
+  manualGridRowGap: {
+    marginBottom: GRID_GAP,
   },
   // Card mode only — pulls the grid up closer to the hero header below it.
   cardGridContent: {

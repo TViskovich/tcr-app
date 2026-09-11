@@ -18,7 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
-import { LIGHT_PAGE_BACKGROUND } from '@/constants/theme';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
@@ -545,12 +545,12 @@ export default function MessagesScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : conversations.length === 0 ? (
         <View style={styles.messagesEmptyState}>
           <CacheCaseLogo
-            variant="dark"
+            variant="light"
             size="lg"
             placement="emptyState"
             style={styles.messagesEmptyLogo}
@@ -594,7 +594,7 @@ export default function MessagesScreen() {
             />
           )}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
           }
         />
       )}
@@ -666,19 +666,19 @@ function ConversationRow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
+    backgroundColor: PV2.bg,
   },
   header: {
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
+    backgroundColor: PV2.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: PV2.dividerColor,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   center: {
     flex: 1,
@@ -706,7 +706,7 @@ const styles = StyleSheet.create({
     fontSize: 26,
     lineHeight: 32,
     fontWeight: '700',
-    color: '#11181C',
+    color: PV2.textPrimary,
     textAlign: 'center',
   },
   messagesEmptyBody: {
@@ -715,7 +715,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 24,
     fontWeight: '400',
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
   },
   messagesEmptyButton: {
@@ -723,7 +723,7 @@ const styles = StyleSheet.create({
     width: 230,
     height: 52,
     borderRadius: 26,
-    backgroundColor: '#0A8BAD',
+    backgroundColor: PV2.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -738,14 +738,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-    backgroundColor: LIGHT_PAGE_BACKGROUND,
+    borderBottomColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
   },
   deleteAction: {
     width: 88,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#e53935',
+    backgroundColor: PV2.accent,
   },
   deleteActionText: {
     fontSize: 15,
@@ -757,7 +757,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   avatarPlaceholder: {
@@ -767,7 +767,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#1565C0',
+    color: PV2.textPrimary,
   },
   rowBody: {
     flex: 1,
@@ -777,15 +777,15 @@ const styles = StyleSheet.create({
   rowName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   rowPreview: {
     fontSize: 14,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   rowTime: {
     fontSize: 12,
-    color: '#aaa',
+    color: PV2.textTertiary,
     marginLeft: 8,
     flexShrink: 0,
   },

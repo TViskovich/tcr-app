@@ -15,6 +15,7 @@ import {
 import { Stack, useRouter } from 'expo-router';
 
 import { GrailsSlot } from '@/components/profile/grails-slot';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useGrails } from '@/hooks/use-grails';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -92,7 +93,7 @@ export default function NewRateMyGrailsScreen() {
           headerRight: () => (
             <TouchableOpacity onPress={handlePost} disabled={!canPost} hitSlop={8}>
               {posting ? (
-                <ActivityIndicator size="small" color="#0a7ea4" />
+                <ActivityIndicator size="small" color={PV2.link} />
               ) : (
                 <Text style={[styles.headerPost, !canPost && styles.headerPostDisabled]}>
                   Post
@@ -105,7 +106,7 @@ export default function NewRateMyGrailsScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : grails.length === 0 ? (
         <View style={styles.center}>
@@ -134,7 +135,7 @@ export default function NewRateMyGrailsScreen() {
             <TextInput
               style={styles.input}
               placeholder="Add a caption (optional)"
-              placeholderTextColor="#999"
+              placeholderTextColor={PV2.textTertiary}
               multiline
               value={caption}
               onChangeText={setCaption}
@@ -152,19 +153,19 @@ export default function NewRateMyGrailsScreen() {
 const styles = StyleSheet.create({
   headerCancel: {
     fontSize: 16,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   headerPost: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   headerPostDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   scroll: {
     padding: 16,
@@ -175,7 +176,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.4,
     textTransform: 'uppercase',
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   grid: {
     flexDirection: 'row',
@@ -185,16 +186,16 @@ const styles = StyleSheet.create({
   },
   input: {
     fontSize: 16,
-    color: '#11181C',
+    color: PV2.textPrimary,
     minHeight: 80,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: PV2.border,
     borderRadius: 10,
     padding: 12,
   },
   counter: {
     fontSize: 13,
-    color: '#aaa',
+    color: PV2.textTertiary,
     textAlign: 'right',
   },
   center: {
@@ -206,18 +207,18 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   emptyButton: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 28,

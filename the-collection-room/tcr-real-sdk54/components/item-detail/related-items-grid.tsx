@@ -2,7 +2,6 @@ import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-na
 
 import { Image } from 'expo-image';
 
-import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 
 const COLUMNS = 3;
@@ -22,49 +21,43 @@ export type RelatedItem = {
 type Props = {
   title?: string;
   // Left undefined/empty today — the real "more from this folder / player /
-  // collection" queries don't exist yet. Renders placeholder tiles (same
-  // shell dimensions as real-image tiles) instead of fabricated card data.
+  // collection" queries don't exist yet. No placeholder tiles are rendered
+  // in their place (see the empty-items early return below) — an unbuilt
+  // query is represented as "no related items," not faked card data.
   items?: RelatedItem[];
   onItemPress?: (item: RelatedItem) => void;
-  placeholderCount?: number;
 };
 
 // Reusable 3-column grid of tall portrait tiles — layout only for now.
-// Real-image and placeholder tiles share one base tile style so neither is
-// ever sized differently from the other.
-export function RelatedItemsGrid({ title = 'Related Items', items, onItemPress, placeholderCount = 6 }: Props) {
+export function RelatedItemsGrid({ title = 'Related Items', items, onItemPress }: Props) {
   const { width: screenWidth } = useWindowDimensions();
   const tileWidth = (screenWidth - GRID_HORIZONTAL_PADDING * 2 - GRID_GAP * (COLUMNS - 1)) / COLUMNS;
-  const hasRealItems = !!items && items.length > 0;
+
+  // No reserved empty slots, no placeholder tiles, and no empty "Related
+  // Items" header floating with nothing under it — the whole section
+  // collapses to nothing when there's nothing real to show.
+  if (!items || items.length === 0) return null;
 
   return (
     <View style={styles.wrap}>
       <Text style={styles.header}>{title}</Text>
       <View style={styles.grid}>
-        {hasRealItems
-          ? items!.map((item) => (
-              <Pressable
-                key={item.id}
-                style={[styles.relatedItemTile, { width: tileWidth }]}
-                onPress={() => onItemPress?.(item)}
-                accessibilityRole="button"
-                accessibilityLabel={item.title ?? 'Related item'}>
-                {item.imageUrl && (
-                  <Image
-                    source={{ uri: item.imageUrl }}
-                    style={StyleSheet.absoluteFillObject}
-                    contentFit="cover"
-                  />
-                )}
-              </Pressable>
-            ))
-          : Array.from({ length: placeholderCount }).map((_, index) => (
-              <View key={index} style={[styles.relatedItemTile, { width: tileWidth }]}>
-                <View style={styles.relatedItemPlaceholder}>
-                  <CacheCaseLogo variant="icon" size={44} style={styles.placeholderMark} />
-                </View>
-              </View>
-            ))}
+        {items.map((item) => (
+          <Pressable
+            key={item.id}
+            style={[styles.relatedItemTile, { width: tileWidth }]}
+            onPress={() => onItemPress?.(item)}
+            accessibilityRole="button"
+            accessibilityLabel={item.title ?? 'Related item'}>
+            {item.imageUrl && (
+              <Image
+                source={{ uri: item.imageUrl }}
+                style={StyleSheet.absoluteFillObject}
+                contentFit="cover"
+              />
+            )}
+          </Pressable>
+        ))}
       </View>
     </View>
   );
@@ -97,14 +90,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: PV2.collectorPanelBg,
-  },
-  relatedItemPlaceholder: {
-    flex: 1,
-    width: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  placeholderMark: {
-    opacity: 0.14,
   },
 });

@@ -3,6 +3,7 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 
@@ -66,11 +67,11 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   email: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 8,
@@ -79,7 +80,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.panel,
     overflow: 'hidden',
   },
   row: {
@@ -88,13 +89,13 @@ const styles = StyleSheet.create({
   },
   rowBorder: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: PV2.dividerColor,
   },
   rowLabel: {
     fontSize: 16,
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   rowLabelDestructive: {
-    color: '#FF3B30',
+    color: PV2.accent,
   },
 });

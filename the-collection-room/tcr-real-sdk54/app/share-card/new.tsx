@@ -16,12 +16,17 @@ import {
 import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
 
+import { SharePostPreview } from '@/components/feed/share-post-preview';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAllItems } from '@/hooks/use-collection';
+import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
+import type { CardShareItem } from '@/types';
 
 const MAX_CHARS = 280;
 const MAX_CARDS = 5;
@@ -42,6 +47,10 @@ export default function ShareCardScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const { items, loading, error, refresh } = useAllItems(currentUserId);
+  // Own profile only — the "current user's avatar/username" the preview
+  // (below) needs, same hook every other screen in this app already uses
+  // for that. Not used for anything else on this screen.
+  const { profile: currentProfile } = useProfile(currentUserId);
   // A create form, not a scrollable browsing list — no scroll-hide effect,
   // but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });
@@ -82,6 +91,57 @@ export default function ShareCardScreen() {
 
   const hasPrivateCards = shareableItems.some((i) => !isPubliclyShareable(i));
   const canPost = selectedIds.length >= 1 && !posting;
+
+  // The compose step's own view of the selection, in FINAL posting order —
+  // selectedIds' own array order IS that order (see moveSelected below and
+  // handlePost, which passes selectedIds straight through to
+  // createSnapshotPost/the single-card insert; display_order on the
+  // persisted card_share_items rows is assigned server-side from this same
+  // array's index — see create-snapshot-post's own module comment). Filters
+  // out any id that no longer resolves against shareableItems defensively
+  // (mirrors handlePost's own re-validation below) rather than assuming
+  // selectedIds and shareableItems can never disagree for a render in
+  // between state updates.
+  const selectedItems = selectedIds
+    .map((id) => shareableItems.find((i) => i.id === id))
+    .filter((i): i is (typeof shareableItems)[number] => !!i);
+
+  // Fake, LOCAL-ONLY CardShareItem rows for the preview — no post exists
+  // yet, so there is no real card_share_items id/post_id to read. Reuses
+  // the exact fields CardSharePostBody actually renders (snapshot_title/
+  // snapshot_subtitle sourced the same way create-snapshot-post derives
+  // them server-side: item.title/item.brand) plus the already-signed
+  // preview image this screen's own grid already displays — never the
+  // durable share-snapshots copy, which only gets created at actual post
+  // time. item_id is deliberately null (not the real item id) so
+  // CardSharePostBody's own tap-to-navigate is disabled here — this
+  // preview is a visual confirmation, not a live interactive card; tapping
+  // it should never navigate the user away from mid-compose.
+  const previewCards: CardShareItem[] = selectedItems.map((item, index) => ({
+    id: item.id,
+    post_id: 'preview',
+    item_id: null,
+    snapshot_image_url: item.primary_image_id ? (signedItemImageUrls.get(item.primary_image_id) ?? null) : null,
+    snapshot_title: item.title,
+    snapshot_subtitle: item.brand,
+    display_order: index,
+  }));
+
+  // Adjacent swap only — matches the move-left/move-right control pair
+  // rendered per thumbnail below (no drag-and-drop library in this
+  // project; see the reorder strip's own comment). No-ops silently at
+  // either end of the list rather than wrapping around.
+  function moveSelected(id: string, direction: -1 | 1) {
+    setSelectedIds((prev) => {
+      const index = prev.indexOf(id);
+      if (index === -1) return prev;
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+  }
 
   // No back history when this screen was deep-linked, reloaded directly, or
   // opened during development — fall back to the main feed, where the Create
@@ -186,7 +246,7 @@ export default function ShareCardScreen() {
           headerRight: () => (
             <TouchableOpacity onPress={handlePost} disabled={!canPost} hitSlop={8}>
               {posting ? (
-                <ActivityIndicator size="small" color="#0a7ea4" />
+                <ActivityIndicator size="small" color={PV2.link} />
               ) : (
                 <Text style={[styles.headerPost, !canPost && styles.headerPostDisabled]}>Post</Text>
               )}
@@ -197,7 +257,7 @@ export default function ShareCardScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       ) : error ? (
         // Distinct from the empty state below — a failed query must never
@@ -279,19 +339,99 @@ export default function ShareCardScreen() {
               })}
             </View>
 
-            <TextInput
-              style={styles.input}
-              placeholder="Add a caption (optional)"
-              placeholderTextColor="#999"
-              multiline
-              value={caption}
-              onChangeText={setCaption}
-              maxLength={MAX_CHARS}
-              textAlignVertical="top"
-            />
-            <Text style={styles.counter}>
-              {caption.length}/{MAX_CHARS}
-            </Text>
+            {/* Step 2 — only appears once there's something to compose.
+                Reorder strip, caption, and preview all live in this one
+                section/page rather than a separate route (kept as a single
+                scroll so caption text and card order both stay intact
+                while the other is being adjusted — there's no navigation
+                transition between them to lose state across). */}
+            {selectedItems.length > 0 && (
+              <View style={styles.composeSection}>
+                <Text style={styles.sectionLabel}>Arrange your cards</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.reorderRow}>
+                  {selectedItems.map((item, index) => {
+                    const signedUrl = item.primary_image_id
+                      ? signedItemImageUrls.get(item.primary_image_id)
+                      : undefined;
+                    return (
+                      <View key={item.id} style={styles.reorderThumbWrap}>
+                        <View style={styles.reorderThumb}>
+                          {signedUrl && (
+                            <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" />
+                          )}
+                          <View style={styles.selectedBadge}>
+                            <Text style={styles.selectedBadgeText}>{index + 1}</Text>
+                          </View>
+                          <TouchableOpacity
+                            style={styles.reorderRemoveBtn}
+                            onPress={() => toggleSelect(item)}
+                            hitSlop={6}
+                            accessibilityRole="button"
+                            accessibilityLabel="Remove card from post">
+                            <IconSymbol name="xmark" size={12} color={PV2.textPrimary} />
+                          </TouchableOpacity>
+                        </View>
+                        <View style={styles.reorderControls}>
+                          <TouchableOpacity
+                            onPress={() => moveSelected(item.id, -1)}
+                            disabled={index === 0}
+                            hitSlop={6}
+                            style={styles.reorderArrowBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel="Move card earlier">
+                            <IconSymbol
+                              name="chevron.left"
+                              size={14}
+                              color={index === 0 ? PV2.textTertiary : PV2.textPrimary}
+                            />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => moveSelected(item.id, 1)}
+                            disabled={index === selectedItems.length - 1}
+                            hitSlop={6}
+                            style={styles.reorderArrowBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel="Move card later">
+                            <IconSymbol
+                              name="chevron.right"
+                              size={14}
+                              color={index === selectedItems.length - 1 ? PV2.textTertiary : PV2.textPrimary}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+
+                <Text style={styles.sectionLabel}>Caption</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Add a caption (optional)"
+                  placeholderTextColor={PV2.textTertiary}
+                  multiline
+                  value={caption}
+                  onChangeText={setCaption}
+                  maxLength={MAX_CHARS}
+                  textAlignVertical="top"
+                />
+                <Text style={styles.counter}>
+                  {caption.length}/{MAX_CHARS}
+                </Text>
+
+                <Text style={styles.sectionLabel}>Preview</Text>
+                <SharePostPreview
+                  avatarUrl={currentProfile?.avatar_url ?? null}
+                  displayName={currentProfile?.display_name || currentProfile?.username || ''}
+                  username={currentProfile?.username ?? ''}
+                  caption={caption}
+                  cards={previewCards}
+                />
+              </View>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       )}
@@ -302,19 +442,19 @@ export default function ShareCardScreen() {
 const styles = StyleSheet.create({
   headerCancel: {
     fontSize: 16,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   headerPost: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   headerPostDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   scroll: {
     padding: 16,
@@ -330,21 +470,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.4,
     textTransform: 'uppercase',
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   selectedCount: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   maxHint: {
     fontSize: 12,
-    color: '#aaa',
+    color: PV2.textTertiary,
     marginTop: -6,
   },
   privateHint: {
     fontSize: 12,
-    color: '#687076',
+    color: PV2.textSecondary,
     marginTop: -6,
   },
   grid: {
@@ -366,12 +506,12 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 11,
     overflow: 'hidden',
-    backgroundColor: '#e9ecef',
+    backgroundColor: PV2.collectorPanelBg,
     borderWidth: 2,
     borderColor: 'transparent',
   },
   slotSelected: {
-    borderColor: '#0a7ea4',
+    borderColor: PV2.accent,
   },
   // Private, ineligible-to-share card — dimmed and non-interactive
   // (Pressable disabled), not removed from the grid entirely, so the user
@@ -406,7 +546,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -415,18 +555,65 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  composeSection: {
+    gap: 12,
+    marginTop: 4,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: PV2.dividerColor,
+  },
+  reorderRow: {
+    gap: 10,
+    paddingBottom: 2,
+  },
+  reorderThumbWrap: {
+    width: 84,
+    alignItems: 'center',
+    gap: 6,
+  },
+  reorderThumb: {
+    width: 84,
+    aspectRatio: 3 / 4,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  reorderRemoveBtn: {
+    position: 'absolute',
+    top: 5,
+    left: 5,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reorderControls: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  reorderArrowBtn: {
+    width: 30,
+    height: 26,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   input: {
     fontSize: 16,
-    color: '#11181C',
+    color: PV2.textPrimary,
     minHeight: 80,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: PV2.border,
     borderRadius: 10,
     padding: 12,
   },
   counter: {
     fontSize: 13,
-    color: '#aaa',
+    color: PV2.textTertiary,
     textAlign: 'right',
   },
   center: {
@@ -438,19 +625,19 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 20,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
     marginBottom: 8,
     textAlign: 'center',
   },
   emptyBody: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   emptyButton: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 28,

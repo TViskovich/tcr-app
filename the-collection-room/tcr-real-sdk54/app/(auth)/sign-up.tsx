@@ -14,6 +14,7 @@ import {
 import { Link } from 'expo-router';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { supabase } from '@/lib/supabase';
 
 export default function SignUpScreen() {
@@ -74,14 +75,14 @@ export default function SignUpScreen() {
         contentContainerStyle={styles.inner}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
-        <CacheCaseLogo variant="dark" size="md" style={styles.logo} />
+        <CacheCaseLogo variant="light" size="md" style={styles.logo} />
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Join The Collection Room</Text>
 
         <TextInput
           style={styles.input}
           placeholder="Username"
-          placeholderTextColor="#999"
+          placeholderTextColor={PV2.textTertiary}
           value={username}
           onChangeText={setUsername}
           autoCapitalize="none"
@@ -91,7 +92,7 @@ export default function SignUpScreen() {
         <TextInput
           style={styles.input}
           placeholder="Email"
-          placeholderTextColor="#999"
+          placeholderTextColor={PV2.textTertiary}
           value={email}
           onChangeText={setEmail}
           autoCapitalize="none"
@@ -102,7 +103,7 @@ export default function SignUpScreen() {
         <TextInput
           style={styles.input}
           placeholder="Password (min. 6 characters)"
-          placeholderTextColor="#999"
+          placeholderTextColor={PV2.textTertiary}
           value={password}
           onChangeText={setPassword}
           secureTextEntry
@@ -130,7 +131,7 @@ export default function SignUpScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   inner: {
     flexGrow: 1,
@@ -148,26 +149,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'center',
     marginBottom: 4,
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
+    color: PV2.textSecondary,
     textAlign: 'center',
     marginBottom: 16,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: PV2.border,
     borderRadius: 10,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 16,
-    backgroundColor: '#fafafa',
-    color: '#11181C',
+    backgroundColor: PV2.collectorPanelBg,
+    color: PV2.textPrimary,
   },
   button: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',
@@ -180,7 +181,7 @@ const styles = StyleSheet.create({
   },
   link: {
     textAlign: 'center',
-    color: '#0a7ea4',
+    color: PV2.link,
     marginTop: 8,
     fontSize: 15,
   },

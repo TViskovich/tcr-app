@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -768,7 +769,7 @@ export default function PostDetailScreen() {
             value={newComment}
             onChangeText={setNewComment}
             placeholder="Add a comment..."
-            placeholderTextColor="#999"
+            placeholderTextColor={PV2.textTertiary}
             returnKeyType="send"
             onSubmitEditing={handleAddComment}
             blurOnSubmit={false}
@@ -796,7 +797,7 @@ export default function PostDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   headerDeleteBtn: {
     paddingHorizontal: 4,
@@ -804,25 +805,28 @@ const styles = StyleSheet.create({
   headerDeleteText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#E53935',
+    color: PV2.accent,
   },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: PV2.bg,
   },
   errorText: {
     fontSize: 16,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   errorDetail: {
     fontSize: 13,
-    color: '#aaa',
+    color: PV2.textTertiary,
     marginTop: 6,
     paddingHorizontal: 24,
     textAlign: 'center',
   },
+  // Same accentSoft-fill / accent-tinted-border error-banner convention as
+  // app/collection/[folderId].tsx's own refreshErrorRow — not a one-off
+  // light red here anymore.
   commentsErrorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -830,24 +834,24 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#FDECEA',
+    backgroundColor: PV2.accentSoft,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#f5c6c2',
+    borderTopColor: 'rgba(232,24,26,0.35)',
   },
   commentsErrorText: {
     flex: 1,
     fontSize: 12,
-    color: '#B3261E',
+    color: PV2.accent,
   },
   commentsErrorRetry: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#B3261E',
+    color: PV2.accent,
   },
   // Post header
   imageWrap: {
     aspectRatio: 5 / 7,
-    backgroundColor: '#e9ecef',
+    backgroundColor: PV2.collectorPanelBg,
     overflow: 'hidden',
   },
   cardShareUnavailable: {
@@ -857,18 +861,25 @@ const styles = StyleSheet.create({
   },
   cardShareUnavailableText: {
     fontSize: 13,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
+  // Was its own separate '#1A1A1A' fill (a pre-dark-theme-unification
+  // leftover) — components/feed/post-card.tsx's own card header already
+  // dropped this exact same per-section fill in favor of one shared
+  // PV2.bg for the whole post (see that file's own history comments); this
+  // screen is the expanded/detail view of the same post header, so it now
+  // matches that same already-completed pattern instead of carrying its
+  // own separate near-black shade.
   grailsWrap: {
     padding: 12,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: PV2.bg,
   },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: PV2.bg,
     gap: 10,
   },
   avatar: {
@@ -876,7 +887,7 @@ const styles = StyleSheet.create({
     height: 36,
     borderRadius: 18,
     overflow: 'hidden',
-    backgroundColor: '#333333',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
   },
   avatarPlaceholder: {
@@ -886,7 +897,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: PV2.textPrimary,
   },
   userInfo: {
     flex: 1,
@@ -895,27 +906,27 @@ const styles = StyleSheet.create({
   postDisplayName: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: PV2.textPrimary,
   },
   postUsername: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.55)',
+    color: PV2.textSecondary,
   },
   postAge: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.40)',
+    color: PV2.textSecondary,
     flexShrink: 0,
   },
   textContent: {
     fontSize: 18,
-    color: '#11181C',
+    color: PV2.textPrimary,
     paddingHorizontal: 12,
     paddingVertical: 16,
     lineHeight: 26,
   },
   caption: {
     fontSize: 15,
-    color: '#11181C',
+    color: PV2.textPrimary,
     paddingHorizontal: 12,
     paddingBottom: 12,
     lineHeight: 22,
@@ -943,15 +954,19 @@ const styles = StyleSheet.create({
   actionCount: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#687076',
+    color: PV2.textSecondary,
     minWidth: 16,
   },
+  // Burnt-orange "liked" accent (pairs with the 🔥 reaction) — not a
+  // light-mode color, reads fine on a dark background as-is; left
+  // untouched rather than remapped onto PV2.accent's red, which would
+  // change this highlight's actual hue rather than just its theme.
   likedCount: {
     color: '#E65100',
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: '#e0e0e0',
+    backgroundColor: PV2.dividerColor,
   },
   // Comments
   commentRow: {
@@ -959,14 +974,14 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: PV2.dividerColor,
   },
   commentAvatar: {
     width: 32,
     height: 32,
     borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#E3F2FD',
+    backgroundColor: PV2.collectorPanelBg,
     flexShrink: 0,
     marginTop: 2,
   },
@@ -977,7 +992,7 @@ const styles = StyleSheet.create({
   commentAvatarInitial: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#1565C0',
+    color: PV2.textPrimary,
   },
   commentContent: {
     flex: 1,
@@ -991,15 +1006,15 @@ const styles = StyleSheet.create({
   commentUsername: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   commentAge: {
     fontSize: 11,
-    color: '#aaa',
+    color: PV2.textTertiary,
   },
   commentBody: {
     fontSize: 14,
-    color: '#333',
+    color: PV2.textPrimary,
     lineHeight: 20,
   },
   deleteBtn: {
@@ -1009,7 +1024,7 @@ const styles = StyleSheet.create({
   },
   deleteText: {
     fontSize: 13,
-    color: '#bbb',
+    color: PV2.textTertiary,
   },
   emptyComments: {
     padding: 32,
@@ -1017,7 +1032,7 @@ const styles = StyleSheet.create({
   },
   emptyCommentsText: {
     fontSize: 14,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   // Input bar
   inputBar: {
@@ -1026,15 +1041,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    borderTopColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
     gap: 8,
   },
   input: {
     flex: 1,
     fontSize: 15,
-    color: '#11181C',
-    backgroundColor: '#f5f5f5',
+    color: PV2.textPrimary,
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.border,
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -1046,12 +1063,15 @@ const styles = StyleSheet.create({
     minWidth: 44,
     alignItems: 'center',
   },
+  // #0a7ea4 mapped onto PV2.link — same actionable-text role (this app's
+  // one existing "link/button text" token), not a new blue invented for
+  // this screen.
   sendText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   sendTextDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
 });

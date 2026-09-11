@@ -893,7 +893,7 @@ export default function RegistryDetailScreen() {
               onPress={closeQrModal}
               accessibilityRole="button"
               accessibilityLabel="Close">
-              <IconSymbol name="xmark" size={18} color="#11181C" />
+              <IconSymbol name="xmark" size={18} color={PV2.textPrimary} />
             </TouchableOpacity>
 
             {registryPublicUrl && (
@@ -1382,10 +1382,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
+  // Only the QRCode component itself (its own backgroundColor="#FFFFFF"
+  // prop, set directly on <QRCode>, not a style here) stays white — required
+  // for scanner contrast, same reasoning as qrCard above. This sheet
+  // wrapping it is now dark/PV2-themed like the rest of the app; the QR's
+  // own white square still renders on top of it either way.
   qrModalCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: PV2.panel,
     borderRadius: 24,
     paddingTop: 12,
     paddingBottom: 24,
@@ -1397,7 +1402,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(0,0,0,0.06)',
+    backgroundColor: PV2.border,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
@@ -1407,19 +1412,19 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     letterSpacing: 1,
-    color: '#11181C',
+    color: PV2.textPrimary,
   },
   qrModalTitle: {
     marginTop: 6,
     fontSize: 14,
     fontWeight: '600',
-    color: '#3A3A3C',
+    color: PV2.textSecondary,
     textAlign: 'center',
   },
   qrModalInstruction: {
     marginTop: 14,
     fontSize: 12,
-    color: '#687076',
+    color: PV2.textSecondary,
     textAlign: 'center',
     lineHeight: 17,
   },

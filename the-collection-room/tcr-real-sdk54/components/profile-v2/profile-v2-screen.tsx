@@ -27,6 +27,7 @@ import type { PostgrestError } from '@supabase/supabase-js';
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
+import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   getHeroCanvasPickerThemes,
@@ -325,6 +326,14 @@ export function ProfileV2Screen({ userId }: Props) {
   // writes — this state just carries what was true when Replace was
   // chosen.
   const [grailChooserTarget, setGrailChooserTarget] = useState<GrailChooserTarget | null>(null);
+  // Owner-only "+" at the bottom of the Collection tab (see
+  // ProfileV2Collections' onCreateFolderPress) — opens the SAME
+  // CreateFolderModal app/(tabs)/collection.tsx and app/collection/
+  // [folderId].tsx already use for root-level folder creation, rendered
+  // inline on this screen instead of navigating away (unlike the existing
+  // onCreatePress below, which still navigates to the old Collection page
+  // and is left untouched).
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
   // Bookmarking a whole Grails showcase, not any single item — the same
   // saved_grails-backed hook already used by app/grails/[userId].tsx
   // (a route with no live entry point from normal browsing; this profile
@@ -1878,11 +1887,26 @@ export function ProfileV2Screen({ userId }: Props) {
             <>
               {/* One shared, fixed-minHeight container for whichever section
                   is active — measured once off the posts section (now the
-                  default/starting tab). Other sections then hold the same
-                  floor instead of shrinking the page and shifting everything
-                  below it. */}
+                  default/starting tab). 'posts'/'cachecase'/'transfer'/
+                  'tagged' still hold that same floor instead of shrinking
+                  the page and shifting everything below it. EXEMPT:
+                  'items' and 'collections' — that floor is `posts`'s own
+                  rendered height, which for an active poster can run to
+                  several screens; enforcing that same floor on a short
+                  items grid or a short folder/collection list left a huge
+                  dead gap below the real content, before the ScrollView's
+                  own TAB_BAR_HEIGHT+insets.bottom+24 nav-clearance padding
+                  even started — scrolling had to cross most of `posts`'s
+                  own height before reaching the nav, not just clear it.
+                  This isn't owner-gated code — it's shared logic that
+                  surfaces whenever a given profile's posts/items or posts/
+                  collections ratio is lopsided enough; a profile whose
+                  items or collections tab is already at least as tall as
+                  posts sees no change either way. 'tagged' is left sharing
+                  the floor for now, per instruction, unless its own content
+                  shows the same problem. */}
               <ProfileV2SectionPage
-                minHeight={sectionMinHeight}
+                minHeight={section === 'items' || section === 'collections' ? undefined : sectionMinHeight}
                 onLayout={(e) => {
                   if (section === 'posts' && sectionMinHeight === undefined) {
                     setSectionMinHeight(e.nativeEvent.layout.height);
@@ -1933,6 +1957,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     onOpenChildFolder={openFolder}
                     onAddItem={isOwnProfile ? addFolderItem : undefined}
                     onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
+                    onCreateFolderPress={isOwnProfile ? () => setShowCreateFolderModal(true) : undefined}
                   />
                 )}
 
@@ -1971,6 +1996,18 @@ export function ProfileV2Screen({ userId }: Props) {
       </KeyboardAvoidingView>
 
       <GrailSlotChooser target={grailChooserTarget} onClose={closeGrailChooser} />
+
+      {isOwnProfile && currentUserId && (
+        <CreateFolderModal
+          visible={showCreateFolderModal}
+          userId={currentUserId}
+          onClose={() => setShowCreateFolderModal(false)}
+          onCreated={() => {
+            setShowCreateFolderModal(false);
+            refreshFolders();
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

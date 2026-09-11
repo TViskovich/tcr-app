@@ -21,6 +21,7 @@ import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -679,7 +680,7 @@ export default function ConversationScreen() {
           }}
         />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#0a7ea4" />
+          <ActivityIndicator size="large" color={PV2.link} />
         </View>
       </>
     );
@@ -708,7 +709,7 @@ export default function ConversationScreen() {
             </View>
           }
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0a7ea4" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
           }
           onScroll={handleMessagesScroll}
           scrollEventThrottle={100}
@@ -729,7 +730,7 @@ export default function ConversationScreen() {
               disabled={sending}
               style={styles.pendingRetryBtn}>
               {sending ? (
-                <ActivityIndicator size="small" color="#0a7ea4" />
+                <ActivityIndicator size="small" color={PV2.link} />
               ) : (
                 <Text style={styles.pendingRetryText}>Retry</Text>
               )}
@@ -755,7 +756,7 @@ export default function ConversationScreen() {
             value={newMessage}
             onChangeText={setNewMessage}
             placeholder="Message..."
-            placeholderTextColor="#999"
+            placeholderTextColor={PV2.textTertiary}
             returnKeyType="send"
             onSubmitEditing={handleSend}
             blurOnSubmit={false}
@@ -767,7 +768,7 @@ export default function ConversationScreen() {
             disabled={!newMessage.trim() || sending || !!pendingSend}
             style={styles.sendBtn}>
             {sending ? (
-              <ActivityIndicator size="small" color="#0a7ea4" />
+              <ActivityIndicator size="small" color={PV2.link} />
             ) : (
               <Text style={[styles.sendText, !newMessage.trim() && styles.sendTextDisabled]}>
                 Send
@@ -783,13 +784,13 @@ export default function ConversationScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8f9fa',
+    backgroundColor: PV2.bg,
   },
   list: {
     flex: 1,
@@ -806,7 +807,7 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 15,
-    color: '#687076',
+    color: PV2.textSecondary,
   },
   // Bubbles
   bubbleWrap: {
@@ -824,16 +825,20 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   bubbleOther: {
-    backgroundColor: '#e9ecef',
+    backgroundColor: PV2.collectorPanelBg,
     borderBottomLeftRadius: 4,
   },
+  // Was the same #0a7ea4 teal-blue used ad hoc elsewhere in this file —
+  // mapped onto PV2.accent (the app's one actual defined accent, used for
+  // likes/primary actions throughout) rather than a color with no other
+  // meaning in the rest of the app.
   bubbleOwn: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: PV2.accent,
     borderBottomRightRadius: 4,
   },
   bubbleText: {
     fontSize: 15,
-    color: '#11181C',
+    color: PV2.textPrimary,
     lineHeight: 20,
   },
   bubbleTextOwn: {
@@ -841,26 +846,30 @@ const styles = StyleSheet.create({
   },
   bubbleTime: {
     fontSize: 10,
-    color: '#aaa',
+    color: PV2.textTertiary,
     marginTop: 2,
     marginHorizontal: 4,
   },
-  // Pending-send banner
+  // Pending-send banner — amber/warning, deliberately distinct from the
+  // app's red accent/error color (this isn't a failure, just an
+  // unconfirmed send) — same accentSoft-style low-alpha-fill +
+  // tinted-border shape as the error banners elsewhere in this dark-theme
+  // pass, just amber-hued since no warning token exists in PV2.
   pendingBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#fff3e0',
+    backgroundColor: 'rgba(255,183,3,0.14)',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
+    borderTopColor: 'rgba(255,183,3,0.35)',
     gap: 8,
   },
   pendingBannerText: {
     flex: 1,
     fontSize: 13,
-    color: '#8a5a00',
+    color: '#FFB703',
   },
   pendingRetryBtn: {
     paddingHorizontal: 10,
@@ -871,7 +880,7 @@ const styles = StyleSheet.create({
   pendingRetryText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: '#FFB703',
   },
   // Input bar
   inputBar: {
@@ -880,15 +889,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    borderTopColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
     gap: 8,
   },
   input: {
     flex: 1,
     fontSize: 15,
-    color: '#11181C',
-    backgroundColor: '#f5f5f5',
+    color: PV2.textPrimary,
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.border,
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -903,9 +914,9 @@ const styles = StyleSheet.create({
   sendText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#0a7ea4',
+    color: PV2.link,
   },
   sendTextDisabled: {
-    color: '#ccc',
+    color: PV2.textTertiary,
   },
 });

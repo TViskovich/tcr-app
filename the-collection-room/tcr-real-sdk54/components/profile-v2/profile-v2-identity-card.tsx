@@ -4,6 +4,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { GRID_CELL_WIDTH, GRID_HORIZONTAL_MARGIN } from './profile-v2-grid';
 import { PV2 } from './profile-v2-theme';
 
 // Left-to-right neon signature — cyan/blue into purple into pink. A
@@ -22,20 +23,36 @@ const RADIUS = 0;
 // (no padding around it, per the reference), so this is also the avatar's
 // own height.
 const CARD_HEIGHT = 80;
-// Historical left inset `card` no longer has (see `card`'s own
-// paddingRight below — there's no matching paddingLeft any more). Kept
-// only as the amount AVATAR_WIDTH below compensates by, so the avatar's
-// right edge stays exactly where it was before that padding was removed
-// from the left side of `card`.
-const AVATAR_WIDTH_COMPENSATION = 20;
-// Wide, not square — roughly matches the reference's photo proportions,
-// deliberately much wider than a typical circular-avatar footprint. Widened
-// by exactly AVATAR_WIDTH_COMPENSATION (was 116, flush against `card`'s own
-// former left padding) so the avatar's LEFT edge extends into the space
-// that padding used to reserve — flush against the border now, with no
-// gap — while its RIGHT edge (where the username/text column begins)
-// lands in the same place as before that change.
-const AVATAR_WIDTH = 116 + AVATAR_WIDTH_COMPENSATION;
+// Right-edge alignment fix: was a fixed 136 (116 + a 20px compensation for
+// `card`'s removed left padding — see BORDER_WIDTH_LEFT's own comment
+// below for that history). A fixed width can only coincidentally match the
+// Grails grid's first cell's own right edge, since GRID_CELL_WIDTH (see
+// profile-v2-grid.tsx) is a device-width-proportional fraction, not a
+// fixed value — on narrower devices 136 overshoots past the grid's right
+// edge (the reported bug: the photo visibly wider than the card below
+// it), on wider devices it would undershoot instead. Importing
+// GRID_CELL_WIDTH directly (rather than tuning a second hardcoded number
+// to approximate it) guarantees the photo's right edge lands exactly on
+// the first grid cell's right edge on every device width, the same way
+// BORDER_WIDTH_LEFT already guarantees their LEFT edges match.
+const AVATAR_WIDTH = GRID_CELL_WIDTH;
+// Alignment fix: `borderWrap`'s own padding (BORDER_WIDTH, the gradient
+// border's thickness) insets EVERYTHING inside it — including the avatar,
+// which has no paddingLeft of its own — by BORDER_WIDTH from the screen's
+// left edge. The Grails/card grid directly below this card
+// (profile-v2-grid.tsx) insets its own first column by the smaller
+// GRID_HORIZONTAL_MARGIN instead, so the two left edges landed 1dp apart.
+// Used as borderWrap's own paddingLeft (replacing BORDER_WIDTH on that one
+// side only — see borderWrap below) so `card`, and therefore the avatar
+// inside it, starts exactly GRID_HORIZONTAL_MARGIN from the screen edge,
+// same as the grid's first column. A plain negative margin on the avatar
+// itself can't do this: `card` has overflow: 'hidden', so anything pulled
+// left of `card`'s own left edge would simply be clipped, not moved.
+// GRID_HORIZONTAL_MARGIN is imported, not duplicated, so the two can never
+// drift out of sync again. Top/right/bottom border thickness (BORDER_WIDTH)
+// is untouched — only the left edge's rendered gradient sliver narrows by
+// the same 1dp the avatar moves, which is what actually closes the gap.
+const BORDER_WIDTH_LEFT = GRID_HORIZONTAL_MARGIN;
 // Right-side inset for rightCol's content (logo/ACCT#) off the inside of
 // the right gradient border — the ONLY source of that gap (rightCol
 // itself no longer contributes its own right-side padding; see rightCol's
@@ -148,27 +165,37 @@ export function ProfileV2IdentityCard({
 const styles = StyleSheet.create({
   // Gradient rect showing through as the card's border — same
   // padding-equals-border-width trick as ProfileV2Selector's cachecaseBorder.
-  // BORDER_WIDTH (4) is the sole source of the border's visible thickness;
-  // `card` beneath it has a fixed CARD_HEIGHT and its own opaque
-  // background, so thickening this padding only grows borderWrap's own
-  // outer frame — it never squeezes or shifts any of card's inner content
-  // (avatar/text/logo/ACCT#), which is sized and positioned independently.
-  // No marginHorizontal — the header runs edge-to-edge across the screen;
-  // `card`'s own paddingRight is what keeps rightCol off the right screen
-  // edge (the avatar deliberately has no matching left inset — see `card`
-  // below).
+  // BORDER_WIDTH (4) is the sole source of the border's visible thickness on
+  // top/right/bottom; `card` beneath it has a fixed CARD_HEIGHT and its own
+  // opaque background, so thickening this padding only grows borderWrap's
+  // own outer frame — it never squeezes or shifts any of card's inner
+  // content (avatar/text/logo/ACCT#), which is sized and positioned
+  // independently. No marginHorizontal — the header runs edge-to-edge
+  // across the screen; `card`'s own paddingRight is what keeps rightCol off
+  // the right screen edge (the avatar deliberately has no matching left
+  // inset — see `card` below). paddingLeft is BORDER_WIDTH_LEFT, not
+  // BORDER_WIDTH — narrowed to exactly GRID_HORIZONTAL_MARGIN so `card`
+  // (and the avatar flush against its left edge) starts at the same
+  // distance from the screen edge as the Grails/card grid's first column
+  // below it, instead of BORDER_WIDTH's slightly wider inset (see
+  // BORDER_WIDTH_LEFT's own comment). The border's visible thickness is
+  // therefore ~1dp narrower on the left edge only than on the other three;
+  // every other edge is untouched.
   borderWrap: {
     marginTop: 12,
     borderRadius: RADIUS,
-    padding: BORDER_WIDTH,
+    paddingTop: BORDER_WIDTH,
+    paddingRight: BORDER_WIDTH,
+    paddingBottom: BORDER_WIDTH,
+    paddingLeft: BORDER_WIDTH_LEFT,
   },
   // paddingRight (not paddingHorizontal) keeps rightCol's content off the
   // right screen edge now that borderWrap runs full-width. Deliberately no
   // paddingLeft: the avatar is this row's first child, so with no left
   // inset here it starts flush against the card's own left edge — i.e.
   // flush against the inside of the gradient border, no blank gap (see
-  // AVATAR_WIDTH's own comment for the matching width change that keeps
-  // its right edge in place). paddingVertical is 0 so the avatar's
+  // AVATAR_WIDTH's own comment above for how its right edge is now kept
+  // aligned to the grid below instead). paddingVertical is 0 so the avatar's
   // height: '100%' still fills the row edge-to-edge top/bottom, matching
   // the reference. Fixed CARD_HEIGHT rather than content-driven, since the
   // avatar needs a concrete height to fill edge-to-edge.

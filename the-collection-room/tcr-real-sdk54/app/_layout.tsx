@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, ThemeProvider, type Theme } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo } from 'react';
@@ -6,8 +6,8 @@ import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { AuthProvider, useAuth } from '@/lib/auth';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { GlobalFloatingTabBar } from '@/components/navigation/global-floating-tab-bar';
 import { MessageBadgeContext } from '@/lib/message-badge-context';
@@ -17,8 +17,31 @@ export const unstable_settings = {
   anchor: '(tabs)',
 };
 
+// CacheCase is always-dark — every PV2 token is a fixed dark value, with no
+// light-mode counterpart anywhere in the app's own screen styling. Before
+// this, the native Stack header (title/back/right-button chrome — used
+// unmodified by screens like app/post/[id].tsx, which don't set headerShown:
+// false) followed the DEVICE's own light/dark setting via useColorScheme(),
+// completely independent of PV2 — a phone set to light mode got a white
+// native header bar directly above this app's already-dark screen content.
+// Built from React Navigation's own DarkTheme (not invented from scratch)
+// with just its `colors` remapped onto the equivalent PV2 tokens, so native
+// chrome (headers, and anything else that reads from navigation theme
+// colors) matches the same palette the rest of the app already uses,
+// unconditionally — not layering a second dark-theme system alongside PV2.
+const CACHECASE_NAV_THEME: Theme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: PV2.bg,
+    card: PV2.panel,
+    text: PV2.textPrimary,
+    border: PV2.border,
+    primary: PV2.accent,
+  },
+};
+
 function RootLayoutNav() {
-  const colorScheme = useColorScheme();
   const { session, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
@@ -55,7 +78,7 @@ function RootLayoutNav() {
   }
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={CACHECASE_NAV_THEME}>
       <TabVisibilityProvider>
         <MessageBadgeContext.Provider value={messageBadgeContextValue}>
           <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
@@ -71,7 +94,12 @@ function RootLayoutNav() {
           {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
         </MessageBadgeContext.Provider>
       </TabVisibilityProvider>
-      <StatusBar style="auto" />
+      {/* "light" (not "auto") — always white/light status-bar content,
+          matching CacheCase's always-dark screens regardless of the
+          device's own system light/dark setting; "auto" was choosing
+          based on device state, which could land on dark status-bar
+          content (hard to see) against this app's dark backgrounds. */}
+      <StatusBar style="light" />
     </ThemeProvider>
   );
 }
