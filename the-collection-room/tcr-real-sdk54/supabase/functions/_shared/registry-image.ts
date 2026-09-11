@@ -98,10 +98,27 @@ export function canViewRegisteredCard(
   return callerId === record.current_owner_id || callerId === record.created_by;
 }
 
+// HEIC/HEIF added (post-photo copy-pipeline investigation) — a library
+// pick with allowsEditing:false (app/post/new.tsx's Choose from Library,
+// and item/new.tsx before it) returns the SOURCE asset's own format
+// as-is, never force-converting it. On iOS, "High Efficiency" has been
+// the default camera capture format since iPhone 7 (iOS 11+), so an
+// unedited library selection is routinely HEIC, not JPEG — this
+// allowlist rejecting it (extension undefined -> copy fails as
+// 'unavailable') was a real, reachable gap, not a hypothetical one.
+// Safe to serve publicly from share-snapshots: every consumer of a
+// share-snapshots URL in this app is expo-image (post-card.tsx,
+// attachment-image-grid.tsx) — never a plain web <img> or the public-web
+// Next.js surface (verified: that surface only ever reads from the
+// separate registry-images bucket, never share-snapshots or posts at
+// all) — and expo-image decodes HEIC/HEIF natively on iOS (ImageIO) and
+// via platform HEIF support on Android 8+.
 export const ALLOWED_IMAGE_MIME_TYPES: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
 };
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB

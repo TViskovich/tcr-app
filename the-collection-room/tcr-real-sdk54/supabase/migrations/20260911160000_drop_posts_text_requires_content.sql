@@ -1,0 +1,68 @@
+-- Corrective fix for the multi-image text-post feature (supabase/migrations/
+-- 20260911150000_create_post_images.sql). Creating an IMAGE-ONLY text post
+-- (content = NULL, 1-4 post_images rows) fails at INSERT time with:
+--
+--   new row for relation "posts" violates check constraint
+--   "posts_text_requires_content"
+--
+-- posts_text_requires_content is a LIVE constraint that predates this
+-- feature and is not declared anywhere in this repo (schema.sql or any
+-- other tracked migration) — added directly against the live project,
+-- undocumented, the same way posts.post_type/posts.content/the original
+-- posts_post_type_check constraint were (see
+-- supabase/migrations/20260711193000_fix_posts_post_type_check.sql's own
+-- comment for the identical pattern: "never documented in
+-- supabase/schema.sql... added directly against the live project"). It
+-- enforced "post_type = 'text' requires non-empty content" — correct back
+-- when a text post's only possible content WAS its text, but wrong now
+-- that a text post is also valid as 1-4 images with no text at all.
+--
+-- It cannot simply be rewritten to also allow "0 images" as an
+-- alternative condition: a CHECK constraint on posts can only ever see
+-- that one row's own columns — it has no way to look up whether any
+-- post_images rows exist for it. The "text OR images" rule now inherently
+-- spans two tables, so it can no longer live as a table-level CHECK on
+-- posts at all; that validation has to live in application/RPC logic
+-- instead, where both pieces of information are actually available.
+--
+-- create_text_post (20260911150000_create_post_images.sql) already
+-- enforces the correct, cross-table version of this rule itself, BEFORE
+-- ever inserting into posts — unchanged by this migration:
+--   v_content := NULLIF(btrim(p_content), '');
+--   IF v_content IS NULL AND v_count = 0 THEN
+--     RAISE EXCEPTION 'A post needs text or at least one image';
+--   END IF;
+-- (v_count is p_attachments' own array length, and is separately capped
+-- at 4 by the check immediately above that one in the same function —
+-- also unchanged here.) Whitespace-only content is treated as empty by
+-- btrim + NULLIF, so "  " does not count as real text.
+--
+-- Verified before writing this migration: create_text_post is the ONLY
+-- code path anywhere in this app (client TypeScript, Edge Functions, or
+-- SQL) that inserts a post_type = 'text' row. Every other post_type is
+-- written through its own distinct path — 'item' via
+-- app/share-card/new.tsx (single card) and app/item/new.tsx,
+-- 'card_share' / 'rate_my_grails' via the create-snapshot-post Edge
+-- Function — and none of those ever insert 'text' rows. So dropping this
+-- table-level constraint opens no gap: create_text_post's own RAISE
+-- EXCEPTION above is already the sole, and already-correct, gatekeeper
+-- for every 'text' post ever created, both today and after this change.
+--
+-- Standalone/idempotent by design, not folded into
+-- 20260911150000_create_post_images.sql — that migration may already be
+-- applied to a live database (which is exactly how this error was first
+-- hit during testing), so editing it in place would not retroactively fix
+-- an environment where it already ran. This migration is safe to run
+-- regardless of whether that migration has been applied yet, and
+-- regardless of whether posts_text_requires_content exists under this
+-- exact name on a given environment — IF EXISTS makes the DROP a no-op
+-- wherever the constraint is already gone or was never added (e.g. a
+-- brand-new database seeded straight from schema.sql, which never had
+-- this undocumented constraint in the first place).
+--
+-- Scope: only ever touches posts_text_requires_content. Does not alter
+-- posts_post_type_check, post_images, or anything belonging to
+-- card_share/rate_my_grails.
+ALTER TABLE public.posts DROP CONSTRAINT IF EXISTS posts_text_requires_content;
+
+NOTIFY pgrst, 'reload schema';

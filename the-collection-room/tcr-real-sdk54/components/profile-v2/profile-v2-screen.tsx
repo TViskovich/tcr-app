@@ -89,20 +89,26 @@ const LOCATION_MAX_LENGTH = 80;
 const SHOW_OWNER_SETTINGS_AND_SAVED_ICONS = false;
 
 // The one place the "tab row → tab content" gap is defined — matches the
-// Grails→tab-row gap (ProfileV2HeroCanvas's gridStage paddingBottom 16 +
-// ProfileV2TabRow's own row marginTop 10 = 26) so the tab row reads as a
+// Grails→tab-row gap (ProfileV2HeroCanvas's gridStage paddingBottom 4 +
+// ProfileV2TabRow's own row marginTop 2 = 6) so the tab row reads as a
 // symmetric divider, gap-for-gap, between the shared showcase above it and
 // whichever tab's content is below it. Both sides were brought in together
 // from an initial, too-large 42/42 pass — still one shared, deliberately
-// small value, not two independently-tuned numbers. Previously this same
-// conceptual gap was split across tabRowInner's paddingBottom and
-// tabBodyWrap's marginTop, AND each tab body (ProfileV2Posts/
-// ProfileV2Collections/ProfileV2ItemsGrid) added its own additional top
-// margin on top of that — three different totals for three tabs.
-// Posts/Collection/Items/Tagged must all rely on this single value alone
-// for their starting offset; none of them should carry their own separate
-// top margin/padding before their first element.
-const TAB_CONTENT_TOP_GAP = 26;
+// small value, not two independently-tuned numbers. Trimmed 26 → 10 → 6
+// (default-load-fold pass, then a further nudge, both alongside the
+// matching gridStage/TabRow change) — the Grails grid above is tall by
+// design (9 trading-card-ratio cells) and untouched, but the old 26px gap
+// on top of that, plus the floating nav's own clearance below, left the
+// tab row partially hidden behind the nav on a typical phone's default
+// (unscrolled) profile load. Previously this same conceptual gap was
+// split across tabRowInner's paddingBottom and tabBodyWrap's marginTop,
+// AND each tab body (ProfileV2Posts/ProfileV2Collections/
+// ProfileV2ItemsGrid) added its own additional top margin on top of that
+// — three different totals for three tabs. Posts/Collection/Items/Tagged
+// must all rely on this single value alone for their starting offset;
+// none of them should carry their own separate top margin/padding before
+// their first element.
+const TAB_CONTENT_TOP_GAP = 6;
 
 // Deliberately does NOT use `new URL(...)` as the validator. React
 // Native's actual global URL (node_modules/react-native/Libraries/Blob/URL.js,
@@ -2028,19 +2034,20 @@ const styles = StyleSheet.create({
   // background-removal/spacing pass), so the grid sits almost flush
   // under the header instead of being pushed down an extra step here.
   heroCanvasWrap: {},
-  // Public viewer only — pulls the tab row up so it sits ~8px below the
-  // grid instead of the owner case's full 26px design gap
-  // (gridStage.paddingBottom 16 + ProfileV2TabRow's own marginTop 10, see
-  // TAB_CONTENT_TOP_GAP above). That 26px gap used to also have
+  // Public viewer only. Originally pulled the tab row up below the grid
+  // (via a negative marginBottom) so it sat ~8px below the grid instead of
+  // the owner case's larger design gap — that gap used to also have
   // ownerActionRow's public Back/bookmark row stacked on top of it (another
-  // ~50-60px) before both those controls moved to the top action row —
-  // this closes the resulting oversized gap without touching the shared
-  // 26px constant/TabRow marginTop themselves, since those also govern the
-  // owner case and the tab-row→tab-body gap for all four tabs, neither of
-  // which this pass touches.
-  heroCanvasWrapPublic: {
-    marginBottom: -18,
-  },
+  // ~50-60px) before both those controls moved to the top action row, and
+  // this closed the resulting oversized gap without touching the shared
+  // TAB_CONTENT_TOP_GAP/TabRow marginTop themselves, since those also
+  // govern the owner case and the tab-row→tab-body gap for all four tabs.
+  // No-op now (was -18, then -2 as the owner gap itself got trimmed,
+  // default-load-fold passes): the owner gap is down to 6px, already
+  // tighter than that original ~8px public target, so public and owner
+  // converge on the same gap and no further pull-up is needed — a
+  // negative value here now would only overlap the grid with the tab row.
+  heroCanvasWrapPublic: {},
   // Opaque backdrop for the sticky tab row (ScrollView's stickyHeaderIndices
   // index 1) — matches the screen's own background so scrolled content
   // underneath doesn't show through ProfileV2TabRow's own transparent gaps

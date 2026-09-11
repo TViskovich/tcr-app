@@ -202,11 +202,21 @@ export default function CollectionFolderScreen() {
   // sub-flow, reusing this screen's own already-loaded items/signedUrls.
   const [showCoverMenu, setShowCoverMenu] = useState(false);
   const [showCoverItemPicker, setShowCoverItemPicker] = useState(false);
-  // "Choose from Folder" -> tap an item opens this (FolderCoverAdjuster)
-  // instead of saving immediately — the item + its already-resolved signed
-  // URL, captured together so the adjuster never has to re-look either up.
-  // Non-null exactly while that adjuster is open.
-  const [adjustingCover, setAdjustingCover] = useState<{ item: CollectionItem; uri: string } | null>(null);
+  // Both "Choose from Folder" (tap an item) and "Choose from Library"
+  // (pick a photo, native editing disabled) converge on this single
+  // FolderCoverAdjuster instance instead of saving immediately — one
+  // shared crop/zoom/reposition UI for both sources, never a second
+  // cropper. `kind` distinguishes them only for handleSaveAdjustedCover's
+  // own persistence branch below (an 'item' cover just points at that
+  // item's existing image; a 'library' cover still needs its local uri
+  // uploaded to Storage first) — FolderCoverAdjuster itself only ever
+  // reads the common `uri` field. Non-null exactly while the adjuster is
+  // open.
+  const [adjustingCover, setAdjustingCover] = useState<
+    | { kind: 'item'; item: CollectionItem; uri: string }
+    | { kind: 'library'; uri: string }
+    | null
+  >(null);
   const [savingCover, setSavingCover] = useState(false);
   // iOS only — set right before closing FolderCoverMenu when the user picks
   // "Choose from Photo Library," then consumed by that Modal's onDismiss
@@ -682,26 +692,52 @@ export default function CollectionFolderScreen() {
     if (!uri) return;
     setShowCoverItemPicker(false);
     setShowCoverMenu(false);
-    setAdjustingCover({ item, uri });
+    setAdjustingCover({ kind: 'item', item, uri });
   }
 
+  // Single save path for both adjustingCover sources — an 'item' cover
+  // never re-uploads anything (it just points cover_item_id at the
+  // already-stored item image, exactly as before); a 'library' cover
+  // uploads the picker's untouched local uri to Storage first (the native
+  // editor no longer pre-crops it — see runLibraryCoverPick), then points
+  // at that upload. Either way, `crop` (from FolderCoverAdjuster) is saved
+  // the same way, since FolderCoverImage now applies it for both sources.
   async function handleSaveAdjustedCover(crop: FolderCoverCrop) {
     if (!adjustingCover || savingCover || !folder || !currentUserId) return;
-    const { item } = adjustingCover;
+    const source = adjustingCover;
     setAdjustingCover(null);
     setSavingCover(true);
     const previousUploadPath = folder.cover_source === 'upload' ? folder.cover_storage_path : null;
-    const updated = await applyCoverUpdate({
-      cover_source: 'item',
-      cover_item_id: item.id,
-      cover_storage_path: null,
-      cover_image_url: null,
-      cover_crop: crop,
-    });
-    if (updated && previousUploadPath) {
-      await deleteFolderCover(previousUploadPath, currentUserId);
+    try {
+      if (source.kind === 'item') {
+        const updated = await applyCoverUpdate({
+          cover_source: 'item',
+          cover_item_id: source.item.id,
+          cover_storage_path: null,
+          cover_image_url: null,
+          cover_crop: crop,
+        });
+        if (updated && previousUploadPath) {
+          await deleteFolderCover(previousUploadPath, currentUserId);
+        }
+      } else {
+        const uploaded = await uploadFolderCover(source.uri, currentUserId);
+        const updated = await applyCoverUpdate({
+          cover_source: 'upload',
+          cover_storage_path: uploaded.storagePath,
+          cover_item_id: null,
+          cover_image_url: uploaded.publicUrl,
+          cover_crop: crop,
+        });
+        if (updated && previousUploadPath && previousUploadPath !== uploaded.storagePath) {
+          await deleteFolderCover(previousUploadPath, currentUserId);
+        }
+      }
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload cover image.');
+    } finally {
+      setSavingCover(false);
     }
-    setSavingCover(false);
   }
 
   function handleCancelAdjustCover() {
@@ -752,39 +788,21 @@ export default function CollectionFolderScreen() {
       Alert.alert('Permission needed', 'Please allow access to your photo library.');
       return;
     }
-    // allowsEditing + aspect uses the picker's own native crop UI rather
-    // than this app's custom PhotoAdjuster (item-photo pinch-crop tool,
-    // portrait/square only) — a landscape banner ratio is outside what
-    // that tool supports today, and extending it is out of scope here.
+    // allowsEditing: false — this picker now only SELECTS a photo. Native
+    // iOS/Android cropping is skipped entirely; the selected image is
+    // handed straight to FolderCoverAdjuster (the same "Choose from
+    // Folder" crop/zoom/reposition UI) below, converging both cover
+    // sources onto one cropper instead of two different UIs. quality: 1
+    // (no picker-side recompression) since the adjuster's own Save is now
+    // the only place this image gets uploaded.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [Math.round(FOLDER_COVER_ASPECT_RATIO * 100), 100],
-      quality: 0.85,
+      allowsEditing: false,
+      quality: 1,
     });
     if (result.canceled || !result.assets[0]) return;
 
-    setSavingCover(true);
-    const previousUploadPath = folder.cover_source === 'upload' ? folder.cover_storage_path : null;
-    try {
-      const uploaded = await uploadFolderCover(result.assets[0].uri, currentUserId);
-      const updated = await applyCoverUpdate({
-        cover_source: 'upload',
-        cover_storage_path: uploaded.storagePath,
-        cover_item_id: null,
-        cover_image_url: uploaded.publicUrl,
-        // Only ever meaningful for cover_source = 'item' — an upload
-        // replaces whatever crop framing a previous item-cover had.
-        cover_crop: null,
-      });
-      if (updated && previousUploadPath && previousUploadPath !== uploaded.storagePath) {
-        await deleteFolderCover(previousUploadPath, currentUserId);
-      }
-    } catch (e) {
-      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload cover image.');
-    } finally {
-      setSavingCover(false);
-    }
+    setAdjustingCover({ kind: 'library', uri: result.assets[0].uri });
   }
 
   async function handleRemoveCover() {
@@ -979,7 +997,11 @@ export default function CollectionFolderScreen() {
             {coverUrl && (
               <FolderCoverImage
                 uri={coverUrl}
-                crop={folder?.cover_source === 'item' ? (folder.cover_crop ?? null) : null}
+                crop={
+                  folder?.cover_source === 'item' || folder?.cover_source === 'upload'
+                    ? (folder.cover_crop ?? null)
+                    : null
+                }
               />
             )}
           </View>
@@ -1051,6 +1073,18 @@ export default function CollectionFolderScreen() {
             {screenTitle}
           </Text>
         </View>
+
+        {/* Accurate item count — `items` is this folder's full,
+            unpaginated collection_items result (hooks/use-collection.ts
+            useItems), not a capped preview, so items.length is already the
+            real total and needs no separate count query. Hidden during the
+            initial load so it never flashes "0 items" before the first
+            fetch resolves. */}
+        {!showInitialLoading && (
+          <Text style={styles.itemCountLabel}>
+            {items.length} {items.length === 1 ? 'item' : 'items'}
+          </Text>
+        )}
 
         {/* Same balanced left/right two-side layout (and the same
             galleryActionsRow/galleryActionsSide styles) as the card-mode
@@ -1568,7 +1602,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 12,
     paddingTop: 4,
-    paddingBottom: 6,
+    // itemCountLabel below now carries the title-to-actions-row gap (via its
+    // own marginBottom), so this only needs to clear the title's descenders.
+    paddingBottom: 0,
   },
   likeBtn: {
     flexDirection: 'row',
@@ -1596,6 +1632,17 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
+  },
+  // Folder metadata, not an action control — sits directly under the title
+  // and reads as part of it, so it uses the same muted secondary-text token
+  // as the rest of this screen's metadata (compactUsername/likeCount/etc.)
+  // rather than introducing a new color.
+  itemCountLabel: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+    paddingHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 6,
   },
   privateIcon: {
     fontSize: 40,

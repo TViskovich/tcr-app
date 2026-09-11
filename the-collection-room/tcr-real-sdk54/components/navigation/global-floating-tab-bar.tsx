@@ -43,7 +43,10 @@ const BAR_HEIGHT = TAB_BAR_HEIGHT;
 // widening the pill is also what sets the spacing between the 3 flex:1
 // tab items, since there's no other spacing mechanism between them).
 const BAR_HORIZONTAL_INSET = 42;
-const BAR_BOTTOM_GAP = 8;
+// Kept identical to app/(tabs)/_layout.tsx's own BAR_BOTTOM_GAP (trimmed
+// from 8 to 4 there, Profile default-load-fold pass) so this copy doesn't
+// drift out of sync and the pill sits at the same height on every screen.
+const BAR_BOTTOM_GAP = 4;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 const BAR_BG = 'rgba(9,10,16,1)';
 const BAR_BORDER = 'rgba(100,105,145,0.28)';

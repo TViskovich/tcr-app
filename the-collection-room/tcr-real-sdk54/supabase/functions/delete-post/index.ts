@@ -10,6 +10,9 @@
 //   notifications.comment_id -> comments.id ON DELETE CASCADE
 //   likes.post_id, rate_my_grail_cards.post_id, grail_ratings.post_id,
 //   card_share_items.post_id -> posts.id ON DELETE CASCADE (schema.sql)
+//   post_images.post_id      -> posts.id ON DELETE CASCADE (supabase/
+//   migrations/20260911150000_create_post_images.sql — text posts' 0-4
+//   mixed-source images)
 // Every one of these is removed automatically the instant the posts row
 // itself is deleted — this function never deletes any of them explicitly,
 // and must not start doing so again (that would just be redundant work
@@ -140,8 +143,24 @@ Deno.serve(async (req: Request) => {
     for (const row of (rows ?? []) as { snapshot_image_url: string | null }[]) {
       if (row.snapshot_image_url) candidateUrls.push(row.snapshot_image_url);
     }
+  } else if (post.post_type === 'text') {
+    // Two generations of text-post image: the original single optional
+    // photo (still just posts.image_url, pre-multi-image), and the
+    // current 0-4 mixed-source post_images rows (supabase/migrations/
+    // 20260911150000_create_post_images.sql). A single row can only ever
+    // have used one or the other, but both are checked unconditionally —
+    // cheap, and never assumes which generation a given row belongs to.
+    if (post.image_url) {
+      candidateUrls.push(post.image_url as string);
+    }
+    const { data: rows } = await client
+      .from('post_images')
+      .select('image_url')
+      .eq('post_id', postId);
+    for (const row of (rows ?? []) as { image_url: string }[]) {
+      if (row.image_url) candidateUrls.push(row.image_url);
+    }
   }
-  // 'text' posts carry no image at all — candidateUrls stays empty.
 
   // Every candidate must resolve against THIS project's own share-snapshots
   // bucket shape — anything that doesn't (never expected post-migration,

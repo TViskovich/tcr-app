@@ -191,6 +191,26 @@ export type CardShareItem = {
   display_order: number;
 };
 
+// One of a normal text post's 0-4 attached images (post_type 'text' —
+// supabase/migrations/20260911150000_create_post_images.sql). Unlike
+// RateMyGrailCard/CardShareItem, image_url here is not itself called
+// "snapshot_*" but is the exact same kind of value: always an already-
+// durable, always-public share-snapshots URL, resolved and copied there
+// BEFORE this row is ever written (see lib/share-snapshots.ts's
+// createTextPost) — never a raw item-images signed/private URL, and never
+// expected to expire. item_id becomes null (row kept, not deleted) if the
+// source item is later removed, for a 'item'-sourced image — same
+// denormalized "view original card" convention as the other two snapshot
+// types; image_url alone is always sufficient to render this row.
+export type PostImage = {
+  id: string;
+  post_id: string;
+  item_id: string | null;
+  image_url: string;
+  source_type: 'library' | 'item';
+  sort_order: number;
+};
+
 export type GrailRating = {
   post_id: string;
   rater_user_id: string;

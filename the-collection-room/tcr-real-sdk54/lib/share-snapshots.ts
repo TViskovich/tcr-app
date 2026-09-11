@@ -94,3 +94,80 @@ export async function createSnapshotPost(
   }
   return { status: 'ok', postId: data.post_id };
 }
+
+// One resolved (already-durable, already-in-share-snapshots) image
+// attachment for a text post, in the order it should be stored. Callers
+// MUST resolve every attachment to this shape themselves BEFORE calling
+// createTextPost below — via copyOwnedItemImageIntoShareSnapshots (through
+// the existing copyPostPhotoToShareSnapshots wrapper, for a freshly-picked
+// library photo already staged in item-images) or copyItemImageIntoShareSnapshots
+// (through copyShareSnapshotImage, for an existing collection item's own
+// image) — same "copy first, confirm every single one, only then write
+// the post" rule as createSnapshotPost above. createTextPost itself never
+// touches Storage; it only writes rows, atomically, given URLs that are
+// already durable.
+export type TextPostAttachment = {
+  imageUrl: string;
+  sourceType: 'library' | 'item';
+  // The source collection_items row, for a 'item'-sourced attachment —
+  // null for 'library'. Purely a denormalized "view original card" link
+  // (mirrors CardShareItem/RateMyGrailCard's own item_id) — never required
+  // for rendering, since imageUrl alone is already a complete, durable
+  // reference.
+  itemId: string | null;
+};
+
+export type CreateTextPostResult = { status: 'ok'; postId: string } | { status: 'failed'; reason: string };
+
+// Delegates to the create_text_post Postgres function (supabase/migrations/
+// 20260911150000_create_post_images.sql) — a plain RPC, not an Edge
+// Function, since by the time this is called every attachment's image is
+// already durable (see TextPostAttachment's own comment above): the only
+// work left is an atomic multi-row INSERT (posts + post_images together),
+// which a single plpgsql function body already does as one implicit
+// transaction, the same way create_card_share_post does for card shares.
+// content may be null/empty only when attachments is non-empty (an
+// images-only post) — the RPC itself re-validates this server-side rather
+// than trusting the caller's own canPost gate.
+export async function createTextPost(
+  content: string | null,
+  attachments: TextPostAttachment[],
+): Promise<CreateTextPostResult> {
+  const { data, error } = await supabase.rpc('create_text_post', {
+    p_content: content,
+    p_attachments: attachments.map((a) => ({
+      image_url: a.imageUrl,
+      source_type: a.sourceType,
+      item_id: a.itemId,
+    })),
+  });
+  if (error || typeof data !== 'string') {
+    if (__DEV__) console.warn('[createTextPost] failed:', error);
+    return { status: 'failed', reason: error?.message ?? 'unknown' };
+  }
+  return { status: 'ok', postId: data };
+}
+
+// Best-effort cleanup for share-snapshots objects already copied during a
+// text-post creation attempt that then failed BEFORE createTextPost ever
+// succeeded — either a later attachment's own copy failed, or
+// createTextPost itself failed after every copy had already succeeded.
+// Storage and Postgres are not one transaction (see createTextPost's own
+// comment above), so those already-durable objects are never implicitly
+// rolled back; this reclaims exactly them. Deliberately never throws and
+// its own outcome is never surfaced to the user — see
+// app/post/new.tsx's handlePost for the call site: a cleanup failure here
+// just means one harmless orphaned object (logged for later), and must
+// never replace, delay, or otherwise mask the actual "Post failed" message
+// already shown for whatever real failure triggered this call.
+export async function cleanupShareSnapshots(urls: string[]): Promise<void> {
+  if (urls.length === 0) return;
+  try {
+    const { data, error } = await supabase.functions.invoke('cleanup-share-snapshots', { body: { urls } });
+    if (error || data?.status !== 'ok') {
+      if (__DEV__) console.warn('[cleanupShareSnapshots] failed (non-fatal, orphaned object(s) may remain):', error ?? data);
+    }
+  } catch (e) {
+    if (__DEV__) console.warn('[cleanupShareSnapshots] threw (non-fatal):', e);
+  }
+}

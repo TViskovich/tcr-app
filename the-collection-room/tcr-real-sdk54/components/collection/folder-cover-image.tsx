@@ -9,9 +9,13 @@ import type { FolderCoverCrop } from '@/types';
 
 type Props = {
   uri: string;
-  // null for 'upload'/'first_card' covers, and for 'item' covers picked
-  // before this feature existed — both render exactly as they always have
-  // (plain centered contentFit="cover"), unchanged.
+  // null for 'first_card' covers, and for 'item'/'upload' covers picked
+  // before FolderCoverAdjuster applied to their source — those render
+  // exactly as they always have (plain centered contentFit="cover").
+  // Non-null for both 'item' and 'upload' covers framed via
+  // FolderCoverAdjuster (app/collection/[folderId].tsx), which is what
+  // lets "Choose from Library" reuse the exact same crop/zoom/reposition
+  // UI as "Choose from Folder" instead of a second cropper.
   crop: FolderCoverCrop | null;
 };
 

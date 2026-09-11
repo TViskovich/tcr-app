@@ -21,7 +21,7 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
-import { fetchCardShareItems, fetchGrailData, PostCard, type FeedPost } from '@/components/feed/post-card';
+import { fetchCardShareItems, fetchGrailData, fetchPostImages, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -86,8 +86,11 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   const cardSharePostIds = (postRows as any[])
     .filter((p) => p.post_type === 'card_share')
     .map((p) => p.id as string);
+  const textPostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'text')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -109,6 +112,9 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     // this fetch loudly rather than silently render posts with missing
     // card data.
     fetchCardShareItems(cardSharePostIds, signal),
+    // Same throws-loudly convention — see fetchCardShareItems's comment
+    // just above.
+    fetchPostImages(textPostIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -165,6 +171,7 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
       cardShareItems: cardShareMap.get(post.id) ?? [],
+      images: postImagesMap.get(post.id) ?? [],
     };
   });
 
@@ -216,8 +223,11 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
   const cardSharePostIds = (postRows as any[])
     .filter((p) => p.post_type === 'card_share')
     .map((p) => p.id as string);
+  const textPostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'text')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -232,6 +242,7 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
       ? fetchGrailData(grailPostIds, signal, currentUserId)
       : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
     fetchCardShareItems(cardSharePostIds, signal),
+    fetchPostImages(textPostIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -280,6 +291,7 @@ async function queryFollowingFeed(currentUserId: string | undefined, page: numbe
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
       cardShareItems: cardShareMap.get(post.id) ?? [],
+      images: postImagesMap.get(post.id) ?? [],
     };
   }));
 }

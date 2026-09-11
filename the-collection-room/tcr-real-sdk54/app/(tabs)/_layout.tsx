@@ -65,7 +65,14 @@ const BAR_HEIGHT = TAB_BAR_HEIGHT;
 // comes out to roughly 97-115pt wide, nowhere near the ~44pt minimum
 // touch-target floor, with no risk of the zones overlapping each other.
 const BAR_HORIZONTAL_INSET = 42;
-const BAR_BOTTOM_GAP = 8;
+// Trimmed from 8 to 4 (Profile default-load-fold pass) — a few extra
+// points of safe room above insets.bottom (the home-indicator clearance,
+// untouched) that this pill didn't need, freed up so screens like Profile
+// have a little more headroom to fit their last row above it without
+// scrolling. Kept identical to global-floating-tab-bar.tsx's own
+// BAR_BOTTOM_GAP (that file's own copy of this same constant) so the pill
+// sits at the same height everywhere.
+const BAR_BOTTOM_GAP = 4;
 const BAR_RADIUS = BAR_HEIGHT / 2;
 // Same dark surface as before, fully opaque — no see-through content
 // behind the floating pill.

@@ -19,9 +19,24 @@ import {
   validateItemImagesStoragePath,
 } from './registry-image.ts';
 
+// reason is diagnostic-only — never returned verbatim to an untrusted
+// caller as a detailed error (every Edge Function that surfaces this to
+// its own client still only ever sends the generic 'unavailable' status;
+// see copy-post-photo-to-share-snapshots), logged server-side (Supabase
+// Edge Function logs) so a real failure here is never a silent, unlabeled
+// `{ok:false}` again — the exact gap that made this take a multi-round
+// investigation to trace instead of a single log line.
+export type CopyFailureReason =
+  | 'invalid_source' // sourcePath couldn't be parsed/validated against item-images
+  | 'unauthorized' // caller doesn't own the source item/object
+  | 'download_failed' // the source object doesn't exist or Storage download errored
+  | 'file_too_large' // over MAX_IMAGE_BYTES
+  | 'unsupported_type' // content-type not in ALLOWED_IMAGE_MIME_TYPES
+  | 'upload_failed'; // share-snapshots upload itself errored
+
 export type CopyItemImageResult =
   | { ok: true; publicUrl: string; storagePath: string }
-  | { ok: false };
+  | { ok: false; reason: CopyFailureReason };
 
 // Downloads `sourcePath` from item-images via the given (service-role)
 // client, validates size/MIME, and uploads it to `destinationPath` in
@@ -42,17 +57,20 @@ async function downloadValidateUpload(
     .download(sourcePath);
 
   if (downloadError || !downloaded) {
-    return { ok: false };
+    console.error('[downloadValidateUpload] download_failed:', sourcePath, downloadError?.message);
+    return { ok: false, reason: 'download_failed' };
   }
 
   if (downloaded.size > MAX_IMAGE_BYTES) {
-    return { ok: false };
+    console.error('[downloadValidateUpload] file_too_large:', sourcePath, downloaded.size);
+    return { ok: false, reason: 'file_too_large' };
   }
 
   const contentType = downloaded.type;
   const extension = ALLOWED_IMAGE_MIME_TYPES[contentType];
   if (!extension) {
-    return { ok: false };
+    console.error('[downloadValidateUpload] unsupported_type:', sourcePath, contentType);
+    return { ok: false, reason: 'unsupported_type' };
   }
 
   const finalPath = `${destinationPath}.${extension}`;
@@ -62,7 +80,8 @@ async function downloadValidateUpload(
     .upload(finalPath, downloaded, { contentType, upsert });
 
   if (uploadError) {
-    return { ok: false };
+    console.error('[downloadValidateUpload] upload_failed:', finalPath, uploadError.message);
+    return { ok: false, reason: 'upload_failed' };
   }
 
   const { data: publicUrlData } = client.storage.from('share-snapshots').getPublicUrl(finalPath);
@@ -98,7 +117,7 @@ export async function copyItemImageIntoShareSnapshots(
     .maybeSingle();
 
   if (!item || item.user_id !== callerId) {
-    return { ok: false };
+    return { ok: false, reason: 'unauthorized' };
   }
 
   const { data: primaryImage } = await client
@@ -122,7 +141,7 @@ export async function copyItemImageIntoShareSnapshots(
   }
 
   if (!sourcePath) {
-    return { ok: false };
+    return { ok: false, reason: 'invalid_source' };
   }
 
   const destinationPath = `${callerId}/${snapshotType}/${targetId}/${itemId}-${crypto.randomUUID()}`;
@@ -149,7 +168,7 @@ export async function copyHistoricalUrlIntoShareSnapshots(
   const projectUrl = Deno.env.get('SUPABASE_URL') ?? '';
   const sourcePath = parseItemImagesStoragePath(historicalUrl, projectUrl);
   if (!sourcePath) {
-    return { ok: false };
+    return { ok: false, reason: 'invalid_source' };
   }
   return downloadValidateUpload(client, sourcePath, destinationPath, true);
 }
@@ -186,10 +205,10 @@ export async function copyOwnedItemImageIntoShareSnapshots(
   const projectUrl = Deno.env.get('SUPABASE_URL') ?? '';
   const sourcePath = parseItemImagesStoragePath(sourceUrl, projectUrl);
   if (!sourcePath) {
-    return { ok: false };
+    return { ok: false, reason: 'invalid_source' };
   }
   if (sourcePath.split('/')[0] !== callerId) {
-    return { ok: false };
+    return { ok: false, reason: 'unauthorized' };
   }
 
   const destinationPath = `${callerId}/post-upload/${crypto.randomUUID()}`;

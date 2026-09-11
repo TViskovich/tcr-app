@@ -32,7 +32,9 @@
 //                                           returned to the client)
 //           Authorization: Bearer <user JWT>  (required)
 // Response: { status: 'ok'; public_url: string; storage_path: string }
-//         | { status: 'unavailable' }
+//         | { status: 'unavailable'; reason: CopyFailureReason }  (diagnostic
+//              only — see ../_shared/share-snapshot.ts's own comment;
+//              callers must keep treating any non-'ok' status the same way)
 //
 // On success, the source item-images object is deleted (best-effort) — it
 // was only ever a staging upload for this one copy, never referenced by
@@ -45,8 +47,6 @@ import {
   serviceRoleClient,
 } from '../_shared/registry-image.ts';
 import { copyOwnedItemImageIntoShareSnapshots } from '../_shared/share-snapshot.ts';
-
-const UNAVAILABLE = { status: 'unavailable' as const };
 
 Deno.serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -78,7 +78,15 @@ Deno.serve(async (req: Request) => {
   const result = await copyOwnedItemImageIntoShareSnapshots(client, userId, sourceUrl);
 
   if (!result.ok) {
-    return jsonResponse(UNAVAILABLE, 200);
+    // `reason` is diagnostic-only (see CopyFailureReason's own comment in
+    // ../_shared/share-snapshot.ts) — the caller (lib/share-snapshots.ts's
+    // copyPostPhotoToShareSnapshots) only ever surfaces the generic
+    // 'unavailable' status to app/post/new.tsx's own logic, unchanged;
+    // this just makes an 'unavailable' response self-diagnosing in
+    // __DEV__ console output and Edge Function logs instead of an opaque
+    // one-word status with no way to tell WHY without re-deriving it from
+    // scratch every time.
+    return jsonResponse({ status: 'unavailable', reason: result.reason }, 200);
   }
 
   return jsonResponse(

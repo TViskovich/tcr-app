@@ -116,13 +116,19 @@ const styles = StyleSheet.create({
   // Space above/below the grid — normal padding, not a solid spacer.
   // paddingTop reduced from 32 to 6 (Profile V3 background-removal pass)
   // so the grid sits almost flush under the identity header above it,
-  // per the current design direction; paddingBottom (16) is unrelated and
-  // untouched — together with ProfileV2TabRow's own marginTop (10) that's
-  // still the Grails→tab-row gap (26px), matched by profile-v2-screen.tsx's
-  // TAB_CONTENT_TOP_GAP on the other side of the tab row.
+  // per the current design direction. paddingBottom trimmed 16 → 6 → 4
+  // (default-load-fold pass, then a further nudge) — together with
+  // ProfileV2TabRow's own marginTop (now 2) that's a 6px Grails→tab-row
+  // gap (was 26px, then 10px), matched by profile-v2-screen.tsx's
+  // TAB_CONTENT_TOP_GAP on the other side of the tab row. The Grails grid
+  // itself (profile-v2-grid.tsx, GRID_HEIGHT) is tall by design — 9
+  // trading-card-ratio cells — and that height is untouched; this only
+  // closes the padding around it, which combined with the floating nav's
+  // own clearance was leaving the tab row partially behind the nav on
+  // first load, before any scroll, on common phone widths.
   gridStage: {
     paddingTop: 6,
-    paddingBottom: 16,
+    paddingBottom: 4,
   },
   // Same visual values as profile-v2-hero.tsx's own topRow/textBtn* —
   // copied, not redesigned. Only `position`/`top`/`left`/`right`

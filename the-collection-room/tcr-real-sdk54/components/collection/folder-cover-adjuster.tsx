@@ -20,13 +20,17 @@ type Props = {
   onCancel: () => void;
 };
 
-// Non-destructive companion to photo-adjuster.tsx for the "Choose from
-// Folder" folder-hero flow: pan/zoom the ALREADY-selected item's own image
-// inside a viewport pinned to the exact hero aspect ratio, then hand back
-// {x,y,scale} crop metadata (lib/folder-cover-crop.ts) — never a cropped
-// file, never a second Storage object. The item's own image row/storage
-// path is untouched; only folders.cover_crop changes, via the caller's own
-// applyCoverUpdate.
+// Non-destructive companion to photo-adjuster.tsx for the folder-hero
+// cover flow — shared by BOTH "Choose from Folder" (an already-stored
+// item image) and "Choose from Library" (a freshly-picked, unedited local
+// photo; native iOS/Android cropping is skipped so this is the only crop
+// UI either path goes through): pan/zoom the selected image inside a
+// viewport pinned to the exact hero aspect ratio, then hand back
+// {x,y,scale} crop metadata (lib/folder-cover-crop.ts). For "Choose from
+// Folder" this never touches Storage — only folders.cover_crop changes;
+// for "Choose from Library" the caller (app/collection/[folderId].tsx)
+// uploads the untouched local image first, then saves this same crop
+// metadata alongside it.
 //
 // Simpler geometry than PhotoAdjuster: there's exactly one fixed aspect
 // ratio, and the preview viewport IS the crop frame (no separate,

@@ -61,11 +61,15 @@ export function ProfileV2TabRow({ active, onChange }: Props) {
 const styles = StyleSheet.create({
   // Same 16px horizontal inset as ProfileV2IdentityCard's own marginHorizontal
   // — keeps the row's outer edges aligned with the card above it.
+  // marginTop trimmed 10 → 4 → 2 (default-load-fold pass, then a further
+  // nudge) — combined with ProfileV2HeroCanvas's own gridStage.paddingBottom
+  // (4) that's a 6px Grails→tab-row gap profile-v2-screen.tsx's
+  // TAB_CONTENT_TOP_GAP still matches on the tab row's other side.
   row: {
     flexDirection: 'row',
     gap: 8,
     marginHorizontal: 16,
-    marginTop: 10,
+    marginTop: 2,
   },
   pill: {
     flex: 1,

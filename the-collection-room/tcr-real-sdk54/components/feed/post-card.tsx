@@ -13,13 +13,14 @@ import {
 
 import { Image } from 'expo-image';
 
+import { AttachmentImageGrid } from '@/components/feed/attachment-image-grid';
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { supabase } from '@/lib/supabase';
-import type { CardShareItem, RateMyGrailCard } from '@/types';
+import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
 
 export type FeedPost = {
   id: string;
@@ -42,6 +43,14 @@ export type FeedPost = {
   ratingCount: number;
   myRating: number | null;
   cardShareItems: CardShareItem[];
+  // Text posts' 0-4 mixed-source images (supabase/migrations/
+  // 20260911150000_create_post_images.sql), ordered by sort_order. Empty
+  // for every post created before this feature existed, and for every
+  // OTHER post_type (those keep using image_url/cardShareItems/grailCards
+  // as before) — a legacy single-photo text post still has image_url set
+  // and this stays [], which is exactly what keeps it rendering unchanged
+  // (see PostCard's own isTextPost branch below).
+  images: PostImage[];
 };
 
 // Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
@@ -122,6 +131,47 @@ export async function fetchCardShareItems(postIds: string[], signal: AbortSignal
   return map;
 }
 
+// Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
+// fetchUserPosts below — batch-fetches post_images for whichever of the
+// given posts are 'text' posts, keyed by post_id. Exact same shape/
+// convention as fetchCardShareItems above (one batched query across every
+// post id, ordered by sort_order, never one query per post). A 'text' post
+// created before this feature existed simply has zero rows here — its map
+// entry is just never set, and PostCard falls back to its legacy
+// image_url rendering for that case.
+export async function fetchPostImages(postIds: string[], signal: AbortSignal): Promise<Map<string, PostImage[]>> {
+  const map = new Map<string, PostImage[]>();
+
+  if (postIds.length === 0) {
+    return map;
+  }
+
+  const { data, error } = await supabase
+    .from('post_images')
+    .select('id, post_id, item_id, image_url, source_type, sort_order')
+    .in('post_id', postIds)
+    .order('sort_order', { ascending: true })
+    .abortSignal(signal);
+
+  if (error) {
+    // Same reasoning as fetchCardShareItems above — expected cancellation
+    // must not be logged as a real failure, but is still thrown either
+    // way so the caller's own abort check decides what to do with it.
+    if (!signal.aborted) {
+      console.error('[fetchPostImages] query failed:', error.message, error);
+    }
+    throw error;
+  }
+
+  for (const row of (data ?? []) as PostImage[]) {
+    const list = map.get(row.post_id) ?? [];
+    list.push(row);
+    map.set(row.post_id, list);
+  }
+
+  return map;
+}
+
 // One user's own post history, newest first — no date window, no engagement
 // ranking (unlike the main feed's queryFeed), since this powers a profile's
 // Posts tab rather than a ranked/windowed feed. Mirrors queryFeed's row
@@ -151,8 +201,11 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
   const cardSharePostIds = (postRows as any[])
     .filter((p) => p.post_type === 'card_share')
     .map((p) => p.id as string);
+  const textPostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'text')
+    .map((p) => p.id as string);
 
-  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap] = await Promise.all([
+  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -172,6 +225,10 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     // this whole fetch loudly via the caller's own error handling, rather
     // than silently rendering posts with missing card data.
     fetchCardShareItems(cardSharePostIds, signal),
+    // Same "throws, not caught here" convention as fetchCardShareItems —
+    // a post_images query failure must fail this whole fetch loudly, not
+    // silently render text posts with missing images.
+    fetchPostImages(textPostIds, signal),
   ]);
 
   const profile = (profileRes.data as any) ?? {};
@@ -223,6 +280,7 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
       ratingCount: rating?.count ?? 0,
       myRating: rating?.mine ?? null,
       cardShareItems: cardShareMap.get(post.id) ?? [],
+      images: postImagesMap.get(post.id) ?? [],
     };
   });
 }
@@ -483,67 +541,95 @@ export function PostCard({
               <Text style={styles.cardTextContent}>{post.content}</Text>
             </TouchableOpacity>
           )}
-          {/* A text post's optional attached photo (app/post/new.tsx) now
-              shares the exact same outer horizontal frame (mediaContentColumnFull's
-              12px inset + mediaImageWrapSingle's 86%-centered width) as a
-              genuine single-card share and card-share's carousel, so every
-              media-bearing post type lines up on one common left/right edge
-              in Feed — only the aspect-ratio RULE and contentFit still differ
-              by type (clampMediaAspectRatio + 'cover' here vs.
-              clampSingleCardAspectRatio + 'contain' for !isTextPost), not the
-              frame's position/width. caption/item_name are item-post-only
-              fields. Its image_url points at share-snapshots
-              (copy-post-photo-to-share-snapshots), the same durable,
-              always-public surface every other post image already renders
-              from — no special signed-image branch needed here. */}
-          {post.image_url && (
+          {/* A text post's 1-4 images (app/post/new.tsx) — the responsive
+              AttachmentImageGrid (shared with the composer's own preview)
+              replaces the single-image box once post_images rows exist.
+              Every image_url in post.images is already durable
+              share-snapshots data (same pipeline as the legacy single
+              photo below), so no signed-image branch is needed here
+              either. Tapping anywhere in the grid opens post detail — the
+              same behavior tapping the old single photo already had
+              (onPostPress); no separate full-screen image viewer exists
+              in this app to defer to instead, so this stays the smallest
+              compatible behavior rather than introducing a new one. */}
+          {isTextPost && post.images.length > 0 ? (
             <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
-              {!isTextPost && (post.caption || post.item_name) && (
-                <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
-              )}
               <TouchableOpacity
-                style={[
-                  styles.mediaImageWrap,
-                  styles.mediaImageWrapSingle,
-                  {
-                    aspectRatio:
-                      mediaAspectRatio != null
-                        ? isTextPost
-                          ? clampMediaAspectRatio(mediaAspectRatio)
-                          : clampSingleCardAspectRatio(mediaAspectRatio)
-                        : MEDIA_DEFAULT_ASPECT_RATIO,
-                    // Viewport-relative height cap, single-card posts only
-                    // (see singleCardMaxHeight's own comment above) — Yoga
-                    // resolves this alongside aspectRatio as a true cap:
-                    // the box is min(width / aspectRatio, this), never
-                    // taller. When that cap is what actually binds (a tall
-                    // portrait card at typical widths), the box's
-                    // rendered shape no longer exactly matches the image's
-                    // own ratio — contentFit="contain" (below) is what
-                    // keeps the full card visible in that case, via
-                    // letterboxing instead of a crop.
-                    ...(isTextPost ? null : { maxHeight: singleCardMaxHeight }),
-                  },
-                ]}
+                style={styles.mediaImageWrapSingle}
                 onPress={onPostPress}
                 activeOpacity={0.95}>
-                <Image
-                  source={{ uri: post.image_url }}
-                  style={StyleSheet.absoluteFill}
-                  // 'contain' for a single-card share (never crops — an
-                  // aspect mismatch against the box below only ever
-                  // letterboxes, so the full card is always visible even
-                  // for an unusually-cropped upload); text posts keep
-                  // 'cover' exactly as before — that path's own tighter
-                  // clamp (clampMediaAspectRatio) already keeps cropping
-                  // minor there, and this isn't the behavior being changed
-                  // for text posts.
-                  contentFit={isTextPost ? 'cover' : 'contain'}
-                  transition={200}
-                  onError={() => setImageError(true)}
+                <AttachmentImageGrid
+                  images={post.images.map((img) => ({ key: img.id, uri: img.image_url }))}
+                  borderRadius={MEDIA_CORNER_RADIUS}
                 />
               </TouchableOpacity>
             </View>
+          ) : (
+            /* A text post's optional LEGACY single attached photo (posts
+                created before post_images existed — post.images is []
+                for these) shares the exact same outer horizontal frame
+                (mediaContentColumnFull's 12px inset + mediaImageWrapSingle's
+                86%-centered width) as a genuine single-card share and
+                card-share's carousel, so every media-bearing post type
+                lines up on one common left/right edge in Feed — only the
+                aspect-ratio RULE and contentFit still differ by type
+                (clampMediaAspectRatio + 'cover' here vs.
+                clampSingleCardAspectRatio + 'contain' for !isTextPost), not
+                the frame's position/width. caption/item_name are
+                item-post-only fields. Its image_url points at
+                share-snapshots (copy-post-photo-to-share-snapshots), the
+                same durable, always-public surface every other post image
+                already renders from — no special signed-image branch
+                needed here. */
+            post.image_url && (
+              <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
+                {!isTextPost && (post.caption || post.item_name) && (
+                  <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>
+                )}
+                <TouchableOpacity
+                  style={[
+                    styles.mediaImageWrap,
+                    styles.mediaImageWrapSingle,
+                    {
+                      aspectRatio:
+                        mediaAspectRatio != null
+                          ? isTextPost
+                            ? clampMediaAspectRatio(mediaAspectRatio)
+                            : clampSingleCardAspectRatio(mediaAspectRatio)
+                          : MEDIA_DEFAULT_ASPECT_RATIO,
+                      // Viewport-relative height cap, single-card posts only
+                      // (see singleCardMaxHeight's own comment above) — Yoga
+                      // resolves this alongside aspectRatio as a true cap:
+                      // the box is min(width / aspectRatio, this), never
+                      // taller. When that cap is what actually binds (a tall
+                      // portrait card at typical widths), the box's
+                      // rendered shape no longer exactly matches the image's
+                      // own ratio — contentFit="contain" (below) is what
+                      // keeps the full card visible in that case, via
+                      // letterboxing instead of a crop.
+                      ...(isTextPost ? null : { maxHeight: singleCardMaxHeight }),
+                    },
+                  ]}
+                  onPress={onPostPress}
+                  activeOpacity={0.95}>
+                  <Image
+                    source={{ uri: post.image_url }}
+                    style={StyleSheet.absoluteFill}
+                    // 'contain' for a single-card share (never crops — an
+                    // aspect mismatch against the box below only ever
+                    // letterboxes, so the full card is always visible even
+                    // for an unusually-cropped upload); text posts keep
+                    // 'cover' exactly as before — that path's own tighter
+                    // clamp (clampMediaAspectRatio) already keeps cropping
+                    // minor there, and this isn't the behavior being changed
+                    // for text posts.
+                    contentFit={isTextPost ? 'cover' : 'contain'}
+                    transition={200}
+                    onError={() => setImageError(true)}
+                  />
+                </TouchableOpacity>
+              </View>
+            )
           )}
         </>
       )}
