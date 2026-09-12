@@ -101,11 +101,15 @@ function useOwnFoldersForMove(userId: string | undefined) {
   return { folders, itemCounts, loading, error, refresh: load };
 }
 
-type Props = {
+type BaseProps = {
   visible: boolean;
-  item: CollectionItem;
   currentUserId: string | undefined;
   onClose: () => void;
+};
+
+type SingleModeProps = BaseProps & {
+  mode: 'single';
+  item: CollectionItem;
   // Called once the folder_id UPDATE has actually committed — the caller
   // (app/item/[id].tsx) owns updating its own `item` state and showing the
   // "Moved to <folder>" confirmation; this modal only owns the picker UI
@@ -113,12 +117,39 @@ type Props = {
   onMoved: (updatedItem: CollectionItem, folderName: string) => void;
 };
 
-// Phase 1 item move — single-item only (see this feature's own PR
-// description for the explicit non-goals: bulk move, drag-and-drop, folder
-// creation from here, moving folders, copying items). Folder list is flat
-// (every folder the owner has, any nesting level) — same rationale as
-// useOwnFoldersForMove above.
-export function MoveItemModal({ visible, item, currentUserId, onClose, onMoved }: Props) {
+type BulkModeProps = BaseProps & {
+  mode: 'bulk';
+  // Every id must already be known (by the caller) to live in
+  // sourceFolderId and belong to the caller — this modal never trusts that
+  // on its own either: the move_collection_items RPC re-validates both
+  // server-side before moving anything (Phase 2's own security
+  // requirement — never trust client-supplied item ids).
+  itemIds: string[];
+  sourceFolderId: string;
+  // Called once the RPC has committed — movedCount is the RPC's own
+  // authoritative row count, not just itemIds.length, though the two are
+  // guaranteed equal on success (the RPC rejects the whole call otherwise).
+  // The caller (app/collection/[folderId].tsx) owns exiting Select mode,
+  // clearing selection, refreshing the folder, and showing the "Moved N
+  // items" confirmation.
+  onMoved: (movedCount: number, folderName: string) => void;
+};
+
+type Props = SingleModeProps | BulkModeProps;
+
+// Phase 1 (single item) + Phase 2 (bulk) item move share this one picker —
+// same folder list, same current-folder marking/disabling, same
+// move-in-flight lock — so there is only ever one folder-picker design to
+// maintain (Phase 2's own explicit preference). Bulk move still goes
+// through a single server-side RPC transaction rather than N client
+// updates — see move_collection_items in supabase/migrations — so this
+// modal doesn't have to reconcile a partial-success state on its own.
+export function MoveItemModal(props: Props) {
+  const { visible, currentUserId, onClose } = props;
+  const currentFolderId = props.mode === 'single' ? props.item.folder_id : props.sourceFolderId;
+  const selectionCount = props.mode === 'single' ? 1 : props.itemIds.length;
+  const title = props.mode === 'single' ? 'Move Item' : `Move ${selectionCount} ${selectionCount === 1 ? 'Item' : 'Items'}`;
+
   const { folders, itemCounts, loading, error, refresh } = useOwnFoldersForMove(
     visible ? currentUserId : undefined,
   );
@@ -128,34 +159,51 @@ export function MoveItemModal({ visible, item, currentUserId, onClose, onMoved }
   // (folder list fetch) so a slow initial folder load can never be
   // mistaken for "a move is in flight," and a rapid double-tap on the same
   // (or a different) folder row while the first tap's request is still in
-  // flight is a no-op rather than a second concurrent UPDATE.
+  // flight is a no-op rather than a second concurrent UPDATE/RPC call.
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null);
   const movingRef = useRef(false);
 
   async function handleSelectFolder(folder: Folder) {
-    if (folder.id === item.folder_id) return; // current folder — no-op
+    if (folder.id === currentFolderId) return; // current/source folder — no-op
     if (movingRef.current) return;
     movingRef.current = true;
     setMovingFolderId(folder.id);
 
     try {
-      const { data: updated, error: moveError } = await supabase
-        .from('collection_items')
-        .update({ folder_id: folder.id })
-        .eq('id', item.id)
-        .eq('user_id', currentUserId)
-        .select()
-        .single();
+      if (props.mode === 'single') {
+        const { data: updated, error: moveError } = await supabase
+          .from('collection_items')
+          .update({ folder_id: folder.id })
+          .eq('id', props.item.id)
+          .eq('user_id', currentUserId)
+          .select()
+          .single();
 
-      if (moveError) throw new Error(moveError.message);
-      if (!updated) throw new Error('Item could not be moved.');
+        if (moveError) throw new Error(moveError.message);
+        if (!updated) throw new Error('Item could not be moved.');
 
-      onMoved(updated as CollectionItem, folder.name);
+        props.onMoved(updated as CollectionItem, folder.name);
+      } else {
+        // One atomic server-side transaction for the whole selection — see
+        // move_collection_items's own migration comment for the
+        // all-or-nothing guarantee and the source-folder re-check that
+        // guards against a stale selection (an item moved/removed by
+        // something else between selecting it here and confirming).
+        const { data: movedCount, error: moveError } = await supabase.rpc('move_collection_items', {
+          p_item_ids: props.itemIds,
+          p_source_folder_id: props.sourceFolderId,
+          p_destination_folder_id: folder.id,
+        });
+
+        if (moveError) throw new Error(moveError.message);
+
+        props.onMoved(typeof movedCount === 'number' ? movedCount : props.itemIds.length, folder.name);
+      }
     } catch (e) {
-      // Picker stays open, selection state resets — the item's own
-      // displayed folder is never touched here (this modal doesn't hold
-      // that state; app/item/[id].tsx's `item` is only ever updated in
-      // onMoved, on confirmed success), so there's nothing to roll back.
+      // Picker stays open in both modes, selection state resets here — the
+      // caller's own item/selection state is never touched on failure
+      // (onMoved above is only ever called on confirmed success), so
+      // there's nothing to roll back on this side either.
       Alert.alert('Move failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {
       movingRef.current = false;
@@ -170,7 +218,7 @@ export function MoveItemModal({ visible, item, currentUserId, onClose, onMoved }
           <TouchableOpacity onPress={onClose} hitSlop={8} disabled={movingFolderId !== null}>
             <Text style={[styles.cancel, movingFolderId !== null && styles.cancelDisabled]}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>Move Item</Text>
+          <Text style={styles.title}>{title}</Text>
           <View style={styles.headerSpacer} />
         </View>
 
@@ -193,7 +241,7 @@ export function MoveItemModal({ visible, item, currentUserId, onClose, onMoved }
         ) : (
           <ScrollView style={styles.scroll} contentContainerStyle={styles.list}>
             {folders.map((folder) => {
-              const isCurrent = folder.id === item.folder_id;
+              const isCurrent = folder.id === currentFolderId;
               const isMovingThis = movingFolderId === folder.id;
               const rowDisabled = isCurrent || movingFolderId !== null;
               const count = itemCounts[folder.id] ?? 0;

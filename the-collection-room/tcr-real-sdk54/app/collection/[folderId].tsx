@@ -38,6 +38,7 @@ import { FolderCoverItemPicker } from '@/components/collection/folder-cover-item
 import { FolderCoverMenu } from '@/components/collection/folder-cover-menu';
 import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-sheet';
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
+import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -108,6 +109,16 @@ const GRID_GAP = 1;
 // fallback to it (neither sets its own radius), so 0 here squares off
 // both at once.
 const GRID_CARD_RADIUS = 0;
+
+// Phase 2 bulk action bar — the extra vertical clearance it needs above
+// the global floating tab bar's own reserved space (TAB_BAR_HEIGHT +
+// insets.bottom), so the bar never overlaps the last grid row and the last
+// grid row is never scrollable-behind it. Covers the bar's own gap above
+// the tab pill (16, see its render-site bottom offset below) plus its
+// rendered height (padding + one line of text/button content, ~54) with a
+// small margin — approximate on purpose, not measured via onLayout, since
+// slightly over-reserving scroll padding has no visible downside here.
+const BULK_BAR_RESERVED_HEIGHT = 96;
 
 // Default (non-card-mode) grid only — the FlatList's own `data` there is no
 // longer CollectionGridEntry[] directly (which relied on FlatList's built-in
@@ -349,6 +360,87 @@ export default function CollectionFolderScreen() {
       if (visible) setSearch('');
       return !visible;
     });
+  }
+
+  // Phase 2 bulk move — Select mode. Local UI-only state (see
+  // move-item-modal.tsx's bulk mode / move_collection_items RPC for the
+  // actual move); selection never triggers its own fetch, only the FlatList
+  // re-rendering the (already-loaded) tiles it's built from. Scoped to the
+  // default (non-card-mode) grid only — isCardMode's per-player hero
+  // gallery is a different, narrower view with its own fixed header and no
+  // entry point into Select mode below, so the two can never interact.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function toggleItemSelected(itemId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  function enterSelectMode(firstItemId?: string) {
+    setSelectMode(true);
+    if (firstItemId) setSelectedIds(new Set([firstItemId]));
+  }
+
+  function cancelSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  // Resets whenever this screen is actually navigating to a different
+  // folder (folderId route param changes) — a fresh mount already starts
+  // with the defaults above, but this also covers the (rarer) case of the
+  // same mounted screen instance being redirected to a different folderId
+  // without unmounting, so a stale selection can never carry over onto the
+  // wrong folder's items.
+  useEffect(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, [folderId]);
+
+  // Drops any selected id that's no longer present in this folder's own
+  // freshly-refetched item list — covers "item removed/moved externally
+  // while Select mode is active" (e.g. deleted, or moved out from under
+  // this screen by another device) without ever needing a query of its
+  // own: `items` here is the same already-loaded list the grid renders
+  // from (hooks/use-collection.ts's useItems, refetched on every
+  // useFocusEffect refocus above).
+  useEffect(() => {
+    if (!selectMode || selectedIds.size === 0) return;
+    const liveIds = new Set(items.map((i) => i.id));
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (liveIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
+  const [showBulkMoveModal, setShowBulkMoveModal] = useState(false);
+
+  // Mirrors app/item/[id].tsx's handleItemMoved: the modal itself already
+  // confirmed the RPC committed (all-or-nothing — see
+  // move_collection_items), so this only owns reacting to that confirmed
+  // result, never re-validating it. refreshItems() re-fetches this folder's
+  // items from the DB, which both drops the moved items from the grid AND
+  // corrects this screen's own displayed count (folderStickyBar's
+  // items.length label) in one call — no local splicing needed. The
+  // destination folder's own count/preview (Collections tab, its own
+  // folder-detail screen) isn't touched from here; both already refresh via
+  // their own useFocusEffect on next visit, same as Phase 1.
+  function handleBulkMoved(movedCount: number, folderName: string) {
+    setShowBulkMoveModal(false);
+    cancelSelectMode();
+    refreshItems();
+    Alert.alert('Moved', `Moved ${movedCount} ${movedCount === 1 ? 'item' : 'items'} to ${folderName}`);
   }
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
@@ -1138,6 +1230,12 @@ export default function CollectionFolderScreen() {
           key={key}
           testID={`child-folder-${entry.folder.id}`}
           style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
+          // Nested folders are never a bulk-move candidate (Phase 2 is
+          // items only) — disabled rather than removed from the grid, so
+          // Select mode doesn't reshuffle the layout, matching how the
+          // current-folder row in MoveItemModal stays visible-but-disabled
+          // rather than vanishing.
+          disabled={selectMode}
           onPress={() =>
             router.push({
               pathname: '/collection/[folderId]',
@@ -1167,12 +1265,27 @@ export default function CollectionFolderScreen() {
         </Pressable>
       );
     }
+    const isSelected = selectMode && selectedIds.has(entry.item.id);
     return (
       <Pressable
         key={key}
         testID={`collection-item-${entry.item.id}`}
-        style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-        onPress={() => openItem(entry.item)}>
+        style={[
+          styles.thumb,
+          { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO },
+          isSelected && styles.thumbSelected,
+        ]}
+        onPress={() => (selectMode ? toggleItemSelected(entry.item.id) : openItem(entry.item))}
+        // Long-press only ever enters Select mode from the default (non-
+        // card-mode) grid — isCardMode's per-player hero gallery has no
+        // Select-mode header/bulk-action-bar of its own (see the header
+        // JSX below), so entering it there would produce selection state
+        // with no visible way to act on or exit it.
+        onLongPress={() => {
+          if (!isCardMode && !selectMode) enterSelectMode(entry.item.id);
+        }}
+        accessibilityRole="button"
+        accessibilityState={selectMode ? { selected: isSelected } : undefined}>
         {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
           <Image
             source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
@@ -1182,6 +1295,16 @@ export default function CollectionFolderScreen() {
           />
         ) : (
           <View style={styles.thumbPlaceholder} />
+        )}
+        {/* Selection checkmark — only rendered once actually selected, so
+            an unselected tile in Select mode looks identical to normal
+            browsing (no dimming/scrim needed for "no ambiguity": a
+            selected tile always has both the accent border above AND this
+            badge, never just one). */}
+        {isSelected && (
+          <View style={styles.selectionBadge} pointerEvents="none">
+            <IconSymbol name="checkmark.circle.fill" size={22} color={PV2.accent} />
+          </View>
         )}
       </Pressable>
     );
@@ -1341,35 +1464,57 @@ export default function CollectionFolderScreen() {
         ) : (
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              <BackButton fallbackHref="/collection" />
+              {selectMode ? (
+                <Pressable onPress={cancelSelectMode} hitSlop={10}>
+                  <Text style={styles.selectCancelText}>Cancel</Text>
+                </Pressable>
+              ) : (
+                <BackButton fallbackHref="/collection" />
+              )}
 
-              <View style={styles.headerTopActions}>
-                {!showInitialLoading && items.length > 0 && (
-                  <Pressable
-                    onPress={toggleSearch}
-                    hitSlop={10}
-                    style={styles.iconBtn}
-                    accessibilityRole="button"
-                    accessibilityLabel="Search"
-                    accessibilityState={{ selected: searchVisible }}>
-                    <IconSymbol
-                      name="magnifyingglass"
-                      size={22}
-                      color={searchVisible ? PV2.accent : PV2.textPrimary}
-                    />
-                  </Pressable>
-                )}
-                {isOwner && (
-                  <Pressable onPress={() => setShowAddMenu(true)} hitSlop={10} style={styles.iconBtn}>
-                    <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
-                  </Pressable>
-                )}
-                {isOwner && (
-                  <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                    <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
-                  </Pressable>
-                )}
-              </View>
+              {selectMode ? (
+                <Text style={styles.selectCountText}>
+                  {selectedIds.size} Selected
+                </Text>
+              ) : (
+                <View style={styles.headerTopActions}>
+                  {!showInitialLoading && items.length > 0 && (
+                    <Pressable
+                      onPress={toggleSearch}
+                      hitSlop={10}
+                      style={styles.iconBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel="Search"
+                      accessibilityState={{ selected: searchVisible }}>
+                      <IconSymbol
+                        name="magnifyingglass"
+                        size={22}
+                        color={searchVisible ? PV2.accent : PV2.textPrimary}
+                      />
+                    </Pressable>
+                  )}
+                  {isOwner && !showInitialLoading && items.length > 0 && (
+                    <Pressable
+                      onPress={() => enterSelectMode()}
+                      hitSlop={10}
+                      style={styles.selectEntryBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel="Select items">
+                      <Text style={styles.selectEntryText}>Select</Text>
+                    </Pressable>
+                  )}
+                  {isOwner && (
+                    <Pressable onPress={() => setShowAddMenu(true)} hitSlop={10} style={styles.iconBtn}>
+                      <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
+                    </Pressable>
+                  )}
+                  {isOwner && (
+                    <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                      <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
+                    </Pressable>
+                  )}
+                </View>
+              )}
             </View>
 
             {/* Cover/search (non-sticky) and the identity/title/actions
@@ -1447,7 +1592,17 @@ export default function CollectionFolderScreen() {
               stickyHeaderIndices={[1]}
               contentContainerStyle={[
                 styles.gridContentSticky,
-                { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
+                {
+                  // Extra reserved space while the bulk action bar is
+                  // showing (see BULK_BAR_RESERVED_HEIGHT's own comment) —
+                  // otherwise the last grid row would sit directly behind
+                  // it once scrolled to the bottom.
+                  paddingBottom:
+                    TAB_BAR_HEIGHT +
+                    insets.bottom +
+                    24 +
+                    (selectMode && selectedIds.size > 0 ? BULK_BAR_RESERVED_HEIGHT : 0),
+                },
               ]}
               onScroll={navbarOnScroll}
               scrollEventThrottle={scrollEventThrottle}
@@ -1464,6 +1619,39 @@ export default function CollectionFolderScreen() {
           </>
         )}
       </SafeAreaView>
+
+      {/* Phase 2 bulk action bar — absolutely positioned above the global
+          floating tab bar (components/navigation/global-floating-tab-bar.tsx:
+          bottom = insets.bottom + 4, height TAB_BAR_HEIGHT), never a sibling
+          inside the scrolling FlatList, so it stays fixed/accessible while
+          scrolling and can never be scrolled behind the tab pill. Only
+          rendered once at least one item is selected — "Move unavailable"
+          at 0 selected is simply this bar not existing yet, not a disabled
+          button. */}
+      {selectMode && selectedIds.size > 0 && (
+        <View style={[styles.bulkBar, { bottom: TAB_BAR_HEIGHT + insets.bottom + 16 }]} pointerEvents="box-none">
+          <View style={styles.bulkBarInner}>
+            <Text style={styles.bulkBarCount}>
+              {selectedIds.size} selected
+            </Text>
+            <Pressable style={styles.bulkBarMoveBtn} onPress={() => setShowBulkMoveModal(true)}>
+              <Text style={styles.bulkBarMoveBtnText}>Move</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {isOwner && folderId && (
+        <MoveItemModal
+          mode="bulk"
+          visible={showBulkMoveModal}
+          itemIds={Array.from(selectedIds)}
+          sourceFolderId={folderId}
+          currentUserId={currentUserId}
+          onClose={() => setShowBulkMoveModal(false)}
+          onMoved={handleBulkMoved}
+        />
+      )}
 
       {isOwner && (
         <CollectionAddMenu
@@ -1592,6 +1780,74 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Phase 2 Select mode — text buttons/label replacing headerTopActions'
+  // icon row while active (see headerTop's own conditional above). Not
+  // `iconBtn` (fixed 36x36 square, sized for a single glyph) — these are
+  // variable-width text, so they get their own minimal hit-area padding
+  // instead.
+  selectEntryBtn: {
+    paddingHorizontal: 6,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectEntryText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  selectCancelText: {
+    fontSize: 16,
+    color: PV2.textSecondary,
+  },
+  selectCountText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  // Phase 2 bulk action bar — see its own render-site comment for why this
+  // is absolutely positioned as a sibling of the SafeAreaView rather than
+  // inside the FlatList (stays fixed while scrolling, sits above the
+  // global floating tab bar). left/right match BAR_HORIZONTAL_INSET's
+  // general sizing intent (a floating pill inset from both edges) without
+  // importing that private constant from global-floating-tab-bar.tsx.
+  bulkBar: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+  },
+  bulkBarInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(9,10,16,0.97)',
+    borderWidth: 1,
+    borderColor: 'rgba(100,105,145,0.28)',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  bulkBarCount: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  bulkBarMoveBtn: {
+    backgroundColor: PV2.accent,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+  },
+  bulkBarMoveBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   // Title's own full-width row — the like/comment/bookmark/share controls
   // that used to share this row (squeezing the title's available width)
@@ -1877,6 +2133,26 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Phase 2 Select mode — applied on top of `thumb` (border layers inside
+  // its own overflow:hidden clip, same as any other bordered tile in this
+  // app) only for a selected item tile, never for an unselected one in
+  // Select mode, so a selected tile is unambiguous: border AND checkmark
+  // together, always both.
+  thumbSelected: {
+    borderWidth: 3,
+    borderColor: PV2.accent,
+  },
+  selectionBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: PV2.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -1142,6 +1142,7 @@ export default function ItemDetailScreen() {
 
       {isOwner && (
         <MoveItemModal
+          mode="single"
           visible={showMoveModal}
           item={item}
           currentUserId={currentUserId}
