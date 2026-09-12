@@ -667,6 +667,12 @@ export default function HomeScreen() {
                     params: { id: item.id },
                   });
                 }}
+                onCommentPress={() => {
+                  router.push({
+                    pathname: '/post-reply/[id]',
+                    params: { id: item.id },
+                  });
+                }}
                 onLike={() => handleLike(item.id)}
                 onDelete={() => handleDeletePost(item.id)}
               />

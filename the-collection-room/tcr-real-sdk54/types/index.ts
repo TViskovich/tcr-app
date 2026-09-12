@@ -61,6 +61,18 @@ export type CollectionItem = {
   image_url: string | null;
   description: string | null;
   created_at: string;
+  // Manual folder ordering (supabase/migrations/
+  // 20260912120000_add_collection_item_manual_ordering.sql) — the ONE
+  // source of truth for "this folder's items in order": the folder grid,
+  // the Collections-tab preview row, and Grail-slot collection previews
+  // all sort by this ascending, never by created_at/updated_at. Not
+  // client-writable directly (no UPDATE grant on this column at all) —
+  // every change goes through reorder_collection_items or
+  // move_collection_items. New items are assigned a value below the
+  // folder's current minimum by a DB trigger, so they keep appearing first
+  // exactly like before this column existed, with no insert-call-site
+  // changes anywhere.
+  sort_order: number;
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Effective visibility to a non-owner is folder.is_public AND this — a

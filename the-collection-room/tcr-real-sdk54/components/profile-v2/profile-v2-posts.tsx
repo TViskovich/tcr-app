@@ -8,6 +8,10 @@ type Props = {
   currentUserId: string | undefined;
   onUserPress: (username: string) => void;
   onPostPress: (postId: string) => void;
+  // Feed comment/reply redesign — opens the dedicated reply composer,
+  // separate from onPostPress (post detail). See post-card.tsx's own
+  // onCommentPress prop comment.
+  onCommentPress: (postId: string) => void;
   onLike: (postId: string) => void;
   // Owner-only — PostCard itself gates the affordance to posts where
   // currentUserId === post.user_id, so this is safe to always pass through.
@@ -20,7 +24,7 @@ type Props = {
 
 // Plain stacked list, not a FlatList — this renders inside the profile
 // screen's single outer ScrollView, same reasoning as ProfileV2Collections.
-export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress, onLike, onDelete, error, onRetry }: Props) {
+export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress, onCommentPress, onLike, onDelete, error, onRetry }: Props) {
   if (error && posts.length === 0) {
     return (
       <View style={styles.empty}>
@@ -52,6 +56,7 @@ export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress,
           currentUserId={currentUserId}
           onUserPress={() => onUserPress(post.username)}
           onPostPress={() => onPostPress(post.id)}
+          onCommentPress={() => onCommentPress(post.id)}
           onLike={() => onLike(post.id)}
           onDelete={() => onDelete(post.id)}
         />

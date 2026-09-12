@@ -90,6 +90,21 @@ function RootLayoutNav() {
                 own inline Stack.Screen options; this only attaches the
                 presentation transition. */}
             <Stack.Screen name="registry/[id]" options={{ presentation: 'modal' }} />
+            {/* Reply composer (Feed comment redesign) — same modal
+                presentation treatment as registry/[id] above, but unlike
+                that one headerShown is set statically here rather than via
+                an inline Stack.Screen inside app/post-reply/[id].tsx: that
+                screen renders its own custom "Cancel · Reply · Post" header,
+                so the native header must never be shown at all, not shown-
+                then-hidden. Setting it here means the navigator mounts the
+                screen already knowing headerShown is false — dynamically
+                flipping it post-mount (which is what the removed inline
+                Stack.Screen was doing) forces a modal to remount its whole
+                content to switch header configurations, discarding local
+                state (React Navigation's own "Dynamically changing header's
+                visibility in modals..." warning, confirmed reproduced
+                before this fix). */}
+            <Stack.Screen name="post-reply/[id]" options={{ presentation: 'modal', headerShown: false }} />
           </Stack>
           {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
         </MessageBadgeContext.Provider>

@@ -264,7 +264,12 @@ export function useGrailSlots(userId: string | undefined) {
         .select('id, folder_id, created_at')
         .eq('collection_status', 'active')
         .in('folder_id', collectionIds)
-        .order('created_at', { ascending: false });
+        // Manual folder ordering (supabase/migrations/
+        // 20260912120000_add_collection_item_manual_ordering.sql) — a
+        // Grail-showcased collection's preview is "this folder's items in
+        // order" the same as every other consumer of that ordering, not an
+        // independent recency rule.
+        .order('sort_order', { ascending: true });
 
       if (previewError) {
         // Preview images are a UX nicety layered on top of already-valid

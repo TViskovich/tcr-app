@@ -297,6 +297,7 @@ export function PostCard({
   currentUserId,
   onUserPress,
   onPostPress,
+  onCommentPress,
   onLike,
   onDelete,
 }: {
@@ -304,6 +305,12 @@ export function PostCard({
   currentUserId: string | undefined;
   onUserPress: () => void;
   onPostPress: () => void;
+  // Feed comment/reply redesign — the comment icon now opens the dedicated
+  // reply composer (app/post-reply/[id].tsx) instead of reusing
+  // onPostPress's plain "go to post detail" navigation. Required (not
+  // optional) since both real call sites (app/(tabs)/index.tsx,
+  // profile-v2-posts.tsx) already wire a real handler.
+  onCommentPress: () => void;
   onLike: () => void;
   // Owner-only — omitted (or simply never rendered, see isOwner below) for
   // every other viewer's post. The caller owns the actual delete request
@@ -654,11 +661,13 @@ export function PostCard({
           the same left inset Piece 3 established for the media/content
           column, so this row lines up with it instead of the avatar. */}
       <View style={styles.actionsRow}>
-        {/* Comment first, matching the X-style mockup's icon order —
-            tapping also opens post detail, same as before. Piece 6: emoji
-            glyph replaced with IconSymbol's existing 'message' mapping
-            (outline speech bubble) — no new icon system introduced. */}
-        <TouchableOpacity onPress={onPostPress} hitSlop={8} style={styles.commentBtn}>
+        {/* Comment first, matching the X-style mockup's icon order. Feed
+            comment/reply redesign: now opens the dedicated reply composer
+            (onCommentPress) instead of post detail (onPostPress) — tapping
+            the rest of the card still opens post detail unchanged. Piece 6:
+            emoji glyph replaced with IconSymbol's existing 'message'
+            mapping (outline speech bubble) — no new icon system introduced. */}
+        <TouchableOpacity onPress={onCommentPress} hitSlop={8} style={styles.commentBtn}>
           <IconSymbol name="message" size={19} color={PV2.textSecondary} />
           <Text style={styles.commentCount}>{post.commentCount}</Text>
         </TouchableOpacity>

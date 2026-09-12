@@ -467,8 +467,14 @@ export default function ItemDetailScreen() {
   // item queries on every useFocusEffect refocus, so navigating back to
   // either after a move picks it up automatically, same as every other
   // cross-screen mutation in this app.
-  function handleItemMoved(updatedItem: CollectionItem, folderName: string) {
-    setItem(updatedItem);
+  // MoveItemModal now returns only the destination folder id (it shares
+  // move_collection_items with bulk mode, which only ever returns a moved
+  // row count, not full rows) — a move never touches anything about the
+  // item besides its folder_id, so patching that one field locally is
+  // exactly as correct as replacing the whole row would be, with no extra
+  // round-trip.
+  function handleItemMoved(destinationFolderId: string, folderName: string) {
+    setItem((prev) => (prev ? { ...prev, folder_id: destinationFolderId } : prev));
     setShowMoveModal(false);
     Alert.alert('Moved', `Moved to ${folderName}`);
   }

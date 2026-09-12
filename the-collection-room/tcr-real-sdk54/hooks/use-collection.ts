@@ -46,7 +46,15 @@ async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, Co
         .select('*')
         .eq('folder_id', id)
         .eq('collection_status', 'active')
-        .order('created_at', { ascending: false })
+        // Manual folder ordering (supabase/migrations/
+        // 20260912120000_add_collection_item_manual_ordering.sql) — this
+        // order clause is what determines WHICH items are even fetched,
+        // since .limit below caps the query itself, not just the client's
+        // later re-sort. Ordering by created_at here would keep returning
+        // the most-recently-created rows regardless of any reorder,
+        // silently excluding an older item the owner just dragged to the
+        // front from this candidate set entirely.
+        .order('sort_order', { ascending: true })
         .limit(PREVIEW_ITEM_LIMIT),
     ),
   );
@@ -75,12 +83,23 @@ export type CollectionGridEntry =
   | { kind: 'item'; item: CollectionItem }
   | { kind: 'folder'; folder: Folder };
 
-// The one ordering rule for a mixed grid/preview: newest created_at first,
-// exactly matching the plain created_at DESC every collection_items query
-// in this file already used before folders could appear alongside items.
-// `kind` never participates in the comparison — only recency decides
-// position, so a folder and an item interleave by timestamp, never by type.
+// The ordering rule for a mixed grid/preview. Two items now compare by
+// their persisted manual position (collection_items.sort_order, ascending
+// — see supabase/migrations/20260912120000_add_collection_item_manual_
+// ordering.sql), the one source of truth for "this folder's items in
+// order," so a reorder is reflected here immediately. Everything else is
+// unchanged from before manual ordering existed: two folders (child
+// "category" folders, not reorderable — out of this feature's scope) still
+// compare by created_at DESC, and an item-vs-folder comparison still falls
+// back to created_at too. sort_order (small 0-based integers) and
+// created_at (epoch milliseconds) have no shared scale to interleave a
+// folder against an item by position alone, so a mixed folder+item preview
+// row keeps its existing recency-based interleave between the two KINDS —
+// only items' order RELATIVE TO EACH OTHER changes.
 export function compareGridEntriesByRecency(a: CollectionGridEntry, b: CollectionGridEntry): number {
+  if (a.kind === 'item' && b.kind === 'item') {
+    return a.item.sort_order - b.item.sort_order;
+  }
   const aTime = new Date(a.kind === 'folder' ? a.folder.created_at : a.item.created_at).getTime();
   const bTime = new Date(b.kind === 'folder' ? b.folder.created_at : b.item.created_at).getTime();
   return bTime - aTime;
@@ -406,7 +425,10 @@ export function useItems(folderId: string | undefined) {
         .select('*')
         .eq('folder_id', folderId)
         .eq('collection_status', 'active')
-        .order('created_at', { ascending: false });
+        // Manual folder ordering — see fetchPreviewItems' own comment
+        // above for why this has to be a real ORDER BY, not just a
+        // client-side re-sort after the fact.
+        .order('sort_order', { ascending: true });
 
       if (queryError) {
         console.error('[useItems] query failed:', queryError.message, queryError);

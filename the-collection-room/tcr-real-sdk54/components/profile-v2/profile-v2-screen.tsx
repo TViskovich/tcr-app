@@ -1947,6 +1947,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     currentUserId={currentUserId}
                     onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
                     onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
+                    onCommentPress={(postId) => router.push({ pathname: '/post-reply/[id]', params: { id: postId } })}
                     onLike={handleLike}
                     onDelete={handleDeletePost}
                     error={profilePostsError}

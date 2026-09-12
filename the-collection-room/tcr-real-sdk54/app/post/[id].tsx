@@ -4,19 +4,15 @@ import {
   Alert,
   Animated,
   FlatList,
-  Keyboard,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
@@ -31,17 +27,16 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem, RateMyGrailCard } from '@/types';
 
-// Extra clearance so the comment input bar's "Post" button sits above the
+// Extra clearance so the "Add a comment..." row sits above the
 // globally-rendered floating tab bar (see components/navigation/
 // global-floating-tab-bar.tsx, rendered as a root-level sibling of every
 // screen outside app/(tabs) — it is NOT part of this screen's own view
-// tree, so it doesn't get pushed up by KeyboardAvoidingView). Without this,
-// the input bar sits underneath that bar's touch-absorbing surface
-// whenever the keyboard is closed, and taps meant for "Post" (or even
-// focusing the text field) land on the tab bar's inert background instead
-// — no error, no navigation, nothing happens. Applied only while the
-// keyboard is closed; once it's open the bar hugs the keyboard exactly as
-// before, with no dead gap.
+// tree). Without this, the row sits underneath that bar's touch-absorbing
+// surface and taps land on the tab bar's inert background instead — no
+// error, no navigation, nothing happens. Unconditional now (feed comment/
+// reply redesign moved the actual text input to its own screen, so nothing
+// on this screen ever raises the keyboard anymore — no keyboard-open/closed
+// distinction is needed here the way the old inline input bar required).
 const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
 
 type PostDetail = {
@@ -244,12 +239,19 @@ export default function PostDetailScreen() {
   // Set only when a comments query fails — never cleared to [] on failure,
   // so a failed refresh can't wipe comments that are already on screen.
   const [commentsError, setCommentsError] = useState<string | null>(null);
-  const [newComment, setNewComment] = useState('');
-  const [sending, setSending] = useState(false);
   const [deletingPost, setDeletingPost] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
+  // Tracks each render's own comment count purely so the focus-refetch
+  // effect below (which re-fetches on every refocus, e.g. returning from
+  // the reply composer) can tell "a new comment actually arrived" apart
+  // from "nothing changed" without depending on `comments` itself in that
+  // effect's own deps (which would re-run it on every comment list update,
+  // including the refetch's own setComments call — an infinite loop).
+  const commentCountRef = useRef(0);
+  useEffect(() => {
+    commentCountRef.current = comments.length;
+  }, [comments.length]);
 
   // Owns the mount/postId-change load's request batch only — the
   // Retry-comments and post-a-comment refresh paths below are user-
@@ -260,20 +262,6 @@ export default function PostDetailScreen() {
   // the native networking layer and crash with whatwg-fetch's status-0
   // RangeError — see hooks/use-profile.ts for the full mechanism writeup.
   const loadControllerRef = useRef<AbortController | null>(null);
-
-  // Tracks keyboard state purely to toggle TAB_BAR_CLEARANCE above — see
-  // that constant's comment. "Will" events on iOS (available there) avoid a
-  // one-frame lag/flash; Android only has "Did" events.
-  useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
-    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
 
   // Prefer popping real history (preserves whatever screen/scroll position
   // the user actually came from — feed, profile, notifications, etc. — per
@@ -351,6 +339,41 @@ export default function PostDetailScreen() {
 
     return { comments, error: null };
   }, []);
+
+  // Feed comment/reply redesign — this screen no longer owns its own
+  // composer (the inline TextInput/"Post" bar was removed in favor of the
+  // dedicated reply composer, app/post-reply/[id].tsx, opened by the
+  // tappable row below). Since composing now happens on a separate routed
+  // screen, refetch comments on every refocus so a reply just posted there
+  // is visible immediately on return — same useFocusEffect-refetch
+  // convention already used by app/collection/[folderId].tsx. Scoped to
+  // `post?.id` (not the whole `post` object) so an optimistic like-count
+  // update elsewhere on this screen — which does replace `post` with a new
+  // object — can't spuriously retrigger this while already focused.
+  useFocusEffect(
+    useCallback(() => {
+      if (!post) return;
+      let cancelled = false;
+      (async () => {
+        const before = commentCountRef.current;
+        const result = await fetchComments(post.id);
+        if (cancelled) return;
+        if (result.error) {
+          setCommentsError(result.error);
+        } else {
+          setComments(result.comments);
+          setCommentsError(null);
+          if (result.comments.length > before) {
+            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [post?.id, fetchComments]),
+  );
 
   useEffect(() => {
     if (!postId) return;
@@ -524,66 +547,6 @@ export default function PostDetailScreen() {
     });
   }
 
-  async function handleAddComment() {
-    // sending is checked and set synchronously (no await before it), so a
-    // second tap/return-key-press dispatched while the first is still in
-    // flight is rejected here rather than racing it.
-    if (!currentUserId || !newComment.trim() || !post || sending) return;
-    setSending(true);
-    const body = newComment.trim();
-
-    const { data: inserted, error } = await supabase
-      .from('comments')
-      .insert({ user_id: currentUserId, post_id: post.id, body })
-      .select('id, user_id, body, created_at')
-      .single();
-
-    if (error || !inserted) {
-      console.error('[PostDetail] handleAddComment: insert failed:', error?.message, error);
-      Alert.alert('Comment failed', error?.message ?? 'Could not post your comment. Please try again.');
-      setSending(false);
-      return;
-    }
-
-    // Only clear the input once the insert is confirmed successful.
-    setNewComment('');
-
-    if (post.user_id !== currentUserId) {
-      // Server-verified against the comment row that just committed
-      // (create_comment_notification RPC), never a direct client insert.
-      supabase.rpc('create_comment_notification', { p_post_id: post.id, p_comment_id: inserted.id })
-        .then(({ error: e }) => { if (e) console.error('Comment notif failed:', e.message); });
-    }
-
-    const result = await fetchComments(post.id);
-    if (result.error) {
-      // The comment is already saved server-side — don't let a failed
-      // refresh wipe the list back to whatever was there before. Append
-      // the row we just got back from the insert instead, so it's still
-      // visible immediately.
-      console.error('[PostDetail] handleAddComment: refresh after insert failed:', result.error);
-      setCommentsError(result.error);
-      setComments((prev) => [
-        ...prev,
-        {
-          id: inserted.id,
-          user_id: inserted.user_id,
-          body: inserted.body,
-          created_at: inserted.created_at,
-          username: 'you',
-          display_name: null,
-          avatar_url: null,
-        },
-      ]);
-    } else {
-      setComments(result.comments);
-      setCommentsError(null);
-    }
-
-    setSending(false);
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-  }
-
   async function retryLoadComments() {
     if (!post) return;
     const result = await fetchComments(post.id);
@@ -707,10 +670,11 @@ export default function PostDetailScreen() {
               : undefined,
         }}
       />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}>
+      {/* Feed comment/reply redesign — this screen no longer hosts its own
+          text input/keyboard, so it no longer needs KeyboardAvoidingView
+          either (nothing on this screen ever raises the keyboard now; the
+          reply composer is a separate routed screen that owns that). */}
+      <View style={styles.container}>
         <FlatList
           ref={flatListRef}
           data={comments}
@@ -751,45 +715,20 @@ export default function PostDetailScreen() {
           </View>
         )}
 
-        {/* Comment input bar — extra bottom clearance (TAB_BAR_CLEARANCE)
-            only while the keyboard is closed, so the "Post" button sits
-            above the floating tab bar instead of underneath its
-            touch-absorbing surface. See TAB_BAR_CLEARANCE's comment. */}
-        <View
-          style={[
-            styles.inputBar,
-            {
-              paddingBottom: keyboardVisible
-                ? Math.max(insets.bottom, 8)
-                : Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE,
-            },
-          ]}>
-          <TextInput
-            style={styles.input}
-            value={newComment}
-            onChangeText={setNewComment}
-            placeholder="Add a comment..."
-            placeholderTextColor={PV2.textTertiary}
-            returnKeyType="send"
-            onSubmitEditing={handleAddComment}
-            blurOnSubmit={false}
-            editable={!sending}
-            maxLength={500}
-          />
-          <TouchableOpacity
-            onPress={handleAddComment}
-            disabled={!newComment.trim() || sending}
-            style={styles.sendBtn}>
-            {sending ? (
-              <ActivityIndicator size="small" color="#0a7ea4" />
-            ) : (
-              <Text style={[styles.sendText, !newComment.trim() && styles.sendTextDisabled]}>
-                Post
-              </Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
+        {/* Replaces the old inline TextInput/"Post" bar — tapping this row
+            now opens the dedicated reply composer (app/post-reply/[id].tsx)
+            instead of composing in place. Extra bottom clearance
+            (TAB_BAR_CLEARANCE) is now unconditional (no keyboard ever opens
+            on this screen anymore) so it always sits above the floating tab
+            bar's touch-absorbing surface — see that constant's comment. */}
+        <TouchableOpacity
+          style={[styles.addCommentRow, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
+          onPress={() => post && router.push({ pathname: '/post-reply/[id]', params: { id: post.id } })}
+          disabled={!post}
+          activeOpacity={0.7}>
+          <Text style={styles.addCommentPlaceholder}>Add a comment...</Text>
+        </TouchableOpacity>
+      </View>
     </>
   );
 }
@@ -1034,44 +973,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: PV2.textSecondary,
   },
-  // Input bar
-  inputBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingTop: 8,
+  // Add-comment row — replaces the old inline input bar; tapping it opens
+  // the dedicated reply composer (app/post-reply/[id].tsx) instead.
+  addCommentRow: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: PV2.dividerColor,
     backgroundColor: PV2.bg,
-    gap: 8,
   },
-  input: {
-    flex: 1,
+  addCommentPlaceholder: {
     fontSize: 15,
-    color: PV2.textPrimary,
-    backgroundColor: PV2.collectorPanelBg,
-    borderWidth: 1,
-    borderColor: PV2.border,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    maxHeight: 100,
-  },
-  sendBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    minWidth: 44,
-    alignItems: 'center',
-  },
-  // #0a7ea4 mapped onto PV2.link — same actionable-text role (this app's
-  // one existing "link/button text" token), not a new blue invented for
-  // this screen.
-  sendText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: PV2.link,
-  },
-  sendTextDisabled: {
     color: PV2.textTertiary,
   },
 });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import { Image } from 'expo-image';
@@ -23,7 +23,14 @@ type Props = {
 // View in app/collection/[folderId].tsx). With crop metadata, reconstructs
 // the exact pan/zoom framing the owner composed in FolderCoverAdjuster —
 // see lib/folder-cover-crop.ts for the shared math both sides use.
-export function FolderCoverImage({ uri, crop }: Props) {
+//
+// Wrapped in memo() as defense-in-depth against exactly the flicker class
+// diagnosed in app/collection/[folderId].tsx's own render path (that
+// screen re-renders constantly during Reorder mode's tap-to-rank —
+// unrelated to this component's own props): with a stable `uri`/`crop`,
+// this now skips re-rendering entirely on an unrelated parent re-render,
+// on top of that screen no longer remounting it in the first place.
+export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop }: Props) {
   const { width: windowWidth } = useWindowDimensions();
 
   if (!crop) {
@@ -38,7 +45,7 @@ export function FolderCoverImage({ uri, crop }: Props) {
       containerH={windowWidth / FOLDER_COVER_ASPECT_RATIO}
     />
   );
-}
+});
 
 function CroppedFolderCoverImage({
   uri,

@@ -400,6 +400,8 @@ export default function CollectionFolderScreen() {
   useEffect(() => {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setReorderMode(false);
+    setRankedIds([]);
   }, [folderId]);
 
   // Drops any selected id that's no longer present in this folder's own
@@ -441,6 +443,97 @@ export default function CollectionFolderScreen() {
     cancelSelectMode();
     refreshItems();
     Alert.alert('Moved', `Moved ${movedCount} ${movedCount === 1 ? 'item' : 'items'} to ${folderName}`);
+  }
+
+  // Manual item reordering — tap-to-rank, a third mode alongside normal
+  // browsing and Select mode (mutually exclusive with both; entering it
+  // always exits Select mode first, per "do not mix multi-select Move and
+  // freeform dragging"). rankedIds is the ONLY reorder state: an ordered
+  // array of item ids, front-to-back — an item's rank is simply
+  // rankedIds.indexOf(id) + 1, never a separately tracked number, so
+  // removing an id from the middle "compacts" every later rank down by one
+  // for free, on the very next render. `items` (hooks/use-collection.ts's
+  // useItems) is never touched until Done actually persists, so Cancel
+  // needs no explicit "restore" step: discarding rankedIds and switching
+  // back to the normal grid (which still reads from the untouched `items`)
+  // already shows the original order.
+  const [reorderMode, setReorderMode] = useState(false);
+  const [rankedIds, setRankedIds] = useState<string[]>([]);
+  const [savingReorder, setSavingReorder] = useState(false);
+  const savingReorderRef = useRef(false);
+
+  function handleEnterReorderMode() {
+    cancelSelectMode();
+    setRankedIds([]);
+    setReorderMode(true);
+  }
+
+  function handleReorderCancel() {
+    setReorderMode(false);
+    setRankedIds([]);
+  }
+
+  // Tapping an unranked item appends it (next rank = current length + 1);
+  // tapping an already-ranked item removes it. Both are the same one-line
+  // operation because rank is positional, not stored — see rankedIds' own
+  // comment above. Deterministic under repeated tap/remove/re-add: an
+  // item's rank always reflects exactly "how many currently-ranked items
+  // were tapped before it, in tap order," regardless of how many times it
+  // was previously added and removed.
+  function toggleItemRank(itemId: string) {
+    setRankedIds((prev) => (prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]));
+  }
+
+  // Drops any ranked id no longer present in this folder's own freshly-
+  // refetched item list — same "external change during an active
+  // in-progress mode" safety net as Select mode's own analogous effect
+  // above, and for the same reason: reorder_collection_items would
+  // otherwise atomically reject the whole Done call over one stale id.
+  useEffect(() => {
+    if (!reorderMode || rankedIds.length === 0) return;
+    const liveIds = new Set(items.map((i) => i.id));
+    setRankedIds((prev) => {
+      const next = prev.filter((id) => liveIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
+  async function handleReorderDone() {
+    if (savingReorderRef.current || !folderId) return;
+    savingReorderRef.current = true;
+    setSavingReorder(true);
+    try {
+      // Ranked items define the front of the final order, in the order
+      // they were tapped; every unranked item follows, in whatever order
+      // it already had (items is already sorted by the current persisted
+      // sort_order — see useItems) — so ranking only 2 of 10 items moves
+      // exactly those two to the front and leaves the other 8's relative
+      // order untouched.
+      const rankedSet = new Set(rankedIds);
+      const unrankedIds = items.filter((item) => !rankedSet.has(item.id)).map((item) => item.id);
+      const finalOrder = [...rankedIds, ...unrankedIds];
+
+      const { error } = await supabase.rpc('reorder_collection_items', {
+        p_folder_id: folderId,
+        p_item_ids: finalOrder,
+      });
+      if (error) throw new Error(error.message);
+
+      // Refetch BEFORE leaving reorder mode (rather than flipping
+      // reorderMode off first) so the normal grid never briefly shows the
+      // pre-reorder order while refreshItems() is still in flight.
+      await refreshItems();
+      setReorderMode(false);
+      setRankedIds([]);
+    } catch (e) {
+      // Stays in reorder mode with the tapped ranking intact — the user
+      // can retry Done without re-tapping everything.
+      Alert.alert('Reorder failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    } finally {
+      savingReorderRef.current = false;
+      setSavingReorder(false);
+    }
   }
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
@@ -1230,12 +1323,12 @@ export default function CollectionFolderScreen() {
           key={key}
           testID={`child-folder-${entry.folder.id}`}
           style={[styles.thumb, { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO }]}
-          // Nested folders are never a bulk-move candidate (Phase 2 is
-          // items only) — disabled rather than removed from the grid, so
-          // Select mode doesn't reshuffle the layout, matching how the
+          // Nested folders are never a bulk-move or reorder candidate
+          // (both are items-only) — disabled rather than removed from the
+          // grid, so neither mode reshuffles the layout, matching how the
           // current-folder row in MoveItemModal stays visible-but-disabled
           // rather than vanishing.
-          disabled={selectMode}
+          disabled={selectMode || reorderMode}
           onPress={() =>
             router.push({
               pathname: '/collection/[folderId]',
@@ -1266,6 +1359,13 @@ export default function CollectionFolderScreen() {
       );
     }
     const isSelected = selectMode && selectedIds.has(entry.item.id);
+    // Tap-to-rank — rank is purely derived from position within rankedIds
+    // (1-based), never a separately-tracked number: removing an id from
+    // the middle of that array automatically "compacts" every later rank
+    // down by one on the very next render, with no explicit renumbering
+    // step anywhere. 0 means unranked.
+    const rank = reorderMode ? rankedIds.indexOf(entry.item.id) + 1 : 0;
+    const isRanked = rank > 0;
     return (
       <Pressable
         key={key}
@@ -1274,18 +1374,34 @@ export default function CollectionFolderScreen() {
           styles.thumb,
           { width: cardThumbWidth, aspectRatio: PREVIEW_CARD_ASPECT_RATIO },
           isSelected && styles.thumbSelected,
+          isRanked && styles.thumbRanked,
         ]}
-        onPress={() => (selectMode ? toggleItemSelected(entry.item.id) : openItem(entry.item))}
+        onPress={() => {
+          if (reorderMode) toggleItemRank(entry.item.id);
+          else if (selectMode) toggleItemSelected(entry.item.id);
+          else openItem(entry.item);
+        }}
         // Long-press only ever enters Select mode from the default (non-
         // card-mode) grid — isCardMode's per-player hero gallery has no
         // Select-mode header/bulk-action-bar of its own (see the header
         // JSX below), so entering it there would produce selection state
-        // with no visible way to act on or exit it.
+        // with no visible way to act on or exit it. Reorder mode has no
+        // long-press of its own — tap-to-rank responds to a plain,
+        // immediate tap, no hold gesture required.
         onLongPress={() => {
-          if (!isCardMode && !selectMode) enterSelectMode(entry.item.id);
+          if (!isCardMode && !selectMode && !reorderMode) enterSelectMode(entry.item.id);
         }}
         accessibilityRole="button"
-        accessibilityState={selectMode ? { selected: isSelected } : undefined}>
+        accessibilityState={
+          reorderMode ? { selected: isRanked } : selectMode ? { selected: isSelected } : undefined
+        }
+        accessibilityLabel={
+          reorderMode
+            ? isRanked
+              ? `${entry.item.title ?? entry.item.player ?? 'Card'}, rank ${rank}, tap to remove`
+              : `${entry.item.title ?? entry.item.player ?? 'Card'}, tap to rank`
+            : undefined
+        }>
         {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
           <Image
             source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
@@ -1304,6 +1420,15 @@ export default function CollectionFolderScreen() {
         {isSelected && (
           <View style={styles.selectionBadge} pointerEvents="none">
             <IconSymbol name="checkmark.circle.fill" size={22} color={PV2.accent} />
+          </View>
+        )}
+        {/* Rank badge — the prominent numbered circle tap-to-rank replaces
+            the old drag affordance with. Only rendered once actually
+            ranked, same "no dimming needed, the badge+border together are
+            the whole signal" convention as the selection checkmark above. */}
+        {isRanked && (
+          <View style={styles.rankBadge} pointerEvents="none">
+            <Text style={styles.rankBadgeText}>{rank}</Text>
           </View>
         )}
       </Pressable>
@@ -1464,7 +1589,13 @@ export default function CollectionFolderScreen() {
         ) : (
           <>
             <View style={[styles.headerTop, { paddingTop: insets.top + 10 }]}>
-              {selectMode ? (
+              {reorderMode ? (
+                <Pressable onPress={handleReorderCancel} hitSlop={10} disabled={savingReorder}>
+                  <Text style={[styles.selectCancelText, savingReorder && styles.selectCancelTextDisabled]}>
+                    Cancel
+                  </Text>
+                </Pressable>
+              ) : selectMode ? (
                 <Pressable onPress={cancelSelectMode} hitSlop={10}>
                   <Text style={styles.selectCancelText}>Cancel</Text>
                 </Pressable>
@@ -1472,7 +1603,24 @@ export default function CollectionFolderScreen() {
                 <BackButton fallbackHref="/collection" />
               )}
 
-              {selectMode ? (
+              {reorderMode ? (
+                <View style={styles.reorderHeaderRight}>
+                  <Text style={styles.selectCountText}>Reorder Items</Text>
+                  <Pressable
+                    onPress={handleReorderDone}
+                    hitSlop={10}
+                    disabled={savingReorder}
+                    style={styles.reorderDoneBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Done reordering">
+                    {savingReorder ? (
+                      <ActivityIndicator size="small" color={PV2.accent} />
+                    ) : (
+                      <Text style={styles.reorderDoneText}>Done</Text>
+                    )}
+                  </Pressable>
+                </View>
+              ) : selectMode ? (
                 <Text style={styles.selectCountText}>
                   {selectedIds.size} Selected
                 </Text>
@@ -1588,7 +1736,20 @@ export default function CollectionFolderScreen() {
               keyExtractor={(row, index) =>
                 row.kind === 'sticky' ? 'sticky-header' : row.kind === 'empty' ? 'empty-state' : `row-${index}`
               }
-              ListHeaderComponent={renderFolderListHeader}
+              // Called here (an already-built element), NOT passed as a bare
+              // function reference. VirtualizedList's own rendering does
+              // `isValidElement(ListHeaderComponent) ? ListHeaderComponent :
+              // <ListHeaderComponent />` — renderFolderListHeader is a new
+              // closure on every render of this screen (rank taps, the
+              // reorder-save refetch, etc.), so passing the function itself
+              // made every one of those re-renders look like "a different
+              // component type" to React, which fully unmounted and
+              // remounted the whole header subtree — including
+              // FolderCoverImage's <Image> — on every single one. Passing
+              // the element instead lets normal reconciliation (diffing the
+              // same <View>/<FolderCoverImage> tags) take over, so the cover
+              // image is updated in place, never torn down.
+              ListHeaderComponent={renderFolderListHeader()}
               stickyHeaderIndices={[1]}
               contentContainerStyle={[
                 styles.gridContentSticky,
@@ -1596,12 +1757,11 @@ export default function CollectionFolderScreen() {
                   // Extra reserved space while the bulk action bar is
                   // showing (see BULK_BAR_RESERVED_HEIGHT's own comment) —
                   // otherwise the last grid row would sit directly behind
-                  // it once scrolled to the bottom.
-                  paddingBottom:
-                    TAB_BAR_HEIGHT +
-                    insets.bottom +
-                    24 +
-                    (selectMode && selectedIds.size > 0 ? BULK_BAR_RESERVED_HEIGHT : 0),
+                  // it once scrolled to the bottom. The bar itself now
+                  // shows for the whole of Select mode (Move disabled at 0
+                  // selected, Reorder always available — see the bar's own
+                  // render site), not just once something is selected.
+                  paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 + (selectMode ? BULK_BAR_RESERVED_HEIGHT : 0),
                 },
               ]}
               onScroll={navbarOnScroll}
@@ -1620,23 +1780,35 @@ export default function CollectionFolderScreen() {
         )}
       </SafeAreaView>
 
-      {/* Phase 2 bulk action bar — absolutely positioned above the global
-          floating tab bar (components/navigation/global-floating-tab-bar.tsx:
+      {/* Bulk action bar — absolutely positioned above the global floating
+          tab bar (components/navigation/global-floating-tab-bar.tsx:
           bottom = insets.bottom + 4, height TAB_BAR_HEIGHT), never a sibling
           inside the scrolling FlatList, so it stays fixed/accessible while
-          scrolling and can never be scrolled behind the tab pill. Only
-          rendered once at least one item is selected — "Move unavailable"
-          at 0 selected is simply this bar not existing yet, not a disabled
-          button. */}
-      {selectMode && selectedIds.size > 0 && (
+          scrolling and can never be scrolled behind the tab pill. Shown for
+          the whole of Select mode now, not just once ≥1 item is selected —
+          Reorder is a mode switch, not a bulk operation on the current
+          selection, so it has to stay reachable at 0 selected too; Move
+          alone becomes "unavailable" there via its own disabled state
+          below, never by hiding the whole bar. */}
+      {selectMode && (
         <View style={[styles.bulkBar, { bottom: TAB_BAR_HEIGHT + insets.bottom + 16 }]} pointerEvents="box-none">
           <View style={styles.bulkBarInner}>
             <Text style={styles.bulkBarCount}>
-              {selectedIds.size} selected
+              {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select items'}
             </Text>
-            <Pressable style={styles.bulkBarMoveBtn} onPress={() => setShowBulkMoveModal(true)}>
-              <Text style={styles.bulkBarMoveBtnText}>Move</Text>
-            </Pressable>
+            <View style={styles.bulkBarActions}>
+              <Pressable style={styles.bulkBarReorderBtn} onPress={handleEnterReorderMode}>
+                <Text style={styles.bulkBarReorderBtnText}>Reorder</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.bulkBarMoveBtn, selectedIds.size === 0 && styles.bulkBarMoveBtnDisabled]}
+                onPress={() => setShowBulkMoveModal(true)}
+                disabled={selectedIds.size === 0}>
+                <Text style={[styles.bulkBarMoveBtnText, selectedIds.size === 0 && styles.bulkBarMoveBtnTextDisabled]}>
+                  Move
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       )}
@@ -1801,10 +1973,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: PV2.textSecondary,
   },
+  selectCancelTextDisabled: {
+    color: PV2.textTertiary,
+  },
   selectCountText: {
     fontSize: 16,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  // Reorder mode header — groups the "Reorder Items" label with the Done
+  // button on the header's right side (Cancel stays alone on the left, via
+  // headerTop's own space-between) — see that render site's own comment
+  // for why this isn't a true 3-slot centered layout.
+  reorderHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  reorderDoneBtn: {
+    minWidth: 40,
+    alignItems: 'flex-end',
+  },
+  reorderDoneText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: PV2.accent,
   },
   // Phase 2 bulk action bar — see its own render-site comment for why this
   // is absolutely positioned as a sibling of the SafeAreaView rather than
@@ -1838,16 +2031,39 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: PV2.textPrimary,
   },
+  bulkBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bulkBarReorderBtn: {
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  bulkBarReorderBtnText: {
+    color: PV2.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
   bulkBarMoveBtn: {
     backgroundColor: PV2.accent,
     borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 22,
   },
+  bulkBarMoveBtnDisabled: {
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
   bulkBarMoveBtnText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  bulkBarMoveBtnTextDisabled: {
+    color: PV2.textTertiary,
   },
   // Title's own full-width row — the like/comment/bookmark/share controls
   // that used to share this row (squeezing the title's available width)
@@ -2155,6 +2371,38 @@ const styles = StyleSheet.create({
     backgroundColor: PV2.bg,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Reorder mode (tap-to-rank) — a subtler border than thumbSelected's
+  // (2px vs 3px, per "subtle selected border/overlay"), distinct enough to
+  // never be confused with Select mode's own accent border even though
+  // they use the same color, since the two modes are mutually exclusive
+  // and never render at the same time anyway.
+  thumbRanked: {
+    borderWidth: 2,
+    borderColor: PV2.accent,
+  },
+  // The prominent numbered badge tap-to-rank relies on — deliberately
+  // larger and higher-contrast than selectionBadge (Select mode's plain
+  // checkmark) so a rank number reads clearly at a glance across a grid of
+  // many ranked tiles, not just "is this one selected or not."
+  rankBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
+    paddingHorizontal: 6,
+    backgroundColor: PV2.accent,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rankBadgeText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
   },
   emptyWrap: {
     flex: 1,

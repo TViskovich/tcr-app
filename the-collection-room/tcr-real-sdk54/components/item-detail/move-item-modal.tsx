@@ -110,11 +110,14 @@ type BaseProps = {
 type SingleModeProps = BaseProps & {
   mode: 'single';
   item: CollectionItem;
-  // Called once the folder_id UPDATE has actually committed — the caller
-  // (app/item/[id].tsx) owns updating its own `item` state and showing the
-  // "Moved to <folder>" confirmation; this modal only owns the picker UI
-  // and the move mutation itself.
-  onMoved: (updatedItem: CollectionItem, folderName: string) => void;
+  // Called once move_collection_items has committed — the caller
+  // (app/item/[id].tsx) owns updating its own `item` state (a plain local
+  // folder_id patch; nothing else about the item changes on a move) and
+  // showing the "Moved to <folder>" confirmation. Only the destination
+  // folder id/name come back — not a full updated row, since this now
+  // shares move_collection_items with bulk mode (see below), which only
+  // ever returns a moved-row count, never full rows.
+  onMoved: (destinationFolderId: string, folderName: string) => void;
 };
 
 type BulkModeProps = BaseProps & {
@@ -170,34 +173,35 @@ export function MoveItemModal(props: Props) {
     setMovingFolderId(folder.id);
 
     try {
+      // Single mode now shares the exact same RPC as bulk mode — a
+      // 1-element array is just the trivial case of "N items." This is
+      // what lets a single move get a correct, race-free "append at the
+      // end of the destination folder" sort_order (see this feature's own
+      // migration, 20260912120000_add_collection_item_manual_ordering.sql):
+      // the previous raw client `.update({ folder_id })` had no safe way to
+      // compute that without a separate read-then-write race, and adding a
+      // second sort-order-assignment mechanism just for the single-item
+      // path would mean two places to keep in sync instead of one.
+      const itemIds = props.mode === 'single' ? [props.item.id] : props.itemIds;
+      const sourceFolderId = props.mode === 'single' ? props.item.folder_id : props.sourceFolderId;
+
+      // One atomic server-side transaction for the whole selection — see
+      // move_collection_items's own migration comment for the
+      // all-or-nothing guarantee and the source-folder re-check that
+      // guards against a stale selection (an item moved/removed by
+      // something else between selecting it here and confirming).
+      const { data: movedCount, error: moveError } = await supabase.rpc('move_collection_items', {
+        p_item_ids: itemIds,
+        p_source_folder_id: sourceFolderId,
+        p_destination_folder_id: folder.id,
+      });
+
+      if (moveError) throw new Error(moveError.message);
+
       if (props.mode === 'single') {
-        const { data: updated, error: moveError } = await supabase
-          .from('collection_items')
-          .update({ folder_id: folder.id })
-          .eq('id', props.item.id)
-          .eq('user_id', currentUserId)
-          .select()
-          .single();
-
-        if (moveError) throw new Error(moveError.message);
-        if (!updated) throw new Error('Item could not be moved.');
-
-        props.onMoved(updated as CollectionItem, folder.name);
+        props.onMoved(folder.id, folder.name);
       } else {
-        // One atomic server-side transaction for the whole selection — see
-        // move_collection_items's own migration comment for the
-        // all-or-nothing guarantee and the source-folder re-check that
-        // guards against a stale selection (an item moved/removed by
-        // something else between selecting it here and confirming).
-        const { data: movedCount, error: moveError } = await supabase.rpc('move_collection_items', {
-          p_item_ids: props.itemIds,
-          p_source_folder_id: props.sourceFolderId,
-          p_destination_folder_id: folder.id,
-        });
-
-        if (moveError) throw new Error(moveError.message);
-
-        props.onMoved(typeof movedCount === 'number' ? movedCount : props.itemIds.length, folder.name);
+        props.onMoved(typeof movedCount === 'number' ? movedCount : itemIds.length, folder.name);
       }
     } catch (e) {
       // Picker stays open in both modes, selection state resets here — the
