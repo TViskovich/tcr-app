@@ -49,6 +49,8 @@ const MAPPING = {
   'xmark': 'close',
   // Profile expanded-details location row (profile-v2-expanded-details.tsx).
   'mappin': 'place',
+  // Move Item modal's current-folder indicator (move-item-modal.tsx).
+  'checkmark.circle.fill': 'check-circle',
 } as IconMapping;
 
 /**

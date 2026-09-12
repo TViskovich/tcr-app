@@ -25,9 +25,11 @@ import { buildItemImageList, ItemImageCarousel } from '@/components/item-detail/
 import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gallery-manager';
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
+import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -246,6 +248,11 @@ export default function ItemDetailScreen() {
   const [grailsLoading, setGrailsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  // Phase 1 item move — single-item only (see components/item-detail/
+  // move-item-modal.tsx). Kept as a top-level bool here, not folded into
+  // editMode: Move is reachable from the edit form but is its own
+  // independent action/modal, not a form field.
+  const [showMoveModal, setShowMoveModal] = useState(false);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
   // Sender Transferred-Out Item Lifecycle — a top-level derived flag, not
@@ -448,6 +455,22 @@ export default function ItemDetailScreen() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Move Item — the modal itself owns the folder picker UI and the
+  // folder_id UPDATE (including its own error handling/re-entrancy guard);
+  // this screen only owns reflecting the confirmed result: update local
+  // `item` state so the new folder is visible immediately (no refetch
+  // needed), close the picker, and show a brief non-blocking confirmation.
+  // Source/destination folder screens (Collections tab, folder detail) are
+  // not told about this directly — both already re-fetch their own folder/
+  // item queries on every useFocusEffect refocus, so navigating back to
+  // either after a move picks it up automatically, same as every other
+  // cross-screen mutation in this app.
+  function handleItemMoved(updatedItem: CollectionItem, folderName: string) {
+    setItem(updatedItem);
+    setShowMoveModal(false);
+    Alert.alert('Moved', `Moved to ${folderName}`);
   }
 
   // Reconciliation for the two ambiguous delete outcomes (resolved {error}
@@ -916,6 +939,19 @@ export default function ItemDetailScreen() {
                 />
               </View>
 
+              {/* Move Item — Phase 1 (single item, no bulk/drag-drop). Opens
+                  MoveItemModal's folder picker; that modal owns the actual
+                  UPDATE + its own error/re-entrancy handling, this screen
+                  only reacts to a confirmed move via handleItemMoved. */}
+              <Text style={editStyles.sectionHeader}>Organization</Text>
+              <TouchableOpacity
+                style={editStyles.moveRow}
+                onPress={() => setShowMoveModal(true)}
+                activeOpacity={0.7}>
+                <Text style={editStyles.moveRowLabel}>Move to Another Folder</Text>
+                <IconSymbol name="chevron.right" size={16} color={PV2.textTertiary} />
+              </TouchableOpacity>
+
               {/* Delete Item — moved here from the normal Item Detail view
                   (Save/Cancel live in the header, not this form body, so
                   this is already well separated from them by scroll
@@ -1103,6 +1139,16 @@ export default function ItemDetailScreen() {
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {isOwner && (
+        <MoveItemModal
+          visible={showMoveModal}
+          item={item}
+          currentUserId={currentUserId}
+          onClose={() => setShowMoveModal(false)}
+          onMoved={handleItemMoved}
+        />
+      )}
     </View>
   );
 }
@@ -1160,6 +1206,21 @@ const editStyles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255,255,255,0.50)',
     marginTop: 2,
+  },
+  moveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  moveRowLabel: {
+    fontSize: 15,
+    color: PV2.textPrimary,
   },
   // Visually separates the destructive Delete Item action (below) from the
   // normal editable controls above it (fields, then the privacy toggle) —
