@@ -15,6 +15,14 @@ type Props = {
   // already recency-sorted (buildPreviewEntries) — this component does no
   // ordering of its own.
   previewEntries: Record<string, CollectionGridEntry[]>;
+  // Authoritative per-folder active-item counts — hooks/use-collection.ts's
+  // useFolders().itemCounts, passed straight through by the caller
+  // (profile-v2-screen.tsx). Drives each row's own "+N more" overflow tile
+  // (see components/collection/horizontal-card-preview.tsx) — a folder
+  // missing from this map (not yet loaded, or genuinely zero items) is
+  // treated as 0, same fallback convention already used for the "N items"
+  // labels in move-item-modal.tsx/claim-folder-picker.tsx.
+  itemCounts: Record<string, number>;
   onOpenFolder: (folder: Folder) => void;
   // Opens a specific card's item-detail page — tapping a preview tile
   // should land on that card, not the folder it lives in (matches the
@@ -59,6 +67,7 @@ type Props = {
 export function ProfileV2Collections({
   folders,
   previewEntries,
+  itemCounts,
   onOpenFolder,
   onOpenItem,
   onOpenChildFolder,
@@ -101,16 +110,19 @@ export function ProfileV2Collections({
             folderId={folder.id}
             title={folder.name}
             entries={previewEntries[folder.id] ?? []}
+            itemCount={itemCounts[folder.id] ?? 0}
             isExpanded
             onOpenFolder={() => onOpenFolder(folder)}
-            // Rows here never actually collapse (isExpanded is always
-            // true above) — passing onToggle isn't wiring real
-            // expand/collapse, it's what makes CollectionHeaderRow render
-            // its trailing chevron at all (see the `{onToggle && (...)}`
-            // guard there), so the reference's right-edge "expand
-            // indicator" appears. Pointed at the same onOpenFolder as the
-            // title tap, since there's nothing to actually toggle.
-            onToggle={() => onOpenFolder(folder)}
+            // No onToggle here (deliberately) — rows in this compact
+            // profile view never actually collapse (isExpanded is always
+            // true above), and CollectionHeaderRow only renders its
+            // trailing chevron when an onToggle is passed at all. This
+            // row used to fake one (pointed at the same onOpenFolder as
+            // the title tap) purely to make that decorative chevron
+            // appear; removed so the far-right control is gone entirely
+            // rather than duplicating the title's own navigation. The
+            // main Collection page (app/(tabs)/collection.tsx) still
+            // passes a real onToggle for its own genuine collapse/expand.
             onOpenItem={onOpenItem}
             onOpenChildFolder={onOpenChildFolder}
             onAddItem={() => onAddItem?.(folder)}

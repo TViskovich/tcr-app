@@ -76,6 +76,7 @@ import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } 
 import { ProfileV2Tagged } from './profile-v2-tagged';
 import { PV2 } from './profile-v2-theme';
 
+const DISPLAY_NAME_MAX_LENGTH = 18;
 const TAGLINE_MAX_LENGTH = 80;
 const LOCATION_MAX_LENGTH = 80;
 // Deliberately small and fixed — "prefetch the first visible Collection
@@ -93,6 +94,29 @@ const PREVIEW_PREFETCH_LIMIT = 6;
 // identity card (publicBackRow), so there's no public-viewer branch left
 // for this flag to interact with.
 const SHOW_OWNER_SETTINGS_AND_SAVED_ICONS = false;
+
+// TEMP (Profile V3 cleanup pass) — the Edit Profile form's Hero Theme
+// label + swatch picker are hidden from the rendered UI while this
+// selector is reworked. Nothing behind it (selectedTheme state, the save
+// path that persists it, hero_theme resolution for already-saved
+// profiles) was removed — flip this back to true to restore the picker
+// exactly as it was. Gating the JSX (rather than deleting it) rather than
+// a spacer keeps sectionHeader's own marginTop the only gap above
+// "Collector Preferences" when this is off, same as every other section
+// boundary on this form.
+const SHOW_HERO_THEME_PICKER = false;
+
+// TEMP (Profile V3 cleanup pass) — the Edit Profile form's entire
+// "Collector Preferences" section (Favorite Sports/Teams, Collecting
+// Categories, Collector Tags — all four ProfileV2TagEditor rows) is
+// hidden from the rendered UI while this section is reworked. Nothing
+// behind it was touched: favoriteSports/favoriteTeams/
+// collectingCategories/collectorTags state, their setters,
+// findArraySectionIssue's save-time re-validation, and the save payload
+// that persists them all still run exactly as before — an already-saved
+// profile's preference values are untouched and still round-trip through
+// Save. Flip this back to true to restore the section exactly as it was.
+const SHOW_COLLECTOR_PREFERENCES = false;
 
 // The one place the "tab row → tab content" gap is defined — matches the
 // Grails→tab-row gap (ProfileV2HeroCanvas's gridStage paddingBottom 4 +
@@ -358,7 +382,7 @@ export function ProfileV2Screen({ userId }: Props) {
   );
   // Someone else's private folders never load client-side at all — not
   // just hidden in the UI, per hooks/use-collection.ts's publicOnly.
-  const { folders, previewEntries, refresh: refreshFolders } = useFolders(userId, {
+  const { folders, previewEntries, itemCounts, refresh: refreshFolders } = useFolders(userId, {
     publicOnly: !isOwnProfile,
   });
   // Profile V3's Items tab — flat, all-folders view of this profile's own
@@ -1198,8 +1222,9 @@ export function ProfileV2Screen({ userId }: Props) {
     savingRef.current = true;
 
     // Full validation pass BEFORE setSaving/any upload/any DB write, in the
-    // exact order requested: tagline length, website, array counts, array
-    // item lengths, array duplicates. Stops at the first failure with one
+    // exact order requested: display name length, tagline length, website,
+    // array counts, array item lengths, array duplicates. Stops at the
+    // first failure with one
     // Alert; edit mode stays open, nothing is uploaded or saved. Each early
     // return here happens before the try/finally below, so each one must
     // release savingRef itself rather than relying on the finally. Skipped
@@ -1207,9 +1232,17 @@ export function ProfileV2Screen({ userId }: Props) {
     // fields (see the intendedProfileFields construction below, which
     // sources them straight from `profile` in that case), so there is
     // nothing here to validate.
+    let trimmedDisplayName = '';
     let trimmedTagline = '';
     let normalizedWebsite: string | null = null;
     if (!directAvatar) {
+      trimmedDisplayName = editForm.displayName.trim();
+      if (trimmedDisplayName.length > DISPLAY_NAME_MAX_LENGTH) {
+        savingRef.current = false;
+        Alert.alert('Display Name Too Long', `Display name must be ${DISPLAY_NAME_MAX_LENGTH} characters or fewer.`);
+        return false;
+      }
+
       trimmedTagline = editForm.tagline.trim();
       if (trimmedTagline.length > TAGLINE_MAX_LENGTH) {
         savingRef.current = false;
@@ -1345,7 +1378,7 @@ export function ProfileV2Screen({ userId }: Props) {
           }
         : {
             hero_display_name: editForm.heroName.trim() || null,
-            display_name: editForm.displayName.trim() || null,
+            display_name: trimmedDisplayName || null,
             bio: editForm.bio.trim() || null,
             tagline: trimmedTagline || null,
             location: editForm.location.trim() || null,
@@ -1808,9 +1841,12 @@ export function ProfileV2Screen({ userId }: Props) {
                 onChangeText={(v) => setEditForm((p) => ({ ...p, displayName: v }))}
                 placeholder="Display name"
                 placeholderTextColor="rgba(255,255,255,0.35)"
-                maxLength={50}
+                maxLength={DISPLAY_NAME_MAX_LENGTH}
                 accessibilityLabel="Display name"
               />
+              <Text style={styles.displayNameCounter}>
+                {editForm.displayName.length} / {DISPLAY_NAME_MAX_LENGTH}
+              </Text>
 
               <Text style={styles.fieldLabel}>Hero Name</Text>
               <TextInput
@@ -1826,21 +1862,14 @@ export function ProfileV2Screen({ userId }: Props) {
                 Shown large on your profile. Leave blank to use your display name.
               </Text>
 
-              <View style={styles.fieldLabelRow}>
-                <Text style={styles.fieldLabelInRow}>Tagline</Text>
-                <Text style={styles.charCounter}>
-                  {editForm.tagline.length}/{TAGLINE_MAX_LENGTH}
-                </Text>
-              </View>
-              <TextInput
-                style={styles.fieldInput}
-                value={editForm.tagline}
-                onChangeText={(v) => setEditForm((p) => ({ ...p, tagline: v }))}
-                placeholder="Vintage hoops. Modern grails."
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                maxLength={TAGLINE_MAX_LENGTH}
-                accessibilityLabel="Tagline"
-              />
+              {/* Tagline field intentionally hidden from this form (UI-only
+                  removal) — editForm.tagline/TAGLINE_MAX_LENGTH validation
+                  and the save payload below (`tagline: trimmedTagline ||
+                  null`) are all left in place, so an existing stored
+                  tagline still round-trips through Save unchanged; there's
+                  just no control here to edit it anymore. Re-add this block
+                  (it previously sat here, between Hero Name and Bio) to
+                  bring the picker back. */}
 
               <Text style={styles.fieldLabel}>Bio</Text>
               <TextInput
@@ -1881,62 +1910,70 @@ export function ProfileV2Screen({ userId }: Props) {
                 accessibilityLabel="Website"
               />
 
-              <Text style={styles.fieldLabel}>Hero Theme</Text>
-              <View style={styles.themeRow}>
-                {getHeroCanvasPickerThemes().map((t) => (
-                  <TouchableOpacity
-                    key={t.id}
-                    style={[
-                      styles.themeSwatch,
-                      selectedTheme === t.id && styles.themeSwatchSelected,
-                    ]}
-                    onPress={() => setSelectedTheme(t.id)}
-                    activeOpacity={0.8}>
-                    {t.kind === 'image' ? (
-                      <Image
-                        source={t.asset.source}
-                        style={styles.themeSwatchFill}
-                        contentFit="cover"
-                        contentPosition={t.asset.focalPoint}
-                      />
-                    ) : (
-                      <LinearGradient
-                        colors={t.swatch}
-                        style={styles.themeSwatchFill}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                      />
-                    )}
-                    <Text style={styles.themeSwatchLabel}>{t.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              {SHOW_HERO_THEME_PICKER && (
+                <>
+                  <Text style={styles.fieldLabel}>Hero Theme</Text>
+                  <View style={styles.themeRow}>
+                    {getHeroCanvasPickerThemes().map((t) => (
+                      <TouchableOpacity
+                        key={t.id}
+                        style={[
+                          styles.themeSwatch,
+                          selectedTheme === t.id && styles.themeSwatchSelected,
+                        ]}
+                        onPress={() => setSelectedTheme(t.id)}
+                        activeOpacity={0.8}>
+                        {t.kind === 'image' ? (
+                          <Image
+                            source={t.asset.source}
+                            style={styles.themeSwatchFill}
+                            contentFit="cover"
+                            contentPosition={t.asset.focalPoint}
+                          />
+                        ) : (
+                          <LinearGradient
+                            colors={t.swatch}
+                            style={styles.themeSwatchFill}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                          />
+                        )}
+                        <Text style={styles.themeSwatchLabel}>{t.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
 
-              <Text style={styles.sectionHeader}>Collector Preferences</Text>
-              <ProfileV2TagEditor
-                label="Favorite Sports"
-                values={favoriteSports}
-                onChange={setFavoriteSports}
-                placeholder="Basketball"
-              />
-              <ProfileV2TagEditor
-                label="Favorite Teams"
-                values={favoriteTeams}
-                onChange={setFavoriteTeams}
-                placeholder="Lakers"
-              />
-              <ProfileV2TagEditor
-                label="Collecting Categories"
-                values={collectingCategories}
-                onChange={setCollectingCategories}
-                placeholder="Rookie Cards"
-              />
-              <ProfileV2TagEditor
-                label="Collector Tags"
-                values={collectorTags}
-                onChange={setCollectorTags}
-                placeholder="Grader, Vintage, PC Only"
-              />
+              {SHOW_COLLECTOR_PREFERENCES && (
+                <>
+                  <Text style={styles.sectionHeader}>Collector Preferences</Text>
+                  <ProfileV2TagEditor
+                    label="Favorite Sports"
+                    values={favoriteSports}
+                    onChange={setFavoriteSports}
+                    placeholder="Basketball"
+                  />
+                  <ProfileV2TagEditor
+                    label="Favorite Teams"
+                    values={favoriteTeams}
+                    onChange={setFavoriteTeams}
+                    placeholder="Lakers"
+                  />
+                  <ProfileV2TagEditor
+                    label="Collecting Categories"
+                    values={collectingCategories}
+                    onChange={setCollectingCategories}
+                    placeholder="Rookie Cards"
+                  />
+                  <ProfileV2TagEditor
+                    label="Collector Tags"
+                    values={collectorTags}
+                    onChange={setCollectorTags}
+                    placeholder="Grader, Vintage, PC Only"
+                  />
+                </>
+              )}
             </View>
           ) : (
             /* ── View Mode ──
@@ -2014,6 +2051,7 @@ export function ProfileV2Screen({ userId }: Props) {
                   <ProfileV2Collections
                     folders={folders}
                     previewEntries={previewEntries}
+                    itemCounts={itemCounts}
                     onOpenFolder={openFolder}
                     onOpenItem={handleGrailItemPress}
                     onOpenChildFolder={openFolder}
@@ -2188,23 +2226,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 6,
   },
-  fieldLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 16,
-    marginBottom: 6,
-  },
-  fieldLabelInRow: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: PV2.textSecondary,
-  },
-  charCounter: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: PV2.textTertiary,
-  },
   sectionHeader: {
     fontSize: 13,
     fontWeight: '700',
@@ -2218,6 +2239,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: PV2.textTertiary,
     marginTop: 5,
+  },
+  // Live "N / DISPLAY_NAME_MAX_LENGTH" counter directly under the Display
+  // Name input — same muted size/color/top-spacing as fieldHint above, just
+  // right-aligned to sit under the input's own right edge instead of
+  // reading as a left-aligned hint line.
+  displayNameCounter: {
+    fontSize: 11,
+    color: PV2.textTertiary,
+    marginTop: 5,
+    textAlign: 'right',
   },
   fieldInput: {
     borderWidth: 1,

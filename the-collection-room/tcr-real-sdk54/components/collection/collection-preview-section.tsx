@@ -32,6 +32,12 @@ type Props = {
   // tile was tapped.
   onOpenChildFolder: (folder: Folder) => void;
   onAddItem: () => void;
+  // Passed straight through to HorizontalCardPreview — see that file's own
+  // Props for the full contract. Optional/omitted by app/(tabs)/
+  // collection.tsx's own call site today; only profile-v2-collections.tsx
+  // passes it, so that screen's "+N more" overflow tile is scoped to the
+  // Profile Collection tab alone.
+  itemCount?: number;
   // "compact" shrinks dimensions/typography AND drops the collapse
   // chevron entirely — its rows are always expanded (see
   // components/profile-v2/profile-v2-collections.tsx). Same structure,
@@ -66,6 +72,7 @@ export function CollectionPreviewSection({
   onOpenItem,
   onOpenChildFolder,
   onAddItem,
+  itemCount,
   variant = 'full',
 }: Props) {
   return (
@@ -85,6 +92,8 @@ export function CollectionPreviewSection({
           onOpenItem={onOpenItem}
           onOpenChildFolder={onOpenChildFolder}
           onAddItem={onAddItem}
+          itemCount={itemCount}
+          onOpenFolder={onOpenFolder}
           variant={variant}
         />
       )}

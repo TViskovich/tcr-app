@@ -35,7 +35,10 @@ export async function resolveCovers(folders: Folder[]): Promise<Folder[]> {
 // each folder's own query (rather than one unlimited query across all
 // folder ids) means a folder with hundreds of items never pulls more than
 // this many rows just to populate its horizontal preview row.
-const PREVIEW_ITEM_LIMIT = 10;
+// Exported so the Profile Collection preview's own overflow ("+N more")
+// tile can size itself off this exact same limit, rather than a second,
+// independently hardcoded 10 that could drift out of sync with this one.
+export const PREVIEW_ITEM_LIMIT = 10;
 
 async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, CollectionItem[]>> {
   if (!folderIds.length) return {};

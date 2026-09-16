@@ -16,7 +16,11 @@ const COLS = 3;
 // left edge to this exact same value, rather than a second, independently
 // hardcoded number that could drift out of sync with this one.
 export const GRID_HORIZONTAL_MARGIN = 3;
-const GRID_GAP = 2;
+// Exported so horizontal-card-preview.tsx's compact (profile Collection
+// tab) row can use this exact same column gap, rather than a second,
+// independently hardcoded value that could drift out of sync with this
+// one — see that file's own tileWidth/cardGap comments.
+export const GRID_GAP = 2;
 const GRID_WIDTH = Dimensions.get('window').width - GRID_HORIZONTAL_MARGIN * 2;
 
 // Standard trading-card proportion (2.5in x 3.5in), not a square — must
