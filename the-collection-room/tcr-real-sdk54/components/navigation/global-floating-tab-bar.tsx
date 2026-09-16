@@ -1,11 +1,11 @@
 import * as Haptics from 'expo-haptics';
-import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CacheCaseGridIcon } from '@/components/navigation/cachecase-grid-icon';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useMessageBadgeCount } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
@@ -19,19 +19,6 @@ import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 // as its own copy (same constants, same shell/glow styling) rather than
 // sharing code with the tabs-group version, so that working bar is left
 // untouched.
-// Standalone icon mark (3x3 gradient tile grid), not the wordmark —
-// rendered at its own natural colors always (no tintColor; see the render
-// loop below). assets/brand/cachecase-app-icon.png (the first asset tried
-// here) turned out to be a flat RGB PNG with NO alpha channel — verified
-// via its PNG color type (2, not 6/RGBA) — i.e. its near-black square
-// canvas is a real, opaque, baked-in background, not transparent padding,
-// so it rendered as a visible dark box behind the mark. cachecase-icon.png
-// is a genuine RGBA asset (verified: alpha 0 at all four corners, 255 at
-// center) with the same mark tightly cropped (visible content ~93%x89% of
-// its own canvas, vs. app-icon's ~79%x60%). Same asset as
-// app/(tabs)/_layout.tsx's AnimatedTabBar.
-const CacheCaseIconMark = require('@/assets/brand/cachecase-icon.png');
-
 // Discover (search) and Messages stay in TABS below (routes/navigation
 // untouched, still reachable) but are hidden from this bar for now — mirrors
 // HIDDEN_TABS in app/(tabs)/_layout.tsx. Remove an entry here to restore it.
@@ -56,11 +43,6 @@ const INACTIVE_COLOR = '#555762';
 // grid anymore. See app/(tabs)/_layout.tsx's matching FEATURED_TAB for the
 // full rationale.
 const FEATURED_TAB: GlobalTabName = 'profile';
-// Matches app/(tabs)/_layout.tsx's CENTER_BADGE_WIDTH/HEIGHT — see that
-// file's own comment for the full sizing rationale (cachecase-icon.png's
-// 454x359 canvas, ≈1.265:1, with the mark tightly cropped inside it).
-const CENTER_BADGE_WIDTH = 50;
-const CENTER_BADGE_HEIGHT = 40;
 // Matches app/(tabs)/_layout.tsx's DRAG_VERTICAL_CANCEL_MARGIN.
 const DRAG_VERTICAL_CANCEL_MARGIN = 40;
 
@@ -259,9 +241,12 @@ export function GlobalFloatingTabBar() {
                     <View style={centered ? styles.iconWrapCenter : styles.iconWrap}>
                       <View style={styles.iconLitWrap}>
                         {centered ? (
-                          // No tintColor — full RGB gradient graphic;
-                          // see CacheCaseIconMark's own comment above.
-                          <Image source={CacheCaseIconMark} contentFit="contain" style={styles.cacheCaseLogo} />
+                          // This bar's own center button can never render as
+                          // active (see the comment above selectTab) — the
+                          // early return above already excludes every path
+                          // this bar would need to light it up for — so
+                          // active is always false here.
+                          <CacheCaseGridIcon active={false} />
                         ) : (
                           <IconSymbol size={ICON_SIZE} name={tab.icon} color={INACTIVE_COLOR} />
                         )}
@@ -337,10 +322,6 @@ const styles = StyleSheet.create({
   },
   iconWrapCenter: {
     position: 'relative',
-  },
-  cacheCaseLogo: {
-    width: CENTER_BADGE_WIDTH,
-    height: CENTER_BADGE_HEIGHT,
   },
   iconLitWrap: {
     shadowOffset: { width: 0, height: 0 },

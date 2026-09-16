@@ -35,7 +35,7 @@ import {
   resolveHeroCanvasTheme,
   type HeroCanvasThemeId,
 } from '@/components/profile/hero-canvas-themes';
-import { useAllItems, useFolders } from '@/hooks/use-collection';
+import { useAllItems, useFolders, type CollectionGridEntry } from '@/hooks/use-collection';
 import {
   expectedRefIdForSlot,
   removeGrailSlot,
@@ -45,6 +45,8 @@ import {
 import { useProfile } from '@/hooks/use-profile';
 import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -76,6 +78,10 @@ import { PV2 } from './profile-v2-theme';
 
 const TAGLINE_MAX_LENGTH = 80;
 const LOCATION_MAX_LENGTH = 80;
+// Deliberately small and fixed — "prefetch the first visible Collection
+// preview row(s)", never "prefetch the whole collection". See the
+// boundedPreviewItemUrls comment further down for how this is applied.
+const PREVIEW_PREFETCH_LIMIT = 6;
 
 // TEMP (Profile V3 cleanup pass) — the owner-only Settings cog and Saved
 // bookmark shortcut are hidden from the rendered UI while these controls
@@ -366,6 +372,60 @@ export function ProfileV2Screen({ userId }: Props) {
   } = useAllItems(userId, {
     publicOnly: !isOwnProfile,
   });
+
+  // Warms the Collection tab's signed image/cover URLs as soon as the
+  // underlying preview data is available — regardless of which tab is
+  // currently selected. 'posts' is the default tab (see `section` below),
+  // so HorizontalCardPreview (which calls these same two hooks with the
+  // same ids) doesn't otherwise mount — and doesn't request anything —
+  // until the user actually switches to Collection. Measured: the
+  // signed-URL Edge Function round-trip alone was ~2.3s on a cold
+  // invocation, so waiting for the tab switch to even START that request
+  // made two small preview images feel like a fresh multi-second wait on
+  // every open. Both hooks' caches are module-level and shared, so
+  // this call's only purpose is populating that cache early — its own
+  // return value is unused here; HorizontalCardPreview's later call (on
+  // tab switch) reads the by-then-likely-already-resolved cache instead of
+  // starting the request from scratch.
+  const previewGridEntries = Object.values(previewEntries).flat();
+  const { urls: previewItemUrls } = useSignedItemImages(
+    previewGridEntries
+      .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
+      .map((e) => e.item.primary_image_id),
+  );
+  useSignedFolderCovers(
+    previewGridEntries
+      .filter((e): e is Extract<CollectionGridEntry, { kind: 'folder' }> => e.kind === 'folder')
+      .map((e) => e.folder.id),
+  );
+
+  // Bounded prefetch of the actual image bytes for whatever's likely to be
+  // the FIRST visible Collection preview row(s) — deliberately capped, not
+  // "prefetch every resolved preview URL," so this can never turn into
+  // preloading a large collection just because its cover/preview URLs were
+  // already warmed above. previewGridEntries is folder-by-folder in the
+  // same order the Collection tab renders them, so the first
+  // PREVIEW_PREFETCH_LIMIT item entries approximate "what's on screen
+  // before any scrolling" without needing real viewport measurement.
+  // Same Image.prefetch() pattern profile-v2-grid.tsx/profile-v2-items-
+  // grid.tsx already use for their own (differently-bounded) grids — not a
+  // new prefetch mechanism, just applied here with a smaller, order-
+  // preserving cap instead of their full-resolved-set one.
+  const boundedPreviewItemUrls = previewGridEntries
+    .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
+    .slice(0, PREVIEW_PREFETCH_LIMIT)
+    .map((e) => (e.item.primary_image_id ? previewItemUrls.get(e.item.primary_image_id) : undefined))
+    .filter((url): url is string => !!url);
+  // Joined (not sorted — order is what makes this "the first N", and a
+  // stable string is still all useEffect needs to detect an actual change)
+  // into one dependency string so the prefetch effect only re-runs when the
+  // actual resolved URL set changes, not on every incidental re-render.
+  const boundedPreviewUrlsKey = boundedPreviewItemUrls.join(',');
+  useEffect(() => {
+    if (!boundedPreviewUrlsKey) return;
+    Image.prefetch(boundedPreviewUrlsKey.split(',')).catch(() => {});
+  }, [boundedPreviewUrlsKey]);
+
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   // The one outer scroll container for this whole screen (identity card,
   // Grails grid, sticky tab row, and every tab's body all scroll inside
@@ -460,20 +520,15 @@ export function ProfileV2Screen({ userId }: Props) {
     }, []),
   );
 
-  // Same blur-triggered reset as detailsExpanded above, for scroll
-  // position instead of expanded state — the profile route lives inside
-  // the Tabs navigator and can stay mounted (not unmounted) when switching
-  // tabs, so this can't rely on remount-on-return; the reset has to
-  // happen explicitly on blur. animated: false so the jump back to top
-  // happens off-screen, while this tab is blurred, rather than animating
-  // visibly the moment the user returns. Switching Posts/Collection/Items/
-  // Tagged via `section` doesn't blur this screen, so scroll position is
-  // untouched by that — matches detailsExpanded's own behavior.
-  useFocusEffect(
-    useCallback(() => {
-      return () => scrollRef.current?.scrollTo({ y: 0, animated: false });
-    }, []),
-  );
+  // Deliberately NOT reset on blur (unlike detailsExpanded above) — opening
+  // a folder/item and hitting Back should return to this same scroll
+  // position, not jump to top. The profile route stays mounted underneath
+  // a pushed folder/item screen (same reason detailsExpanded's own
+  // blur-reset above works the way it does), so simply not touching
+  // scrollRef here is enough: React Native already preserves a mounted
+  // ScrollView's native offset on its own. A genuinely different profile
+  // (userId actually changes) still resets to top — see the `[userId]`
+  // effect above, which isn't tied to focus/blur at all.
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({

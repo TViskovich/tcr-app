@@ -6,6 +6,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CacheCaseGridIcon } from '@/components/navigation/cachecase-grid-icon';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useAuth } from '@/lib/auth';
@@ -26,19 +27,6 @@ import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 // of the three primary bottom-nav destinations.
 const HIDDEN_TABS = new Set(['search', 'messages', 'notifications', 'collection']);
 
-// Standalone icon mark (3x3 gradient tile grid), not the wordmark —
-// rendered at its own natural colors (no tintColor; see the Tabs.Screen
-// below). assets/brand/cachecase-app-icon.png (the first asset tried here)
-// turned out to be a flat RGB PNG with NO alpha channel — verified via its
-// PNG color type (2, not 6/RGBA) — i.e. its near-black square canvas is a
-// real, opaque, baked-in background, not transparent padding, so it
-// rendered as a visible dark box behind the mark. cachecase-icon.png is a
-// genuine RGBA asset (verified: alpha 0 at all four corners, 255 at
-// center) with the same mark tightly cropped (visible content ~93%x89%
-// of its own canvas, vs. app-icon's ~79%x60%), so it needs a much smaller
-// container to read at the same visual size — see CENTER_BADGE_WIDTH/
-// HEIGHT below. Used by the visible 'profile' (CacheCase) Tabs.Screen.
-const CacheCaseIconMark = require('@/assets/brand/cachecase-icon.png');
 // Still used by the 'collection' Tabs.Screen's own tabBarIcon — that
 // screen is hidden from the bar (see HIDDEN_TABS above) and not part of
 // this artwork swap, so it keeps the wordmark it always had.
@@ -107,20 +95,10 @@ const TAB_ACCENTS: Record<string, string> = {
 // the old 'collection' featured tab went.
 const FEATURED_TAB = 'profile';
 
-// The CacheCase icon mark replaces both the icon and label for the center
-// tab, so it renders larger than the other four icons (which stay at
-// ICON_SIZE) — the vertical space the removed label used to occupy goes
-// to the icon instead. cachecase-icon.png's own canvas is 454x359
-// (≈1.265:1) with the visible mark tightly cropped inside it (~93%x89% of
-// the canvas — sampled via the asset's actual alpha channel, not
-// guessed), so — unlike the old app-icon.png asset this replaced, whose
-// opaque square needed a much bigger container to compensate for its own
-// baked-in padding — this container can be sized close to the actual
-// target visual size directly. 50x40 (matching the canvas's own aspect,
-// so contentFit="contain" doesn't letterbox) puts the visible mark at
-// roughly 35px tall, clearly bigger than ICON_SIZE (28) and comfortably
-// inside BAR_HEIGHT (68) even with the +8px Android glow-assist box (see
-// glowAssistCenter below): 40 + 8 = 48, well clear.
+// Sizing for cachecase-wordmark-nav.png (CacheCaseLogoNav), used only by the
+// hidden 'collection' Tabs.Screen's own tabBarIcon below — the visible
+// 'profile' (CacheCase) center tab now renders CacheCaseGridIcon at plain
+// ICON_SIZE instead, so it matches the other icons' footprint.
 const CENTER_BADGE_WIDTH = 50;
 const CENTER_BADGE_HEIGHT = 40;
 
@@ -483,15 +461,13 @@ export default function TabLayout() {
           options={{
             title: 'CacheCase',
             tabBarAccessibilityLabel: 'CacheCase',
-            // No tintColor — this is the standalone app-icon mark, a full
-            // RGB gradient graphic with no alpha channel, rendered at its
-            // own natural cyan/purple/pink colors always. Active vs.
-            // inactive state still reads through the same glow/shadow
-            // treatment every featured-tab render already applies (see
-            // TabBarItem's iconLitWrap/iconLit below), not a color swap.
-            tabBarIcon: () => (
-              <Image source={CacheCaseIconMark} contentFit="contain" style={styles.cacheCaseLogo} />
-            ),
+            // Outline 3x3 grid instead of the old raster mark — dormant uses
+            // the same neutral stroke as Home/Profile, active swaps to the
+            // brand's iridescent gradient stroke (see cachecase-grid-icon.tsx).
+            // The wrapping glow/shadow every featured-tab render already
+            // applies (TabBarItem's iconLitWrap/iconLit below) still layers
+            // on top of this unchanged.
+            tabBarIcon: ({ focused }) => <CacheCaseGridIcon active={focused} />,
           }}
         />
         {/* RIGHT bar button — new personal Dashboard destination

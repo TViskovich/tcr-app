@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
@@ -183,7 +183,24 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
   // from "nothing to show yet."
   const [error, setError] = useState<string | null>(null);
 
+  // Request-generation guard — load() is invoked both by this hook's own
+  // mount effect below and by external refresh() calls (e.g. a screen's
+  // own focus effect), so two overlapping calls are already possible; without
+  // this, whichever call's async chain happens to settle LAST wins every
+  // set*() below regardless of which one actually started last, so a
+  // slower, older load() could silently overwrite a newer refresh's
+  // already-correct state with stale data. Each load() call captures its
+  // own generation number at the start; isCurrent() (checked before every
+  // meaningful set* call below) is only true for whichever call is the
+  // MOST RECENT to have started — an older, still-in-flight call's own
+  // writes are simply skipped once it's no longer current, never
+  // undoing a newer call's results.
+  const loadGenerationRef = useRef(0);
+
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => generation === loadGenerationRef.current;
+
     if (!userId) {
       setLoading(false);
       return;
@@ -201,6 +218,7 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
         .is('parent_folder_id', null);
       if (publicOnly) query = query.eq('is_public', true);
       const { data, error: queryError } = await query.order('created_at', { ascending: false });
+      if (!isCurrent()) return;
 
       if (queryError) {
         console.error('[useFolders] query failed:', queryError.message, queryError);
@@ -209,6 +227,7 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
       }
 
       const resolved = await resolveCovers((data ?? []) as Folder[]);
+      if (!isCurrent()) return;
       const sorted = resolved.sort((a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
       );
@@ -233,6 +252,7 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
             .select('folder_id')
             .eq('collection_status', 'active')
             .in('folder_id', folderIds);
+          if (!isCurrent()) return;
 
           if (countsError) {
             console.error('[useFolders] item-count query failed (best-effort):', countsError.message, countsError);
@@ -244,38 +264,45 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
             setItemCounts(counts);
           }
 
-          // Item previews come first and stand entirely on their own — this
-          // is the exact same fetchPreviewItems call this hook always made,
-          // so it must keep succeeding/failing independently of anything
-          // else added later. previewEntries is derived from it immediately
-          // (items-only) so the preview is never left empty even if the
-          // child-folder enrichment below never runs or fails.
+          // Item previews and child-folder previews are both resolved
+          // BEFORE previewEntries is published — see buildPreviewEntries'
+          // own comment for the merge/sort/cap logic itself (unchanged).
+          // Previously this called setPreviewEntries once with items-only
+          // content immediately after fetchPreviewItems, then a SECOND
+          // time once fetchChildFolderPreviews (a separate, slower query)
+          // resolved — two different, real published values per load
+          // cycle. For a folder with a child folder more recent than some
+          // of its items, buildPreviewEntries' own recency sort means
+          // those two calls can select a genuinely different top-N, so the
+          // Collection tab's preview row would render one pair, then
+          // visibly replace it with a different pair moments later —
+          // wasted signed-url/image work on the transient pair, and a real
+          // visual flicker. Publishing exactly once here (after both
+          // queries have settled) removes that intermediate state
+          // entirely; child-folder fetch failure still can't suppress the
+          // item previews — see the try/catch below — it just means this
+          // single publish falls back to items-only content instead of a
+          // first, separate items-only publish.
           const itemsByFolder = await fetchPreviewItems(folderIds);
+          if (!isCurrent()) return;
           setPreviewItems(itemsByFolder);
-          setPreviewEntries(buildPreviewEntries(folderIds, itemsByFolder, {}));
 
-          // Child-folder preview entries are additional, best-effort
-          // enrichment on top of the always-reliable item previews above —
-          // isolated in their own try/catch so a failure in this newer,
-          // separate query (e.g. a transient network blip) can never
-          // suppress the item previews that already worked before nested
-          // folders existed. Previously both were awaited together via one
-          // Promise.all, which meant a rejection here discarded the
-          // already-successful item-preview result too and left every
-          // folder's preview empty — this restores independence.
+          let childFoldersByFolder: Record<string, Folder[]> = {};
           try {
-            const childFoldersByFolder = await fetchChildFolderPreviews(folderIds);
-            setPreviewEntries(buildPreviewEntries(folderIds, itemsByFolder, childFoldersByFolder));
+            childFoldersByFolder = await fetchChildFolderPreviews(folderIds);
           } catch (childFolderError) {
             console.error(
               '[useFolders] child-folder preview enrichment failed (best-effort):',
               childFolderError,
             );
           }
+          if (!isCurrent()) return;
+          setPreviewEntries(buildPreviewEntries(folderIds, itemsByFolder, childFoldersByFolder));
         } catch (enrichError) {
           console.error('[useFolders] item-count/preview enrichment failed (best-effort):', enrichError);
         }
       } else {
+        if (!isCurrent()) return;
         setItemCounts({});
         setPreviewItems({});
         setPreviewEntries({});
@@ -286,9 +313,9 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
       // messages.tsx/use-profile.ts's load(). Never touches `folders`, so
       // previously-loaded data survives a failed refresh here too.
       console.error('[useFolders] load failed:', e);
-      setError(e instanceof Error ? e.message : 'Something went wrong.');
+      if (isCurrent()) setError(e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [userId, publicOnly]);
 

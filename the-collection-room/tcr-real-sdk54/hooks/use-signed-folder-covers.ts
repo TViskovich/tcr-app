@@ -35,14 +35,37 @@ const TTL_MS = 300_000;
 // expiry, so a render never hands out a URL Storage is about to reject.
 const REFRESH_SKEW_MS = 15_000;
 
+// Same reliability policy as use-signed-item-images.ts's own (see that
+// file's matching constants for the full rationale) — added here because
+// this hook previously had NO retry/timeout at all: a single failed or
+// hung fetch just gave up silently with nothing cached, leaving the status
+// stuck at 'loading' forever for a still-mounted, rarely-remounted screen
+// (Profile's Collection tab folder previews, the motivating case) until
+// some unrelated screen happened to warm the shared cache instead.
+const RETRY_DELAYS_MS = [750, 2000];
+const RETRYABLE_STATUSES = new Set([408, 429]);
+const FAILURE_TTL_MS = 10_000;
+const FOLLOWUP_RETRY_DELAY_MS = 4_000;
+const FETCH_TIMEOUT_MS = 10_000;
+
+function isRetryableStatus(status: number | null): boolean {
+  return status === null || status >= 500 || RETRYABLE_STATUSES.has(status);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type SignedCoverStatus = 'loading' | 'ready' | 'unavailable';
 
-// url === null means the server explicitly returned `unavailable` for this
-// id (not found, not authorized, or no resolvable cover) — cached for the
-// same TTL as a success so an unauthorized/coverless folder isn't
-// re-requested on every render, while still being naturally re-checked
-// after the TTL window.
-type CacheEntry = { url: string | null; expiresAt: number };
+// url === null means either the server explicitly returned `unavailable`
+// for this id (not found, not authorized, or no resolvable cover — a
+// genuine, considered answer, cached for the same TTL as a success) or
+// every retry for a request-level failure was exhausted (isTransientFailure:
+// true, cached for the much shorter FAILURE_TTL_MS instead — see
+// use-signed-item-images.ts's matching CacheEntry comment for the full
+// rationale). The two are never conflated.
+type CacheEntry = { url: string | null; expiresAt: number; isTransientFailure?: boolean };
 
 // Module-level, in-memory only, shared across every hook instance/screen —
 // never persisted to storage or the database, cleared on app reload. Keyed
@@ -57,7 +80,14 @@ type CacheEntry = { url: string | null; expiresAt: number };
 const cache = new Map<string, CacheEntry>();
 
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
-  return !!entry && entry.expiresAt - REFRESH_SKEW_MS > Date.now();
+  if (!entry) return false;
+  // Same reasoning as use-signed-item-images.ts's own isFresh: the skew
+  // exists to preempt a real signed URL's server-side expiry and is
+  // meaningless (and actively harmful — would expire the entry the instant
+  // it's written) for a transient-failure placeholder, which already uses
+  // its own much shorter FAILURE_TTL_MS.
+  if (entry.isTransientFailure) return entry.expiresAt > Date.now();
+  return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
 }
 
 // Bumped by invalidateSignedFolderCover and read into each hook instance's
@@ -101,10 +131,19 @@ type EdgeResult =
   | { id: string; status: 'ok'; signed_url: string; expires_in: number }
   | { id: string; status: 'unavailable' };
 
-async function fetchSignedCoverBatch(
+type BatchAttempt = { ok: true; results: EdgeResult[] } | { ok: false; status: number | null };
+
+// A single attempt only — retry/backoff policy lives one level up, in
+// fetchSignedCoverBatchWithRetry. `status: null` means the request never
+// got a response at all (fetch itself threw, or it was aborted by
+// FETCH_TIMEOUT_MS — see use-signed-item-images.ts's matching comment for
+// why a timeout is needed at all: an untimed-out fetch can hang forever on
+// a cold app launch, permanently stalling this hook for the affected ids
+// with no natural retrigger).
+async function fetchSignedCoverBatchAttempt(
   folderIds: string[],
   accessToken: string | null,
-): Promise<EdgeResult[] | null> {
+): Promise<BatchAttempt> {
   const headers: Record<string, string> = {
     apikey: supabaseAnonKey,
     'Content-Type': 'application/json',
@@ -113,16 +152,22 @@ async function fetchSignedCoverBatch(
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   let res: Response;
   try {
     res = await fetch(`${supabaseUrl}/functions/v1/${EDGE_FUNCTION}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ folder_ids: folderIds }),
+      signal: controller.signal,
     });
   } catch (e) {
     if (__DEV__) console.error('[useSignedFolderCovers] batch request threw:', e);
-    return null;
+    return { ok: false, status: null };
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!res.ok) {
@@ -142,12 +187,51 @@ async function fetchSignedCoverBatch(
         batchSize: folderIds.length,
       });
     }
-    return null;
+    return { ok: false, status: res.status };
   }
 
   const json = await res.json().catch(() => null);
-  if (!json?.results) return null;
-  return json.results as EdgeResult[];
+  if (!json?.results) return { ok: false, status: res.status };
+  return { ok: true, results: json.results as EdgeResult[] };
+}
+
+// Bounded retry/backoff for a request-level failure only — never for a
+// per-folder 'unavailable' the Edge Function itself already resolved
+// successfully, which is a real, final answer on the first attempt
+// regardless of how many ids in the batch came back that way. No
+// auth-specific (401/403) re-fetch-session handling here, unlike
+// use-signed-item-images.ts's own retry wrapper — this endpoint already
+// supports anonymous callers by design (see the module comment above), so
+// a 401/403 here is far less likely to be a stale-token blip specifically;
+// it still retries as an ordinary retryable-status failure via
+// isRetryableStatus below if the status itself qualifies.
+async function fetchSignedCoverBatchWithRetry(
+  folderIds: string[],
+  accessToken: string | null,
+  isCancelled: () => boolean,
+): Promise<BatchAttempt> {
+  let attempt = 0;
+
+  for (;;) {
+    const result = await fetchSignedCoverBatchAttempt(folderIds, accessToken);
+    if (isCancelled()) return { ok: false, status: null };
+    if (result.ok) return result;
+
+    if (!isRetryableStatus(result.status) || attempt >= RETRY_DELAYS_MS.length) {
+      if (__DEV__) {
+        console.error('[useSignedFolderCovers] batch request exhausted retries:', {
+          lastStatus: result.status,
+          attempts: attempt + 1,
+          batchSize: folderIds.length,
+        });
+      }
+      return result;
+    }
+
+    await delay(RETRY_DELAYS_MS[attempt]);
+    if (isCancelled()) return { ok: false, status: null };
+    attempt += 1;
+  }
 }
 
 // Accepts folders.id values only (nulls/undefineds filtered out, safe to
@@ -198,22 +282,58 @@ export function useSignedFolderCovers(folderIds: (string | null | undefined)[]):
     if (!missing.length) return;
 
     let cancelled = false;
+    const isCancelled = () => cancelled;
 
-    (async () => {
-      for (let i = 0; i < missing.length; i += MAX_BATCH_SIZE) {
-        const batch = missing.slice(i, i + MAX_BATCH_SIZE);
-        const results = await fetchSignedCoverBatch(batch, accessToken);
+    // One pass over `idsToTry`, batched — writes a normal TTL_MS entry for
+    // every id that actually resolved, or a short-lived isTransientFailure
+    // entry for every id in a batch whose retries were exhausted. Shared by
+    // the initial pass and the single bounded follow-up pass below (same
+    // structure as use-signed-item-images.ts's own runPass).
+    async function runPass(idsToTry: string[]) {
+      for (let i = 0; i < idsToTry.length; i += MAX_BATCH_SIZE) {
+        const batch = idsToTry.slice(i, i + MAX_BATCH_SIZE);
+        const outcome = await fetchSignedCoverBatchWithRetry(batch, accessToken, isCancelled);
         if (cancelled) return;
-        if (!results) continue;
 
         const now = Date.now();
-        for (const r of results) {
-          cache.set(`${identity}:${r.id}`, {
-            url: r.status === 'ok' ? r.signed_url : null,
-            expiresAt: now + TTL_MS,
-          });
+        if (outcome.ok) {
+          for (const r of outcome.results) {
+            cache.set(`${identity}:${r.id}`, {
+              url: r.status === 'ok' ? r.signed_url : null,
+              expiresAt: now + TTL_MS,
+            });
+          }
+        } else {
+          // Every retry for this batch was exhausted (or the failure
+          // wasn't retryable at all) — cache every id in it as
+          // unavailable so status doesn't stay stuck at 'loading' forever,
+          // but marked isTransientFailure and expired after the much
+          // shorter FAILURE_TTL_MS: this was never a real "no cover"
+          // answer, just the last observation during what's most likely a
+          // brief outage.
+          for (const id of batch) {
+            cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
+          }
         }
       }
+    }
+
+    (async () => {
+      await runPass(missing);
+      if (cancelled) return;
+      bump((n) => n + 1);
+
+      // A single bounded follow-up pass for whatever's still not fresh
+      // after the pass above — lets a screen that rarely remounts/
+      // re-requests (Profile's Collection tab folder previews, the
+      // motivating case) self-correct on its own within a few seconds of a
+      // transient outage clearing. Exactly one follow-up, never a loop or
+      // repeating timer.
+      const stillMissing = missing.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      if (!stillMissing.length) return;
+      await delay(FOLLOWUP_RETRY_DELAY_MS);
+      if (cancelled) return;
+      await runPass(stillMissing);
       if (!cancelled) bump((n) => n + 1);
     })();
 

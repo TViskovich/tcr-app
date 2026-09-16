@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -28,7 +29,22 @@ type Props = {
   imageWidth: number;
   imageHeight: number;
   onUse: (uri: string) => void;
+  // Stops the ENTIRE remaining queue (a caller queuing multiple photos
+  // should keep whatever was already accepted via onUse and drop this
+  // photo plus every unprocessed one after it) — always shown, top-left.
   onCancel: () => void;
+  // Discards ONLY this one photo and lets the queue continue to the next
+  // entry — deliberately a separate callback from onCancel so a caller
+  // can never conflate "skip this photo" with "stop everything," and
+  // deliberately optional: a lone single-photo caller (nothing queued
+  // behind this one) has nothing meaningful to skip TO, so omitting this
+  // prop hides the Skip control entirely rather than rendering a button
+  // that would behave identically to Cancel.
+  onSkip?: () => void;
+  // Set by callers queuing multiple photos through this same adjuster one
+  // at a time (e.g. "Photo 2 of 4") — omitted entirely for the single-photo
+  // case, which keeps today's plain "Adjust Photo" header unchanged.
+  progressLabel?: string;
 };
 
 // Only downscale if the cropped region exceeds this on either side.
@@ -51,6 +67,14 @@ const ASPECT_RATIOS: { key: CropAspectRatioKey; label: string; ratio: number }[]
 ];
 const DEFAULT_ASPECT_RATIO: CropAspectRatioKey = '3:4';
 
+// Guaranteed gutter on both sides of the preview frame, regardless of
+// aspect ratio or device width — computed from the window width (not the
+// previewContainer's own onLayout width) so it can never end up flush
+// against the physical screen edges, where a hairline border can read as
+// clipped/asymmetric depending on device bezel and rounding. See
+// PhotoAdjuster's `frame` useMemo below.
+const PREVIEW_HORIZONTAL_PADDING = 16;
+
 // clampAxisTranslation (shared by the pinch and pan gesture handlers below)
 // now lives in lib/folder-cover-crop.ts, alongside the folder-hero cover
 // adjuster's own crop math — same geometry convention as cropToView()'s
@@ -69,7 +93,14 @@ export function PhotoAdjuster({
   imageHeight,
   onUse,
   onCancel,
+  onSkip,
+  progressLabel,
 }: Props) {
+  // Width comes from the window, not previewContainer's own onLayout —
+  // see PREVIEW_HORIZONTAL_PADDING and the `frame` useMemo below. Height
+  // still comes from onLayout (below) since the space actually available
+  // between the header and footer isn't knowable statically.
+  const { width: windowWidth } = useWindowDimensions();
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [processing, setProcessing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<CropAspectRatioKey>(DEFAULT_ASPECT_RATIO);
@@ -114,16 +145,26 @@ export function PhotoAdjuster({
   // geometry drives both, so the preview is WYSIWYG by construction.
   const frame = useMemo(() => {
     const ratioValue = ASPECT_RATIOS.find((r) => r.key === aspectRatio)!.ratio;
-    const { width: cw, height: ch } = containerSize;
-    if (cw === 0 || ch === 0) return { left: 0, top: 0, width: 0, height: 0 };
-    let w = cw;
+    const { height: ch } = containerSize;
+    if (windowWidth === 0 || ch === 0) return { left: 0, top: 0, width: 0, height: 0 };
+    // Width is capped to windowWidth - PREVIEW_HORIZONTAL_PADDING*2 (never
+    // the full edge-to-edge container width), guaranteeing a real, equal
+    // gutter on both sides at any aspect ratio or device width — the frame
+    // border can never end up flush against the physical screen edge.
+    const availableWidth = windowWidth - PREVIEW_HORIZONTAL_PADDING * 2;
+    let w = availableWidth;
     let h = w / ratioValue;
     if (h > ch) {
       h = ch;
       w = h * ratioValue;
     }
-    return { left: (cw - w) / 2, top: (ch - h) / 2, width: w, height: h };
-  }, [containerSize, aspectRatio]);
+    return { left: (windowWidth - w) / 2, top: (ch - h) / 2, width: w, height: h };
+    // Deliberately keyed on containerSize.height only, not the whole
+    // object — containerSize.width no longer feeds this calculation (see
+    // windowWidth above), so a width-only onLayout change shouldn't
+    // recompute it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerSize.height, aspectRatio, windowWidth]);
 
   // Recomputes every piece of shared geometry the gesture worklets and
   // cropToView() depend on, then re-clamps the current scale/tx/ty against
@@ -391,7 +432,10 @@ export function PhotoAdjuster({
               disabled={processing}>
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>Adjust Photo</Text>
+            <View style={styles.headerTitleWrap}>
+              <Text style={styles.headerTitle}>Adjust Photo</Text>
+              {progressLabel && <Text style={styles.headerProgress}>{progressLabel}</Text>}
+            </View>
             <TouchableOpacity
               onPress={reset}
               style={styles.headerBtn}
@@ -500,6 +544,11 @@ export function PhotoAdjuster({
                 <Text style={styles.useBtnText}>Use Photo</Text>
               )}
             </TouchableOpacity>
+            {onSkip && (
+              <TouchableOpacity onPress={onSkip} disabled={processing} hitSlop={8}>
+                <Text style={styles.skipText}>Skip this photo</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </SafeAreaView>
       </View>
@@ -528,10 +577,18 @@ const styles = StyleSheet.create({
   headerBtn: {
     minWidth: 70,
   },
+  headerTitleWrap: {
+    alignItems: 'center',
+  },
   headerTitle: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  headerProgress: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 12,
+    marginTop: 2,
   },
   cancelText: {
     color: 'rgba(255,255,255,0.60)',
@@ -542,8 +599,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'right',
   },
+  // overflow:'hidden' is the actual fix for large/tall source images drawing
+  // over the header/footer: without it, a scaled/panned child can paint
+  // outside this box's own bounds — and since this View is a later sibling
+  // than the header in `container`'s normal flex flow, that overflow paints
+  // ON TOP of the header rather than being clipped away. backgroundColor
+  // gives the viewport a deterministic fill so there's never a transparent
+  // gap while the image/frame are still being laid out.
   previewContainer: {
     flex: 1,
+    overflow: 'hidden',
+    backgroundColor: '#000',
   },
   // Dimming layer outside the crop frame — same dark tone on all 4 sides.
   maskBar: {
@@ -620,5 +686,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 17,
     fontWeight: '700',
+  },
+  skipText: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });

@@ -18,6 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemDescription } from '@/components/item-detail/item-description';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
@@ -253,6 +254,16 @@ export default function ItemDetailScreen() {
   // editMode: Move is reachable from the edit form but is its own
   // independent action/modal, not a form field.
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // Multi-photo "Add Photos" queue — handleAddPhotos below seeds this from
+  // however many library assets the user multi-selected in one pass, then
+  // PhotoAdjuster is shown once per entry (see the render below) so every
+  // photo gets the same crop/adjust step a single photo already got,
+  // rather than uploading the raw, unedited picker output. photoQueue is
+  // cleared (empty array) whenever there's nothing pending; queueIndex is
+  // only meaningful while it isn't.
+  const [photoQueue, setPhotoQueue] = useState<{ uri: string; width: number; height: number }[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [queueAdjustedUris, setQueueAdjustedUris] = useState<string[]>([]);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
   // Sender Transferred-Out Item Lifecycle — a top-level derived flag, not
@@ -378,18 +389,63 @@ export default function ItemDetailScreen() {
     });
     if (result.canceled || !result.assets.length) return;
 
-    const uris = result.assets.map((asset) => asset.uri);
+    // Queue every selected asset through PhotoAdjuster (one at a time, in
+    // the order iOS returned them) instead of uploading the raw picker
+    // output directly — see the PhotoAdjuster render below and
+    // handleQueuedPhotoAdjusted/handleQueuedPhotoSkipped.
+    setQueueAdjustedUris([]);
+    setQueueIndex(0);
+    setPhotoQueue(result.assets.map((asset) => ({ uri: asset.uri, width: asset.width, height: asset.height })));
+  }
+
+  // Runs once the queue is done — either every photo was adjusted/skipped,
+  // or the user hit Cancel partway through — and uploads whatever was
+  // actually adjusted. Can run with anywhere from 0 to photoQueue.length
+  // uris.
+  async function finishPhotoQueue(adjustedUris: string[]) {
+    setPhotoQueue([]);
+    setQueueIndex(0);
+    setQueueAdjustedUris([]);
+    if (adjustedUris.length === 0 || !currentUserId) return;
     try {
-      const { failed } = await addGalleryImages(currentUserId, uris);
+      const { failed } = await addGalleryImages(currentUserId, adjustedUris);
       if (failed > 0) {
         Alert.alert(
           'Some photos failed',
-          `${failed} of ${uris.length} photo${uris.length === 1 ? '' : 's'} could not be uploaded. The rest were added.`,
+          `${failed} of ${adjustedUris.length} photo${adjustedUris.length === 1 ? '' : 's'} could not be uploaded. The rest were added.`,
         );
       }
     } catch (e) {
       Alert.alert('Upload failed', e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     }
+  }
+
+  function handleQueuedPhotoAdjusted(uri: string) {
+    const adjusted = [...queueAdjustedUris, uri];
+    if (queueIndex + 1 < photoQueue.length) {
+      setQueueAdjustedUris(adjusted);
+      setQueueIndex(queueIndex + 1);
+    } else {
+      finishPhotoQueue(adjusted);
+    }
+  }
+
+  // Skip discards only the current photo and continues to the next one —
+  // distinct from Cancel below, which stops the whole remaining queue.
+  function handleQueuedPhotoSkipped() {
+    if (queueIndex + 1 < photoQueue.length) {
+      setQueueIndex(queueIndex + 1);
+    } else {
+      finishPhotoQueue(queueAdjustedUris);
+    }
+  }
+
+  // Cancel stops the ENTIRE remaining queue (this photo plus every
+  // unprocessed one after it) but keeps whatever was already accepted via
+  // Use Photo earlier in this same batch — never silently treated the same
+  // as Skip.
+  function handleQueueCancelled() {
+    finishPhotoQueue(queueAdjustedUris);
   }
 
   async function handleRemovePhoto(imageId: string) {
@@ -1154,6 +1210,18 @@ export default function ItemDetailScreen() {
           currentUserId={currentUserId}
           onClose={() => setShowMoveModal(false)}
           onMoved={handleItemMoved}
+        />
+      )}
+
+      {photoQueue.length > 0 && (
+        <PhotoAdjuster
+          uri={photoQueue[queueIndex].uri}
+          imageWidth={photoQueue[queueIndex].width}
+          imageHeight={photoQueue[queueIndex].height}
+          progressLabel={photoQueue.length > 1 ? `Photo ${queueIndex + 1} of ${photoQueue.length}` : undefined}
+          onUse={handleQueuedPhotoAdjusted}
+          onSkip={photoQueue.length > 1 ? handleQueuedPhotoSkipped : undefined}
+          onCancel={handleQueueCancelled}
         />
       )}
     </View>

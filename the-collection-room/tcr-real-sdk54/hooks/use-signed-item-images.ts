@@ -58,6 +58,12 @@ const RETRYABLE_STATUSES = new Set([408, 429]);
 // after the outage clears, without requiring a remount.
 const FAILURE_TTL_MS = 10_000;
 
+// Delay before the single bounded follow-up pass (see the fetch effect
+// below) — shorter than FAILURE_TTL_MS on purpose: this only needs to give
+// a brief cold-start network hiccup a moment to clear, not wait out the
+// full cache lifetime of a transient-failure entry.
+const FOLLOWUP_RETRY_DELAY_MS = 4_000;
+
 function isRetryableStatus(status: number | null): boolean {
   return status === null || status >= 500 || RETRYABLE_STATUSES.has(status);
 }
@@ -126,9 +132,25 @@ type BatchAttempt = { ok: true; results: EdgeResult[] } | { ok: false; status: n
 // A single attempt only — retry/backoff policy lives one level up, in
 // fetchSignedImageBatchWithRetry, so this stays a plain "try once and
 // report exactly what happened" primitive. `status: null` means the
-// request never got a response at all (fetch itself threw); any other
-// status is the real HTTP status Supabase's gateway or the Edge Function
-// returned.
+// request never got a response at all (fetch itself threw, or it was
+// aborted by FETCH_TIMEOUT_MS below); any other status is the real HTTP
+// status Supabase's gateway or the Edge Function returned.
+//
+// FETCH_TIMEOUT_MS exists because a cold app launch can occasionally leave
+// the very first fetch() issued hanging indefinitely at the native
+// networking layer (DNS/TLS/radio not yet warmed up) — neither resolving
+// nor rejecting. Without a timeout, that single stuck attempt silently
+// stalls this whole hook forever for the affected ids: the fetch effect's
+// deps ([key, identity]) never change on their own, so nothing ever
+// retries it, and bump() (the only thing that would force a re-render once
+// data arrives) never fires. The image only ever "fixes itself" if some
+// OTHER, unrelated mount of this same hook (e.g. opening the item directly)
+// happens to warm the shared module-level cache instead. Aborting after a
+// bounded wait turns that permanent stall into an ordinary retryable
+// failure (status: null, already handled by isRetryableStatus below) that
+// fetchSignedImageBatchWithRetry's existing backoff can actually act on.
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchSignedImageBatchAttempt(
   imageIds: string[],
   accessToken: string | null,
@@ -141,16 +163,22 @@ async function fetchSignedImageBatchAttempt(
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   let res: Response;
   try {
     res = await fetch(`${supabaseUrl}/functions/v1/${EDGE_FUNCTION}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ image_ids: imageIds }),
+      signal: controller.signal,
     });
   } catch (e) {
     if (__DEV__) console.error('[useSignedItemImages] batch request threw:', e);
     return { ok: false, status: null };
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!res.ok) {
@@ -275,9 +303,15 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
     let cancelled = false;
     const isCancelled = () => cancelled;
 
-    (async () => {
-      for (let i = 0; i < missing.length; i += MAX_BATCH_SIZE) {
-        const batch = missing.slice(i, i + MAX_BATCH_SIZE);
+    // One pass over `idsToTry`, batched — writes a normal TTL_MS entry for
+    // every id that actually resolved, or a short-lived isTransientFailure
+    // entry for every id in a batch whose retries were exhausted. Shared by
+    // the initial pass and the single bounded follow-up pass below, so the
+    // two stay identical rather than risking drift between two hand-written
+    // copies of the same logic.
+    async function runPass(idsToTry: string[]) {
+      for (let i = 0; i < idsToTry.length; i += MAX_BATCH_SIZE) {
+        const batch = idsToTry.slice(i, i + MAX_BATCH_SIZE);
         const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled);
         if (cancelled) return;
 
@@ -297,15 +331,33 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
           // shorter FAILURE_TTL_MS rather than the normal TTL_MS (see that
           // constant's comment): this was never a real authorization
           // answer, just the last observation during what's most likely a
-          // brief outage, and a screen that rarely remounts/re-requests
-          // (Profile Grails' static whole-grid batch being the motivating
-          // case) should self-correct within ~10s of the outage clearing,
-          // not stay blank for several minutes.
+          // brief outage.
           for (const id of batch) {
             cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
           }
         }
       }
+    }
+
+    (async () => {
+      await runPass(missing);
+      if (cancelled) return;
+      bump((n) => n + 1);
+
+      // A single bounded follow-up pass for whatever's still not fresh
+      // after the pass above (i.e. every in-pass retry for it was
+      // exhausted) — this is what lets a screen that rarely
+      // remounts/re-requests (Profile's Collection/Items tabs, the
+      // motivating case) self-correct on its own within a few seconds of a
+      // transient outage clearing, instead of depending on some unrelated
+      // screen happening to warm the shared cache first. Exactly one
+      // follow-up, never a loop or a repeating timer, so a genuinely
+      // down backend still gives up rather than retrying forever.
+      const stillMissing = missing.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      if (!stillMissing.length) return;
+      await delay(FOLLOWUP_RETRY_DELAY_MS);
+      if (cancelled) return;
+      await runPass(stillMissing);
       if (!cancelled) bump((n) => n + 1);
     })();
 

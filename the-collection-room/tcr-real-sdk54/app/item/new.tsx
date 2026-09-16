@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
@@ -14,17 +13,17 @@ import {
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { PendingItemGalleryManager, type PendingItemPhoto } from '@/components/item-detail/pending-item-gallery-manager';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { BackButton } from '@/components/ui/back-button';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { deriveStoragePathFromPublicUrl } from '@/lib/item-images';
-import { uploadItemImage } from '@/lib/storage';
+import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -70,6 +69,65 @@ function field(label: string, key: keyof FormState, form: FormState, update: (k:
   );
 }
 
+// Custom header bar — replaces the native Stack header entirely for this
+// screen (headerShown: false below), same reasoning already proven out in
+// app/item/[id].tsx's own ItemDetailHeaderBar: react-navigation's native
+// header wraps ANY headerLeft content in the OS's own rounded/"Liquid
+// Glass" pill chrome on iOS 18+ — confirmed on-device, and not something
+// any Stack.Screen option (headerBackTitle included — tried first, didn't
+// suppress it) can fix, since it's applied by the native header itself,
+// not by anything this app controls (see components/ui/back-button.tsx's
+// own doc comment on the same finding). Rendering the header row as plain
+// in-screen content is the only way to guarantee a bare chevron. Kept as
+// its own small local copy rather than importing item/[id].tsx's
+// (module-private) ItemDetailHeaderBar — this screen only ever needs a
+// bare left slot + centered title, no right-side action button.
+const HEADER_ROW_HEIGHT = 44;
+const HEADER_SIDE_WIDTH = 70;
+
+function AddItemHeaderBar({ insetsTop, title, left }: { insetsTop: number; title: string; left: ReactNode }) {
+  return (
+    <View style={[headerBarStyles.bar, { paddingTop: insetsTop }]}>
+      <View style={headerBarStyles.row}>
+        <View style={headerBarStyles.slotLeft}>{left}</View>
+        <Text style={headerBarStyles.title} numberOfLines={1}>
+          {title}
+        </Text>
+        {/* Empty slot matching slotLeft's width so the title is truly
+            centered on the row, not just centered between two unequal-
+            width controls (same convention as ItemDetailHeaderBar). */}
+        <View style={headerBarStyles.slotRight} />
+      </View>
+    </View>
+  );
+}
+
+const headerBarStyles = StyleSheet.create({
+  bar: {
+    backgroundColor: PV2.bg,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: HEADER_ROW_HEIGHT,
+  },
+  slotLeft: {
+    width: HEADER_SIDE_WIDTH,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  slotRight: {
+    width: HEADER_SIDE_WIDTH,
+  },
+  title: {
+    flex: 1,
+    textAlign: 'center',
+    color: PV2.textPrimary,
+    fontSize: 17,
+    fontWeight: '600',
+  },
+});
+
 export default function AddItemScreen() {
   const { session } = useAuth();
   const { folderId, folderName, mode } = useLocalSearchParams<{
@@ -93,10 +151,18 @@ export default function AddItemScreen() {
   // effect, but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });
 
-  const [imageUri, setImageUri] = useState<string | null>(null);
-  const [pendingUri, setPendingUri] = useState<string | null>(null);
-  const [pendingWidth, setPendingWidth] = useState(0);
-  const [pendingHeight, setPendingHeight] = useState(0);
+  // Photos accepted into the pending gallery (already run through
+  // PhotoAdjuster) — nothing here is uploaded until Save. See
+  // PendingItemPhoto's own comment for why this is a distinct local-only
+  // shape rather than the persisted CollectionItemImage.
+  const [pendingPhotos, setPendingPhotos] = useState<PendingItemPhoto[]>([]);
+  const [coverId, setCoverId] = useState<string | null>(null);
+  // Assets picked (library or camera) but not yet run through PhotoAdjuster
+  // — adjustQueue[adjustIndex] is whichever one PhotoAdjuster is currently
+  // showing; both reset to empty/0 once the whole queue is done or
+  // cancelled (see the queue handlers below).
+  const [adjustQueue, setAdjustQueue] = useState<{ uri: string; width: number; height: number }[]>([]);
+  const [adjustIndex, setAdjustIndex] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
@@ -129,7 +195,24 @@ export default function AddItemScreen() {
     return (value: string) => setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function pickImage() {
+  function makeLocalPhotoId(): string {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function handleAddPhotosPress() {
+    Alert.alert('Add Photos', undefined, [
+      { text: 'Take Photo', onPress: pickFromCamera },
+      { text: 'Choose from Library', onPress: pickFromLibrary },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  async function pickFromLibrary() {
+    const remaining = MAX_ITEM_IMAGES - pendingPhotos.length;
+    if (remaining <= 0) {
+      Alert.alert('Limit reached', `You can add up to ${MAX_ITEM_IMAGES} photos per item.`);
+      return;
+    }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission needed', 'Please allow access to your photo library.');
@@ -137,15 +220,92 @@ export default function AddItemScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: false,
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
       quality: 0.85,
     });
-    if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
-      setPendingUri(asset.uri);
-      setPendingWidth(asset.width);
-      setPendingHeight(asset.height);
+    if (result.canceled || !result.assets.length) return;
+
+    // Queue every selected asset through PhotoAdjuster one at a time, in
+    // the order the picker returned them — nothing is uploaded here, only
+    // staged for adjustment (see handleAdjustedPhotoUsed below).
+    setAdjustQueue(result.assets.map((asset) => ({ uri: asset.uri, width: asset.width, height: asset.height })));
+    setAdjustIndex(0);
+  }
+
+  async function pickFromCamera() {
+    const remaining = MAX_ITEM_IMAGES - pendingPhotos.length;
+    if (remaining <= 0) {
+      Alert.alert('Limit reached', `You can add up to ${MAX_ITEM_IMAGES} photos per item.`);
+      return;
     }
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your camera.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.85 });
+    if (result.canceled || !result.assets.length) return;
+    const asset = result.assets[0];
+    // One at a time, same as the library path just with a single entry —
+    // the user can tap Add Photos again afterward for another camera shot
+    // or another library batch, right up to the 10-photo cap.
+    setAdjustQueue([{ uri: asset.uri, width: asset.width, height: asset.height }]);
+    setAdjustIndex(0);
+  }
+
+  // Accept the current queue entry's adjusted photo into the pending
+  // gallery, then advance. The very first photo ever accepted becomes
+  // Cover by default (functional update: only when nothing is Cover yet).
+  function handleAdjustedPhotoUsed(adjustedUri: string) {
+    const current = adjustQueue[adjustIndex];
+    const newPhoto: PendingItemPhoto = {
+      id: makeLocalPhotoId(),
+      originalUri: current.uri,
+      adjustedUri,
+      width: current.width,
+      height: current.height,
+    };
+    setPendingPhotos((prev) => [...prev, newPhoto]);
+    setCoverId((prev) => prev ?? newPhoto.id);
+    advanceAdjustQueue();
+  }
+
+  // Skip discards only the current photo (never added to pendingPhotos)
+  // and continues to the next queued one.
+  function handleAdjustedPhotoSkipped() {
+    advanceAdjustQueue();
+  }
+
+  function advanceAdjustQueue() {
+    if (adjustIndex + 1 < adjustQueue.length) {
+      setAdjustIndex(adjustIndex + 1);
+    } else {
+      setAdjustQueue([]);
+      setAdjustIndex(0);
+    }
+  }
+
+  // Cancel stops the whole remaining queue (this photo plus every
+  // unprocessed one after it) — whatever was already accepted via Use
+  // Photo earlier in this same batch stays in pendingPhotos untouched.
+  function handleAdjustQueueCancelled() {
+    setAdjustQueue([]);
+    setAdjustIndex(0);
+  }
+
+  function handleSetCover(id: string) {
+    setCoverId(id);
+  }
+
+  // Removing the Cover photo promotes the first remaining pending photo
+  // (matching remove_item_image's own "promote sort_order 0" convention
+  // for persisted galleries — see lib/item-images.ts); Cover becomes null
+  // if no photos remain.
+  function handleRemovePendingPhoto(id: string) {
+    const next = pendingPhotos.filter((p) => p.id !== id);
+    setPendingPhotos(next);
+    if (coverId === id) setCoverId(next[0]?.id ?? null);
   }
 
   async function handleSubmit() {
@@ -153,27 +313,23 @@ export default function AddItemScreen() {
     // Collections-level entry point has no folder assigned yet, so nothing
     // may be persisted from it regardless of how handleSubmit is reached.
     if (isPreviewOnly) return;
-    if (!imageUri) {
-      Alert.alert('Image required', 'Please select an image for this item.');
+    if (pendingPhotos.length === 0) {
+      Alert.alert('Photo required', 'Please add at least one photo for this item.');
       return;
     }
     if (!session?.user?.id) return;
+    const userId = session.user.id;
 
     setLoading(true);
     try {
-      let imageUrl: string;
-      try {
-        imageUrl = await uploadItemImage(imageUri, session.user.id);
-      } catch {
-        throw new Error('Image upload failed. Check your connection and try again.');
-      }
-
+      // Item row first, with no image_url yet (nullable — see
+      // types/index.ts's CollectionItem) — nothing is uploaded until the
+      // item itself exists, so a failure here leaves nothing to clean up.
       const { data: item, error: itemError } = await supabase
         .from('collection_items')
         .insert({
           folder_id: folderId,
-          user_id: session.user.id,
-          image_url: imageUrl,
+          user_id: userId,
           title: form.title.trim() || null,
           player: form.player.trim() || null,
           team: form.team.trim() || null,
@@ -189,26 +345,45 @@ export default function AddItemScreen() {
         .select()
         .single();
 
-      if (itemError) throw new Error('Failed to save item. Please try again.');
+      if (itemError || !item) throw new Error('Failed to save item. Please try again.');
 
-      // Seeds the new item's gallery with its cover photo as the primary
-      // row, so it's immediately a real gallery-backed item rather than
-      // relying on the edit page's legacy-materialization fallback the
-      // first time someone opens it. Best-effort — the item itself is
-      // already saved at this point, so a failure here shouldn't block
-      // the save; the fallback still covers this item if it happens.
-      if (item) {
-        const { error: galleryError } = await supabase.from('collection_item_images').insert({
-          item_id: item.id,
-          user_id: session.user.id,
-          image_url: imageUrl,
-          storage_path: deriveStoragePathFromPublicUrl(imageUrl, 'item-images'),
-          sort_order: 0,
-          is_primary: true,
-        });
-        if (galleryError) {
-          console.error('[handleSubmit] gallery row insert failed:', galleryError.message);
-        }
+      // Cover first, then the rest in their existing pending order —
+      // addItemImages marks array index 0 primary for a brand-new item's
+      // first-ever batch and always ends up at sort_order 0 (matching
+      // set_primary_item_image/reorder_item_images' own "primary is always
+      // sort_order 0" convention — see lib/item-images.ts), so ordering the
+      // upload list this way is what makes the chosen Cover actually land
+      // as the persisted primary/sort_order-0 row.
+      const orderedUris = [
+        ...pendingPhotos.filter((p) => p.id === coverId).map((p) => p.adjustedUri),
+        ...pendingPhotos.filter((p) => p.id !== coverId).map((p) => p.adjustedUri),
+      ];
+
+      // Reuses the exact same upload+insert+reconciliation path Edit Item's
+      // "Add Photos" already relies on (see lib/item-images.ts's
+      // addItemImages) — parallel per-photo upload, one atomic batch
+      // INSERT for the DB rows, and safe Storage cleanup on a definitive or
+      // reconciled-ambiguous rejection. Nothing new invented for the
+      // Storage/Postgres boundary itself.
+      const { added, failed } = await addItemImages(item.id, userId, orderedUris);
+
+      if (added.length === 0) {
+        // Every upload failed — this is the one failure mode addItemImages
+        // can't already guard against on its own for a BRAND NEW item
+        // (Edit Item never hits this, since that item already had content
+        // before "Add Photos" was even tapped): a fresh item with zero
+        // photos and a null image_url. Explicit, targeted compensating
+        // delete — not a fake cross-system transaction — so this never
+        // leaves a photo-less item behind.
+        await supabase.from('collection_items').delete().eq('id', item.id);
+        throw new Error('Could not upload any photos. Please try again.');
+      }
+
+      if (failed > 0) {
+        Alert.alert(
+          'Some photos failed',
+          `${failed} of ${orderedUris.length} photo${orderedUris.length === 1 ? '' : 's'} could not be uploaded. The item was created with the rest.`,
+        );
       }
 
       // No back history when this screen was deep-linked, reloaded directly,
@@ -228,9 +403,23 @@ export default function AddItemScreen() {
     }
   }
 
+  // Matches handleSubmit's own existing no-back-history fallback below
+  // (folderId known → back to that folder; otherwise the Collection tab) —
+  // same destination either way, just reached via Back instead of Save.
+  const headerTitle = folderName ? `Add to ${folderName}` : 'Add Item';
+
   return (
     <>
-      <Stack.Screen options={{ title: folderName ? `Add to ${folderName}` : 'Add Item' }} />
+      <Stack.Screen options={{ headerShown: false }} />
+      <AddItemHeaderBar
+        insetsTop={insets.top}
+        title={headerTitle}
+        left={
+          <BackButton
+            fallbackHref={folderId ? { pathname: '/collection/[folderId]', params: { folderId } } : '/collection'}
+          />
+        }
+      />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? undefined : 'height'}>
@@ -243,17 +432,14 @@ export default function AddItemScreen() {
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
-          {/* Image picker */}
-          <Pressable onPress={pickImage} style={styles.imagePicker}>
-            {imageUri ? (
-              <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
-            ) : (
-              <View style={styles.imagePlaceholder}>
-                <Text style={styles.imagePlaceholderIcon}>📷</Text>
-                <Text style={styles.imagePlaceholderText}>Tap to select image</Text>
-              </View>
-            )}
-          </Pressable>
+          <PendingItemGalleryManager
+            photos={pendingPhotos}
+            coverId={coverId}
+            maxImages={MAX_ITEM_IMAGES}
+            onAdd={handleAddPhotosPress}
+            onRemove={handleRemovePendingPhoto}
+            onSetCover={handleSetCover}
+          />
 
           {/* Card Details */}
           <Text style={styles.sectionHeader}>Card Details</Text>
@@ -330,16 +516,15 @@ export default function AddItemScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {pendingUri && (
+      {adjustQueue.length > 0 && (
         <PhotoAdjuster
-          uri={pendingUri}
-          imageWidth={pendingWidth}
-          imageHeight={pendingHeight}
-          onUse={(uri) => {
-            setImageUri(uri);
-            setPendingUri(null);
-          }}
-          onCancel={() => setPendingUri(null)}
+          uri={adjustQueue[adjustIndex].uri}
+          imageWidth={adjustQueue[adjustIndex].width}
+          imageHeight={adjustQueue[adjustIndex].height}
+          progressLabel={adjustQueue.length > 1 ? `Photo ${adjustIndex + 1} of ${adjustQueue.length}` : undefined}
+          onUse={handleAdjustedPhotoUsed}
+          onSkip={adjustQueue.length > 1 ? handleAdjustedPhotoSkipped : undefined}
+          onCancel={handleAdjustQueueCancelled}
         />
       )}
     </>
@@ -376,28 +561,6 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 40,
-  },
-  imagePicker: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 24,
-    alignSelf: 'center',
-    width: '60%',
-    aspectRatio: 5 / 7,
-    backgroundColor: PV2.collectorPanelBg,
-  },
-  imagePlaceholder: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  imagePlaceholderIcon: {
-    fontSize: 36,
-  },
-  imagePlaceholderText: {
-    fontSize: 14,
-    color: PV2.textSecondary,
   },
   sectionHeader: {
     fontSize: 12,
