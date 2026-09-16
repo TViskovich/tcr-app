@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import {
+  FOLDER_COVERS_CACHE_DOMAIN,
+  mergePersistedSignedUrlEntries,
+  readPersistedSignedUrlMap,
+  removePersistedSignedUrlEntry,
+} from '@/lib/persisted-signed-url-cache';
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-folder-cover-signed-url Edge Function
@@ -8,18 +14,22 @@ import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 // currently-requested folders.id through that function, caches results in
 // memory for the same TTL the backend issues (300s), and re-fetches only
 // what's missing or stale. Never accepts or derives a storage_path, never
-// calls Storage's createSignedUrl() directly, never persists a signed URL,
-// and never reads/trusts folder.cover_image_url — all authorization and
-// cover resolution happens server-side, every time; this hook only owns
-// caching/batching/refresh.
+// calls Storage's createSignedUrl() directly, and never reads/trusts
+// folder.cover_image_url — all authorization and cover resolution happens
+// server-side, every time; this hook only owns caching/batching/refresh
+// (now across both memory AND a persisted AsyncStorage layer — see the
+// private-image caching upgrade, Phase 1).
 //
 // Deliberately duplicates (rather than shares via a common internal
-// module) the direct-fetch/identity-scoped-cache design from
-// hooks/use-signed-item-images.ts: that hook is already runtime-validated
-// against a proven auth-transport bug (Phase 3C), and this one resolves a
-// different id space against a different table server-side — folding them
-// into one shared abstraction now would mean touching validated code to
-// support an unvalidated caller, not a size reduction worth that risk.
+// module) the direct-fetch/identity-scoped-cache/in-flight-dedupe design
+// from hooks/use-signed-item-images.ts: that hook is already
+// runtime-validated against a proven auth-transport bug (Phase 3C), and
+// this one resolves a different id space against a different table
+// server-side — folding them into one shared abstraction now would mean
+// touching validated code to support an unvalidated caller, not a size
+// reduction worth that risk. Only the genuinely-new, low-risk AsyncStorage
+// plumbing (lib/persisted-signed-url-cache.ts) is actually shared between
+// the two.
 //
 // Uses a direct fetch(), not supabase.functions.invoke() — see
 // use-signed-item-images.ts's module comment for the full rationale
@@ -29,10 +39,17 @@ import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 // genuinely invalid user JWT).
 
 const EDGE_FUNCTION = 'get-folder-cover-signed-url';
+// The persisted-cache domain for this hook (lib/persisted-signed-url-cache.ts)
+// — exported from there, not declared locally, specifically so lib/auth.tsx
+// can purge it on logout without importing this hook file (see that
+// constant's own comment for the circular-import reason why).
+const CACHE_DOMAIN = FOLDER_COVERS_CACHE_DOMAIN;
 const MAX_BATCH_SIZE = 50;
 const TTL_MS = 300_000;
-// Treat a cached entry as stale slightly before its real server-side
-// expiry, so a render never hands out a URL Storage is about to reject.
+// Treat a cached entry as due for a (background) refresh slightly before
+// its real server-side expiry — does NOT gate whether a still-valid entry
+// is SERVED (see isUsable below), only whether the effect fires a quiet
+// refetch for it.
 const REFRESH_SKEW_MS = 15_000;
 
 // Same reliability policy as use-signed-item-images.ts's own (see that
@@ -64,30 +81,48 @@ export type SignedCoverStatus = 'loading' | 'ready' | 'unavailable';
 // every retry for a request-level failure was exhausted (isTransientFailure:
 // true, cached for the much shorter FAILURE_TTL_MS instead — see
 // use-signed-item-images.ts's matching CacheEntry comment for the full
-// rationale). The two are never conflated.
+// rationale). The two are never conflated, and only the former is ever
+// persisted to disk.
 type CacheEntry = { url: string | null; expiresAt: number; isTransientFailure?: boolean };
 
-// Module-level, in-memory only, shared across every hook instance/screen —
-// never persisted to storage or the database, cleared on app reload. Keyed
-// by `${identity}:${folderId}`, not just folderId — identity is the
+// Module-level, in-memory first-level cache, shared across every hook
+// instance/screen — cleared on app reload, but now backed by a persisted
+// AsyncStorage layer (see the fetch effect below) that survives one.
+// Keyed by `${identity}:${folderId}`, not just folderId — identity is the
 // caller's user id, or the literal string 'anon' with no session. This is
 // what keeps an anonymous denial (e.g. a request that legitimately ran
 // before session restoration finished) from ever being read back as the
 // answer for the same folder once the real owner's session is available,
 // and prevents any cross-user reuse of a signed URL that was only ever
 // authorized for one specific caller — same design and rationale as
-// hooks/use-signed-item-images.ts's cache.
+// hooks/use-signed-item-images.ts's cache. The persisted layer mirrors this
+// exact same identity-scoping (see lib/persisted-signed-url-cache.ts's
+// storage key).
 const cache = new Map<string, CacheEntry>();
 
+// Separate from `cache` above on purpose (Phase 1 in-flight dedupe) —
+// tracks signing work currently IN PROGRESS, not completed results. Same
+// design/rationale as use-signed-item-images.ts's own `inFlight` map.
+const inFlight = new Map<string, Promise<void>>();
+
+// Gates whether the EFFECT below fires a (possibly background) refetch —
+// unchanged from before Phase 1 (skew-subtracted for a real entry, ignored
+// for a transient-failure placeholder — see use-signed-item-images.ts's
+// matching isFresh comment for the full rationale).
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
-  // Same reasoning as use-signed-item-images.ts's own isFresh: the skew
-  // exists to preempt a real signed URL's server-side expiry and is
-  // meaningless (and actively harmful — would expire the entry the instant
-  // it's written) for a transient-failure placeholder, which already uses
-  // its own much shorter FAILURE_TTL_MS.
   if (entry.isTransientFailure) return entry.expiresAt > Date.now();
   return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
+}
+
+// Gates whether the RENDER-time read below actually SERVES an entry — no
+// skew subtracted, just real expiry. Phase 1 near-expiry fix: an entry
+// inside the refresh-skew window keeps rendering exactly as it did a
+// moment ago while isFresh (above) independently tells the effect to
+// quietly refresh it in the background — see
+// use-signed-item-images.ts's matching isUsable comment.
+function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
+  return !!entry && entry.expiresAt > Date.now();
 }
 
 // Bumped by invalidateSignedFolderCover and read into each hook instance's
@@ -109,20 +144,25 @@ function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
 let version = 0;
 const versionListeners = new Set<() => void>();
 
-// Drops one folder's cached entry for one specific caller identity and
-// notifies every mounted useSignedFolderCovers instance to re-check its
-// fetch effect, so the next render treats it as missing and re-fetches
-// immediately rather than serving a stale cached result (up to TTL_MS old)
-// or getting stuck with none at all — see `version` above for why the
-// cache.delete alone was never sufficient. Only ever meaningful for the
-// owner's own identity — cover edits are owner-only, so `identity` here
-// should always be the current user's own id, never 'anon' or another
+// Drops one folder's cached entry (memory AND persisted) for one specific
+// caller identity and notifies every mounted useSignedFolderCovers instance
+// to re-check its fetch effect, so the next render treats it as missing
+// and re-fetches immediately rather than serving a stale cached result (up
+// to TTL_MS old) or getting stuck with none at all — see `version` above
+// for why the cache.delete alone was never sufficient. Only ever meaningful
+// for the owner's own identity — cover edits are owner-only, so `identity`
+// here should always be the current user's own id, never 'anon' or another
 // user's. Exported rather than folded into a "refresh" mutation on the hook
 // itself, since the caller (a folder-detail screen) already knows exactly
 // which folder just changed and doesn't need this hook's full batching
-// machinery just to invalidate one entry.
+// machinery just to invalidate one entry. The persisted-cache deletion here
+// is best-effort/fire-and-forget — the in-memory delete + version bump
+// alone are what guarantee the next render/effect actually refetches;
+// AsyncStorage merely needs to stop returning the stale entry to some
+// FUTURE cold launch, not to this one.
 export function invalidateSignedFolderCover(folderId: string, identity: string) {
   cache.delete(`${identity}:${folderId}`);
+  removePersistedSignedUrlEntry(CACHE_DOMAIN, identity, folderId).catch(() => {});
   version++;
   for (const listener of versionListeners) listener();
 }
@@ -278,47 +318,106 @@ export function useSignedFolderCovers(folderIds: (string | null | undefined)[]):
 
   useEffect(() => {
     if (!ids.length) return;
-    const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
-    if (!missing.length) return;
 
     let cancelled = false;
     const isCancelled = () => cancelled;
 
-    // One pass over `idsToTry`, batched — writes a normal TTL_MS entry for
-    // every id that actually resolved, or a short-lived isTransientFailure
-    // entry for every id in a batch whose retries were exhausted. Shared by
-    // the initial pass and the single bounded follow-up pass below (same
-    // structure as use-signed-item-images.ts's own runPass).
-    async function runPass(idsToTry: string[]) {
-      for (let i = 0; i < idsToTry.length; i += MAX_BATCH_SIZE) {
-        const batch = idsToTry.slice(i, i + MAX_BATCH_SIZE);
-        const outcome = await fetchSignedCoverBatchWithRetry(batch, accessToken, isCancelled);
-        if (cancelled) return;
+    // One pass over `idsToTry`: ids already being fetched by another
+    // in-flight call just await that shared promise (no new request); the
+    // rest are grouped into fresh batches, each registered against its own
+    // promise in `inFlight` for the duration of that request. Writes a
+    // normal TTL_MS entry (persisted to AsyncStorage too) for every id
+    // that actually resolved, or a short-lived isTransientFailure entry
+    // (memory only, never persisted) for every id in a batch whose
+    // retries were exhausted. Shared by the initial pass and the single
+    // bounded follow-up pass below (same structure as
+    // use-signed-item-images.ts's own runPass).
+    async function runPass(idsToTry: string[]): Promise<void> {
+      const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${id}`));
+      const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${id}`));
 
-        const now = Date.now();
-        if (outcome.ok) {
-          for (const r of outcome.results) {
-            cache.set(`${identity}:${r.id}`, {
-              url: r.status === 'ok' ? r.signed_url : null,
-              expiresAt: now + TTL_MS,
-            });
+      const newBatchPromises: Promise<void>[] = [];
+      for (let i = 0; i < toBatch.length; i += MAX_BATCH_SIZE) {
+        const batch = toBatch.slice(i, i + MAX_BATCH_SIZE);
+        const batchPromise: Promise<void> = (async () => {
+          try {
+            const outcome = await fetchSignedCoverBatchWithRetry(batch, accessToken, isCancelled);
+            if (cancelled) return;
+
+            const now = Date.now();
+            if (outcome.ok) {
+              const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
+              for (const r of outcome.results) {
+                const entry: CacheEntry = {
+                  url: r.status === 'ok' ? r.signed_url : null,
+                  expiresAt: now + TTL_MS,
+                };
+                cache.set(`${identity}:${r.id}`, entry);
+                toPersist[r.id] = entry;
+              }
+              mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
+            } else {
+              // Every retry for this batch was exhausted (or the failure
+              // wasn't retryable at all) — cache every id in it as
+              // unavailable so status doesn't stay stuck at 'loading'
+              // forever, but marked isTransientFailure and expired after
+              // the much shorter FAILURE_TTL_MS: this was never a real "no
+              // cover" answer, just the last observation during what's
+              // most likely a brief outage — and, per the type's own
+              // comment, NEVER persisted to AsyncStorage.
+              for (const id of batch) {
+                cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
+              }
+            }
+          } finally {
+            // Unconditional delete, not an identity-compare-then-delete —
+            // by construction, no other pass can ever reassign one of
+            // THIS batch's ids in `inFlight` while this batch is still
+            // pending: a concurrent pass sees `inFlight.has(id)` already
+            // true (set right after this promise was created, below) and
+            // awaits this same promise instead of registering its own, so
+            // nothing else can be sitting under these keys when this
+            // batch settles.
+            for (const id of batch) {
+              inFlight.delete(`${identity}:${id}`);
+            }
           }
-        } else {
-          // Every retry for this batch was exhausted (or the failure
-          // wasn't retryable at all) — cache every id in it as
-          // unavailable so status doesn't stay stuck at 'loading' forever,
-          // but marked isTransientFailure and expired after the much
-          // shorter FAILURE_TTL_MS: this was never a real "no cover"
-          // answer, just the last observation during what's most likely a
-          // brief outage.
-          for (const id of batch) {
-            cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
-          }
-        }
+        })();
+        newBatchPromises.push(batchPromise);
+        for (const id of batch) inFlight.set(`${identity}:${id}`, batchPromise);
       }
+
+      await Promise.all([
+        ...newBatchPromises,
+        ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${id}`) ?? Promise.resolve()),
+      ]);
     }
 
     (async () => {
+      // Layer 1, step 2: hydrate the in-memory cache from the persisted
+      // AsyncStorage layer for any id this hook instance doesn't already
+      // have in memory — before deciding what's actually missing. See
+      // use-signed-item-images.ts's matching comment for the full
+      // rationale (only ever fills a gap, never overwrites an in-memory
+      // entry, skips an already-expired persisted entry entirely).
+      const needsHydration = ids.filter((id) => !cache.has(`${identity}:${id}`));
+      if (needsHydration.length) {
+        const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
+        if (cancelled) return;
+        let hydratedAny = false;
+        for (const id of needsHydration) {
+          const entry = persisted[id];
+          if (entry && entry.expiresAt > Date.now()) {
+            cache.set(`${identity}:${id}`, { url: entry.url, expiresAt: entry.expiresAt });
+            hydratedAny = true;
+          }
+        }
+        if (hydratedAny) bump((n) => n + 1);
+      }
+
+      const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      if (!missing.length) return;
+
       await runPass(missing);
       if (cancelled) return;
       bump((n) => n + 1);
@@ -356,7 +455,7 @@ export function useSignedFolderCovers(folderIds: (string | null | undefined)[]):
   const statuses = new Map<string, SignedCoverStatus>();
   for (const id of ids) {
     const entry = cache.get(`${identity}:${id}`);
-    if (isFresh(entry)) {
+    if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
         statuses.set(id, 'ready');

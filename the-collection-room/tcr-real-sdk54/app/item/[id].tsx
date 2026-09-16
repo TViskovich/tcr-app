@@ -22,7 +22,7 @@ import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemDescription } from '@/components/item-detail/item-description';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
-import { buildItemImageList, ItemImageCarousel } from '@/components/item-detail/item-image-carousel';
+import { buildItemImageList, ItemImageCarousel, type CarouselImage } from '@/components/item-detail/item-image-carousel';
 import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gallery-manager';
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
@@ -798,26 +798,50 @@ export default function ItemDetailScreen() {
 
   // View-mode carousel now renders through the signed-delivery Edge
   // Function (item-images beta privacy hardening, Phase 3) instead of each
-  // row's raw public image_url — one batched call for the whole gallery.
-  // Falls back to the legacy single image_url only when the gallery
-  // genuinely has no rows yet (a rare gap Phase 1A's backfill — and
-  // enterEdit's self-heal — mostly close); that narrow fallback still has
-  // no collection_item_images.id to sign against, so it's left on the raw
-  // URL deliberately, not a general escape hatch. `unavailable`/still-
-  // loading gallery images are simply dropped from the list rather than
-  // falling back to their own raw URL, so this surface actually exercises
-  // authorized delivery instead of masking it.
+  // row's raw public image_url — one batched call for the whole gallery,
+  // fired the moment `galleryImages` itself is known (see useItemImages),
+  // never waiting on anything else first.
   const galleryImageIds = useMemo(() => galleryImages.map((img) => img.id), [galleryImages]);
-  const { urls: signedGalleryUrls } = useSignedItemImages(galleryImageIds);
-  const galleryImageUrls = useMemo(
-    () =>
-      galleryImages.length > 0
-        ? galleryImages
-            .map((img) => signedGalleryUrls.get(img.id))
-            .filter((url): url is string => !!url)
-        : buildItemImageList([item?.image_url]),
-    [galleryImages, signedGalleryUrls, item?.image_url],
-  );
+  const { urls: signedGalleryUrls, statuses: signedGalleryStatuses } = useSignedItemImages(galleryImageIds);
+
+  // Gallery STRUCTURE vs. IMAGE AVAILABILITY are deliberately separate here.
+  // One carouselImages entry per gallery row, ALWAYS — never filtered down
+  // to only the rows whose signed URL has resolved so far. That filtering
+  // used to be exactly what made a 2-photo item render as a single,
+  // non-paginated image for however long signing took: galleryImageUrls
+  // (the old plain string[]) only grew to length 2 once BOTH signed URLs
+  // were in, so ItemImageCarousel never even learned a second photo
+  // existed until then. Now `carouselImages.length` reflects the gallery
+  // row count immediately; a still-unresolved row just carries `uri:
+  // undefined` and its own real `status` ('loading' or 'unavailable', read
+  // straight off useSignedItemImages' existing statuses map — no second
+  // signing call) and fills in, in place, once its own url resolves — the
+  // array's own length/order never changes at that point, only that one
+  // entry's `uri`/`status`. This is also what lets ItemImageCarousel show
+  // an honest "still loading" spinner instead of "No image" for a slide
+  // that simply hasn't resolved yet (see CarouselImage's own status
+  // comment in item-image-carousel.tsx). Falls back to the legacy single
+  // image_url only when the gallery genuinely has no rows yet (a rare gap
+  // Phase 1A's backfill — and enterEdit's self-heal — mostly close); that
+  // narrow fallback has no real collection_item_images.id (a stable
+  // synthetic one is used purely as a React/FlatList key) and no signing
+  // status at all — it's either a real, permanent uri or nothing, so
+  // `status` is left unset there, which ItemImageCarousel already treats
+  // as "not loading" (i.e. genuinely unavailable, never a fake spinner).
+  const carouselImages: CarouselImage[] = useMemo(() => {
+    if (galleryImages.length > 0) {
+      return galleryImages.map((img) => ({
+        id: img.id,
+        uri: signedGalleryUrls.get(img.id),
+        status: signedGalleryStatuses.get(img.id),
+      }));
+    }
+    return buildItemImageList([item?.image_url]).map((uri, i) => ({
+      id: `legacy-${item?.id ?? 'unknown'}-${i}`,
+      uri,
+    }));
+  }, [galleryImages, signedGalleryUrls, signedGalleryStatuses, item?.image_url, item?.id]);
+
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 
   if (fetching) {
@@ -944,7 +968,7 @@ export default function ItemDetailScreen() {
               onReorder={handleReorderPhotos}
             />
           ) : (
-            <ItemImageCarousel images={galleryImageUrls} />
+            <ItemImageCarousel images={carouselImages} />
           )}
 
           {editMode ? (

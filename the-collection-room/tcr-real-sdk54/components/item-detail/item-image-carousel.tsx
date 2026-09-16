@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -16,6 +17,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import type { SignedImageStatus } from '@/hooks/use-signed-item-images';
 
 // Edge-to-edge, square-cornered Instagram-post-style presentation — no
 // outer horizontal padding, no radius, no frame border/shadow. Named
@@ -70,8 +72,42 @@ export function buildItemImageList(candidates: (string | null | undefined)[]): s
   return images;
 }
 
+// One carousel slide. `uri` is intentionally optional/absent-able — a slide
+// exists (and is counted, keyed, and paged to) the moment its gallery row is
+// known, independent of whether its signed URL has resolved yet. `id` is
+// the immutable collection_item_images.id (or a stable synthetic id for the
+// legacy single-image fallback — see app/item/[id].tsx's own carouselImages
+// memo), used as the FlatList/dot key so a slide's `uri` resolving in place
+// never changes its React key — that's what keeps page position/scroll
+// state intact instead of the list treating a newly-resolved image as a
+// brand-new item.
+export type CarouselImage = {
+  id: string;
+  uri?: string;
+  // hooks/use-signed-item-images.ts's own SignedImageStatus, reused
+  // directly (not a redeclared subset) so this can never drift from what
+  // that hook's `statuses` map actually returns. Only 'loading' changes
+  // rendering here — it's the one value that shows a spinner placeholder
+  // instead of "No image" (see ZoomableItemImageProps' own status comment
+  // below); 'ready' never actually reaches that decision in practice since
+  // it only ever accompanies a truthy `uri`, which is checked first.
+  // Meaningless once `uri` itself is set. Omit it (or pass 'unavailable')
+  // for anything that was never going through signing in the first place —
+  // e.g. the legacy single-image fallback in app/item/[id].tsx's own
+  // carouselImages memo, which has no pending async state to represent: it
+  // either already has a real uri or it never will.
+  status?: SignedImageStatus;
+};
+
 type ZoomableItemImageProps = {
   uri: string | undefined;
+  // See CarouselImage's own comment above — 'loading' is the only value
+  // that renders the spinner placeholder; anything else ('ready',
+  // 'unavailable', or simply omitted) renders "No image". Defaulting a
+  // missing status to "No image" rather than a spinner is deliberate: this
+  // is never allowed to show a fake, permanently-spinning loading state
+  // for a slide that was never actually going to resolve.
+  status?: SignedImageStatus;
   pageWidth: number;
   index: number;
   totalImages: number;
@@ -100,7 +136,15 @@ type ZoomableItemImageProps = {
 // outer layer: putting overflow:hidden on the same view being scaled would
 // scale the clip boundary right along with the content, letting a zoomed
 // image spill past the card's edges instead of staying contained by it.
-function ZoomableItemImage({ uri, pageWidth, index, totalImages, onPress, onZoomChange }: ZoomableItemImageProps) {
+function ZoomableItemImage({
+  uri,
+  status,
+  pageWidth,
+  index,
+  totalImages,
+  onPress,
+  onZoomChange,
+}: ZoomableItemImageProps) {
   const pageHeight = pageWidth / IMAGE_ASPECT_RATIO;
 
   const scale = useSharedValue(1);
@@ -219,6 +263,10 @@ function ZoomableItemImage({ uri, pageWidth, index, totalImages, onPress, onZoom
             accessibilityLabel={accessibilityLabel}>
             {uri ? (
               <Image source={{ uri }} style={styles.image} contentFit="cover" transition={200} />
+            ) : status === 'loading' ? (
+              <View style={[styles.image, styles.placeholder]}>
+                <ActivityIndicator size="small" color={PV2.textTertiary} />
+              </View>
             ) : (
               <View style={[styles.image, styles.placeholder]}>
                 <Text style={styles.placeholderText}>No image</Text>
@@ -232,7 +280,7 @@ function ZoomableItemImage({ uri, pageWidth, index, totalImages, onPress, onZoom
 }
 
 type Props = {
-  images: string[];
+  images: CarouselImage[];
   // Reserved for a future full-screen viewer — no implementation yet.
   // Receives the index of the page that was tapped so a future viewer can
   // open at the right spot.
@@ -245,6 +293,14 @@ type Props = {
 // collection_item_images table) — images are always ordered primary-first.
 // Single-image and legacy (no gallery rows yet) items fall through to the
 // plain single-image path below with no dot indicator.
+//
+// `images` reflects gallery STRUCTURE, not URL availability — the caller
+// (app/item/[id].tsx) includes one entry per gallery row immediately, even
+// before that row's own signed URL has resolved (see CarouselImage's own
+// comment above). This component never waits for every `uri` to be ready
+// before deciding how many pages/dots to render; an entry with no `uri` yet
+// simply renders ZoomableItemImage's existing placeholder until one arrives
+// on a later render, in place, under the same `id` key.
 export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const pageWidth = windowWidth - HERO_OUTER_PADDING * 2;
@@ -269,7 +325,8 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
     return (
       <View style={styles.wrap}>
         <ZoomableItemImage
-          uri={images[0]}
+          uri={images[0]?.uri}
+          status={images[0]?.status}
           pageWidth={pageWidth}
           index={0}
           totalImages={images.length}
@@ -285,7 +342,12 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
     <View style={styles.wrap}>
       <FlatList
         data={images}
-        keyExtractor={(uri, index) => `${uri}-${index}`}
+        // Keyed by the immutable gallery-row id, NOT by uri/index — a
+        // slide's `uri` resolving from undefined to a real signed URL must
+        // never change its key, or React (and the FlatList's own scroll/
+        // page-position bookkeeping) would treat the resolved slide as a
+        // brand-new list item instead of the same one filling in.
+        keyExtractor={(image) => image.id}
         horizontal
         pagingEnabled
         scrollEnabled={!zoomedActive}
@@ -293,9 +355,27 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
         initialScrollIndex={clampedInitial}
         getItemLayout={(_, index) => ({ length: pageWidth, offset: pageWidth * index, index })}
         onMomentumScrollEnd={handleMomentumEnd}
+        // Bounded adjacent-slide render window — current + next (+
+        // previous once scrolled) — rather than relying on FlatList's own
+        // much larger default (initialNumToRender: 10, windowSize: 21
+        // "screens"). That default happens to render this app's entire
+        // gallery today only because MAX_ITEM_IMAGES (lib/item-images.ts)
+        // is capped at 10, not because anything here actually bounds it.
+        // windowSize is measured in "screens" of the list's own viewport
+        // (here, one page = one screen-width, since paging is enabled), so
+        // 3 covers roughly one page each side of whichever is current —
+        // exactly "current, next, optionally previous" — without eagerly
+        // mounting a much larger gallery in one pass if the cap ever
+        // changes. This guarantees the next (and, once scrolled, previous)
+        // slide's own <Image> is already mounted — and so already
+        // downloading its bytes the instant its signed URL resolves —
+        // without requiring the user to swipe there first.
+        initialNumToRender={3}
+        windowSize={3}
         renderItem={({ item, index }) => (
           <ZoomableItemImage
-            uri={item}
+            uri={item.uri}
+            status={item.status}
             pageWidth={pageWidth}
             index={index}
             totalImages={images.length}
@@ -309,8 +389,8 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
           (components/profile-v2/profile-v2-selector.tsx) — reused here for
           visual consistency rather than a second, unrelated dot style. */}
       <View style={styles.dots}>
-        {images.map((uri, index) => (
-          <View key={`${uri}-${index}`} style={[styles.dot, index === activeIndex && styles.dotActive]} />
+        {images.map((image, index) => (
+          <View key={image.id} style={[styles.dot, index === activeIndex && styles.dotActive]} />
         ))}
       </View>
 

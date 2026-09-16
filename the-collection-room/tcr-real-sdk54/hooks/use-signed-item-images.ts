@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import {
+  ITEM_IMAGES_CACHE_DOMAIN,
+  mergePersistedSignedUrlEntries,
+  readPersistedSignedUrlMap,
+} from '@/lib/persisted-signed-url-cache';
 import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-collection-item-image-signed-url Edge
@@ -9,8 +14,11 @@ import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 // function, caches results in memory for the same TTL the backend issues
 // (300s), and re-fetches only what's missing or stale. Never accepts or
 // derives a storage_path, never calls Storage's createSignedUrl() directly,
-// and never persists a signed URL anywhere — all authorization happens
-// server-side, every time; this hook only owns caching/batching/refresh.
+// and never derives authorization client-side — all of that happens
+// server-side, every time; this hook only owns caching/batching/refresh
+// (now across both memory AND a persisted AsyncStorage layer — see the
+// private-image caching upgrade, Phase 1 — and never the private bucket
+// bytes themselves, still entirely expo-image's own concern).
 //
 // Uses a direct fetch() rather than supabase.functions.invoke() (Phase 3C
 // auth-transport fix). @supabase/supabase-js's invoke() unconditionally
@@ -27,10 +35,18 @@ import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 // of trying to teach the backend every possible public-key representation.
 
 const EDGE_FUNCTION = 'get-collection-item-image-signed-url';
+// The persisted-cache domain for this hook (lib/persisted-signed-url-cache.ts)
+// — exported from there, not declared locally, specifically so lib/auth.tsx
+// can purge it on logout without importing this hook file (see that
+// constant's own comment for the circular-import reason why).
+const CACHE_DOMAIN = ITEM_IMAGES_CACHE_DOMAIN;
 const MAX_BATCH_SIZE = 50;
 const TTL_MS = 300_000;
-// Treat a cached entry as stale slightly before its real server-side
-// expiry, so a render never hands out a URL Storage is about to reject.
+// Treat a cached entry as due for a (background) refresh slightly before
+// its real server-side expiry, so a request never goes out this close to
+// Storage rejecting it. Does NOT gate whether a still-valid entry is
+// SERVED — see isUsable below; this only gates whether the effect fires a
+// quiet refetch for it.
 const REFRESH_SKEW_MS = 15_000;
 
 // Bounded retry/backoff for a REQUEST-level failure only (thrown network
@@ -55,7 +71,10 @@ const RETRYABLE_STATUSES = new Set([408, 429]);
 // would turn that blip into several minutes of an incorrectly-blank image.
 // 10s is long enough to avoid hammering a genuinely down backend on every
 // render, short enough that the image corrects itself on its own soon
-// after the outage clears, without requiring a remount.
+// after the outage clears, without requiring a remount. Entries marked
+// isTransientFailure are NEVER written to the persisted AsyncStorage layer
+// (see the runPass loop below) — only a real answer (success or a
+// considered 'unavailable') is worth remembering across an app kill.
 const FAILURE_TTL_MS = 10_000;
 
 // Delay before the single bounded follow-up pass (see the fetch effect
@@ -85,34 +104,58 @@ export type SignedImageStatus = 'loading' | 'ready' | 'unavailable';
 // shorter FAILURE_TTL_MS instead — see that constant's own comment). The
 // two are never conflated: a real authorization denial and "the request
 // itself never got a real answer" are different facts with different
-// expected lifetimes.
+// expected lifetimes, and only the former is ever persisted to disk.
 type CacheEntry = { url: string | null; expiresAt: number; isTransientFailure?: boolean };
 
-// Module-level, in-memory only, shared across every hook instance/screen —
-// never persisted to storage or the database, cleared on app reload. Keyed
-// by `${identity}:${imageId}`, not just imageId (Phase 3C fix) — identity is
-// the caller's user id, or the literal string 'anon' with no session. This
-// keeps an anonymous denial (e.g. a request that legitimately ran before
-// session restoration finished) from ever being read back as the answer for
-// the same image once the real owner's session is available: it lands under
-// a different cache key entirely, so the authenticated read is always a
-// fresh lookup rather than a stale 'unavailable' held over from an earlier,
-// differently-authenticated request. It also prevents any cross-user reuse
-// of a signed URL that was only ever authorized for one specific caller.
+// Module-level, in-memory first-level cache, shared across every hook
+// instance/screen — cleared on app reload, but now backed by a persisted
+// AsyncStorage layer (see the fetch effect below) that survives one.
+// Keyed by `${identity}:${imageId}`, not just imageId (Phase 3C fix) —
+// identity is the caller's user id, or the literal string 'anon' with no
+// session. This keeps an anonymous denial (e.g. a request that legitimately
+// ran before session restoration finished) from ever being read back as the
+// answer for the same image once the real owner's session is available: it
+// lands under a different cache key entirely, so the authenticated read is
+// always a fresh lookup rather than a stale 'unavailable' held over from an
+// earlier, differently-authenticated request. It also prevents any
+// cross-user reuse of a signed URL that was only ever authorized for one
+// specific caller. The persisted layer mirrors this exact same
+// identity-scoping (see lib/persisted-signed-url-cache.ts's storage key).
 const cache = new Map<string, CacheEntry>();
 
+// Separate from `cache` above on purpose (Phase 1 in-flight dedupe) — this
+// tracks signing work currently IN PROGRESS, not completed results. Keyed
+// identically (`${identity}:${imageId}`). Two components requesting the
+// same id at nearly the same time (e.g. profile-v2-screen.tsx's own
+// prewarm and a HorizontalCardPreview mounting moments later) both see the
+// id as "missing" from `cache` before either request has resolved; without
+// this, each would independently kick off its own Edge Function call for
+// the same id. An id present here just awaits the existing promise instead
+// of joining a new batch — see fetchDeduped below.
+const inFlight = new Map<string, Promise<void>>();
+
+// Gates whether the EFFECT below fires a (possibly background) refetch for
+// an entry — unchanged from before Phase 1. Subtracts REFRESH_SKEW_MS for a
+// real entry so a refresh starts slightly ahead of true expiry; a
+// transient-failure placeholder ignores the skew entirely (see its own
+// field comment) since it isn't a signed URL at all and already uses a much
+// shorter FAILURE_TTL_MS.
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
-  // REFRESH_SKEW_MS exists to preempt a real signed URL's own server-side
-  // expiry — meaningless for a transient-failure placeholder, which isn't
-  // a signed URL at all and already uses a much shorter FAILURE_TTL_MS.
-  // Applying the skew on top of that would make an entry expire (10s -
-  // 15s < 0) the instant it's written, immediately reporting 'loading'
-  // again despite this hook's own retry policy already having been fully
-  // exhausted for it — exactly the stuck/looping state this change exists
-  // to prevent.
   if (entry.isTransientFailure) return entry.expiresAt > Date.now();
   return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
+}
+
+// Gates whether the RENDER-time read below actually SERVES an entry — no
+// skew subtracted, just real expiry. This is the Phase 1 near-expiry fix:
+// an entry inside the refresh-skew window is still fully valid (Storage
+// hasn't rejected it yet) and keeps rendering as 'ready'/'unavailable'
+// exactly as it did a moment ago, while isFresh (above) independently tells
+// the effect to quietly refresh it in the background — never a visible
+// 'loading' flicker for an entry that's merely due for a refresh, only for
+// one that's genuinely gone or never existed.
+function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
+  return !!entry && entry.expiresAt > Date.now();
 }
 
 type EdgeResult =
@@ -297,49 +340,118 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
 
   useEffect(() => {
     if (!ids.length) return;
-    const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
-    if (!missing.length) return;
 
     let cancelled = false;
     const isCancelled = () => cancelled;
 
-    // One pass over `idsToTry`, batched — writes a normal TTL_MS entry for
-    // every id that actually resolved, or a short-lived isTransientFailure
-    // entry for every id in a batch whose retries were exhausted. Shared by
-    // the initial pass and the single bounded follow-up pass below, so the
-    // two stay identical rather than risking drift between two hand-written
-    // copies of the same logic.
-    async function runPass(idsToTry: string[]) {
-      for (let i = 0; i < idsToTry.length; i += MAX_BATCH_SIZE) {
-        const batch = idsToTry.slice(i, i + MAX_BATCH_SIZE);
-        const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled);
-        if (cancelled) return;
+    // One pass over `idsToTry`: ids already being fetched by another
+    // in-flight call just await that shared promise (no new request); the
+    // rest are grouped into fresh batches, each registered against its own
+    // promise in `inFlight` for the duration of that request so a
+    // concurrent caller for the same id attaches instead of starting a
+    // second one. Writes a normal TTL_MS entry (persisted to AsyncStorage
+    // too) for every id that actually resolved, or a short-lived
+    // isTransientFailure entry (memory only, never persisted) for every id
+    // in a batch whose retries were exhausted. Shared by the initial pass
+    // and the single bounded follow-up pass below, so the two stay
+    // identical rather than risking drift between two hand-written copies
+    // of the same logic.
+    async function runPass(idsToTry: string[]): Promise<void> {
+      const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${id}`));
+      const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${id}`));
 
-        const now = Date.now();
-        if (outcome.ok) {
-          for (const r of outcome.results) {
-            cache.set(`${identity}:${r.id}`, {
-              url: r.status === 'ok' ? r.signed_url : null,
-              expiresAt: now + TTL_MS,
-            });
+      const newBatchPromises: Promise<void>[] = [];
+      for (let i = 0; i < toBatch.length; i += MAX_BATCH_SIZE) {
+        const batch = toBatch.slice(i, i + MAX_BATCH_SIZE);
+        const batchPromise: Promise<void> = (async () => {
+          try {
+            const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled);
+            if (cancelled) return;
+
+            const now = Date.now();
+            if (outcome.ok) {
+              const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
+              for (const r of outcome.results) {
+                const entry: CacheEntry = {
+                  url: r.status === 'ok' ? r.signed_url : null,
+                  expiresAt: now + TTL_MS,
+                };
+                cache.set(`${identity}:${r.id}`, entry);
+                toPersist[r.id] = entry;
+              }
+              // Fire-and-forget — never blocks rendering; a write failure
+              // here only costs a future cold-launch network round trip,
+              // never a correctness issue (see the helper's own comment).
+              mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
+            } else {
+              // Every retry for this batch was exhausted (or the failure
+              // wasn't retryable at all) — cache every id in it as
+              // unavailable so status doesn't stay stuck at 'loading'
+              // forever, but marked isTransientFailure and expired after
+              // the much shorter FAILURE_TTL_MS rather than the normal
+              // TTL_MS: this was never a real authorization answer, just
+              // the last observation during what's most likely a brief
+              // outage — and, per the type's own comment, NEVER persisted
+              // to AsyncStorage. A persisted transient failure would
+              // otherwise survive an app kill and block a legitimate
+              // future fetch for up to FAILURE_TTL_MS after every cold
+              // launch, which defeats the whole point of that short TTL.
+              for (const id of batch) {
+                cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
+              }
+            }
+          } finally {
+            // Unconditional delete, not an identity-compare-then-delete —
+            // by construction, no other pass can ever reassign one of
+            // THIS batch's ids in `inFlight` while this batch is still
+            // pending: a concurrent pass sees `inFlight.has(id)` already
+            // true (set right after this promise was created, below) and
+            // awaits this same promise instead of registering its own, so
+            // nothing else can be sitting under these keys when this
+            // batch settles.
+            for (const id of batch) {
+              inFlight.delete(`${identity}:${id}`);
+            }
           }
-        } else {
-          // Every retry for this batch was exhausted (or the failure
-          // wasn't retryable at all) — cache every id in it as
-          // unavailable so status doesn't stay stuck at 'loading' forever,
-          // but marked isTransientFailure and expired after the much
-          // shorter FAILURE_TTL_MS rather than the normal TTL_MS (see that
-          // constant's comment): this was never a real authorization
-          // answer, just the last observation during what's most likely a
-          // brief outage.
-          for (const id of batch) {
-            cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
-          }
-        }
+        })();
+        newBatchPromises.push(batchPromise);
+        for (const id of batch) inFlight.set(`${identity}:${id}`, batchPromise);
       }
+
+      await Promise.all([
+        ...newBatchPromises,
+        ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${id}`) ?? Promise.resolve()),
+      ]);
     }
 
     (async () => {
+      // Layer 1, step 2: hydrate the in-memory cache from the persisted
+      // AsyncStorage layer for any id this hook instance doesn't already
+      // have in memory — before deciding what's actually missing. Only
+      // ever fills a gap; never overwrites an already-present in-memory
+      // entry (which, within one running process, is always at least as
+      // fresh as whatever was last persisted). An expired-by-now persisted
+      // entry is simply skipped here and falls through to the normal
+      // missing/fetch path below, exactly as if nothing had been
+      // persisted for it.
+      const needsHydration = ids.filter((id) => !cache.has(`${identity}:${id}`));
+      if (needsHydration.length) {
+        const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
+        if (cancelled) return;
+        let hydratedAny = false;
+        for (const id of needsHydration) {
+          const entry = persisted[id];
+          if (entry && entry.expiresAt > Date.now()) {
+            cache.set(`${identity}:${id}`, { url: entry.url, expiresAt: entry.expiresAt });
+            hydratedAny = true;
+          }
+        }
+        if (hydratedAny) bump((n) => n + 1);
+      }
+
+      const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      if (!missing.length) return;
+
       await runPass(missing);
       if (cancelled) return;
       bump((n) => n + 1);
@@ -378,7 +490,7 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
   const statuses = new Map<string, SignedImageStatus>();
   for (const id of ids) {
     const entry = cache.get(`${identity}:${id}`);
-    if (isFresh(entry)) {
+    if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
         statuses.set(id, 'ready');

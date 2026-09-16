@@ -342,7 +342,7 @@ type Props = {
 // renders this directly). isOwnProfile is derived here, not passed in,
 // so it can never disagree with the actual signed-in session.
 export function ProfileV2Screen({ userId }: Props) {
-  const { session } = useAuth();
+  const { session, signOut } = useAuth();
   const currentUserId = session?.user?.id;
   const isOwnProfile = currentUserId === userId;
   const router = useRouter();
@@ -819,6 +819,20 @@ export function ProfileV2Screen({ userId }: Props) {
   function addFolderItem(folder: Folder) {
     if (!isOwnProfile) return;
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
+  }
+
+  // Same confirm-then-signOut pattern as app/settings.tsx's own "Sign Out"
+  // row — reuses the exact same useAuth().signOut() (lib/auth.tsx), never a
+  // second Supabase sign-out path. signOut() itself is what triggers the
+  // existing app-wide onAuthStateChange listener, which is what already
+  // purges the outgoing identity's persisted signed-URL cache
+  // (lib/persisted-signed-url-cache.ts) — nothing extra needed here for
+  // that to happen.
+  function handleLogoutPress() {
+    Alert.alert('Log Out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Log Out', style: 'destructive', onPress: signOut },
+    ]);
   }
 
   function openGrailAdd(slotIndex: number) {
@@ -1974,6 +1988,21 @@ export function ProfileV2Screen({ userId }: Props) {
                   />
                 </>
               )}
+
+              {/* Always the last thing in this form, regardless of which
+                  optional sections above are currently shown/hidden — see
+                  handleLogoutPress above for the confirm-then-signOut
+                  behavior. Extra marginTop (well past fieldLabel's own 16)
+                  is deliberate, so this reads as a separate, standalone
+                  action rather than one more profile field. */}
+              <TouchableOpacity
+                style={styles.logoutButton}
+                onPress={handleLogoutPress}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Log out">
+                <Text style={styles.logoutButtonText}>Log Out</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             /* ── View Mode ──
@@ -2263,6 +2292,27 @@ const styles = StyleSheet.create({
   bioInput: {
     height: 100,
     paddingTop: 12,
+  },
+  // Full-width row, same dark panel/border language as fieldInput above
+  // (not a solid red fill) — a restrained destructive action, not a loud
+  // one. marginTop is well past fieldLabel's own 16 specifically so this
+  // reads as a separated, standalone action below the real fields rather
+  // than one more of them. minHeight (not just padding) guarantees the
+  // ≥44px touch target regardless of the label's own line height.
+  logoutButton: {
+    marginTop: 40,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    backgroundColor: PV2.panel,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoutButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.accent,
   },
   themeRow: {
     flexDirection: 'row',
