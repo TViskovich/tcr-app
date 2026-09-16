@@ -39,6 +39,7 @@ import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -225,6 +226,15 @@ export default function ItemDetailScreen() {
   const { session } = useAuth();
   const router = useRouter();
   const currentUserId = session?.user?.id;
+  // Same identity useSignedItemImages itself keys its cache by
+  // (hooks/use-signed-item-images.ts's own `session?.user?.id ?? 'anon'`)
+  // — reused here only to build the carousel's stable expo-image cacheKeys
+  // (Phase 2 of the private-image caching upgrade — see
+  // lib/private-image-cache-key.ts). Never a second identity concept. Named
+  // `cacheIdentity` (not `identity`) — this file already has an unrelated
+  // local `identity` further down (buildIdentity(item)'s own title/
+  // subtitle display data).
+  const cacheIdentity = currentUserId ?? 'anon';
   const insets = useSafeAreaInsets();
   const { onScroll: navbarOnScroll, scrollEventThrottle: navbarScrollEventThrottle } =
     useScrollResponsiveNavbar();
@@ -834,13 +844,14 @@ export default function ItemDetailScreen() {
         id: img.id,
         uri: signedGalleryUrls.get(img.id),
         status: signedGalleryStatuses.get(img.id),
+        cacheKey: itemImageCacheKey(cacheIdentity, img.id),
       }));
     }
     return buildItemImageList([item?.image_url]).map((uri, i) => ({
       id: `legacy-${item?.id ?? 'unknown'}-${i}`,
       uri,
     }));
-  }, [galleryImages, signedGalleryUrls, signedGalleryStatuses, item?.image_url, item?.id]);
+  }, [galleryImages, signedGalleryUrls, signedGalleryStatuses, cacheIdentity, item?.image_url, item?.id]);
 
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 

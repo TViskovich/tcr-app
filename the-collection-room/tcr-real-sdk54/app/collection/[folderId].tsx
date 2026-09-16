@@ -57,6 +57,7 @@ import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -165,6 +166,12 @@ export default function CollectionFolderScreen() {
 
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
+  // Same identity the signed-image hooks below already key their own
+  // caches by (hooks/use-signed-item-images.ts, hooks/
+  // use-signed-folder-covers.ts) — reused here only to build stable
+  // expo-image cacheKeys (Phase 2 of the private-image caching upgrade —
+  // see lib/private-image-cache-key.ts). Never a second identity concept.
+  const identity = currentUserId ?? 'anon';
 
   // Existing hook (hooks/use-collection.ts) — already filters
   // collection_items by folder_id and orders newest-first. Not duplicated,
@@ -1182,6 +1189,7 @@ export default function CollectionFolderScreen() {
             {coverUrl && (
               <FolderCoverImage
                 uri={coverUrl}
+                cacheKey={folder ? folderCoverCacheKey(identity, folder) : undefined}
                 crop={
                   folder?.cover_source === 'item' || folder?.cover_source === 'upload'
                     ? (folder.cover_crop ?? null)
@@ -1337,10 +1345,11 @@ export default function CollectionFolderScreen() {
           }>
           {coverUrls.get(entry.folder.id) ? (
             <Image
-              source={{ uri: coverUrls.get(entry.folder.id) }}
+              source={{ uri: coverUrls.get(entry.folder.id), cacheKey: folderCoverCacheKey(identity, entry.folder) }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={150}
+              cachePolicy="memory-disk"
             />
           ) : (
             <View style={styles.thumbPlaceholder} />
@@ -1404,10 +1413,14 @@ export default function CollectionFolderScreen() {
         }>
         {entry.item.primary_image_id && signedUrls.get(entry.item.primary_image_id) ? (
           <Image
-            source={{ uri: signedUrls.get(entry.item.primary_image_id) }}
+            source={{
+              uri: signedUrls.get(entry.item.primary_image_id),
+              cacheKey: itemImageCacheKey(identity, entry.item.primary_image_id),
+            }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
             transition={150}
+            cachePolicy="memory-disk"
           />
         ) : (
           <View style={styles.thumbPlaceholder} />
@@ -1509,10 +1522,14 @@ export default function CollectionFolderScreen() {
                           URL while the signed URL is still resolving. */}
                       {activeHeroItem.primary_image_id && signedUrls.get(activeHeroItem.primary_image_id) && (
                         <Image
-                          source={{ uri: signedUrls.get(activeHeroItem.primary_image_id) }}
+                          source={{
+                            uri: signedUrls.get(activeHeroItem.primary_image_id),
+                            cacheKey: itemImageCacheKey(identity, activeHeroItem.primary_image_id),
+                          }}
                           style={StyleSheet.absoluteFill}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}
+                          cachePolicy="memory-disk"
                         />
                       )}
                       {/* Overlay — present only mid-transition, crossfades
@@ -1523,10 +1540,14 @@ export default function CollectionFolderScreen() {
                           vertically during the crossfade. */}
                       {pendingHeroItem && pendingHeroItem.primary_image_id && signedUrls.get(pendingHeroItem.primary_image_id) && (
                         <AnimatedExpoImage
-                          source={{ uri: signedUrls.get(pendingHeroItem.primary_image_id) }}
+                          source={{
+                            uri: signedUrls.get(pendingHeroItem.primary_image_id),
+                            cacheKey: itemImageCacheKey(identity, pendingHeroItem.primary_image_id),
+                          }}
                           style={[StyleSheet.absoluteFill, heroOverlayStyle]}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}
+                          cachePolicy="memory-disk"
                         />
                       )}
                       <LinearGradient

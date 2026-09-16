@@ -13,6 +13,8 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 
+import { useAuth } from '@/lib/auth';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { PV2 } from './profile-v2-theme';
@@ -75,6 +77,16 @@ export function GrailSlotPreview({
 }: Props) {
   const reducedMotion = useReducedMotion();
 
+  // Same identity useSignedItemImages itself keys its cache by (this
+  // component doesn't call that hook directly — signedImageUrls is
+  // resolved once for the whole grid by the parent, ProfileV2Grid — but
+  // still needs its own useAuth() read here, cheap and backed by the same
+  // single app-wide subscription, to build each image's stable expo-image
+  // cacheKey; Phase 2 of the private-image caching upgrade — see
+  // lib/private-image-cache-key.ts). Never a second identity concept.
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
+
   // Route-focus tracking (expo-router's own useFocusEffect, matching this
   // codebase's existing convention elsewhere — e.g. app/collection/
   // [folderId].tsx's refetch-on-focus) — insufficient alone, since a
@@ -126,6 +138,28 @@ export function GrailSlotPreview({
   useEffect(() => {
     usableImagesRef.current = usableImages;
   }, [usableImages]);
+
+  // Reverse (url -> collection_item_images.id) lookup, built alongside
+  // usableImages from the exact same previewImageIds/signedImageUrls — NOT
+  // a second source of truth. Exists purely so activeUri/incomingUri below
+  // (tracked by URL, deliberately unchanged — see that state's own
+  // comment) can still resolve each one's own correct, per-image stable
+  // cacheKey at render time, without touching the carefully-sequenced
+  // crossfade state machine that already works in terms of URLs. Safe as a
+  // one-to-one map: every id's own signed URL is independently generated
+  // (unique signature/query params) even when two ids happen to reference
+  // the same underlying storage object, so distinct ids never collide on
+  // the same URL string here.
+  const idByUri = useMemo(() => {
+    const map = new Map<string, string>();
+    if (slot?.entry_type === 'collection') {
+      for (const id of slot.previewImageIds ?? []) {
+        const url = signedImageUrls.get(id);
+        if (url) map.set(url, id);
+      }
+    }
+    return map;
+  }, [slot, signedImageUrls]);
 
   // Tracked by URI, not array index — an index into a dynamically
   // filtered list (brokenUrls changes) can silently point at a different
@@ -432,7 +466,10 @@ export function GrailSlotPreview({
         <View style={styles.itemWrap}>
           {slot.item!.primary_image_id && signedImageUrls.get(slot.item!.primary_image_id) ? (
             <Image
-              source={{ uri: signedImageUrls.get(slot.item!.primary_image_id!) }}
+              source={{
+                uri: signedImageUrls.get(slot.item!.primary_image_id!),
+                cacheKey: itemImageCacheKey(identity, slot.item!.primary_image_id!),
+              }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={150}
@@ -447,7 +484,7 @@ export function GrailSlotPreview({
           {activeUri ? (
             <>
               <Image
-                source={{ uri: activeUri }}
+                source={{ uri: activeUri, cacheKey: idByUri.get(activeUri) ? itemImageCacheKey(identity, idByUri.get(activeUri)!) : undefined }}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 cachePolicy="memory-disk"
@@ -456,7 +493,10 @@ export function GrailSlotPreview({
               />
               {incomingUri && (
                 <AnimatedExpoImage
-                  source={{ uri: incomingUri }}
+                  source={{
+                    uri: incomingUri,
+                    cacheKey: idByUri.get(incomingUri) ? itemImageCacheKey(identity, idByUri.get(incomingUri)!) : undefined,
+                  }}
                   style={[StyleSheet.absoluteFill, topAnimatedStyle]}
                   contentFit="cover"
                   cachePolicy="memory-disk"

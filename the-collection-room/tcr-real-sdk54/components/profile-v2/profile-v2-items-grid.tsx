@@ -4,6 +4,8 @@ import { Dimensions, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { useAuth } from '@/lib/auth';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem } from '@/types';
 
 import { PV2 } from './profile-v2-theme';
@@ -48,6 +50,12 @@ type Props = {
 // addressable slots), this is a plain variable-length photo grid, so cells
 // wrap rather than being chunked into fixed rows.
 export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
+  // Same identity useSignedItemImages itself keys its cache by — reused
+  // here only to build each tile's stable expo-image cacheKey (Phase 2 of
+  // the private-image caching upgrade — see lib/private-image-cache-key.ts).
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
+
   // One batched signing call for the whole visible grid, same convention as
   // ProfileV2Grid — never one request per tile.
   const { urls: signedImageUrls } = useSignedItemImages(
@@ -85,7 +93,10 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
             onPress={() => onPressItem(item)}>
             {uri ? (
               <Image
-                source={{ uri }}
+                source={{
+                  uri,
+                  cacheKey: item.primary_image_id ? itemImageCacheKey(identity, item.primary_image_id) : undefined,
+                }}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 transition={150}

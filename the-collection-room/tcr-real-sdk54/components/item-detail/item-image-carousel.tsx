@@ -97,6 +97,15 @@ export type CarouselImage = {
   // carouselImages memo, which has no pending async state to represent: it
   // either already has a real uri or it never will.
   status?: SignedImageStatus;
+  // Stable expo-image cacheKey (lib/private-image-cache-key.ts), built by
+  // the caller (app/item/[id].tsx already has both the current identity and
+  // this same `id` in scope) — decouples the byte-cache entry from `uri`
+  // itself, which rotates on every signed-URL re-sign even when the
+  // underlying image hasn't changed. This component stays a pure
+  // presentational renderer with no auth/identity access of its own;
+  // omitted (undefined) falls back to expo-image's own default of keying
+  // on `uri`.
+  cacheKey?: string;
 };
 
 type ZoomableItemImageProps = {
@@ -108,6 +117,7 @@ type ZoomableItemImageProps = {
   // is never allowed to show a fake, permanently-spinning loading state
   // for a slide that was never actually going to resolve.
   status?: SignedImageStatus;
+  cacheKey?: string;
   pageWidth: number;
   index: number;
   totalImages: number;
@@ -139,6 +149,7 @@ type ZoomableItemImageProps = {
 function ZoomableItemImage({
   uri,
   status,
+  cacheKey,
   pageWidth,
   index,
   totalImages,
@@ -262,7 +273,13 @@ function ZoomableItemImage({
             accessibilityRole={onPress ? 'imagebutton' : undefined}
             accessibilityLabel={accessibilityLabel}>
             {uri ? (
-              <Image source={{ uri }} style={styles.image} contentFit="cover" transition={200} />
+              <Image
+                source={{ uri, cacheKey }}
+                style={styles.image}
+                contentFit="cover"
+                transition={200}
+                cachePolicy="memory-disk"
+              />
             ) : status === 'loading' ? (
               <View style={[styles.image, styles.placeholder]}>
                 <ActivityIndicator size="small" color={PV2.textTertiary} />
@@ -327,6 +344,7 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
         <ZoomableItemImage
           uri={images[0]?.uri}
           status={images[0]?.status}
+          cacheKey={images[0]?.cacheKey}
           pageWidth={pageWidth}
           index={0}
           totalImages={images.length}
@@ -376,6 +394,7 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
           <ZoomableItemImage
             uri={item.uri}
             status={item.status}
+            cacheKey={item.cacheKey}
             pageWidth={pageWidth}
             index={index}
             totalImages={images.length}

@@ -8,6 +8,8 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { PREVIEW_ITEM_LIMIT, type CollectionGridEntry } from '@/hooks/use-collection';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { useAuth } from '@/lib/auth';
+import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder } from '@/types';
 
 // Shows ~3.6 cards across the screen width so the next one is always
@@ -94,6 +96,13 @@ export function HorizontalCardPreview({
   variant = 'full',
 }: Props) {
   const compact = variant === 'compact';
+  // Same identity the two signed-image hooks below already key their own
+  // caches by (hooks/use-signed-item-images.ts, hooks/
+  // use-signed-folder-covers.ts) — reused here, not a second identity
+  // concept, purely to build each tile's stable expo-image cacheKey (Phase
+  // 2 of the private-image caching upgrade — see lib/private-image-cache-key.ts).
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
   const { width: windowWidth } = useWindowDimensions();
   // Compact (profile Collection tab) reuses the Grails grid's own
   // GRID_HORIZONTAL_MARGIN/GRID_GAP/GRID_CELL_WIDTH (profile-v2-grid.tsx)
@@ -173,6 +182,7 @@ export function HorizontalCardPreview({
             <CollectionPreviewCard
               testID={`child-folder-preview-${entry.folder.id}`}
               imageUrl={coverUrls.get(entry.folder.id) ?? null}
+              cacheKey={folderCoverCacheKey(identity, entry.folder)}
               tileWidth={tileWidth}
               variant={variant}
               squareEdges={!compact}
@@ -192,6 +202,7 @@ export function HorizontalCardPreview({
         ) : (
           <CollectionPreviewCard
             imageUrl={entry.item.primary_image_id ? (signedUrls.get(entry.item.primary_image_id) ?? null) : null}
+            cacheKey={entry.item.primary_image_id ? itemImageCacheKey(identity, entry.item.primary_image_id) : undefined}
             tileWidth={tileWidth}
             variant={variant}
             squareEdges={!compact}

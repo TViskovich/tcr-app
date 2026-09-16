@@ -12,6 +12,14 @@ export const PREVIEW_CARD_RADIUS = 12;
 
 type Props = {
   imageUrl?: string | null;
+  // Stable expo-image cacheKey (lib/private-image-cache-key.ts) — decouples
+  // the byte-cache entry from `imageUrl` itself, which rotates on every
+  // signed-URL re-sign even when the underlying image hasn't changed.
+  // Optional: omitted for a folder cover whose cover_source is
+  // 'first_card' (no stable identity available — see that helper's own
+  // comment), in which case expo-image falls back to keying on imageUrl,
+  // same as before Phase 2.
+  cacheKey?: string;
   title?: string | null;
   // Year/set, shown as a second, smaller line beneath the title.
   subtitle?: string | null;
@@ -43,6 +51,7 @@ type Props = {
 // item-card.tsx already uses for the folder-detail grid.
 export function CollectionPreviewCard({
   imageUrl,
+  cacheKey,
   title,
   subtitle,
   tileWidth,
@@ -72,7 +81,7 @@ export function CollectionPreviewCard({
         ]}>
         {imageUrl && (
           <Image
-            source={{ uri: imageUrl }}
+            source={{ uri: imageUrl, cacheKey }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
             transition={150}

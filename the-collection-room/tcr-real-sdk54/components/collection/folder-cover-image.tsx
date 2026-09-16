@@ -17,6 +17,14 @@ type Props = {
   // lets "Choose from Library" reuse the exact same crop/zoom/reposition
   // UI as "Choose from Folder" instead of a second cropper.
   crop: FolderCoverCrop | null;
+  // Stable expo-image cacheKey (lib/private-image-cache-key.ts), built by
+  // the caller from the folder's own cover_source/cover_storage_path/
+  // cover_item_id — decouples the byte-cache entry from `uri` itself,
+  // which rotates on every signed-URL re-sign even when the underlying
+  // cover hasn't changed. Omitted for a 'first_card' cover (no stable
+  // identity available — see that helper's own comment), in which case
+  // expo-image falls back to keying on `uri`, same as before Phase 2.
+  cacheKey?: string;
 };
 
 // Renders the folder-hero cover image, filling its parent (the coverHero
@@ -30,17 +38,26 @@ type Props = {
 // unrelated to this component's own props): with a stable `uri`/`crop`,
 // this now skips re-rendering entirely on an unrelated parent re-render,
 // on top of that screen no longer remounting it in the first place.
-export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop }: Props) {
+export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop, cacheKey }: Props) {
   const { width: windowWidth } = useWindowDimensions();
 
   if (!crop) {
-    return <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />;
+    return (
+      <Image
+        source={{ uri, cacheKey }}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        transition={200}
+        cachePolicy="memory-disk"
+      />
+    );
   }
 
   return (
     <CroppedFolderCoverImage
       uri={uri}
       crop={crop}
+      cacheKey={cacheKey}
       containerW={windowWidth}
       containerH={windowWidth / FOLDER_COVER_ASPECT_RATIO}
     />
@@ -50,11 +67,13 @@ export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop }: Pr
 function CroppedFolderCoverImage({
   uri,
   crop,
+  cacheKey,
   containerW,
   containerH,
 }: {
   uri: string;
   crop: FolderCoverCrop;
+  cacheKey?: string;
   containerW: number;
   containerH: number;
 }) {
@@ -73,10 +92,11 @@ function CroppedFolderCoverImage({
           : styles.hidden,
       ]}>
       <Image
-        source={{ uri }}
+        source={{ uri, cacheKey }}
         style={StyleSheet.absoluteFill}
         contentFit="contain"
         transition={200}
+        cachePolicy="memory-disk"
         onLoad={(e) => setNaturalSize({ width: e.source.width, height: e.source.height })}
       />
     </View>
