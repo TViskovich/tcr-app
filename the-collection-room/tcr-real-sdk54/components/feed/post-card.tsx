@@ -16,6 +16,7 @@ import { Image } from 'expo-image';
 import { AttachmentImageGrid } from '@/components/feed/attachment-image-grid';
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
@@ -360,14 +361,26 @@ export function PostCard({
   // is the lead card.
   const cardShareLeadImageUrl = isCardShare ? (post.cardShareItems[0]?.snapshot_image_url ?? null) : null;
 
+  // Same lead-image measurement, extended to the new multi-image carousel
+  // (Feed collage → carousel pass): only for post.images.length > 1 — a
+  // 1-image text post keeps going through AttachmentImageGrid's own
+  // unmeasured fixed-4:3 box unchanged (see the JSX below), so no
+  // measurement is needed for that case. createTextPost never writes
+  // posts.image_url for a post_images-backed post (it only inserts
+  // post_images rows), so post.image_url is null here regardless — this is
+  // genuinely a separate source, not a duplicate of the branch below.
+  const postImagesLeadUrl =
+    isTextPost && post.images.length > 1 ? (post.images[0]?.image_url ?? null) : null;
+
   useEffect(() => {
     setMediaAspectRatio(null);
     if (isRateMyGrails) return;
     // Text posts CAN carry an optional attached photo (app/post/new.tsx)
-    // and reuse this exact responsive sizing via post.image_url; card-share
-    // posts have no top-level image_url at all and measure their first
-    // card's snapshot instead (see cardShareLeadImageUrl above).
-    const uri = isCardShare ? cardShareLeadImageUrl : post.image_url;
+    // and reuse this exact responsive sizing via post.image_url (or, for a
+    // 2-4 image post, via postImagesLeadUrl above); card-share posts have
+    // no top-level image_url at all and measure their first card's
+    // snapshot instead (see cardShareLeadImageUrl above).
+    const uri = isCardShare ? cardShareLeadImageUrl : (postImagesLeadUrl ?? post.image_url);
     if (!uri) return;
     let cancelled = false;
     RNImage.getSize(
@@ -385,7 +398,7 @@ export function PostCard({
     return () => {
       cancelled = true;
     };
-  }, [post.image_url, cardShareLeadImageUrl, isRateMyGrails, isCardShare]);
+  }, [post.image_url, postImagesLeadUrl, cardShareLeadImageUrl, isRateMyGrails, isCardShare]);
 
   const rating = useGrailRating({
     postId: post.id,
@@ -548,21 +561,18 @@ export function PostCard({
               <Text style={styles.cardTextContent}>{post.content}</Text>
             </TouchableOpacity>
           )}
-          {/* A text post's 1-4 images (app/post/new.tsx) — the responsive
-              AttachmentImageGrid (shared with the composer's own preview)
-              replaces the single-image box once post_images rows exist.
-              Every image_url in post.images is already durable
-              share-snapshots data (same pipeline as the legacy single
-              photo below), so no signed-image branch is needed here
-              either. Tapping anywhere in the grid opens post detail — the
-              same behavior tapping the old single photo already had
-              (onPostPress); no separate full-screen image viewer exists
-              in this app to defer to instead, so this stays the smallest
-              compatible behavior rather than introducing a new one. */}
-          {isTextPost && post.images.length > 0 ? (
+          {/* A text post's 1 image (app/post/new.tsx) still renders via
+              AttachmentImageGrid's own single-image branch, unchanged —
+              same appearance as before this pass, no carousel/FlatList for
+              a case that never needs to page. Every image_url in post.images
+              is already durable share-snapshots data (same pipeline as the
+              legacy single photo below), so no signed-image branch is
+              needed here either. Tapping opens post detail (onPostPress) —
+              unchanged. */}
+          {isTextPost && post.images.length === 1 ? (
             <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
               <TouchableOpacity
-                style={styles.mediaImageWrapSingle}
+                style={styles.mediaImageWrapText}
                 onPress={onPostPress}
                 activeOpacity={0.95}>
                 <AttachmentImageGrid
@@ -570,6 +580,40 @@ export function PostCard({
                   borderRadius={MEDIA_CORNER_RADIUS}
                 />
               </TouchableOpacity>
+            </View>
+          ) : isTextPost && post.images.length > 1 ? (
+            /* 2-4 images — horizontal swipeable carousel (collage → carousel
+                pass) instead of AttachmentImageGrid's collage, one image at
+                a time, full post media width, native paging. Sized via the
+                exact same measure→clamp pipeline (mediaAspectRatio/
+                clampMediaAspectRatio, 'cover') the legacy single-photo
+                branch below already uses — measured once from post.images[0]
+                (postImagesLeadUrl above) and held fixed while swiping, same
+                "measured from the lead, frame never resizes mid-swipe"
+                precedent CardSharePostBody already established for
+                card-share. No aspectRatio-per-image, no per-count width
+                change: every page (2, 3, or 4 images) fills this identical
+                frame. Tapping any page opens post detail (onPostPress) —
+                same handler the single-image/legacy paths already use, and
+                the same tap target the previous whole-grid TouchableOpacity
+                offered (there is still no separate full-screen image viewer
+                in this app to defer to instead). */
+            <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
+              <View
+                style={[
+                  styles.mediaImageWrap,
+                  styles.mediaImageWrapText,
+                  {
+                    aspectRatio:
+                      mediaAspectRatio != null ? clampMediaAspectRatio(mediaAspectRatio) : MEDIA_DEFAULT_ASPECT_RATIO,
+                  },
+                ]}>
+                <PostImageCarousel
+                  images={post.images.map((img) => ({ key: img.id, uri: img.image_url }))}
+                  mediaBorderRadius={MEDIA_CORNER_RADIUS}
+                  onPress={onPostPress}
+                />
+              </View>
             </View>
           ) : (
             /* A text post's optional LEGACY single attached photo (posts
@@ -596,7 +640,14 @@ export function PostCard({
                 <TouchableOpacity
                   style={[
                     styles.mediaImageWrap,
-                    styles.mediaImageWrapSingle,
+                    // Same isTextPost split this branch already applies to
+                    // aspectRatio/contentFit below — a legacy (pre-
+                    // post_images) text post's attached photo gets the same
+                    // narrower text-post frame as the two branches above, for
+                    // visual consistency across every text-post photo shape;
+                    // an 'item' (sports card) post keeps the unchanged shared
+                    // frame.
+                    isTextPost ? styles.mediaImageWrapText : styles.mediaImageWrapSingle,
                     {
                       aspectRatio:
                         mediaAspectRatio != null
@@ -770,6 +821,18 @@ function clampSingleCardAspectRatio(ratio: number): number {
 // can hold.
 const SINGLE_CARD_WIDTH_FRACTION = 0.86;
 const SINGLE_CARD_MAX_HEIGHT_FRACTION = 0.58;
+
+// Text-post attached-photo path only (single AttachmentImageGrid image,
+// the 2-4 image PostImageCarousel, and the legacy single post.image_url
+// branch when isTextPost) — deliberately narrower than
+// SINGLE_CARD_WIDTH_FRACTION above, which item/card-share posts keep using
+// unchanged. Before this, every media-bearing post type shared the exact
+// same 86%-of-column frame, which made a multi-image text post read as
+// visually indistinguishable from a dedicated card-share post. ~90% of that
+// existing shared frame (not of the raw column) — text-post media is meant
+// to read as smaller/secondary to the post's own text content, not as the
+// primary content the way a card share or a single-card post is.
+const TEXT_POST_MEDIA_WIDTH_FRACTION = SINGLE_CARD_WIDTH_FRACTION * 0.9;
 
 const styles = StyleSheet.create({
   // X-style Piece 2 — flat, edge-to-edge, single unified dark surface (no
@@ -950,6 +1013,17 @@ const styles = StyleSheet.create({
   // against a meaningfully smaller box.
   mediaImageWrapSingle: {
     width: `${SINGLE_CARD_WIDTH_FRACTION * 100}%`,
+    alignSelf: 'center',
+  },
+  // Text-post attached-photo path only — see TEXT_POST_MEDIA_WIDTH_FRACTION's
+  // own comment. Same alignSelf: 'center' as mediaImageWrapSingle (both
+  // resolve against mediaContentColumn, the shared flex parent), just a
+  // narrower percentage — centering this smaller box within the same column
+  // is what produces the "small left/right inset" on top of
+  // mediaContentColumnFull's existing 12px column padding, with no new
+  // padding/margin of its own.
+  mediaImageWrapText: {
+    width: `${TEXT_POST_MEDIA_WIDTH_FRACTION * 100}%`,
     alignSelf: 'center',
   },
   // Padding (10, all sides) deliberately untouched — GrailsPostBody
