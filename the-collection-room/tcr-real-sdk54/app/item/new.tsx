@@ -27,14 +27,17 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { createPokemonItem } from '@/lib/pokemon-items';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectibleItemType } from '@/types';
 
 // Collectible Type — Phase 1 (see supabase/migrations/
-// 20260916120000_add_collection_item_type.sql). Sports Card is the only
-// type with a real metadata form today; the other three render a temporary
-// shell (below) and block Save until their own detail tables/forms exist.
+// 20260916120000_add_collection_item_type.sql). Sports Card and Pokémon
+// (Phase 2 — supabase/migrations/20260917120000_create_pokemon_card_details.sql
+// / 20260917120100_create_pokemon_item_rpcs.sql) both have real metadata
+// forms now; Figurine/Comic Book still render a temporary shell (below) and
+// block Save until their own detail tables/forms exist.
 const COLLECTIBLE_TYPES: { value: CollectibleItemType; label: string }[] = [
   { value: 'sports_card', label: 'Sports Card' },
   { value: 'pokemon', label: 'Pokémon' },
@@ -68,7 +71,66 @@ const INITIAL_FORM: FormState = {
   description: '',
 };
 
+// Pokémon has no Title field of its own — collection_items.title is derived
+// server-side from pokemonName by create_pokemon_item/update_pokemon_item
+// (see lib/pokemon-items.ts) — and reuses estimatedValue/description from
+// the common Value & Notes section rather than duplicating them here.
+type PokemonFormState = {
+  pokemonName: string;
+  setName: string;
+  cardNumber: string;
+  rarity: string;
+  language: string;
+  edition: string;
+  holoType: string;
+  gradingCompany: string;
+  grade: string;
+  estimatedValue: string;
+  description: string;
+};
+
+const INITIAL_POKEMON_FORM: PokemonFormState = {
+  pokemonName: '',
+  setName: '',
+  cardNumber: '',
+  rarity: '',
+  language: '',
+  edition: '',
+  holoType: '',
+  gradingCompany: '',
+  grade: '',
+  estimatedValue: '',
+  description: '',
+};
+
 function field(label: string, key: keyof FormState, form: FormState, update: (k: keyof FormState) => (v: string) => void, extra?: object) {
+  return (
+    <View style={fieldStyles.wrap}>
+      <Text style={fieldStyles.label}>{label}</Text>
+      <TextInput
+        style={fieldStyles.input}
+        value={form[key]}
+        onChangeText={update(key)}
+        placeholderTextColor={PV2.textTertiary}
+        placeholder={label}
+        {...extra}
+      />
+    </View>
+  );
+}
+
+// Same shape as field() above, parameterized over PokemonFormState instead
+// of FormState — kept as its own small function (matching this screen's own
+// existing field()/EditField split-by-screen precedent in app/item/[id].tsx)
+// rather than generifying field() itself, since the two forms' underlying
+// state shapes are genuinely unrelated.
+function pokemonField(
+  label: string,
+  key: keyof PokemonFormState,
+  form: PokemonFormState,
+  update: (k: keyof PokemonFormState) => (v: string) => void,
+  extra?: object,
+) {
   return (
     <View style={fieldStyles.wrap}>
       <Text style={fieldStyles.label}>{label}</Text>
@@ -179,12 +241,15 @@ export default function AddItemScreen() {
   const [adjustQueue, setAdjustQueue] = useState<{ uri: string; width: number; height: number }[]>([]);
   const [adjustIndex, setAdjustIndex] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
-  // Collectible Type — defaults to Sports Card, the only type with a real
-  // form right now (see COLLECTIBLE_TYPES above). Selecting another type
-  // swaps the metadata section below for a temporary shell and disables
-  // Save (isSportsCard gate on handleSubmit and the submit button both).
+  const [pokemonForm, setPokemonForm] = useState<PokemonFormState>(INITIAL_POKEMON_FORM);
+  // Collectible Type — defaults to Sports Card. Sports Card and Pokémon both
+  // have real forms (see COLLECTIBLE_TYPES above); Figurine/Comic Book still
+  // swap the metadata section below for a temporary shell and disable Save
+  // (isSupportedType gate on handleSubmit and the submit button both).
   const [itemType, setItemType] = useState<CollectibleItemType>('sports_card');
   const isSportsCard = itemType === 'sports_card';
+  const isPokemon = itemType === 'pokemon';
+  const isSupportedType = isSportsCard || isPokemon;
   const selectedTypeLabel = COLLECTIBLE_TYPES.find((t) => t.value === itemType)?.label ?? 'Sports Card';
   // Shared anchored-dropdown mechanics (measure trigger, open a Modal-hosted
   // box just under it, close on outside tap or selection) — see
@@ -227,6 +292,10 @@ export default function AddItemScreen() {
 
   function update(key: keyof FormState) {
     return (value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updatePokemon(key: keyof PokemonFormState) {
+    return (value: string) => setPokemonForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function makeLocalPhotoId(): string {
@@ -347,12 +416,20 @@ export default function AddItemScreen() {
     // Collections-level entry point has no folder assigned yet, so nothing
     // may be persisted from it regardless of how handleSubmit is reached.
     if (isPreviewOnly) return;
-    // Same defense-in-depth pattern for Collectible Type: Pokémon/Figurine/
-    // Comic Book have no metadata form yet, so nothing may be persisted for
-    // them regardless of how handleSubmit is reached.
-    if (!isSportsCard) return;
+    // Same defense-in-depth pattern for Collectible Type: Figurine/Comic
+    // Book have no metadata form yet, so nothing may be persisted for them
+    // regardless of how handleSubmit is reached.
+    if (!isSupportedType) return;
     if (pendingPhotos.length === 0) {
       Alert.alert('Photo required', 'Please add at least one photo for this item.');
+      return;
+    }
+    // Pokémon's one required field — collection_items.title is derived from
+    // this server-side (see create_pokemon_item), so it also guarantees the
+    // item never ends up with a null title. Mirrors the Photo required
+    // check's own pattern: validate, alert, bail before any write.
+    if (isPokemon && !pokemonForm.pokemonName.trim()) {
+      Alert.alert('Pokémon name required', 'Please enter the Pokémon name for this card.');
       return;
     }
     if (!session?.user?.id) return;
@@ -363,28 +440,57 @@ export default function AddItemScreen() {
       // Item row first, with no image_url yet (nullable — see
       // types/index.ts's CollectionItem) — nothing is uploaded until the
       // item itself exists, so a failure here leaves nothing to clean up.
-      const { data: item, error: itemError } = await supabase
-        .from('collection_items')
-        .insert({
-          folder_id: folderId,
-          user_id: userId,
-          item_type: itemType,
-          title: form.title.trim() || null,
-          player: form.player.trim() || null,
-          team: form.team.trim() || null,
-          year: form.year ? parseInt(form.year, 10) : null,
-          brand: form.brand.trim() || null,
-          grade: form.grade.trim() || null,
-          grading_company: form.gradingCompany.trim() || null,
-          serial_number: form.serialNumber.trim() || null,
-          estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
-          description: form.description.trim() || null,
-          is_public: isPublic,
-        })
-        .select()
-        .single();
+      // Sports Card keeps the original plain insert (its own RLS already
+      // covers it in one statement); Pokémon goes through create_pokemon_item
+      // instead, which also atomically inserts pokemon_card_details in the
+      // same transaction — see lib/pokemon-items.ts.
+      let item: { id: string };
+      if (isSportsCard) {
+        const { data, error: itemError } = await supabase
+          .from('collection_items')
+          .insert({
+            folder_id: folderId,
+            user_id: userId,
+            item_type: itemType,
+            title: form.title.trim() || null,
+            player: form.player.trim() || null,
+            team: form.team.trim() || null,
+            year: form.year ? parseInt(form.year, 10) : null,
+            brand: form.brand.trim() || null,
+            grade: form.grade.trim() || null,
+            grading_company: form.gradingCompany.trim() || null,
+            serial_number: form.serialNumber.trim() || null,
+            estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
+            description: form.description.trim() || null,
+            is_public: isPublic,
+          })
+          .select()
+          .single();
 
-      if (itemError || !item) throw new Error('Failed to save item. Please try again.');
+        if (itemError || !data) throw new Error('Failed to save item. Please try again.');
+        item = data;
+      } else {
+        // createPokemonItem already throws a real Error with the RPC's own
+        // message (e.g. a folder-ownership or validation failure) — let it
+        // propagate to this function's own outer catch below rather than
+        // genericizing it, unlike the Sports Card branch above (which has
+        // no useful message of its own to preserve from a plain postgrest
+        // {error} result).
+        item = await createPokemonItem(folderId, {
+          estimatedValue: pokemonForm.estimatedValue ? parseFloat(pokemonForm.estimatedValue) : null,
+          description: pokemonForm.description.trim() || null,
+          isPublic,
+          pokemonName: pokemonForm.pokemonName.trim() || null,
+          setName: pokemonForm.setName.trim() || null,
+          cardNumber: pokemonForm.cardNumber.trim() || null,
+          rarity: pokemonForm.rarity.trim() || null,
+          language: pokemonForm.language.trim() || null,
+          edition: pokemonForm.edition.trim() || null,
+          holoType: pokemonForm.holoType.trim() || null,
+          gradingCompany: pokemonForm.gradingCompany.trim() || null,
+          grade: pokemonForm.grade.trim() || null,
+        });
+      }
 
       // Cover first, then the rest in their existing pending order —
       // addItemImages marks array index 0 primary for a brand-new item's
@@ -481,10 +587,11 @@ export default function AddItemScreen() {
           />
 
           {/* Collectible Type — item_type persisted on submit (see
-              handleSubmit's insert above). Switching away from Sports Card
-              swaps the whole metadata section below for a temporary shell
-              and disables Save (see isSportsCard gating throughout this
-              screen) until that type's own detail table/form exists. */}
+              handleSubmit's insert above). Sports Card and Pokémon each show
+              their own real form below; Figurine/Comic Book still swap the
+              metadata section for a temporary shell and disable Save (see
+              isSupportedType gating throughout this screen) until their own
+              detail table/form exists. */}
           <View style={fieldStyles.wrap}>
             <Text style={fieldStyles.label}>Collectible Type</Text>
             <Pressable
@@ -555,6 +662,42 @@ export default function AddItemScreen() {
                 />
               </View>
             </>
+          ) : isPokemon ? (
+            <>
+              {/* Pokémon Details */}
+              <Text style={styles.sectionHeader}>Pokémon Details</Text>
+              {pokemonField('Pokémon', 'pokemonName', pokemonForm, updatePokemon)}
+              {pokemonField('Set', 'setName', pokemonForm, updatePokemon)}
+              {pokemonField('Card Number', 'cardNumber', pokemonForm, updatePokemon)}
+              {pokemonField('Rarity', 'rarity', pokemonForm, updatePokemon)}
+              {pokemonField('Language', 'language', pokemonForm, updatePokemon)}
+              {pokemonField('Edition', 'edition', pokemonForm, updatePokemon)}
+              {pokemonField('Holo Type', 'holoType', pokemonForm, updatePokemon)}
+
+              {/* Grading */}
+              <Text style={styles.sectionHeader}>Grading</Text>
+              {pokemonField('Grading Company', 'gradingCompany', pokemonForm, updatePokemon)}
+              {pokemonField('Grade', 'grade', pokemonForm, updatePokemon, { autoCapitalize: 'characters' })}
+
+              {/* Value & Notes — reuses the same common fields (estimated_value/
+                  description) as the Sports Card form, just on pokemonForm's
+                  own local state instead of form's. */}
+              <Text style={styles.sectionHeader}>Value & Notes</Text>
+              {pokemonField('Estimated Value ($)', 'estimatedValue', pokemonForm, updatePokemon, { keyboardType: 'decimal-pad' })}
+              <View style={fieldStyles.wrap}>
+                <Text style={fieldStyles.label}>Description</Text>
+                <TextInput
+                  style={[fieldStyles.input, styles.multiline]}
+                  value={pokemonForm.description}
+                  onChangeText={updatePokemon('description')}
+                  placeholder="Description"
+                  placeholderTextColor={PV2.textTertiary}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </>
           ) : (
             // Temporary shell — no fake sports-card fields for these types.
             // The real per-type metadata form/detail table lands in a later
@@ -596,16 +739,16 @@ export default function AddItemScreen() {
               can never come away thinking an item was saved when it
               wasn't. */}
           <TouchableOpacity
-            style={[styles.submitButton, (loading || isPreviewOnly || !isSportsCard) && styles.submitDisabled]}
+            style={[styles.submitButton, (loading || isPreviewOnly || !isSupportedType) && styles.submitDisabled]}
             onPress={handleSubmit}
-            disabled={loading || isPreviewOnly || !isSportsCard}>
+            disabled={loading || isPreviewOnly || !isSupportedType}>
             {loading ? (
               <ActivityIndicator color={PV2.textPrimary} />
             ) : (
               <Text style={styles.submitText}>
                 {isPreviewOnly
                   ? 'Folder assignment required'
-                  : !isSportsCard
+                  : !isSupportedType
                     ? `${selectedTypeLabel} not yet supported`
                     : 'Save Item'}
               </Text>

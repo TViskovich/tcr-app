@@ -120,6 +120,27 @@ export type CollectionItem = {
   primary_image_id: string | null;
 };
 
+// Pokémon-specific metadata (supabase/migrations/
+// 20260917120000_create_pokemon_card_details.sql) — strictly 1:1 with a
+// CollectionItem whose item_type is 'pokemon'; item_id IS the primary key,
+// not a separate id. Written only via create_pokemon_item/
+// update_pokemon_item (lib/pokemon-items.ts) — never a direct client
+// insert/update, even though RLS would technically allow one, to keep the
+// common-fields/detail-fields write always atomic (see those RPCs' own
+// header comment in the migration above).
+export type PokemonCardDetails = {
+  item_id: string;
+  pokemon_name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  rarity: string | null;
+  language: string | null;
+  edition: string | null;
+  holo_type: string | null;
+  grading_company: string | null;
+  grade: string | null;
+};
+
 // One photo in an item's gallery (supabase/migrations/20260721120000_
 // create_collection_item_images.sql). collection_items.image_url stays in
 // sync with whichever row here has is_primary = true — it's the legacy

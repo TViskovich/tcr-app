@@ -39,11 +39,12 @@ import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { getPokemonCardDetails, updatePokemonItem } from '@/lib/pokemon-items';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem } from '@/types';
+import type { CollectionItem, PokemonCardDetails } from '@/types';
 
 type EditForm = {
   title: string;
@@ -54,6 +55,25 @@ type EditForm = {
   grade: string;
   gradingCompany: string;
   serialNumber: string;
+  estimatedValue: string;
+  description: string;
+};
+
+// Pokémon's own edit-form shape (Phase 2 — supabase/migrations/
+// 20260917120000_create_pokemon_card_details.sql /
+// 20260917120100_create_pokemon_item_rpcs.sql), mirroring app/item/new.tsx's
+// PokemonFormState. No title field — collection_items.title is derived
+// server-side from pokemonName by update_pokemon_item, same as at creation.
+type PokemonEditForm = {
+  pokemonName: string;
+  setName: string;
+  cardNumber: string;
+  rarity: string;
+  language: string;
+  edition: string;
+  holoType: string;
+  gradingCompany: string;
+  grade: string;
   estimatedValue: string;
   description: string;
 };
@@ -74,6 +94,22 @@ function itemToForm(item: CollectionItem): EditForm {
     grade: item.grade ?? '',
     gradingCompany: item.grading_company ?? '',
     serialNumber: item.serial_number ?? '',
+    estimatedValue: item.estimated_value?.toString() ?? '',
+    description: item.description ?? '',
+  };
+}
+
+function pokemonItemToForm(item: CollectionItem, details: PokemonCardDetails | null): PokemonEditForm {
+  return {
+    pokemonName: details?.pokemon_name ?? '',
+    setName: details?.set_name ?? '',
+    cardNumber: details?.card_number ?? '',
+    rarity: details?.rarity ?? '',
+    language: details?.language ?? '',
+    edition: details?.edition ?? '',
+    holoType: details?.holo_type ?? '',
+    gradingCompany: details?.grading_company ?? '',
+    grade: details?.grade ?? '',
     estimatedValue: item.estimated_value?.toString() ?? '',
     description: item.description ?? '',
   };
@@ -115,6 +151,37 @@ function buildMetadataRows(item: CollectionItem): MetadataRow[] {
     { label: 'Grade', value: item.grade },
     { label: 'Grading Company', value: item.grading_company },
     { label: 'Serial Number', value: item.serial_number },
+    { label: 'Estimated Value', value: item.estimated_value != null ? `$${item.estimated_value.toFixed(2)}` : null },
+  ];
+}
+
+// Pokémon's own identity/metadata builders — item.title IS the Pokémon name
+// (derived server-side, see pokemonItemToForm's own comment above), so no
+// "player vs title" fallback logic is needed here the way buildIdentity
+// above has for sports cards; the set/card-number line is this type's
+// closest equivalent to buildIdentity's yearAndSet line.
+function buildPokemonIdentity(
+  item: CollectionItem,
+  details: PokemonCardDetails | null,
+): { title: string; subtitleLines: (string | null)[] } {
+  const title = item.title?.trim() || 'Untitled Item';
+  const setLine = [details?.set_name, details?.card_number ? `#${details.card_number}` : null]
+    .filter(Boolean)
+    .join(' ') || null;
+  return { title, subtitleLines: [setLine, details?.rarity ?? null] };
+}
+
+function buildPokemonMetadataRows(item: CollectionItem, details: PokemonCardDetails | null): MetadataRow[] {
+  return [
+    { label: 'Pokémon', value: details?.pokemon_name ?? null },
+    { label: 'Set', value: details?.set_name ?? null },
+    { label: 'Card #', value: details?.card_number ?? null },
+    { label: 'Rarity', value: details?.rarity ?? null },
+    { label: 'Language', value: details?.language ?? null },
+    { label: 'Edition', value: details?.edition ?? null },
+    { label: 'Holo Type', value: details?.holo_type ?? null },
+    { label: 'Grading Company', value: details?.grading_company ?? null },
+    { label: 'Grade', value: details?.grade ?? null },
     { label: 'Estimated Value', value: item.estimated_value != null ? `$${item.estimated_value.toFixed(2)}` : null },
   ];
 }
@@ -244,6 +311,14 @@ export default function ItemDetailScreen() {
   const [fetching, setFetching] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
+  // Pokémon-specific metadata (Phase 2) — fetched alongside the base item
+  // only when item.item_type === 'pokemon' (see fetchItem below), never for
+  // any other type and never for list/preview surfaces elsewhere in the
+  // app, so this stays a single extra query scoped to item detail/edit only.
+  // pokemonForm mirrors form/EditForm's own separate-state pattern.
+  const [pokemonDetails, setPokemonDetails] = useState<PokemonCardDetails | null>(null);
+  const [pokemonForm, setPokemonForm] = useState<PokemonEditForm | null>(null);
+  const isPokemonItem = item?.item_type === 'pokemon';
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Kept separate from `form`/EditForm (same convention as
@@ -336,6 +411,20 @@ export default function ItemDetailScreen() {
           .eq('id', data.user_id)
           .single();
         if (profile) setOwnerProfile(profile as OwnerProfile);
+
+        // Pokémon detail row — only ever fetched here (item detail/edit),
+        // never for folder grids, search, saved, or profile preview tiles,
+        // so this stays exactly one extra query, only when actually needed
+        // (see pokemonDetails' own comment above).
+        if (data.item_type === 'pokemon') {
+          try {
+            const details = await getPokemonCardDetails(data.id);
+            setPokemonDetails(details);
+            setPokemonForm(pokemonItemToForm(data, details));
+          } catch (e) {
+            if (__DEV__) console.error('[ItemDetail] pokemon_card_details fetch failed:', e);
+          }
+        }
       }
       setFetching(false);
     }
@@ -353,6 +442,9 @@ export default function ItemDetailScreen() {
     if (item) {
       setForm(itemToForm(item));
       setEditItemIsPublic(item.is_public);
+      if (item.item_type === 'pokemon') {
+        setPokemonForm(pokemonItemToForm(item, pokemonDetails));
+      }
     }
     if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
       try {
@@ -370,8 +462,16 @@ export default function ItemDetailScreen() {
     if (item) {
       setForm(itemToForm(item));
       setEditItemIsPublic(item.is_public);
+      if (item.item_type === 'pokemon') {
+        setPokemonForm(pokemonItemToForm(item, pokemonDetails));
+      }
     }
     setEditMode(false);
+  }
+
+  function updatePokemonField(key: keyof PokemonEditForm) {
+    return (value: string) =>
+      setPokemonForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
   function updateField(key: keyof EditForm) {
@@ -482,8 +582,71 @@ export default function ItemDetailScreen() {
     }
   }
 
+  // Pokémon edit-save — routes through update_pokemon_item (lib/pokemon-items.ts)
+  // instead of a plain client update, so the common collection_items fields
+  // and pokemon_card_details are written atomically in one transaction, same
+  // reasoning as create_pokemon_item at creation time. item_type itself is
+  // never part of either payload — treated as fixed once the item exists
+  // (also enforced independently at the database privilege level, see that
+  // RPC's own header comment).
+  async function handleSavePokemon() {
+    if (!item || !pokemonForm || !currentUserId) return;
+    if (!pokemonForm.pokemonName.trim()) {
+      Alert.alert('Pokémon name required', 'Please enter the Pokémon name for this card.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await updatePokemonItem(item.id, {
+        estimatedValue: pokemonForm.estimatedValue ? parseFloat(pokemonForm.estimatedValue) : null,
+        description: pokemonForm.description.trim() || null,
+        isPublic: editItemIsPublic,
+        pokemonName: pokemonForm.pokemonName.trim() || null,
+        setName: pokemonForm.setName.trim() || null,
+        cardNumber: pokemonForm.cardNumber.trim() || null,
+        rarity: pokemonForm.rarity.trim() || null,
+        language: pokemonForm.language.trim() || null,
+        edition: pokemonForm.edition.trim() || null,
+        holoType: pokemonForm.holoType.trim() || null,
+        gradingCompany: pokemonForm.gradingCompany.trim() || null,
+        grade: pokemonForm.grade.trim() || null,
+      });
+      // The RPC returns only the updated collection_items row — the detail
+      // row is rebuilt locally from the exact values just submitted (the
+      // RPC applied the same trim/NULLIF rules server-side) rather than a
+      // second round-trip re-read, same "trust what was just sent" pattern
+      // handleSave below already uses for the sports-card common fields.
+      const updatedDetails: PokemonCardDetails = {
+        item_id: item.id,
+        pokemon_name: pokemonForm.pokemonName.trim() || null,
+        set_name: pokemonForm.setName.trim() || null,
+        card_number: pokemonForm.cardNumber.trim() || null,
+        rarity: pokemonForm.rarity.trim() || null,
+        language: pokemonForm.language.trim() || null,
+        edition: pokemonForm.edition.trim() || null,
+        holo_type: pokemonForm.holoType.trim() || null,
+        grading_company: pokemonForm.gradingCompany.trim() || null,
+        grade: pokemonForm.grade.trim() || null,
+      };
+      setItem(updated);
+      setEditItemIsPublic(updated.is_public);
+      setPokemonDetails(updatedDetails);
+      setPokemonForm(pokemonItemToForm(updated, updatedDetails));
+      setEditMode(false);
+    } catch (e: unknown) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleSave() {
-    if (!item || !form || !currentUserId) return;
+    if (!item || !currentUserId) return;
+    if (item.item_type === 'pokemon') {
+      await handleSavePokemon();
+      return;
+    }
+    if (!form) return;
     setSaving(true);
     try {
       // image_url is no longer written here — it's owned exclusively by the
@@ -887,8 +1050,8 @@ export default function ItemDetailScreen() {
     );
   }
 
-  const identity = buildIdentity(item);
-  const metadataRows = buildMetadataRows(item);
+  const identity = isPokemonItem ? buildPokemonIdentity(item, pokemonDetails) : buildIdentity(item);
+  const metadataRows = isPokemonItem ? buildPokemonMetadataRows(item, pokemonDetails) : buildMetadataRows(item);
   const transferredOutDateLabel = formatTransferredOutDate(item.transferred_out_at);
 
   return (
@@ -987,35 +1150,75 @@ export default function ItemDetailScreen() {
                 Item toggle below (same dynamic label/helper pattern as
                 create-folder-modal.tsx / folder-edit-modal.tsx). ── */
             <View style={styles.editSection}>
-              <Text style={editStyles.sectionHeader}>Card Details</Text>
-              <EditField label="Title" value={form.title} onChange={updateField('title')} />
-              <EditField label="Player" value={form.player} onChange={updateField('player')} />
-              <EditField label="Team" value={form.team} onChange={updateField('team')} />
-              <EditField label="Year" value={form.year} onChange={updateField('year')} extra={{ keyboardType: 'number-pad', maxLength: 4 }} />
+              {isPokemonItem ? (
+                pokemonForm && (
+                  <>
+                    {/* Pokémon Details */}
+                    <Text style={editStyles.sectionHeader}>Pokémon Details</Text>
+                    <EditField label="Pokémon" value={pokemonForm.pokemonName} onChange={updatePokemonField('pokemonName')} />
+                    <EditField label="Set" value={pokemonForm.setName} onChange={updatePokemonField('setName')} />
+                    <EditField label="Card Number" value={pokemonForm.cardNumber} onChange={updatePokemonField('cardNumber')} />
+                    <EditField label="Rarity" value={pokemonForm.rarity} onChange={updatePokemonField('rarity')} />
+                    <EditField label="Language" value={pokemonForm.language} onChange={updatePokemonField('language')} />
+                    <EditField label="Edition" value={pokemonForm.edition} onChange={updatePokemonField('edition')} />
+                    <EditField label="Holo Type" value={pokemonForm.holoType} onChange={updatePokemonField('holoType')} />
 
-              <Text style={editStyles.sectionHeader}>Card Info</Text>
-              <EditField label="Brand" value={form.brand} onChange={updateField('brand')} />
-              <EditField label="Grade" value={form.grade} onChange={updateField('grade')} extra={{ autoCapitalize: 'characters' }} />
-              <EditField label="Grading Company" value={form.gradingCompany} onChange={updateField('gradingCompany')} />
-              <EditField label="Serial Number" value={form.serialNumber} onChange={updateField('serialNumber')} />
+                    {/* Grading */}
+                    <Text style={editStyles.sectionHeader}>Grading</Text>
+                    <EditField label="Grading Company" value={pokemonForm.gradingCompany} onChange={updatePokemonField('gradingCompany')} />
+                    <EditField label="Grade" value={pokemonForm.grade} onChange={updatePokemonField('grade')} extra={{ autoCapitalize: 'characters' }} />
 
-              <Text style={editStyles.sectionHeader}>Value</Text>
-              <EditField label="Estimated Value ($)" value={form.estimatedValue} onChange={updateField('estimatedValue')} extra={{ keyboardType: 'decimal-pad' }} />
+                    {/* Value & Notes */}
+                    <Text style={editStyles.sectionHeader}>Value & Notes</Text>
+                    <EditField label="Estimated Value ($)" value={pokemonForm.estimatedValue} onChange={updatePokemonField('estimatedValue')} extra={{ keyboardType: 'decimal-pad' }} />
+                    <View style={editStyles.wrap}>
+                      <Text style={editStyles.label}>Description</Text>
+                      <TextInput
+                        style={[editStyles.input, { height: 100, paddingTop: 12 }]}
+                        value={pokemonForm.description}
+                        onChangeText={updatePokemonField('description')}
+                        placeholder="Description"
+                        placeholderTextColor="#999"
+                        multiline
+                        numberOfLines={4}
+                        textAlignVertical="top"
+                      />
+                    </View>
+                  </>
+                )
+              ) : (
+                <>
+                  <Text style={editStyles.sectionHeader}>Card Details</Text>
+                  <EditField label="Title" value={form.title} onChange={updateField('title')} />
+                  <EditField label="Player" value={form.player} onChange={updateField('player')} />
+                  <EditField label="Team" value={form.team} onChange={updateField('team')} />
+                  <EditField label="Year" value={form.year} onChange={updateField('year')} extra={{ keyboardType: 'number-pad', maxLength: 4 }} />
 
-              <Text style={editStyles.sectionHeader}>Notes</Text>
-              <View style={editStyles.wrap}>
-                <Text style={editStyles.label}>Description</Text>
-                <TextInput
-                  style={[editStyles.input, { height: 100, paddingTop: 12 }]}
-                  value={form.description}
-                  onChangeText={updateField('description')}
-                  placeholder="Description"
-                  placeholderTextColor="#999"
-                  multiline
-                  numberOfLines={4}
-                  textAlignVertical="top"
-                />
-              </View>
+                  <Text style={editStyles.sectionHeader}>Card Info</Text>
+                  <EditField label="Brand" value={form.brand} onChange={updateField('brand')} />
+                  <EditField label="Grade" value={form.grade} onChange={updateField('grade')} extra={{ autoCapitalize: 'characters' }} />
+                  <EditField label="Grading Company" value={form.gradingCompany} onChange={updateField('gradingCompany')} />
+                  <EditField label="Serial Number" value={form.serialNumber} onChange={updateField('serialNumber')} />
+
+                  <Text style={editStyles.sectionHeader}>Value</Text>
+                  <EditField label="Estimated Value ($)" value={form.estimatedValue} onChange={updateField('estimatedValue')} extra={{ keyboardType: 'decimal-pad' }} />
+
+                  <Text style={editStyles.sectionHeader}>Notes</Text>
+                  <View style={editStyles.wrap}>
+                    <Text style={editStyles.label}>Description</Text>
+                    <TextInput
+                      style={[editStyles.input, { height: 100, paddingTop: 12 }]}
+                      value={form.description}
+                      onChangeText={updateField('description')}
+                      placeholder="Description"
+                      placeholderTextColor="#999"
+                      multiline
+                      numberOfLines={4}
+                      textAlignVertical="top"
+                    />
+                  </View>
+                </>
+              )}
 
               {/* Private Item toggle — editItemIsPublic is the field that's
                   actually persisted (see handleSave's update above);
@@ -1175,31 +1378,41 @@ export default function ItemDetailScreen() {
 
               {isOwner && (
                 <View style={styles.ownerActions}>
-                  {registryLoading ? (
-                    <View style={styles.registryLoadingWrap}>
-                      <ActivityIndicator size="small" color={PV2.textTertiary} />
-                    </View>
-                  ) : registeredCard ? null : (
-                    <TouchableOpacity
-                      style={styles.registerButton}
-                      onPress={handleRegisterPress}
-                      disabled={registering}
-                      activeOpacity={0.8}>
-                      {registering ? (
-                        <>
-                          <ActivityIndicator color="#fff" />
-                          <Text style={styles.registerButtonText}>Registering…</Text>
-                        </>
-                      ) : (
-                        <>
-                          <Text style={styles.registerButtonText}>Register with CacheCase</Text>
-                          <Text style={styles.registerButtonSubtext}>
-                            Create a permanent CacheCase identity and provenance record for this physical card.
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
+                  {/* Registry remains sports-card-only (Phase 2 of
+                      multi-collectible-type support) — this owner-only
+                      register action, the only path that ever calls
+                      register_card()/populates registry snapshot fields, is
+                      hidden entirely for every other item_type. The
+                      read-only CacheCase ID button in ItemActionBar above
+                      stays visible for every type (registeredCard is simply
+                      always null for a non-sports-card item, so it already
+                      shows "Not Registered" harmlessly with no RPC call). */}
+                  {item.item_type === 'sports_card' &&
+                    (registryLoading ? (
+                      <View style={styles.registryLoadingWrap}>
+                        <ActivityIndicator size="small" color={PV2.textTertiary} />
+                      </View>
+                    ) : registeredCard ? null : (
+                      <TouchableOpacity
+                        style={styles.registerButton}
+                        onPress={handleRegisterPress}
+                        disabled={registering}
+                        activeOpacity={0.8}>
+                        {registering ? (
+                          <>
+                            <ActivityIndicator color="#fff" />
+                            <Text style={styles.registerButtonText}>Registering…</Text>
+                          </>
+                        ) : (
+                          <>
+                            <Text style={styles.registerButtonText}>Register with CacheCase</Text>
+                            <Text style={styles.registerButtonSubtext}>
+                              Create a permanent CacheCase identity and provenance record for this physical card.
+                            </Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    ))}
 
                   {(() => {
                     const inGrails = isInGrails(item.id);
