@@ -443,9 +443,32 @@ export function useItems(folderId: string | undefined) {
   // already-loaded grid off screen.
   const [error, setError] = useState<string | null>(null);
 
+  // Mirrors `items` after every commit, read (never written) inside load()
+  // below to build attachPrimaryImageIds' previousIds fallback — a ref, not
+  // a `load` dependency, specifically so redefining `load` on every items
+  // change can't re-fire the mount effect further down (load in its deps)
+  // and loop.
+  const itemsRef = useRef<CollectionItem[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  // Request-generation guard — same pattern as useFolders' own
+  // folderRequestIdRef above. load() is invoked both by this hook's mount/
+  // folderId-change effect and by external refresh() calls (e.g. this
+  // screen's own useFocusEffect firing on every refocus), so two
+  // overlapping calls are already possible; without this, whichever call's
+  // async chain happens to settle LAST wins every setState below regardless
+  // of which one actually started last, letting a stale, superseded
+  // response overwrite a newer one's already-correct result.
+  const loadGenerationRef = useRef(0);
+
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => generation === loadGenerationRef.current;
+
     if (!folderId) {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
       return;
     }
     setLoading(true);
@@ -460,22 +483,34 @@ export function useItems(folderId: string | undefined) {
         // client-side re-sort after the fact.
         .order('sort_order', { ascending: true });
 
+      if (!isCurrent()) return;
+
       if (queryError) {
         console.error('[useItems] query failed:', queryError.message, queryError);
         setError(queryError.message);
         return;
       }
 
-      setItems(await attachPrimaryImageIds((data ?? []) as CollectionItem[]));
+      // previousIds fallback (see attachPrimaryImageIds' own comment) is
+      // what keeps an already-displayed folder grid from blanking out when
+      // this one, otherwise-unrelated enrichment query transiently fails on
+      // a refocus-triggered refresh — the freshly-queried rows above are
+      // still authoritative for every OTHER field; only primary_image_id
+      // gets this failure-only fallback.
+      const previousIds = new Map(itemsRef.current.map((i) => [i.id, i.primary_image_id]));
+      const withPrimaryIds = await attachPrimaryImageIds((data ?? []) as CollectionItem[], previousIds);
+      if (!isCurrent()) return;
+      setItems(withPrimaryIds);
       setError(null);
     } catch (e) {
       // A thrown exception (as opposed to a {data, error}-shaped result) —
       // same defensive shape as useFolders' load(). Never touches `items`,
       // so previously-loaded data survives a failed refresh here too.
+      if (!isCurrent()) return;
       console.error('[useItems] load failed:', e);
       setError(e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [folderId]);
 
@@ -516,9 +551,27 @@ export function useAllItems(userId: string | undefined, options?: { publicOnly?:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Mirrors useItems' own itemsRef/loadGenerationRef pair above — same
+  // primary_image_id-blanking regression is structurally possible here too
+  // (this hook calls attachPrimaryImageIds on every load()/refresh() the
+  // same way), and load() here has the exact same "multiple async steps,
+  // multiple overlapping callers" shape that makes a stale response
+  // clobbering a newer one possible. itemsRef mirrors the LAST COMMITTED
+  // (i.e. isCurrent()-gated) `items`, updated only when a result is
+  // actually written below — never from a superseded generation.
+  const itemsRef = useRef<CollectionItemWithFolderVisibility[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  const loadGenerationRef = useRef(0);
+
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => generation === loadGenerationRef.current;
+
     if (!userId) {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
       return;
     }
     setLoading(true);
@@ -544,6 +597,7 @@ export function useAllItems(userId: string | undefined, options?: { publicOnly?:
       .eq('collection_status', 'active');
     if (publicOnly) query = query.eq('is_public', true);
     const { data, error: queryError } = await query.order('created_at', { ascending: false });
+    if (!isCurrent()) return;
     if (queryError) {
       console.error('[useAllItems] query failed:', queryError.message, queryError);
       setError(queryError.message);
@@ -593,12 +647,21 @@ export function useAllItems(userId: string | undefined, options?: { publicOnly?:
       const folderVisibleById = new Map(visibilityEntries);
       rows = rows.filter((r) => folderVisibleById.get(r.folder_id) === true);
     }
+    if (!isCurrent()) return;
 
     const withFolderVisibility = rows.map(({ folders, ...item }) => ({
       ...item,
       folder_is_public: folders?.is_public ?? false,
     }));
-    setItems(await attachPrimaryImageIds(withFolderVisibility));
+    // previousIds fallback (see attachPrimaryImageIds' own comment in
+    // lib/item-images.ts, and useItems above) — a transient failure of that
+    // one enrichment query must never blank an image that was already
+    // showing; only a query that actually SUCCEEDS with no matching row may
+    // legitimately clear primary_image_id.
+    const previousIds = new Map(itemsRef.current.map((i) => [i.id, i.primary_image_id]));
+    const withPrimaryIds = await attachPrimaryImageIds(withFolderVisibility, previousIds);
+    if (!isCurrent()) return;
+    setItems(withPrimaryIds);
     setLoading(false);
   }, [userId, publicOnly]);
 

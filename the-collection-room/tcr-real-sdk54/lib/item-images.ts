@@ -45,8 +45,23 @@ export function deriveStoragePathFromPublicUrl(
 // via ONE batched query, never one per item. Items with no primary gallery
 // row yet (a legacy gap Phase 1A's backfill closes for anything with a real
 // image_url) get primary_image_id: null, not omitted.
+//
+// previousIds (optional) is a fallback ONLY for the query-failure branch
+// below — a caller that re-runs this on every refocus/refresh (e.g.
+// hooks/use-collection.ts's useItems) can pass a map of each item's last
+// known-good primary_image_id, keyed by item id. This fixes a real folder-
+// detail regression: a transient failure of this one, un-retried query used
+// to null out EVERY item's primary_image_id on the very next refetch, which
+// blanked already-loaded grid tiles even though nothing about the actual
+// image or its cached signed URL had changed (the tile's own render
+// condition just stopped being true — see app/collection/[folderId].tsx's
+// grid tile). A query FAILURE is not an authoritative "no primary image"
+// answer, so it must never overwrite a previously-known value; a query
+// SUCCESS with zero matching rows still correctly writes null below (a
+// genuine deletion must still clear the tile).
 export async function attachPrimaryImageIds<T extends { id: string }>(
   items: T[],
+  previousIds?: Map<string, string | null>,
 ): Promise<(T & { primary_image_id: string | null })[]> {
   if (!items.length) return [];
   const { data, error } = await supabase
@@ -57,10 +72,11 @@ export async function attachPrimaryImageIds<T extends { id: string }>(
 
   if (error) {
     // Never block rendering of the items themselves over this — every item
-    // just resolves to no signed image this pass, same as "no primary row
-    // yet." A later refetch (e.g. pull-to-refresh) tries again.
+    // falls back to whatever was already known for it (if anything), same
+    // as "no primary row yet" for one truly seen for the first time. A
+    // later refetch (e.g. pull-to-refresh, or the next focus) tries again.
     if (__DEV__) console.error('[attachPrimaryImageIds] query failed:', error.message, error);
-    return items.map((i) => ({ ...i, primary_image_id: null }));
+    return items.map((i) => ({ ...i, primary_image_id: previousIds?.get(i.id) ?? null }));
   }
 
   const byItemId = new Map((data ?? []).map((r) => [r.item_id as string, r.id as string]));
