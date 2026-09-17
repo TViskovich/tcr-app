@@ -45,10 +45,20 @@ export type Folder = {
   parent_folder_id: string | null;
 };
 
+// Collectible type discriminator (supabase/migrations/
+// 20260916120000_add_collection_item_type.sql). 'sports_card' is the
+// default for every item created before this field existed — the Sports
+// Card fields on CollectionItem below remain the only ones with real forms;
+// the other three types are UI shells only until their own detail tables
+// and forms are built (see item_type's own architecture note in that
+// migration).
+export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book';
+
 export type CollectionItem = {
   id: string;
   folder_id: string;
   user_id: string;
+  item_type: CollectibleItemType;
   title: string | null;
   year: number | null;
   brand: string | null;

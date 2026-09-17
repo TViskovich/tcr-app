@@ -4,6 +4,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
@@ -19,13 +20,27 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { PendingItemGalleryManager, type PendingItemPhoto } from '@/components/item-detail/pending-item-gallery-manager';
+import { AnchoredMenu, menuStyles, useAnchoredMenu } from '@/components/profile-v2/profile-v2-anchored-menu';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import type { CollectibleItemType } from '@/types';
+
+// Collectible Type — Phase 1 (see supabase/migrations/
+// 20260916120000_add_collection_item_type.sql). Sports Card is the only
+// type with a real metadata form today; the other three render a temporary
+// shell (below) and block Save until their own detail tables/forms exist.
+const COLLECTIBLE_TYPES: { value: CollectibleItemType; label: string }[] = [
+  { value: 'sports_card', label: 'Sports Card' },
+  { value: 'pokemon', label: 'Pokémon' },
+  { value: 'figurine', label: 'Figurine' },
+  { value: 'comic_book', label: 'Comic Book' },
+];
 
 type FormState = {
   title: string;
@@ -164,6 +179,25 @@ export default function AddItemScreen() {
   const [adjustQueue, setAdjustQueue] = useState<{ uri: string; width: number; height: number }[]>([]);
   const [adjustIndex, setAdjustIndex] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
+  // Collectible Type — defaults to Sports Card, the only type with a real
+  // form right now (see COLLECTIBLE_TYPES above). Selecting another type
+  // swaps the metadata section below for a temporary shell and disables
+  // Save (isSportsCard gate on handleSubmit and the submit button both).
+  const [itemType, setItemType] = useState<CollectibleItemType>('sports_card');
+  const isSportsCard = itemType === 'sports_card';
+  const selectedTypeLabel = COLLECTIBLE_TYPES.find((t) => t.value === itemType)?.label ?? 'Sports Card';
+  // Shared anchored-dropdown mechanics (measure trigger, open a Modal-hosted
+  // box just under it, close on outside tap or selection) — see
+  // components/profile-v2/profile-v2-anchored-menu.tsx, already used for
+  // the profile panel's Follow/Following menu. Reused as-is rather than
+  // building a second dropdown primitive for this screen.
+  const {
+    open: typeMenuOpen,
+    anchor: typeMenuAnchor,
+    triggerRef: typeMenuTriggerRef,
+    openMenu: openTypeMenu,
+    closeMenu: closeTypeMenu,
+  } = useAnchoredMenu();
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Defaults to public; seeded from the parent folder's current is_public
@@ -313,6 +347,10 @@ export default function AddItemScreen() {
     // Collections-level entry point has no folder assigned yet, so nothing
     // may be persisted from it regardless of how handleSubmit is reached.
     if (isPreviewOnly) return;
+    // Same defense-in-depth pattern for Collectible Type: Pokémon/Figurine/
+    // Comic Book have no metadata form yet, so nothing may be persisted for
+    // them regardless of how handleSubmit is reached.
+    if (!isSportsCard) return;
     if (pendingPhotos.length === 0) {
       Alert.alert('Photo required', 'Please add at least one photo for this item.');
       return;
@@ -330,6 +368,7 @@ export default function AddItemScreen() {
         .insert({
           folder_id: folderId,
           user_id: userId,
+          item_type: itemType,
           title: form.title.trim() || null,
           player: form.player.trim() || null,
           team: form.team.trim() || null,
@@ -441,39 +480,93 @@ export default function AddItemScreen() {
             onSetCover={handleSetCover}
           />
 
-          {/* Card Details */}
-          <Text style={styles.sectionHeader}>Card Details</Text>
-          {field('Player', 'player', form, update)}
-          {field('Title', 'title', form, update)}
-          {field('Team', 'team', form, update)}
-          {field('Year', 'year', form, update, { keyboardType: 'number-pad', maxLength: 4 })}
-
-          {/* Card Info */}
-          <Text style={styles.sectionHeader}>Card Info</Text>
-          {field('Brand', 'brand', form, update)}
-          {field('Grade', 'grade', form, update, { autoCapitalize: 'characters' })}
-          {field('Grading Company', 'gradingCompany', form, update)}
-          {field('Serial Number', 'serialNumber', form, update)}
-
-          {/* Value */}
-          <Text style={styles.sectionHeader}>Value</Text>
-          {field('Estimated Value ($)', 'estimatedValue', form, update, { keyboardType: 'decimal-pad' })}
-
-          {/* Notes */}
-          <Text style={styles.sectionHeader}>Notes</Text>
+          {/* Collectible Type — item_type persisted on submit (see
+              handleSubmit's insert above). Switching away from Sports Card
+              swaps the whole metadata section below for a temporary shell
+              and disables Save (see isSportsCard gating throughout this
+              screen) until that type's own detail table/form exists. */}
           <View style={fieldStyles.wrap}>
-            <Text style={fieldStyles.label}>Description</Text>
-            <TextInput
-              style={[fieldStyles.input, styles.multiline]}
-              value={form.description}
-              onChangeText={update('description')}
-              placeholder="Description"
-              placeholderTextColor={PV2.textTertiary}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
+            <Text style={fieldStyles.label}>Collectible Type</Text>
+            <Pressable
+              ref={typeMenuTriggerRef}
+              style={styles.typeSelectTrigger}
+              onPress={openTypeMenu}
+              accessibilityRole="button"
+              accessibilityLabel="Collectible Type"
+              accessibilityHint="Opens collectible type options">
+              <Text style={styles.typeSelectValue}>{selectedTypeLabel}</Text>
+              <Text style={styles.typeSelectChevron}>▾</Text>
+            </Pressable>
           </View>
+
+          <AnchoredMenu visible={typeMenuOpen} anchor={typeMenuAnchor} onRequestClose={closeTypeMenu}>
+            {COLLECTIBLE_TYPES.map((option) => {
+              const selected = option.value === itemType;
+              return (
+                <Pressable
+                  key={option.value}
+                  style={styles.typeMenuItem}
+                  onPress={() => {
+                    setItemType(option.value);
+                    closeTypeMenu();
+                  }}
+                  accessibilityRole="menuitem"
+                  accessibilityState={{ selected }}>
+                  <Text style={[menuStyles.itemLabel, styles.typeMenuItemLabel]}>{option.label}</Text>
+                  {selected && <IconSymbol name="checkmark.circle.fill" size={16} color={PV2.accent} />}
+                </Pressable>
+              );
+            })}
+          </AnchoredMenu>
+
+          {isSportsCard ? (
+            <>
+              {/* Card Details */}
+              <Text style={styles.sectionHeader}>Card Details</Text>
+              {field('Player', 'player', form, update)}
+              {field('Title', 'title', form, update)}
+              {field('Team', 'team', form, update)}
+              {field('Year', 'year', form, update, { keyboardType: 'number-pad', maxLength: 4 })}
+
+              {/* Card Info */}
+              <Text style={styles.sectionHeader}>Card Info</Text>
+              {field('Brand', 'brand', form, update)}
+              {field('Grade', 'grade', form, update, { autoCapitalize: 'characters' })}
+              {field('Grading Company', 'gradingCompany', form, update)}
+              {field('Serial Number', 'serialNumber', form, update)}
+
+              {/* Value */}
+              <Text style={styles.sectionHeader}>Value</Text>
+              {field('Estimated Value ($)', 'estimatedValue', form, update, { keyboardType: 'decimal-pad' })}
+
+              {/* Notes */}
+              <Text style={styles.sectionHeader}>Notes</Text>
+              <View style={fieldStyles.wrap}>
+                <Text style={fieldStyles.label}>Description</Text>
+                <TextInput
+                  style={[fieldStyles.input, styles.multiline]}
+                  value={form.description}
+                  onChangeText={update('description')}
+                  placeholder="Description"
+                  placeholderTextColor={PV2.textTertiary}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </>
+          ) : (
+            // Temporary shell — no fake sports-card fields for these types.
+            // The real per-type metadata form/detail table lands in a later
+            // phase; for now this just explains why Save is disabled.
+            <View style={styles.comingSoonShell}>
+              <Text style={styles.comingSoonTitle}>{selectedTypeLabel} details coming soon</Text>
+              <Text style={styles.comingSoonBody}>
+                We&apos;re still building the {selectedTypeLabel.toLowerCase()} info form. You can add photos and
+                pick a folder now, but saving is disabled until that form ships.
+              </Text>
+            </View>
+          )}
 
           {/* Private Item toggle — same dynamic label/helper pattern as
               create-folder-modal.tsx / folder-edit-modal.tsx. isPublic is
@@ -498,17 +591,23 @@ export default function AddItemScreen() {
           </View>
 
           {/* Submit — disabled entirely in preview mode (no folder assigned
-              yet), with copy explaining why, so the user can never come
-              away thinking an item was saved when it wasn't. */}
+              yet) or when the selected Collectible Type has no metadata
+              form yet, with copy explaining why in either case, so the user
+              can never come away thinking an item was saved when it
+              wasn't. */}
           <TouchableOpacity
-            style={[styles.submitButton, (loading || isPreviewOnly) && styles.submitDisabled]}
+            style={[styles.submitButton, (loading || isPreviewOnly || !isSportsCard) && styles.submitDisabled]}
             onPress={handleSubmit}
-            disabled={loading || isPreviewOnly}>
+            disabled={loading || isPreviewOnly || !isSportsCard}>
             {loading ? (
               <ActivityIndicator color={PV2.textPrimary} />
             ) : (
               <Text style={styles.submitText}>
-                {isPreviewOnly ? 'Folder assignment required' : 'Save Item'}
+                {isPreviewOnly
+                  ? 'Folder assignment required'
+                  : !isSportsCard
+                    ? `${selectedTypeLabel} not yet supported`
+                    : 'Save Item'}
               </Text>
             )}
           </TouchableOpacity>
@@ -574,6 +673,67 @@ const styles = StyleSheet.create({
   multiline: {
     height: 100,
     paddingTop: 12,
+  },
+  // Trigger — same visual spec as fieldStyles.input below (border/radius/
+  // background/font all match the rest of the form's text inputs), just a
+  // row layout so the chevron sits at the right edge and a minHeight since
+  // this one has no multi-line text to guarantee its own height.
+  typeSelectTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  typeSelectValue: {
+    fontSize: 15,
+    color: PV2.textPrimary,
+  },
+  typeSelectChevron: {
+    fontSize: 15,
+    color: PV2.textSecondary,
+    marginLeft: 8,
+  },
+  // Menu items — AnchoredMenu's box stretches its children to the anchor's
+  // width by default (no alignItems override), so this row layout naturally
+  // fills the same width as typeSelectTrigger above it.
+  typeMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  typeMenuItemLabel: {
+    flex: 1,
+    textAlign: 'left',
+    fontSize: 15,
+  },
+  comingSoonShell: {
+    borderWidth: 1,
+    borderColor: PV2.border,
+    borderRadius: 10,
+    backgroundColor: PV2.panel,
+    padding: 16,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  comingSoonTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+    marginBottom: 6,
+  },
+  comingSoonBody: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+    lineHeight: 18,
   },
   toggleRow: {
     flexDirection: 'row',
