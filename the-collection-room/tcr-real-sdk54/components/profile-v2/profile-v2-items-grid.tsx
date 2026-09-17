@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useMemo } from 'react';
 import { Dimensions, StyleSheet, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
+import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
@@ -36,6 +37,19 @@ const CELL_HEIGHT = CELL_WIDTH * (3.5 / 2.5);
 // fewer than this).
 const LOADING_PLACEHOLDER_COUNT = 9;
 
+// Bounded byte-cache warmup limit (Phase 3 of the private-image caching
+// upgrade) — same "first screenful" heuristic as LOADING_PLACEHOLDER_COUNT
+// above, not a coincidence: this tab's items are already rendered
+// newest-first in a fixed COLS-wide grid, so the first 9 approximate
+// what's on screen before any scrolling. This is a NEW bound: the prior
+// Image.prefetch() call here had none at all — it warmed every item in
+// `items` (Profile's full, unpaginated Items tab, potentially the user's
+// entire collection). That was already wrong before Phase 3 (a real
+// "preload the whole collection" bug, not something this upgrade
+// introduced) — fixed here rather than carried forward into the new
+// warmup mechanism.
+const ITEMS_GRID_PREFETCH_LIMIT = 9;
+
 type ItemWithImage = CollectionItem & { primary_image_id: string | null };
 
 type Props = {
@@ -62,14 +76,28 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
     items.map((i) => i.primary_image_id),
   );
 
-  // Same shared-prefetch warm-up as ProfileV2Grid, for the same reason: a
-  // grid's worth of tiles resolving their signed URLs near-simultaneously
-  // should also finish decoding together, not pop in one at a time.
-  const resolvedUrlsKey = Array.from(signedImageUrls.values()).sort().join(',');
-  useEffect(() => {
-    if (!resolvedUrlsKey) return;
-    Image.prefetch(resolvedUrlsKey.split(',')).catch(() => {});
-  }, [resolvedUrlsKey]);
+  // Bounded byte-cache warmup for the first ITEMS_GRID_PREFETCH_LIMIT
+  // tiles — order-preserving (items are already newest-first), so this
+  // approximates "what's on screen before any scrolling" without real
+  // viewport measurement, same convention as profile-v2-screen.tsx's own
+  // Collection-preview warmup. Phase 3: this used to be an unbounded
+  // Image.prefetch(url[]) covering every item, which had no cacheKey
+  // option in the installed expo-image version anyway — it only ever
+  // populated a cache entry keyed by the URL itself, which this grid's own
+  // <Image> (Phase 2) no longer reads from (it reads by stable cacheKey).
+  // PrivateImageWarmup below mounts hidden <Image>s with the exact {uri,
+  // cacheKey} shape the real tiles use — and, unlike the old effect, is
+  // now actually bounded (see ITEMS_GRID_PREFETCH_LIMIT's own comment).
+  const warmupEntries = useMemo(
+    () =>
+      items.slice(0, ITEMS_GRID_PREFETCH_LIMIT).flatMap((item) => {
+        const imageId = item.primary_image_id;
+        const uri = imageId ? signedImageUrls.get(imageId) : undefined;
+        if (!imageId || !uri) return [];
+        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+      }),
+    [items, signedImageUrls, identity],
+  );
 
   if (loading && items.length === 0) {
     return (
@@ -83,6 +111,10 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
 
   return (
     <View style={styles.grid}>
+      {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
+          never participates in this View's own flexWrap layout, safe as
+          the first child regardless of position. */}
+      <PrivateImageWarmup entries={warmupEntries} />
       {items.map((item) => {
         const uri = item.primary_image_id ? signedImageUrls.get(item.primary_image_id) : undefined;
         return (

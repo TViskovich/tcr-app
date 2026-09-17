@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,6 +25,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { PostgrestError } from '@supabase/supabase-js';
 
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
+import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
@@ -49,6 +50,7 @@ import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import {
   deleteProfileImage,
@@ -344,6 +346,11 @@ type Props = {
 export function ProfileV2Screen({ userId }: Props) {
   const { session, signOut } = useAuth();
   const currentUserId = session?.user?.id;
+  // Same identity the signed-image hooks below already key their own
+  // caches by — reused here only to build each warmed image's stable
+  // expo-image cacheKey (Phase 2/3 of the private-image caching upgrade —
+  // see lib/private-image-cache-key.ts). Never a second identity concept.
+  const identity = currentUserId ?? 'anon';
   const isOwnProfile = currentUserId === userId;
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -423,32 +430,35 @@ export function ProfileV2Screen({ userId }: Props) {
       .map((e) => e.folder.id),
   );
 
-  // Bounded prefetch of the actual image bytes for whatever's likely to be
+  // Bounded warmup of the actual image bytes for whatever's likely to be
   // the FIRST visible Collection preview row(s) — deliberately capped, not
-  // "prefetch every resolved preview URL," so this can never turn into
+  // "warm every resolved preview URL," so this can never turn into
   // preloading a large collection just because its cover/preview URLs were
   // already warmed above. previewGridEntries is folder-by-folder in the
   // same order the Collection tab renders them, so the first
   // PREVIEW_PREFETCH_LIMIT item entries approximate "what's on screen
   // before any scrolling" without needing real viewport measurement.
-  // Same Image.prefetch() pattern profile-v2-grid.tsx/profile-v2-items-
-  // grid.tsx already use for their own (differently-bounded) grids — not a
-  // new prefetch mechanism, just applied here with a smaller, order-
-  // preserving cap instead of their full-resolved-set one.
-  const boundedPreviewItemUrls = previewGridEntries
-    .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
-    .slice(0, PREVIEW_PREFETCH_LIMIT)
-    .map((e) => (e.item.primary_image_id ? previewItemUrls.get(e.item.primary_image_id) : undefined))
-    .filter((url): url is string => !!url);
-  // Joined (not sorted — order is what makes this "the first N", and a
-  // stable string is still all useEffect needs to detect an actual change)
-  // into one dependency string so the prefetch effect only re-runs when the
-  // actual resolved URL set changes, not on every incidental re-render.
-  const boundedPreviewUrlsKey = boundedPreviewItemUrls.join(',');
-  useEffect(() => {
-    if (!boundedPreviewUrlsKey) return;
-    Image.prefetch(boundedPreviewUrlsKey.split(',')).catch(() => {});
-  }, [boundedPreviewUrlsKey]);
+  //
+  // Phase 3: this used to be a plain Image.prefetch(url[]) call, but that
+  // API has no cacheKey option in the installed expo-image version — it
+  // would only ever populate a cache entry keyed by the URL itself, which
+  // HorizontalCardPreview's own CollectionPreviewCard (Phase 2) no longer
+  // reads from (it reads by stable cacheKey). Rendering PrivateImageWarmup
+  // below with the same {uri, cacheKey} shape the real preview cards use
+  // is what actually warms the bucket the Collection tab will hit.
+  const boundedPreviewWarmupEntries = useMemo(
+    () =>
+      previewGridEntries
+        .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
+        .slice(0, PREVIEW_PREFETCH_LIMIT)
+        .flatMap((e) => {
+          const imageId = e.item.primary_image_id;
+          const uri = imageId ? previewItemUrls.get(imageId) : undefined;
+          if (!imageId || !uri) return [];
+          return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+        }),
+    [previewGridEntries, previewItemUrls, identity],
+  );
 
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   // The one outer scroll container for this whole screen (identity card,
@@ -1623,6 +1633,13 @@ export function ProfileV2Screen({ userId }: Props) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
+          deliberately a sibling OUTSIDE the ScrollView below, not one of
+          its direct children, so it can never shift
+          stickyHeaderIndices={[1]}'s own index-1 assumption (that index
+          must always resolve to the tab row — see that prop's own
+          comment). */}
+      <PrivateImageWarmup entries={boundedPreviewWarmupEntries} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           ref={scrollRef}

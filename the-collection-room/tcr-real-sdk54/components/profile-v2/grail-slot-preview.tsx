@@ -265,22 +265,21 @@ export function GrailSlotPreview({
       const upcomingIdx = activeIdx === -1 ? 0 : (activeIdx + 1) % images.length;
       const upcomingUri = images[upcomingIdx];
       if (!upcomingUri) return;
-      Image.prefetch(upcomingUri)
-        .catch(() => {})
-        .finally(() => {
-          if (!mountedRef.current) return;
-          // The list this tick was scheduled against may have already
-          // been superseded by a newer effect run (which tears down and
-          // reschedules independently) — re-check membership against the
-          // latest list before even mounting the incoming layer.
-          if (!usableImagesRef.current.includes(upcomingUri)) return;
-          // Prefetch resolving only means the bytes are cached, not that
-          // a freshly-mounted AnimatedExpoImage layer has finished
-          // decoding and is ready to paint — the fade itself starts from
-          // that layer's own onLoad (handleIncomingLoad below), not here.
-          incomingLoadTriggeredRef.current = false;
-          setIncomingUri(upcomingUri);
-        });
+      // Mounts the incoming layer directly — no Image.prefetch() staging
+      // step first (Phase 3 of the private-image caching upgrade). That
+      // prefetch used to warm the bytes ahead of mounting, but
+      // Image.prefetch(url) has no cacheKey option in the installed
+      // expo-image version: it only ever populated a cache entry keyed by
+      // the URL itself, which the incoming <AnimatedExpoImage> below
+      // (Phase 2) no longer reads from (it reads by stable cacheKey), so
+      // that staging delay stopped doing anything useful. Visual
+      // correctness is unaffected either way — the fade has always started
+      // from the mounted layer's own onLoad (handleIncomingLoad below),
+      // never from the prefetch resolving; see that function's own
+      // comment. Removing the now-pointless step just means this layer's
+      // own real load starts a little sooner.
+      incomingLoadTriggeredRef.current = false;
+      setIncomingUri(upcomingUri);
     }
 
     // Stagger only ever applies once, on this instance's very first

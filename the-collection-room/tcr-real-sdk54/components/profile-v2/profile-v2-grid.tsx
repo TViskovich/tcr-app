@@ -1,9 +1,10 @@
-import { useEffect } from 'react';
+import { useMemo } from 'react';
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { Image } from 'expo-image';
-
+import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { useAuth } from '@/lib/auth';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { GrailSlotPreview } from './grail-slot-preview';
@@ -75,15 +76,21 @@ export function ProfileV2Grid({
   onReplace,
   onRemove,
 }: Props) {
+  // Same identity useSignedItemImages itself keys its cache by — reused
+  // here only to build each warmed image's stable expo-image cacheKey
+  // (Phase 2/3 of the private-image caching upgrade — see
+  // lib/private-image-cache-key.ts). Never a second identity concept.
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
+
   // One batched call for the whole 3x3 grid — never one signing request per
   // slot, and never one per collection slot's preview images either
   // (item-images beta privacy hardening, Phase 3C / signed-delivery
   // migration): an item slot contributes its own primary_image_id, a
   // collection slot contributes every id in its previewImageIds, all
   // resolved together in this single call.
-  const { urls: signedImageUrls } = useSignedItemImages(
-    slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? []))),
-  );
+  const slotImageIds = slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? [])));
+  const { urls: signedImageUrls } = useSignedItemImages(slotImageIds);
 
   // Warms expo-image's own cache for the whole grid up front, the moment
   // the signing batch resolves — same pattern app/collection/[folderId].tsx
@@ -95,15 +102,26 @@ export function ProfileV2Grid({
   // "feeling ready together" instead of popping in one by one is exactly
   // what a shared prefetch buys, without changing signing (still one
   // batched useSignedItemImages call) or storage/RLS architecture at all.
-  // Keyed by a stable, sorted, joined string rather than `signedImageUrls`
-  // itself (a brand-new Map identity on every render of this hook, per its
-  // own implementation) — this must only actually re-run when the resolved
-  // URL set itself changes, not on every incidental re-render.
-  const resolvedUrlsKey = Array.from(signedImageUrls.values()).sort().join(',');
-  useEffect(() => {
-    if (!resolvedUrlsKey) return;
-    Image.prefetch(resolvedUrlsKey.split(',')).catch(() => {});
-  }, [resolvedUrlsKey]);
+  //
+  // Phase 3: this used to be a plain Image.prefetch(url[]) call, but that
+  // API has no cacheKey option in the installed expo-image version — it
+  // would only ever populate a cache entry keyed by the URL itself, which
+  // GrailSlotPreview (Phase 2) no longer reads from (it reads by stable
+  // cacheKey). PrivateImageWarmup below, given the same ids this grid
+  // already resolved for signing, mounts hidden <Image>s with the exact
+  // {uri, cacheKey} shape the real slots use — genuinely bounded (never
+  // more than SLOT_COUNT item ids, plus each collection slot's own small
+  // previewImageIds list), never "warm the whole collection."
+  const warmupEntries = useMemo(
+    () =>
+      slotImageIds.flatMap((imageId) => {
+        const uri = imageId ? signedImageUrls.get(imageId) : undefined;
+        if (!imageId || !uri) return [];
+        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [slotImageIds.join(','), signedImageUrls, identity],
+  );
 
   // State: initial load failed, nothing loaded yet — never render 9 empty
   // owner-editable "+" slots for a failed query, which would misrepresent
@@ -129,6 +147,10 @@ export function ProfileV2Grid({
 
   return (
     <View style={styles.grid}>
+      {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
+          never participates in this View's own layout (gap/margin), safe
+          as the first child regardless of position. */}
+      <PrivateImageWarmup entries={warmupEntries} />
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {row.map((slot, colIndex) => {
