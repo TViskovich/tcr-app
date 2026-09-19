@@ -427,7 +427,11 @@ export default function PostReplyScreen() {
               <Text style={styles.errorText}>{loadError ?? 'This post could not be found.'}</Text>
             </View>
           ) : (
-            <ScrollView style={styles.flex} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scrollContent}>
+            <ScrollView
+              style={styles.flex}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              contentContainerStyle={styles.scrollContent}>
               {/* Original post context — ONE shared layout for every
                   post_type, see ReplyContextPreview's own comment. This is
                   the one piece of the interaction model borrowed from the

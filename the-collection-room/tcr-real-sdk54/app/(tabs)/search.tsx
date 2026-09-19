@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
@@ -507,6 +508,7 @@ export default function SearchScreen() {
             data={userResults}
             keyExtractor={(item) => item.id}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             contentContainerStyle={listContentStyle}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
@@ -528,6 +530,7 @@ export default function SearchScreen() {
             data={cardResults}
             keyExtractor={(item) => item.id}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             contentContainerStyle={listContentStyle}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}

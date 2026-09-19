@@ -74,6 +74,7 @@ export default function SignUpScreen() {
       <ScrollView
         contentContainerStyle={styles.inner}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <CacheCaseLogo variant="light" size="md" style={styles.logo} />
         <Text style={styles.title}>Create Account</Text>

@@ -296,6 +296,7 @@ export default function ClaimCardScreen() {
             style={styles.scroll}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
             <Text style={styles.ccIdLabel}>{record.cc_id}</Text>
 

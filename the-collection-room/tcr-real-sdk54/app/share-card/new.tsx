@@ -285,7 +285,10 @@ export default function ShareCardScreen() {
         <KeyboardAvoidingView
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
             <View style={styles.selectRow}>
               <Text style={styles.sectionLabel}>
                 Choose 1{'–'}{MAX_CARDS} cards

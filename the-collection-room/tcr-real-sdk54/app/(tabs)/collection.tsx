@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   FlatList,
+  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -406,6 +407,8 @@ export default function CollectionScreen() {
           <FlatList
             data={filteredFolders}
             keyExtractor={(item) => item.id}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             contentContainerStyle={[styles.listContent, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}

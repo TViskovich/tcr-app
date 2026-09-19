@@ -1757,6 +1757,8 @@ export default function CollectionFolderScreen() {
               keyExtractor={(row, index) =>
                 row.kind === 'sticky' ? 'sticky-header' : row.kind === 'empty' ? 'empty-state' : `row-${index}`
               }
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
               // Called here (an already-built element), NOT passed as a bare
               // function reference. VirtualizedList's own rendering does
               // `isValidElement(ListHeaderComponent) ? ListHeaderComponent :

@@ -698,6 +698,8 @@ export default function ConversationScreen() {
           style={styles.list}
           data={messages}
           keyExtractor={(item) => item.id}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           renderItem={({ item }) => (
             <MessageBubble message={item} isOwn={item.sender_id === currentUserId} />
           )}

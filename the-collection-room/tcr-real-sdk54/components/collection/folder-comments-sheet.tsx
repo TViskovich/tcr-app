@@ -231,6 +231,17 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
                   <FlatList
                     data={comments}
                     keyExtractor={(item) => item.id}
+                    keyboardShouldPersistTaps="handled"
+                    // "on-drag" rather than "interactive" (used elsewhere in
+                    // the app) — this whole sheet is already wrapped in its
+                    // own GestureDetector/Gesture.Pan (above) for swipe-to-
+                    // dismiss-the-sheet. "interactive" hands continuous
+                    // touch tracking to the keyboard as the list is dragged,
+                    // which would compete with that same drag for the pan-
+                    // to-close gesture; "on-drag" still dismisses the
+                    // keyboard on a scroll gesture without taking over the
+                    // touch stream.
+                    keyboardDismissMode="on-drag"
                     renderItem={({ item }) => (
                       <CommentRow comment={item} isOwn={item.user_id === currentUserId} onDelete={deleteComment} />
                     )}

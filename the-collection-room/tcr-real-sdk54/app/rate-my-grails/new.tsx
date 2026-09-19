@@ -124,7 +124,10 @@ export default function NewRateMyGrailsScreen() {
         <KeyboardAvoidingView
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
             <Text style={styles.sectionLabel}>This is what will be shared</Text>
             <View style={styles.grid}>
               {grails.map((g) => (
