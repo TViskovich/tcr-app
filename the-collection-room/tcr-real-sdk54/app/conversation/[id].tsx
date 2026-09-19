@@ -16,7 +16,7 @@ import {
   View,
 } from 'react-native';
 
-import { uuid } from 'expo-modules-core';
+import * as Crypto from 'expo-crypto';
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -639,7 +639,7 @@ export default function ConversationScreen() {
   function handleSend() {
     if (!currentUserId || !newMessage.trim() || !convId || sendingRef.current || pendingSend) return;
     const body = newMessage.trim();
-    const sendId = uuid.v4();
+    const sendId = Crypto.randomUUID();
     setNewMessage('');
     performSend(sendId, body);
   }
