@@ -19,25 +19,38 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
 import { PendingItemGalleryManager, type PendingItemPhoto } from '@/components/item-detail/pending-item-gallery-manager';
+import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { AnchoredMenu, menuStyles, useAnchoredMenu } from '@/components/profile-v2/profile-v2-anchored-menu';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { createComicBookItem } from '@/lib/comic-book-items';
+import {
+  COMIC_EDITION_OPTIONS,
+  COMIC_GRADING_COMPANY_OPTIONS,
+  COMIC_KEY_TYPE_OPTIONS,
+  COMIC_PRINTING_OPTIONS,
+  COMIC_RAW_CONDITION_OPTIONS,
+  COMIC_SPECIAL_COVER_FINISH_OPTIONS,
+} from '@/lib/comic-book-options';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { createPokemonItem } from '@/lib/pokemon-items';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectibleItemType } from '@/types';
+import type { CollectibleItemType, ComicConditionType } from '@/types';
 
 // Collectible Type — Phase 1 (see supabase/migrations/
-// 20260916120000_add_collection_item_type.sql). Sports Card and Pokémon
-// (Phase 2 — supabase/migrations/20260917120000_create_pokemon_card_details.sql
-// / 20260917120100_create_pokemon_item_rpcs.sql) both have real metadata
-// forms now; Figurine/Comic Book still render a temporary shell (below) and
-// block Save until their own detail tables/forms exist.
+// 20260916120000_add_collection_item_type.sql). Sports Card, Pokémon (Phase
+// 2 — supabase/migrations/20260917120000_create_pokemon_card_details.sql /
+// 20260917120100_create_pokemon_item_rpcs.sql), and Comic Book (Phase 3 —
+// supabase/migrations/20260917130000_create_comic_book_details.sql /
+// 20260917130100_create_comic_book_item_rpcs.sql) all have real metadata
+// forms now; Figurine still renders a temporary shell (below) and blocks
+// Save until its own detail table/form exists.
 const COLLECTIBLE_TYPES: { value: CollectibleItemType; label: string }[] = [
   { value: 'sports_card', label: 'Sports Card' },
   { value: 'pokemon', label: 'Pokémon' },
@@ -103,6 +116,102 @@ const INITIAL_POKEMON_FORM: PokemonFormState = {
   description: '',
 };
 
+// Comic Book's own form shape (Phase 3 — supabase/migrations/
+// 20260917130000_create_comic_book_details.sql /
+// 20260917130100_create_comic_book_item_rpcs.sql), mirroring
+// PokemonFormState's own separate-state pattern. No title field —
+// collection_items.title is derived server-side from seriesTitle (plus
+// issueNumber, when present) by create_comic_book_item, same as Pokémon
+// derives it from pokemonName. conditionType/isKeyIssue/isSigned/isRestored
+// gate which of the conditional field groups below are shown; keyTypes is
+// the one multi-select field in this form.
+type ComicFormState = {
+  seriesTitle: string;
+  issueNumber: string;
+  publisher: string;
+  publicationYear: string;
+  volume: string;
+  coverVariant: string;
+  printing: string;
+  conditionType: ComicConditionType;
+  condition: string;
+  gradingCompany: string;
+  grade: string;
+  certificationNumber: string;
+  labelType: string;
+  pageQuality: string;
+  isKeyIssue: boolean;
+  keyTypes: string[];
+  keyDescription: string;
+  characters: string;
+  storyArc: string;
+  writer: string;
+  interiorArtist: string;
+  coverArtist: string;
+  edition: string;
+  variantName: string;
+  variantArtist: string;
+  incentiveRatio: string;
+  retailerExclusive: string;
+  specialCoverFinish: string;
+  countryMarket: string;
+  isSigned: boolean;
+  signedBy: string;
+  signatureAuthentication: string;
+  isRestored: boolean;
+  restorationNotes: string;
+  estimatedValue: string;
+  description: string;
+};
+
+const INITIAL_COMIC_FORM: ComicFormState = {
+  seriesTitle: '',
+  issueNumber: '',
+  publisher: '',
+  publicationYear: '',
+  volume: '',
+  coverVariant: '',
+  printing: '',
+  conditionType: 'raw',
+  condition: '',
+  gradingCompany: '',
+  grade: '',
+  certificationNumber: '',
+  labelType: '',
+  pageQuality: '',
+  isKeyIssue: false,
+  keyTypes: [],
+  keyDescription: '',
+  characters: '',
+  storyArc: '',
+  writer: '',
+  interiorArtist: '',
+  coverArtist: '',
+  edition: '',
+  variantName: '',
+  variantArtist: '',
+  incentiveRatio: '',
+  retailerExclusive: '',
+  specialCoverFinish: '',
+  countryMarket: '',
+  isSigned: false,
+  signedBy: '',
+  signatureAuthentication: '',
+  isRestored: false,
+  restorationNotes: '',
+  estimatedValue: '',
+  description: '',
+};
+
+// The subset of ComicFormState's own keys whose value is a plain string —
+// excludes conditionType/isKeyIssue/keyTypes/isSigned/isRestored, which
+// need their own dedicated controls (SelectField/MultiSelectField/Switch)
+// rather than a bare TextInput. Named here (vs. inlined at comicField's own
+// call site) purely for readability.
+type ComicStringField = {
+  [K in keyof ComicFormState]: ComicFormState[K] extends string ? K : never;
+}[keyof ComicFormState];
+
 function field(label: string, key: keyof FormState, form: FormState, update: (k: keyof FormState) => (v: string) => void, extra?: object) {
   return (
     <View style={fieldStyles.wrap}>
@@ -141,6 +250,53 @@ function pokemonField(
         placeholderTextColor={PV2.textTertiary}
         placeholder={label}
         {...extra}
+      />
+    </View>
+  );
+}
+
+// Same shape as field()/pokemonField() above, parameterized over the string
+// fields of ComicFormState — kept as its own small function for the same
+// reason pokemonField is its own function rather than a generified field().
+function comicField(
+  label: string,
+  key: ComicStringField,
+  form: ComicFormState,
+  update: (k: keyof ComicFormState) => (v: string) => void,
+  extra?: object,
+) {
+  return (
+    <View style={fieldStyles.wrap}>
+      <Text style={fieldStyles.label}>{label}</Text>
+      <TextInput
+        style={fieldStyles.input}
+        value={form[key]}
+        onChangeText={update(key)}
+        placeholderTextColor={PV2.textTertiary}
+        placeholder={label}
+        {...extra}
+      />
+    </View>
+  );
+}
+
+// A labeled Switch row for one of Comics' three boolean toggles (Key Issue,
+// Signed, Restored) — same visual language as the screen's own Public/
+// Private toggle further down (toggleRow/toggleTextArea/toggleLabel/
+// toggleSub), just reusable across the three since Comics needs it more
+// than once in one screen (unlike that single Public/Private instance).
+function comicToggleRow(label: string, sublabel: string, value: boolean, onValueChange: (v: boolean) => void) {
+  return (
+    <View style={styles.toggleRow}>
+      <View style={styles.toggleTextArea}>
+        <Text style={styles.toggleLabel}>{label}</Text>
+        <Text style={styles.toggleSub}>{sublabel}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
+        thumbColor="#fff"
       />
     </View>
   );
@@ -242,14 +398,17 @@ export default function AddItemScreen() {
   const [adjustIndex, setAdjustIndex] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [pokemonForm, setPokemonForm] = useState<PokemonFormState>(INITIAL_POKEMON_FORM);
-  // Collectible Type — defaults to Sports Card. Sports Card and Pokémon both
-  // have real forms (see COLLECTIBLE_TYPES above); Figurine/Comic Book still
-  // swap the metadata section below for a temporary shell and disable Save
-  // (isSupportedType gate on handleSubmit and the submit button both).
+  const [comicForm, setComicForm] = useState<ComicFormState>(INITIAL_COMIC_FORM);
+  // Collectible Type — defaults to Sports Card. Sports Card, Pokémon, and
+  // Comic Book all have real forms (see COLLECTIBLE_TYPES above); Figurine
+  // still swaps the metadata section below for a temporary shell and
+  // disables Save (isSupportedType gate on handleSubmit and the submit
+  // button both).
   const [itemType, setItemType] = useState<CollectibleItemType>('sports_card');
   const isSportsCard = itemType === 'sports_card';
   const isPokemon = itemType === 'pokemon';
-  const isSupportedType = isSportsCard || isPokemon;
+  const isComicBook = itemType === 'comic_book';
+  const isSupportedType = isSportsCard || isPokemon || isComicBook;
   const selectedTypeLabel = COLLECTIBLE_TYPES.find((t) => t.value === itemType)?.label ?? 'Sports Card';
   // Shared anchored-dropdown mechanics (measure trigger, open a Modal-hosted
   // box just under it, close on outside tap or selection) — see
@@ -296,6 +455,14 @@ export default function AddItemScreen() {
 
   function updatePokemon(key: keyof PokemonFormState) {
     return (value: string) => setPokemonForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updateComic(key: keyof ComicFormState) {
+    return (value: string) => setComicForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function setComicField<K extends keyof ComicFormState>(key: K, value: ComicFormState[K]) {
+    setComicForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function makeLocalPhotoId(): string {
@@ -432,6 +599,13 @@ export default function AddItemScreen() {
       Alert.alert('Pokémon name required', 'Please enter the Pokémon name for this card.');
       return;
     }
+    // Comics' one required field — collection_items.title is derived from
+    // this server-side (see create_comic_book_item), same reasoning as
+    // Pokémon's pokemonName check above.
+    if (isComicBook && !comicForm.seriesTitle.trim()) {
+      Alert.alert('Series / Title required', 'Please enter the series or title for this comic.');
+      return;
+    }
     if (!session?.user?.id) return;
     const userId = session.user.id;
 
@@ -470,26 +644,66 @@ export default function AddItemScreen() {
         if (itemError || !data) throw new Error('Failed to save item. Please try again.');
         item = data;
       } else {
-        // createPokemonItem already throws a real Error with the RPC's own
-        // message (e.g. a folder-ownership or validation failure) — let it
-        // propagate to this function's own outer catch below rather than
-        // genericizing it, unlike the Sports Card branch above (which has
-        // no useful message of its own to preserve from a plain postgrest
-        // {error} result).
-        item = await createPokemonItem(folderId, {
-          estimatedValue: pokemonForm.estimatedValue ? parseFloat(pokemonForm.estimatedValue) : null,
-          description: pokemonForm.description.trim() || null,
-          isPublic,
-          pokemonName: pokemonForm.pokemonName.trim() || null,
-          setName: pokemonForm.setName.trim() || null,
-          cardNumber: pokemonForm.cardNumber.trim() || null,
-          rarity: pokemonForm.rarity.trim() || null,
-          language: pokemonForm.language.trim() || null,
-          edition: pokemonForm.edition.trim() || null,
-          holoType: pokemonForm.holoType.trim() || null,
-          gradingCompany: pokemonForm.gradingCompany.trim() || null,
-          grade: pokemonForm.grade.trim() || null,
-        });
+        // createPokemonItem/createComicBookItem already throw a real Error
+        // with the RPC's own message (e.g. a folder-ownership or validation
+        // failure) — let it propagate to this function's own outer catch
+        // below rather than genericizing it, unlike the Sports Card branch
+        // above (which has no useful message of its own to preserve from a
+        // plain postgrest {error} result).
+        item = isPokemon
+          ? await createPokemonItem(folderId, {
+              estimatedValue: pokemonForm.estimatedValue ? parseFloat(pokemonForm.estimatedValue) : null,
+              description: pokemonForm.description.trim() || null,
+              isPublic,
+              pokemonName: pokemonForm.pokemonName.trim() || null,
+              setName: pokemonForm.setName.trim() || null,
+              cardNumber: pokemonForm.cardNumber.trim() || null,
+              rarity: pokemonForm.rarity.trim() || null,
+              language: pokemonForm.language.trim() || null,
+              edition: pokemonForm.edition.trim() || null,
+              holoType: pokemonForm.holoType.trim() || null,
+              gradingCompany: pokemonForm.gradingCompany.trim() || null,
+              grade: pokemonForm.grade.trim() || null,
+            })
+          : await createComicBookItem(folderId, {
+              estimatedValue: comicForm.estimatedValue ? parseFloat(comicForm.estimatedValue) : null,
+              description: comicForm.description.trim() || null,
+              isPublic,
+              seriesTitle: comicForm.seriesTitle.trim() || null,
+              issueNumber: comicForm.issueNumber.trim() || null,
+              publisher: comicForm.publisher.trim() || null,
+              publicationYear: comicForm.publicationYear ? parseInt(comicForm.publicationYear, 10) : null,
+              volume: comicForm.volume.trim() || null,
+              coverVariant: comicForm.coverVariant.trim() || null,
+              printing: comicForm.printing.trim() || null,
+              conditionType: comicForm.conditionType,
+              condition: comicForm.condition.trim() || null,
+              gradingCompany: comicForm.gradingCompany.trim() || null,
+              grade: comicForm.grade.trim() || null,
+              certificationNumber: comicForm.certificationNumber.trim() || null,
+              labelType: comicForm.labelType.trim() || null,
+              pageQuality: comicForm.pageQuality.trim() || null,
+              isKeyIssue: comicForm.isKeyIssue,
+              keyTypes: comicForm.keyTypes,
+              keyDescription: comicForm.keyDescription.trim() || null,
+              characters: comicForm.characters.trim() || null,
+              storyArc: comicForm.storyArc.trim() || null,
+              writer: comicForm.writer.trim() || null,
+              interiorArtist: comicForm.interiorArtist.trim() || null,
+              coverArtist: comicForm.coverArtist.trim() || null,
+              edition: comicForm.edition.trim() || null,
+              variantName: comicForm.variantName.trim() || null,
+              variantArtist: comicForm.variantArtist.trim() || null,
+              incentiveRatio: comicForm.incentiveRatio.trim() || null,
+              retailerExclusive: comicForm.retailerExclusive.trim() || null,
+              specialCoverFinish: comicForm.specialCoverFinish.trim() || null,
+              countryMarket: comicForm.countryMarket.trim() || null,
+              isSigned: comicForm.isSigned,
+              signedBy: comicForm.signedBy.trim() || null,
+              signatureAuthentication: comicForm.signatureAuthentication.trim() || null,
+              isRestored: comicForm.isRestored,
+              restorationNotes: comicForm.restorationNotes.trim() || null,
+            });
       }
 
       // Cover first, then the rest in their existing pending order —
@@ -575,6 +789,7 @@ export default function AddItemScreen() {
             { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
           ]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
 
           <PendingItemGalleryManager
@@ -587,11 +802,11 @@ export default function AddItemScreen() {
           />
 
           {/* Collectible Type — item_type persisted on submit (see
-              handleSubmit's insert above). Sports Card and Pokémon each show
-              their own real form below; Figurine/Comic Book still swap the
-              metadata section for a temporary shell and disable Save (see
-              isSupportedType gating throughout this screen) until their own
-              detail table/form exists. */}
+              handleSubmit's insert above). Sports Card, Pokémon, and Comic
+              Book each show their own real form below; Figurine still swaps
+              the metadata section for a temporary shell and disables Save
+              (see isSupportedType gating throughout this screen) until its
+              own detail table/form exists. */}
           <View style={fieldStyles.wrap}>
             <Text style={fieldStyles.label}>Collectible Type</Text>
             <Pressable
@@ -690,6 +905,175 @@ export default function AddItemScreen() {
                   style={[fieldStyles.input, styles.multiline]}
                   value={pokemonForm.description}
                   onChangeText={updatePokemon('description')}
+                  placeholder="Description"
+                  placeholderTextColor={PV2.textTertiary}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </>
+          ) : isComicBook ? (
+            <>
+              {/* Main Comic Information — the compact, always-visible field
+                  set (Series/Title through Condition Type), matching this
+                  screen's own "most-used fields first" convention. */}
+              <Text style={styles.sectionHeader}>Comic Details</Text>
+              {comicField('Series / Title', 'seriesTitle', comicForm, updateComic)}
+              {comicField('Issue Number', 'issueNumber', comicForm, updateComic)}
+              {comicField('Publisher', 'publisher', comicForm, updateComic)}
+              {comicField('Publication Year', 'publicationYear', comicForm, updateComic, {
+                keyboardType: 'number-pad',
+                maxLength: 4,
+              })}
+              {comicField('Volume', 'volume', comicForm, updateComic)}
+              {comicField('Cover / Variant', 'coverVariant', comicForm, updateComic)}
+              <SelectField
+                label="Printing"
+                value={comicForm.printing || null}
+                options={COMIC_PRINTING_OPTIONS}
+                onChange={(v) => setComicField('printing', v)}
+              />
+
+              {/* Condition — Condition Type gates which of Raw's single
+                  field vs. Graded's five fields shows below it; the other
+                  group is never rendered at all (see comicForm.conditionType
+                  below), matching the spec's "never show both" requirement. */}
+              <Text style={styles.sectionHeader}>Condition</Text>
+              <SelectField
+                label="Condition Type"
+                value={comicForm.conditionType === 'graded' ? 'Graded' : 'Raw'}
+                options={['Raw', 'Graded']}
+                onChange={(v) => setComicField('conditionType', v === 'Graded' ? 'graded' : 'raw')}
+              />
+              {comicForm.conditionType === 'raw' ? (
+                <SelectField
+                  label="Condition"
+                  value={comicForm.condition || null}
+                  options={COMIC_RAW_CONDITION_OPTIONS}
+                  onChange={(v) => setComicField('condition', v)}
+                />
+              ) : (
+                <>
+                  <SelectField
+                    label="Grading Company"
+                    value={comicForm.gradingCompany || null}
+                    options={COMIC_GRADING_COMPANY_OPTIONS}
+                    onChange={(v) => setComicField('gradingCompany', v)}
+                  />
+                  {comicField('Grade', 'grade', comicForm, updateComic, { autoCapitalize: 'characters' })}
+                  {comicField('Certification Number', 'certificationNumber', comicForm, updateComic)}
+                  {comicField('Label Type', 'labelType', comicForm, updateComic)}
+                  {comicField('Page Quality', 'pageQuality', comicForm, updateComic)}
+                </>
+              )}
+
+              {/* Key Issue — Key Type/Key Description only ever render when
+                  the toggle is on (see comicForm.isKeyIssue below). */}
+              <Text style={styles.sectionHeader}>Key Issue</Text>
+              {comicToggleRow(
+                'Key Issue',
+                'This issue has notable collector significance',
+                comicForm.isKeyIssue,
+                (v) => setComicField('isKeyIssue', v),
+              )}
+              {comicForm.isKeyIssue && (
+                <>
+                  <MultiSelectField
+                    label="Key Type"
+                    values={comicForm.keyTypes}
+                    options={COMIC_KEY_TYPE_OPTIONS}
+                    onChange={(v) => setComicField('keyTypes', v)}
+                  />
+                  <View style={fieldStyles.wrap}>
+                    <Text style={fieldStyles.label}>Key Description</Text>
+                    <TextInput
+                      style={[fieldStyles.input, styles.multiline]}
+                      value={comicForm.keyDescription}
+                      onChangeText={updateComic('keyDescription')}
+                      placeholder="e.g. First full appearance of Venom"
+                      placeholderTextColor={PV2.textTertiary}
+                      multiline
+                      numberOfLines={3}
+                      textAlignVertical="top"
+                    />
+                  </View>
+                </>
+              )}
+
+              {/* Additional Details — collapsed by default so the default
+                  form stays compact; every field here is genuinely optional
+                  collector detail, per the spec. */}
+              <CollapsibleSection title="Additional Details">
+                {comicField('Characters', 'characters', comicForm, updateComic)}
+                {comicField('Story Arc / Event', 'storyArc', comicForm, updateComic)}
+                {comicField('Writer', 'writer', comicForm, updateComic)}
+                {comicField('Interior Artist', 'interiorArtist', comicForm, updateComic)}
+                {comicField('Cover Artist', 'coverArtist', comicForm, updateComic)}
+                <SelectField
+                  label="Edition"
+                  value={comicForm.edition || null}
+                  options={COMIC_EDITION_OPTIONS}
+                  onChange={(v) => setComicField('edition', v)}
+                />
+                {comicField('Variant Name', 'variantName', comicForm, updateComic)}
+                {comicField('Variant Artist', 'variantArtist', comicForm, updateComic)}
+                {comicField('Incentive Ratio', 'incentiveRatio', comicForm, updateComic, {
+                  placeholder: 'e.g. 1:25',
+                })}
+                {comicField('Retailer Exclusive', 'retailerExclusive', comicForm, updateComic)}
+                <SelectField
+                  label="Special Cover / Finish"
+                  value={comicForm.specialCoverFinish || null}
+                  options={COMIC_SPECIAL_COVER_FINISH_OPTIONS}
+                  onChange={(v) => setComicField('specialCoverFinish', v)}
+                />
+                {comicField('Country / Market', 'countryMarket', comicForm, updateComic)}
+
+                {comicToggleRow('Signed', 'This copy has been autographed', comicForm.isSigned, (v) =>
+                  setComicField('isSigned', v),
+                )}
+                {comicForm.isSigned && (
+                  <>
+                    {comicField('Signed By', 'signedBy', comicForm, updateComic)}
+                    {comicField('Signature Authentication', 'signatureAuthentication', comicForm, updateComic)}
+                  </>
+                )}
+
+                {comicToggleRow(
+                  'Restored',
+                  'This copy has undergone restoration work',
+                  comicForm.isRestored,
+                  (v) => setComicField('isRestored', v),
+                )}
+                {comicForm.isRestored && (
+                  <View style={fieldStyles.wrap}>
+                    <Text style={fieldStyles.label}>Restoration Notes</Text>
+                    <TextInput
+                      style={[fieldStyles.input, styles.multiline]}
+                      value={comicForm.restorationNotes}
+                      onChangeText={updateComic('restorationNotes')}
+                      placeholder="Restoration Notes"
+                      placeholderTextColor={PV2.textTertiary}
+                      multiline
+                      numberOfLines={3}
+                      textAlignVertical="top"
+                    />
+                  </View>
+                )}
+              </CollapsibleSection>
+
+              {/* Value & Notes — reuses the same common fields (estimated_value/
+                  description) as the Sports Card/Pokémon forms, just on
+                  comicForm's own local state instead of form's/pokemonForm's. */}
+              <Text style={styles.sectionHeader}>Value & Notes</Text>
+              {comicField('Estimated Value ($)', 'estimatedValue', comicForm, updateComic, { keyboardType: 'decimal-pad' })}
+              <View style={fieldStyles.wrap}>
+                <Text style={fieldStyles.label}>Description</Text>
+                <TextInput
+                  style={[fieldStyles.input, styles.multiline]}
+                  value={comicForm.description}
+                  onChangeText={updateComic('description')}
                   placeholder="Description"
                   placeholderTextColor={PV2.textTertiary}
                   multiline

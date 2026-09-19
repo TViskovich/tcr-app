@@ -19,6 +19,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
+import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemDescription } from '@/components/item-detail/item-description';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
@@ -28,6 +29,7 @@ import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
 import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
+import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -38,13 +40,22 @@ import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { getComicBookDetails, updateComicBookItem } from '@/lib/comic-book-items';
+import {
+  COMIC_EDITION_OPTIONS,
+  COMIC_GRADING_COMPANY_OPTIONS,
+  COMIC_KEY_TYPE_OPTIONS,
+  COMIC_PRINTING_OPTIONS,
+  COMIC_RAW_CONDITION_OPTIONS,
+  COMIC_SPECIAL_COVER_FINISH_OPTIONS,
+} from '@/lib/comic-book-options';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { getPokemonCardDetails, updatePokemonItem } from '@/lib/pokemon-items';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, PokemonCardDetails } from '@/types';
+import type { ComicBookDetails, ComicConditionType, CollectionItem, PokemonCardDetails } from '@/types';
 
 type EditForm = {
   title: string;
@@ -74,6 +85,51 @@ type PokemonEditForm = {
   holoType: string;
   gradingCompany: string;
   grade: string;
+  estimatedValue: string;
+  description: string;
+};
+
+// Comic Book's own edit-form shape (Phase 3 — supabase/migrations/
+// 20260917130000_create_comic_book_details.sql /
+// 20260917130100_create_comic_book_item_rpcs.sql), mirroring
+// app/item/new.tsx's ComicFormState. No title field — collection_items.title
+// is derived server-side from seriesTitle (plus issueNumber) by
+// update_comic_book_item, same as at creation.
+type ComicEditForm = {
+  seriesTitle: string;
+  issueNumber: string;
+  publisher: string;
+  publicationYear: string;
+  volume: string;
+  coverVariant: string;
+  printing: string;
+  conditionType: ComicConditionType;
+  condition: string;
+  gradingCompany: string;
+  grade: string;
+  certificationNumber: string;
+  labelType: string;
+  pageQuality: string;
+  isKeyIssue: boolean;
+  keyTypes: string[];
+  keyDescription: string;
+  characters: string;
+  storyArc: string;
+  writer: string;
+  interiorArtist: string;
+  coverArtist: string;
+  edition: string;
+  variantName: string;
+  variantArtist: string;
+  incentiveRatio: string;
+  retailerExclusive: string;
+  specialCoverFinish: string;
+  countryMarket: string;
+  isSigned: boolean;
+  signedBy: string;
+  signatureAuthentication: string;
+  isRestored: boolean;
+  restorationNotes: string;
   estimatedValue: string;
   description: string;
 };
@@ -110,6 +166,47 @@ function pokemonItemToForm(item: CollectionItem, details: PokemonCardDetails | n
     holoType: details?.holo_type ?? '',
     gradingCompany: details?.grading_company ?? '',
     grade: details?.grade ?? '',
+    estimatedValue: item.estimated_value?.toString() ?? '',
+    description: item.description ?? '',
+  };
+}
+
+function comicItemToForm(item: CollectionItem, details: ComicBookDetails | null): ComicEditForm {
+  return {
+    seriesTitle: details?.series_title ?? '',
+    issueNumber: details?.issue_number ?? '',
+    publisher: details?.publisher ?? '',
+    publicationYear: details?.publication_year?.toString() ?? '',
+    volume: details?.volume ?? '',
+    coverVariant: details?.cover_variant ?? '',
+    printing: details?.printing ?? '',
+    conditionType: details?.condition_type ?? 'raw',
+    condition: details?.condition ?? '',
+    gradingCompany: details?.grading_company ?? '',
+    grade: details?.grade ?? '',
+    certificationNumber: details?.certification_number ?? '',
+    labelType: details?.label_type ?? '',
+    pageQuality: details?.page_quality ?? '',
+    isKeyIssue: details?.is_key_issue ?? false,
+    keyTypes: details?.key_types ?? [],
+    keyDescription: details?.key_description ?? '',
+    characters: details?.characters ?? '',
+    storyArc: details?.story_arc ?? '',
+    writer: details?.writer ?? '',
+    interiorArtist: details?.interior_artist ?? '',
+    coverArtist: details?.cover_artist ?? '',
+    edition: details?.edition ?? '',
+    variantName: details?.variant_name ?? '',
+    variantArtist: details?.variant_artist ?? '',
+    incentiveRatio: details?.incentive_ratio ?? '',
+    retailerExclusive: details?.retailer_exclusive ?? '',
+    specialCoverFinish: details?.special_cover_finish ?? '',
+    countryMarket: details?.country_market ?? '',
+    isSigned: details?.is_signed ?? false,
+    signedBy: details?.signed_by ?? '',
+    signatureAuthentication: details?.signature_authentication ?? '',
+    isRestored: details?.is_restored ?? false,
+    restorationNotes: details?.restoration_notes ?? '',
     estimatedValue: item.estimated_value?.toString() ?? '',
     description: item.description ?? '',
   };
@@ -186,6 +283,60 @@ function buildPokemonMetadataRows(item: CollectionItem, details: PokemonCardDeta
   ];
 }
 
+// Comics' own identity/metadata builders — item.title IS "Series #Issue"
+// (derived server-side, see comicItemToForm's own comment above). Only the
+// active Raw-or-Graded condition group is ever surfaced here, matching the
+// form's own conditional rendering; Key Issue/Signed/Restored's conditional
+// fields are likewise only included when their own toggle is on.
+function buildComicIdentity(
+  item: CollectionItem,
+  details: ComicBookDetails | null,
+): { title: string; subtitleLines: (string | null)[] } {
+  const title = item.title?.trim() || 'Untitled Item';
+  const publisherLine = [details?.publisher, details?.publication_year ? String(details.publication_year) : null]
+    .filter(Boolean)
+    .join(' · ') || null;
+  return { title, subtitleLines: [publisherLine, details?.is_key_issue ? 'Key Issue' : null] };
+}
+
+function buildComicMetadataRows(item: CollectionItem, details: ComicBookDetails | null): MetadataRow[] {
+  const isGraded = details?.condition_type === 'graded';
+  return [
+    { label: 'Series / Title', value: details?.series_title ?? null },
+    { label: 'Issue Number', value: details?.issue_number ?? null },
+    { label: 'Publisher', value: details?.publisher ?? null },
+    { label: 'Publication Year', value: details?.publication_year != null ? String(details.publication_year) : null },
+    { label: 'Volume', value: details?.volume ?? null },
+    { label: 'Cover / Variant', value: details?.cover_variant ?? null },
+    { label: 'Printing', value: details?.printing ?? null },
+    { label: 'Condition Type', value: isGraded ? 'Graded' : 'Raw' },
+    { label: 'Condition', value: !isGraded ? details?.condition ?? null : null },
+    { label: 'Grading Company', value: isGraded ? details?.grading_company ?? null : null },
+    { label: 'Grade', value: isGraded ? details?.grade ?? null : null },
+    { label: 'Certification Number', value: isGraded ? details?.certification_number ?? null : null },
+    { label: 'Label Type', value: isGraded ? details?.label_type ?? null : null },
+    { label: 'Page Quality', value: isGraded ? details?.page_quality ?? null : null },
+    { label: 'Key Type', value: details?.is_key_issue && details.key_types.length > 0 ? details.key_types.join(', ') : null },
+    { label: 'Key Description', value: details?.is_key_issue ? details?.key_description ?? null : null },
+    { label: 'Characters', value: details?.characters ?? null },
+    { label: 'Story Arc / Event', value: details?.story_arc ?? null },
+    { label: 'Writer', value: details?.writer ?? null },
+    { label: 'Interior Artist', value: details?.interior_artist ?? null },
+    { label: 'Cover Artist', value: details?.cover_artist ?? null },
+    { label: 'Edition', value: details?.edition ?? null },
+    { label: 'Variant Name', value: details?.variant_name ?? null },
+    { label: 'Variant Artist', value: details?.variant_artist ?? null },
+    { label: 'Incentive Ratio', value: details?.incentive_ratio ?? null },
+    { label: 'Retailer Exclusive', value: details?.retailer_exclusive ?? null },
+    { label: 'Special Cover / Finish', value: details?.special_cover_finish ?? null },
+    { label: 'Country / Market', value: details?.country_market ?? null },
+    { label: 'Signed By', value: details?.is_signed ? details?.signed_by ?? null : null },
+    { label: 'Signature Authentication', value: details?.is_signed ? details?.signature_authentication ?? null : null },
+    { label: 'Restoration Notes', value: details?.is_restored ? details?.restoration_notes ?? null : null },
+    { label: 'Estimated Value', value: item.estimated_value != null ? `$${item.estimated_value.toFixed(2)}` : null },
+  ];
+}
+
 function EditField({
   label,
   value,
@@ -208,6 +359,33 @@ function EditField({
         placeholderTextColor="#999"
         {...extra}
       />
+    </View>
+  );
+}
+
+// A labeled Switch row for one of Comics' three boolean toggles in Edit mode
+// (Key Issue, Signed, Restored) — same visual language as this screen's own
+// Private Item toggle further down (editStyles.toggleRow/toggleTextArea/
+// toggleTitle/toggleHint), reused across the three since Comics needs it
+// more than once here.
+function EditToggleRow({
+  label,
+  sublabel,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  sublabel: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={editStyles.toggleRow}>
+      <View style={editStyles.toggleTextArea}>
+        <Text style={editStyles.toggleTitle}>{label}</Text>
+        <Text style={editStyles.toggleHint}>{sublabel}</Text>
+      </View>
+      <Switch value={value} onValueChange={onValueChange} trackColor={{ true: '#0a7ea4' }} />
     </View>
   );
 }
@@ -319,6 +497,11 @@ export default function ItemDetailScreen() {
   const [pokemonDetails, setPokemonDetails] = useState<PokemonCardDetails | null>(null);
   const [pokemonForm, setPokemonForm] = useState<PokemonEditForm | null>(null);
   const isPokemonItem = item?.item_type === 'pokemon';
+  // Comic Book-specific metadata (Phase 3) — same fetched-alongside-the-base-
+  // item, only-when-needed pattern as pokemonDetails/pokemonForm above.
+  const [comicDetails, setComicDetails] = useState<ComicBookDetails | null>(null);
+  const [comicForm, setComicForm] = useState<ComicEditForm | null>(null);
+  const isComicBookItem = item?.item_type === 'comic_book';
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Kept separate from `form`/EditForm (same convention as
@@ -425,6 +608,18 @@ export default function ItemDetailScreen() {
             if (__DEV__) console.error('[ItemDetail] pokemon_card_details fetch failed:', e);
           }
         }
+
+        // Comic Book detail row — only ever fetched here, same reasoning as
+        // pokemonDetails above.
+        if (data.item_type === 'comic_book') {
+          try {
+            const details = await getComicBookDetails(data.id);
+            setComicDetails(details);
+            setComicForm(comicItemToForm(data, details));
+          } catch (e) {
+            if (__DEV__) console.error('[ItemDetail] comic_book_details fetch failed:', e);
+          }
+        }
       }
       setFetching(false);
     }
@@ -444,6 +639,9 @@ export default function ItemDetailScreen() {
       setEditItemIsPublic(item.is_public);
       if (item.item_type === 'pokemon') {
         setPokemonForm(pokemonItemToForm(item, pokemonDetails));
+      }
+      if (item.item_type === 'comic_book') {
+        setComicForm(comicItemToForm(item, comicDetails));
       }
     }
     if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
@@ -465,6 +663,9 @@ export default function ItemDetailScreen() {
       if (item.item_type === 'pokemon') {
         setPokemonForm(pokemonItemToForm(item, pokemonDetails));
       }
+      if (item.item_type === 'comic_book') {
+        setComicForm(comicItemToForm(item, comicDetails));
+      }
     }
     setEditMode(false);
   }
@@ -472,6 +673,15 @@ export default function ItemDetailScreen() {
   function updatePokemonField(key: keyof PokemonEditForm) {
     return (value: string) =>
       setPokemonForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  function updateComicField(key: keyof ComicEditForm) {
+    return (value: string) =>
+      setComicForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  function setComicFieldValue<K extends keyof ComicEditForm>(key: K, value: ComicEditForm[K]) {
+    setComicForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
   function updateField(key: keyof EditForm) {
@@ -640,10 +850,117 @@ export default function ItemDetailScreen() {
     }
   }
 
+  // Comic edit-save — routes through update_comic_book_item (lib/comic-book-items.ts)
+  // instead of a plain client update, same atomic-write reasoning as
+  // handleSavePokemon above. item_type itself is never part of the payload —
+  // fixed once the item exists.
+  async function handleSaveComic() {
+    if (!item || !comicForm || !currentUserId) return;
+    if (!comicForm.seriesTitle.trim()) {
+      Alert.alert('Series / Title required', 'Please enter the series or title for this comic.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await updateComicBookItem(item.id, {
+        estimatedValue: comicForm.estimatedValue ? parseFloat(comicForm.estimatedValue) : null,
+        description: comicForm.description.trim() || null,
+        isPublic: editItemIsPublic,
+        seriesTitle: comicForm.seriesTitle.trim() || null,
+        issueNumber: comicForm.issueNumber.trim() || null,
+        publisher: comicForm.publisher.trim() || null,
+        publicationYear: comicForm.publicationYear ? parseInt(comicForm.publicationYear, 10) : null,
+        volume: comicForm.volume.trim() || null,
+        coverVariant: comicForm.coverVariant.trim() || null,
+        printing: comicForm.printing.trim() || null,
+        conditionType: comicForm.conditionType,
+        condition: comicForm.condition.trim() || null,
+        gradingCompany: comicForm.gradingCompany.trim() || null,
+        grade: comicForm.grade.trim() || null,
+        certificationNumber: comicForm.certificationNumber.trim() || null,
+        labelType: comicForm.labelType.trim() || null,
+        pageQuality: comicForm.pageQuality.trim() || null,
+        isKeyIssue: comicForm.isKeyIssue,
+        keyTypes: comicForm.keyTypes,
+        keyDescription: comicForm.keyDescription.trim() || null,
+        characters: comicForm.characters.trim() || null,
+        storyArc: comicForm.storyArc.trim() || null,
+        writer: comicForm.writer.trim() || null,
+        interiorArtist: comicForm.interiorArtist.trim() || null,
+        coverArtist: comicForm.coverArtist.trim() || null,
+        edition: comicForm.edition.trim() || null,
+        variantName: comicForm.variantName.trim() || null,
+        variantArtist: comicForm.variantArtist.trim() || null,
+        incentiveRatio: comicForm.incentiveRatio.trim() || null,
+        retailerExclusive: comicForm.retailerExclusive.trim() || null,
+        specialCoverFinish: comicForm.specialCoverFinish.trim() || null,
+        countryMarket: comicForm.countryMarket.trim() || null,
+        isSigned: comicForm.isSigned,
+        signedBy: comicForm.signedBy.trim() || null,
+        signatureAuthentication: comicForm.signatureAuthentication.trim() || null,
+        isRestored: comicForm.isRestored,
+        restorationNotes: comicForm.restorationNotes.trim() || null,
+      });
+      // Same "trust what was just sent" reconstruction handleSavePokemon
+      // already uses, rather than a second round-trip re-read — the RPC
+      // applied the same trim/NULLIF/conditional-nulling rules server-side.
+      const updatedDetails: ComicBookDetails = {
+        item_id: item.id,
+        series_title: comicForm.seriesTitle.trim() || null,
+        issue_number: comicForm.issueNumber.trim() || null,
+        publisher: comicForm.publisher.trim() || null,
+        publication_year: comicForm.publicationYear ? parseInt(comicForm.publicationYear, 10) : null,
+        volume: comicForm.volume.trim() || null,
+        cover_variant: comicForm.coverVariant.trim() || null,
+        printing: comicForm.printing.trim() || null,
+        condition_type: comicForm.conditionType,
+        condition: comicForm.conditionType === 'raw' ? comicForm.condition.trim() || null : null,
+        grading_company: comicForm.conditionType === 'graded' ? comicForm.gradingCompany.trim() || null : null,
+        grade: comicForm.conditionType === 'graded' ? comicForm.grade.trim() || null : null,
+        certification_number: comicForm.conditionType === 'graded' ? comicForm.certificationNumber.trim() || null : null,
+        label_type: comicForm.conditionType === 'graded' ? comicForm.labelType.trim() || null : null,
+        page_quality: comicForm.conditionType === 'graded' ? comicForm.pageQuality.trim() || null : null,
+        is_key_issue: comicForm.isKeyIssue,
+        key_types: comicForm.isKeyIssue ? comicForm.keyTypes : [],
+        key_description: comicForm.isKeyIssue ? comicForm.keyDescription.trim() || null : null,
+        characters: comicForm.characters.trim() || null,
+        story_arc: comicForm.storyArc.trim() || null,
+        writer: comicForm.writer.trim() || null,
+        interior_artist: comicForm.interiorArtist.trim() || null,
+        cover_artist: comicForm.coverArtist.trim() || null,
+        edition: comicForm.edition.trim() || null,
+        variant_name: comicForm.variantName.trim() || null,
+        variant_artist: comicForm.variantArtist.trim() || null,
+        incentive_ratio: comicForm.incentiveRatio.trim() || null,
+        retailer_exclusive: comicForm.retailerExclusive.trim() || null,
+        special_cover_finish: comicForm.specialCoverFinish.trim() || null,
+        country_market: comicForm.countryMarket.trim() || null,
+        is_signed: comicForm.isSigned,
+        signed_by: comicForm.isSigned ? comicForm.signedBy.trim() || null : null,
+        signature_authentication: comicForm.isSigned ? comicForm.signatureAuthentication.trim() || null : null,
+        is_restored: comicForm.isRestored,
+        restoration_notes: comicForm.isRestored ? comicForm.restorationNotes.trim() || null : null,
+      };
+      setItem(updated);
+      setEditItemIsPublic(updated.is_public);
+      setComicDetails(updatedDetails);
+      setComicForm(comicItemToForm(updated, updatedDetails));
+      setEditMode(false);
+    } catch (e: unknown) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleSave() {
     if (!item || !currentUserId) return;
     if (item.item_type === 'pokemon') {
       await handleSavePokemon();
+      return;
+    }
+    if (item.item_type === 'comic_book') {
+      await handleSaveComic();
       return;
     }
     if (!form) return;
@@ -1050,8 +1367,16 @@ export default function ItemDetailScreen() {
     );
   }
 
-  const identity = isPokemonItem ? buildPokemonIdentity(item, pokemonDetails) : buildIdentity(item);
-  const metadataRows = isPokemonItem ? buildPokemonMetadataRows(item, pokemonDetails) : buildMetadataRows(item);
+  const identity = isPokemonItem
+    ? buildPokemonIdentity(item, pokemonDetails)
+    : isComicBookItem
+      ? buildComicIdentity(item, comicDetails)
+      : buildIdentity(item);
+  const metadataRows = isPokemonItem
+    ? buildPokemonMetadataRows(item, pokemonDetails)
+    : isComicBookItem
+      ? buildComicMetadataRows(item, comicDetails)
+      : buildMetadataRows(item);
   const transferredOutDateLabel = formatTransferredOutDate(item.transferred_out_at);
 
   return (
@@ -1104,6 +1429,7 @@ export default function ItemDetailScreen() {
             { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 },
           ]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           onScroll={navbarOnScroll}
           scrollEventThrottle={navbarScrollEventThrottle}>
@@ -1177,6 +1503,174 @@ export default function ItemDetailScreen() {
                         style={[editStyles.input, { height: 100, paddingTop: 12 }]}
                         value={pokemonForm.description}
                         onChangeText={updatePokemonField('description')}
+                        placeholder="Description"
+                        placeholderTextColor="#999"
+                        multiline
+                        numberOfLines={4}
+                        textAlignVertical="top"
+                      />
+                    </View>
+                  </>
+                )
+              ) : isComicBookItem ? (
+                comicForm && (
+                  <>
+                    {/* Main Comic Information */}
+                    <Text style={editStyles.sectionHeader}>Comic Details</Text>
+                    <EditField label="Series / Title" value={comicForm.seriesTitle} onChange={updateComicField('seriesTitle')} />
+                    <EditField label="Issue Number" value={comicForm.issueNumber} onChange={updateComicField('issueNumber')} />
+                    <EditField label="Publisher" value={comicForm.publisher} onChange={updateComicField('publisher')} />
+                    <EditField
+                      label="Publication Year"
+                      value={comicForm.publicationYear}
+                      onChange={updateComicField('publicationYear')}
+                      extra={{ keyboardType: 'number-pad', maxLength: 4 }}
+                    />
+                    <EditField label="Volume" value={comicForm.volume} onChange={updateComicField('volume')} />
+                    <EditField label="Cover / Variant" value={comicForm.coverVariant} onChange={updateComicField('coverVariant')} />
+                    <SelectField
+                      label="Printing"
+                      value={comicForm.printing || null}
+                      options={COMIC_PRINTING_OPTIONS}
+                      onChange={(v) => setComicFieldValue('printing', v)}
+                    />
+
+                    {/* Condition */}
+                    <Text style={editStyles.sectionHeader}>Condition</Text>
+                    <SelectField
+                      label="Condition Type"
+                      value={comicForm.conditionType === 'graded' ? 'Graded' : 'Raw'}
+                      options={['Raw', 'Graded']}
+                      onChange={(v) => setComicFieldValue('conditionType', v === 'Graded' ? 'graded' : 'raw')}
+                    />
+                    {comicForm.conditionType === 'raw' ? (
+                      <SelectField
+                        label="Condition"
+                        value={comicForm.condition || null}
+                        options={COMIC_RAW_CONDITION_OPTIONS}
+                        onChange={(v) => setComicFieldValue('condition', v)}
+                      />
+                    ) : (
+                      <>
+                        <SelectField
+                          label="Grading Company"
+                          value={comicForm.gradingCompany || null}
+                          options={COMIC_GRADING_COMPANY_OPTIONS}
+                          onChange={(v) => setComicFieldValue('gradingCompany', v)}
+                        />
+                        <EditField label="Grade" value={comicForm.grade} onChange={updateComicField('grade')} extra={{ autoCapitalize: 'characters' }} />
+                        <EditField label="Certification Number" value={comicForm.certificationNumber} onChange={updateComicField('certificationNumber')} />
+                        <EditField label="Label Type" value={comicForm.labelType} onChange={updateComicField('labelType')} />
+                        <EditField label="Page Quality" value={comicForm.pageQuality} onChange={updateComicField('pageQuality')} />
+                      </>
+                    )}
+
+                    {/* Key Issue */}
+                    <Text style={editStyles.sectionHeader}>Key Issue</Text>
+                    <EditToggleRow
+                      label="Key Issue"
+                      sublabel="This issue has notable collector significance"
+                      value={comicForm.isKeyIssue}
+                      onValueChange={(v) => setComicFieldValue('isKeyIssue', v)}
+                    />
+                    {comicForm.isKeyIssue && (
+                      <>
+                        <MultiSelectField
+                          label="Key Type"
+                          values={comicForm.keyTypes}
+                          options={COMIC_KEY_TYPE_OPTIONS}
+                          onChange={(v) => setComicFieldValue('keyTypes', v)}
+                        />
+                        <View style={editStyles.wrap}>
+                          <Text style={editStyles.label}>Key Description</Text>
+                          <TextInput
+                            style={[editStyles.input, { height: 80, paddingTop: 12 }]}
+                            value={comicForm.keyDescription}
+                            onChangeText={updateComicField('keyDescription')}
+                            placeholder="e.g. First full appearance of Venom"
+                            placeholderTextColor="#999"
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                          />
+                        </View>
+                      </>
+                    )}
+
+                    {/* Additional Details */}
+                    <CollapsibleSection title="Additional Details">
+                      <EditField label="Characters" value={comicForm.characters} onChange={updateComicField('characters')} />
+                      <EditField label="Story Arc / Event" value={comicForm.storyArc} onChange={updateComicField('storyArc')} />
+                      <EditField label="Writer" value={comicForm.writer} onChange={updateComicField('writer')} />
+                      <EditField label="Interior Artist" value={comicForm.interiorArtist} onChange={updateComicField('interiorArtist')} />
+                      <EditField label="Cover Artist" value={comicForm.coverArtist} onChange={updateComicField('coverArtist')} />
+                      <SelectField
+                        label="Edition"
+                        value={comicForm.edition || null}
+                        options={COMIC_EDITION_OPTIONS}
+                        onChange={(v) => setComicFieldValue('edition', v)}
+                      />
+                      <EditField label="Variant Name" value={comicForm.variantName} onChange={updateComicField('variantName')} />
+                      <EditField label="Variant Artist" value={comicForm.variantArtist} onChange={updateComicField('variantArtist')} />
+                      <EditField label="Incentive Ratio" value={comicForm.incentiveRatio} onChange={updateComicField('incentiveRatio')} />
+                      <EditField label="Retailer Exclusive" value={comicForm.retailerExclusive} onChange={updateComicField('retailerExclusive')} />
+                      <SelectField
+                        label="Special Cover / Finish"
+                        value={comicForm.specialCoverFinish || null}
+                        options={COMIC_SPECIAL_COVER_FINISH_OPTIONS}
+                        onChange={(v) => setComicFieldValue('specialCoverFinish', v)}
+                      />
+                      <EditField label="Country / Market" value={comicForm.countryMarket} onChange={updateComicField('countryMarket')} />
+
+                      <EditToggleRow
+                        label="Signed"
+                        sublabel="This copy has been autographed"
+                        value={comicForm.isSigned}
+                        onValueChange={(v) => setComicFieldValue('isSigned', v)}
+                      />
+                      {comicForm.isSigned && (
+                        <>
+                          <EditField label="Signed By" value={comicForm.signedBy} onChange={updateComicField('signedBy')} />
+                          <EditField
+                            label="Signature Authentication"
+                            value={comicForm.signatureAuthentication}
+                            onChange={updateComicField('signatureAuthentication')}
+                          />
+                        </>
+                      )}
+
+                      <EditToggleRow
+                        label="Restored"
+                        sublabel="This copy has undergone restoration work"
+                        value={comicForm.isRestored}
+                        onValueChange={(v) => setComicFieldValue('isRestored', v)}
+                      />
+                      {comicForm.isRestored && (
+                        <View style={editStyles.wrap}>
+                          <Text style={editStyles.label}>Restoration Notes</Text>
+                          <TextInput
+                            style={[editStyles.input, { height: 80, paddingTop: 12 }]}
+                            value={comicForm.restorationNotes}
+                            onChangeText={updateComicField('restorationNotes')}
+                            placeholder="Restoration Notes"
+                            placeholderTextColor="#999"
+                            multiline
+                            numberOfLines={3}
+                            textAlignVertical="top"
+                          />
+                        </View>
+                      )}
+                    </CollapsibleSection>
+
+                    {/* Value & Notes */}
+                    <Text style={editStyles.sectionHeader}>Value & Notes</Text>
+                    <EditField label="Estimated Value ($)" value={comicForm.estimatedValue} onChange={updateComicField('estimatedValue')} extra={{ keyboardType: 'decimal-pad' }} />
+                    <View style={editStyles.wrap}>
+                      <Text style={editStyles.label}>Description</Text>
+                      <TextInput
+                        style={[editStyles.input, { height: 100, paddingTop: 12 }]}
+                        value={comicForm.description}
+                        onChangeText={updateComicField('description')}
                         placeholder="Description"
                         placeholderTextColor="#999"
                         multiline

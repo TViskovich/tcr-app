@@ -141,6 +141,54 @@ export type PokemonCardDetails = {
   grade: string | null;
 };
 
+// Comic Book-specific metadata (supabase/migrations/
+// 20260917130000_create_comic_book_details.sql) — strictly 1:1 with a
+// CollectionItem whose item_type is 'comic_book', same shape as
+// PokemonCardDetails above. Written only via create_comic_book_item/
+// update_comic_book_item (lib/comic-book-items.ts) — never a direct client
+// insert/update, even though RLS would technically allow one, to keep the
+// common-fields/detail-fields write always atomic (see those RPCs' own
+// header comment in the migration above).
+export type ComicConditionType = 'raw' | 'graded';
+
+export type ComicBookDetails = {
+  item_id: string;
+  series_title: string | null;
+  issue_number: string | null;
+  publisher: string | null;
+  publication_year: number | null;
+  volume: string | null;
+  cover_variant: string | null;
+  printing: string | null;
+  condition_type: ComicConditionType;
+  condition: string | null; // Raw only
+  grading_company: string | null; // Graded only
+  grade: string | null; // Graded only
+  certification_number: string | null; // Graded only
+  label_type: string | null; // Graded only
+  page_quality: string | null; // Graded only
+  is_key_issue: boolean;
+  key_types: string[]; // only meaningful when is_key_issue is true
+  key_description: string | null; // only meaningful when is_key_issue is true
+  characters: string | null;
+  story_arc: string | null;
+  writer: string | null;
+  interior_artist: string | null;
+  cover_artist: string | null;
+  edition: string | null;
+  variant_name: string | null;
+  variant_artist: string | null;
+  incentive_ratio: string | null;
+  retailer_exclusive: string | null;
+  special_cover_finish: string | null;
+  country_market: string | null;
+  is_signed: boolean;
+  signed_by: string | null; // only meaningful when is_signed is true
+  signature_authentication: string | null; // only meaningful when is_signed is true
+  is_restored: boolean;
+  restoration_notes: string | null; // only meaningful when is_restored is true
+};
+
 // One photo in an item's gallery (supabase/migrations/20260721120000_
 // create_collection_item_images.sql). collection_items.image_url stays in
 // sync with whichever row here has is_primary = true — it's the legacy
