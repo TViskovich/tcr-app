@@ -436,7 +436,7 @@ export default function TabLayout() {
               <Image
                 source={CacheCaseLogoNav}
                 contentFit="contain"
-                tintColor={color}
+                tintColor={typeof color === 'string' ? color : undefined}
                 style={styles.cacheCaseLogo}
               />
             ),

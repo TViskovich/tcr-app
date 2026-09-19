@@ -1,4 +1,4 @@
-import type { Router } from 'expo-router';
+import type { ImperativeRouter } from 'expo-router';
 
 // Single source of truth for "tap a user, go to their profile" — every
 // user-row/avatar/username tap in the app (Feed, Followers/Following,
@@ -13,7 +13,7 @@ import type { Router } from 'expo-router';
 // usernames are user-editable and not guaranteed to match at read time the
 // way the stable auth id does.
 export function navigateToProfile(
-  router: Router,
+  router: ImperativeRouter,
   currentUserId: string | null | undefined,
   targetUserId: string,
   username: string,

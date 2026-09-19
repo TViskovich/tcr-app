@@ -148,7 +148,7 @@ const styles = StyleSheet.create({
   // same convention as the large reference photo one level up (see
   // item-image-gallery-manager.tsx's own largeImage style).
   imageWrap: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   closeBtn: {
     position: 'absolute',

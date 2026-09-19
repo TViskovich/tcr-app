@@ -56,7 +56,7 @@ export function GrailsPostBody({
           ambient lighting and the center card's atmosphere, so there's
           only one glow layer rather than several stacked ones. */}
       <View style={styles.panel}>
-        <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
           <Svg width="100%" height="100%">
             <Defs>
               <RadialGradient id="grailGlow" cx="50%" cy="44%" r="62%">

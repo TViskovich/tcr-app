@@ -52,7 +52,7 @@ export function RelatedItemsGrid({ title = 'Related Items', items, onItemPress }
             {item.imageUrl && (
               <Image
                 source={{ uri: item.imageUrl }}
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 contentFit="cover"
               />
             )}

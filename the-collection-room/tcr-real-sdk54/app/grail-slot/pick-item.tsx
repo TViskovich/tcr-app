@@ -325,7 +325,7 @@ const styles = StyleSheet.create({
     opacity: 0.35,
   },
   selectedRing: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 12,
     borderWidth: 3,
     borderColor: PV2.accent,

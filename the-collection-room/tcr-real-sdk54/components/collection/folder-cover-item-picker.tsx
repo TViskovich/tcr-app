@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
   // app/collection/[folderId].tsx's own thumbPlaceholder for the exact
   // same not-yet-resolved state.
   slotLoading: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: PV2.collectorPanelBg,
   },
   emptyWrap: {

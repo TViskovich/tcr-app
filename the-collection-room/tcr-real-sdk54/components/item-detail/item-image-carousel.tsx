@@ -444,7 +444,7 @@ const styles = StyleSheet.create({
   // Absolutely fills imageBox — the layer the pinch/pan transform is
   // applied to, one level inside the untransformed clip boundary above.
   zoomLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   pressFill: {
     flex: 1,

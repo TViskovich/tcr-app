@@ -57,9 +57,9 @@ function CommentRow({
     <View style={styles.commentRow}>
       <View style={styles.avatar}>
         {comment.avatar_url ? (
-          <Image source={{ uri: comment.avatar_url }} style={StyleSheet.absoluteFillObject} contentFit="cover" transition={200} />
+          <Image source={{ uri: comment.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
-          <View style={[StyleSheet.absoluteFillObject, styles.avatarPlaceholder]}>
+          <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
             <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
           </View>
         )}
@@ -199,8 +199,8 @@ export function GalleryCommentsSheet({ visible, onClose, folderId, playerKey, ga
     <Modal visible transparent animationType="none" onRequestClose={dismiss} statusBarTranslucent>
       <GestureHandlerRootView style={styles.fill}>
         <View style={styles.fill}>
-          <Animated.View style={[StyleSheet.absoluteFillObject, styles.backdrop, backdropStyle]}>
-            <Pressable style={StyleSheet.absoluteFillObject} onPress={dismiss} />
+          <Animated.View style={[StyleSheet.absoluteFill, styles.backdrop, backdropStyle]}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} />
           </Animated.View>
 
           <GestureDetector gesture={pan}>

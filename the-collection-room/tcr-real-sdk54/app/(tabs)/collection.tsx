@@ -110,7 +110,7 @@ function RailLine({ direction = 'ltr' }: { direction?: 'ltr' | 'rtl' }) {
         colors={RAIL_HALO}
         start={{ x: 0, y: 0.5 }}
         end={{ x: 1, y: 0.5 }}
-        style={StyleSheet.absoluteFillObject}
+        style={StyleSheet.absoluteFill}
       />
       <LinearGradient
         colors={RAIL_CORE}
@@ -124,7 +124,7 @@ function RailLine({ direction = 'ltr' }: { direction?: 'ltr' | 'rtl' }) {
           colors={RAIL_SHIMMER}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
         />
       </Animated.View>
     </View>
@@ -154,11 +154,11 @@ const PAGE_GRAIN_DOTS = Array.from({ length: PAGE_GRAIN_COUNT }, (_, i) => ({
 // room the binders sit in rather than something printed on the list.
 function CollectionAtmosphere({ width }: { width: number }) {
   return (
-    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <LinearGradient
         colors={['#18181f', '#0d0d12', PV2.bg]}
         locations={[0, 0.45, 1]}
-        style={StyleSheet.absoluteFillObject}
+        style={StyleSheet.absoluteFill}
       />
 
       {/* Violet → cool-blue wash, same hue family as hero-canvas-theme.tsx's

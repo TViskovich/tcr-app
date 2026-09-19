@@ -2357,7 +2357,7 @@ const styles = StyleSheet.create({
     backgroundColor: PV2.collectorPanelBg,
   },
   thumbPlaceholder: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: PV2.collectorPanelBg,
   },
   // Nested-collection badge — same rgba(0,0,0,~0.5) dark-scrim-circle
