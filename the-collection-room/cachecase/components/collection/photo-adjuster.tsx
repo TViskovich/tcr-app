@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,7 +21,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { clampAxisTranslation } from '@/lib/folder-cover-crop';
 
@@ -101,6 +102,13 @@ export function PhotoAdjuster({
   // still comes from onLayout (below) since the space actually available
   // between the header and footer isn't knowable statically.
   const { width: windowWidth } = useWindowDimensions();
+  // Read from the app-level provider (this component renders OUTSIDE its own
+  // <Modal>, so the hook resolves against the root SafeAreaProvider) rather
+  // than relying on a SafeAreaView's per-view native inset measurement made
+  // from inside the Modal's separate native hierarchy — see the header
+  // below. A full-screen Modal shares the window's insets, so these values
+  // are correct for it.
+  const insets = useSafeAreaInsets();
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [processing, setProcessing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<CropAspectRatioKey>(DEFAULT_ASPECT_RATIO);
@@ -424,11 +432,17 @@ export function PhotoAdjuster({
     <Modal visible animationType="fade" statusBarTranslucent>
       <View style={styles.container}>
         {/* Header */}
-        <SafeAreaView edges={['top']} style={styles.safeTop}>
+        {/* paddingTop is the explicit top inset (with the Android status
+            bar height as a floor, since statusBarTranslucent draws under
+            it) so Cancel/Reset can never sit under the status bar /
+            Dynamic Island. zIndex/elevation (see headerWrap) keeps this row
+            above the preview surface for both painting and touches. */}
+        <View style={[styles.headerWrap, { paddingTop: Math.max(insets.top, StatusBar.currentHeight ?? 0) }]}>
           <View style={styles.header}>
             <TouchableOpacity
               onPress={onCancel}
               style={styles.headerBtn}
+              hitSlop={8}
               disabled={processing}>
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -439,11 +453,12 @@ export function PhotoAdjuster({
             <TouchableOpacity
               onPress={reset}
               style={styles.headerBtn}
+              hitSlop={8}
               disabled={processing}>
               <Text style={styles.resetText}>Reset</Text>
             </TouchableOpacity>
           </View>
-        </SafeAreaView>
+        </View>
 
         {/* Gesture preview — onLayout captures the exact container dimensions
             used by the crop math. GestureDetector covers the full area via
@@ -561,8 +576,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  safeTop: {
+  // Header container — layered above previewContainer (a later sibling,
+  // which would otherwise paint/hit-test over it) via zIndex + elevation.
+  headerWrap: {
     backgroundColor: '#000',
+    zIndex: 2,
+    elevation: 2,
   },
   safeBottom: {
     backgroundColor: '#111',

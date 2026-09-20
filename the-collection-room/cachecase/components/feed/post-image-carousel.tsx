@@ -9,8 +9,7 @@ import {
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
-
+import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 
 export type CarouselImage = {
@@ -45,14 +44,13 @@ type Props = {
 // than per-onScroll-frame state) AND the same per-page corner-radius mask
 // technique that file's own header comment documents as the one approach
 // (of five tried) that actually keeps a swiped-to page's corners rounded.
-// Not reinventing that fix here. contentFit is 'cover' (not CardSharePostBody's
-// 'contain') to match the existing single-text-photo path's own treatment —
-// see post-card.tsx's mediaImageWrap Image.
+// Not reinventing that fix here. contentFit is 'contain' (same as
+// CardSharePostBody and the single-text-photo path) so a swiped-to page whose
+// shape differs from the lead image's frame letterboxes instead of cropping.
 //
 // PostCard is responsible for NOT rendering this for a 1-image post (that
-// case keeps using AttachmentImageGrid's own single-image branch unchanged,
-// per "same appearance as now, no unnecessary FlatList" for the single-image
-// case) and for sizing/positioning the fixed-aspect-ratio box this fills —
+// case renders a plain image, no unnecessary FlatList) and for
+// sizing/positioning the fixed-aspect-ratio box this fills —
 // this component only ever fills 100%/100% of its own parent, same as
 // CardSharePostBody.
 export function PostImageCarousel({ images, mediaBorderRadius = 0, onPress }: Props) {
@@ -120,9 +118,13 @@ export function PostImageCarousel({ images, mediaBorderRadius = 0, onPress }: Pr
                   accessibilityRole={onPress ? 'imagebutton' : undefined}
                   accessibilityLabel={`Image ${index + 1} of ${images.length}`}>
                   {img.uri ? (
-                    <Image source={{ uri: img.uri }} style={styles.image} contentFit="cover" transition={150} />
+                    // Each page rounds/clips its own photo rectangle — pages
+                    // can differ in shape from the lead image the frame was
+                    // sized from, so the letterboxed photo, not just the
+                    // page, must carry the radius.
+                    <FittedRoundedImage uri={img.uri} radius={mediaBorderRadius} transition={150} />
                   ) : (
-                    <View style={[styles.image, styles.placeholder]} />
+                    <View style={[styles.image, styles.placeholder, { borderRadius: mediaBorderRadius }]} />
                   )}
                 </Pressable>
               </View>

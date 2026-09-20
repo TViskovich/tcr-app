@@ -13,9 +13,9 @@ import {
 
 import { Image } from 'expo-image';
 
-import { AttachmentImageGrid } from '@/components/feed/attachment-image-grid';
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -354,6 +354,15 @@ export function PostCard({
   // single/multi-photo frame unification.
   const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
 
+  // Text-post photo frame — same viewport-relative cap idea as
+  // singleCardMaxHeight above, but a smaller fraction, so a text photo never
+  // out-sizes a shared card. Shared by the single-image, carousel, and
+  // legacy-image_url text-post branches below.
+  const textPhotoFrame = {
+    aspectRatio: mediaAspectRatio != null ? clampMediaAspectRatio(mediaAspectRatio) : TEXT_POST_DEFAULT_ASPECT_RATIO,
+    maxHeight: windowHeight * TEXT_POST_MAX_HEIGHT_FRACTION,
+  };
+
   // Stable primitive (a URL string, or null) rather than depending on
   // post.cardShareItems (a fresh array reference on every parent re-render
   // even when its content is unchanged) — keeps the effect below from
@@ -361,16 +370,15 @@ export function PostCard({
   // is the lead card.
   const cardShareLeadImageUrl = isCardShare ? (post.cardShareItems[0]?.snapshot_image_url ?? null) : null;
 
-  // Same lead-image measurement, extended to the new multi-image carousel
-  // (Feed collage → carousel pass): only for post.images.length > 1 — a
-  // 1-image text post keeps going through AttachmentImageGrid's own
-  // unmeasured fixed-4:3 box unchanged (see the JSX below), so no
-  // measurement is needed for that case. createTextPost never writes
-  // posts.image_url for a post_images-backed post (it only inserts
+  // Same lead-image measurement, extended to post_images-backed text posts
+  // (1 image, or the 2-4 image carousel): a 1-image post is now measured
+  // and sized exactly like the carousel rather than sitting in
+  // AttachmentImageGrid's fixed-4:3 cropped tile. createTextPost never
+  // writes posts.image_url for a post_images-backed post (it only inserts
   // post_images rows), so post.image_url is null here regardless — this is
   // genuinely a separate source, not a duplicate of the branch below.
   const postImagesLeadUrl =
-    isTextPost && post.images.length > 1 ? (post.images[0]?.image_url ?? null) : null;
+    isTextPost && post.images.length > 0 ? (post.images[0]?.image_url ?? null) : null;
 
   useEffect(() => {
     setMediaAspectRatio(null);
@@ -561,33 +569,37 @@ export function PostCard({
               <Text style={styles.cardTextContent}>{post.content}</Text>
             </TouchableOpacity>
           )}
-          {/* A text post's 1 image (app/post/new.tsx) still renders via
-              AttachmentImageGrid's own single-image branch, unchanged —
-              same appearance as before this pass, no carousel/FlatList for
-              a case that never needs to page. Every image_url in post.images
-              is already durable share-snapshots data (same pipeline as the
-              legacy single photo below), so no signed-image branch is
-              needed here either. Tapping opens post detail (onPostPress) —
-              unchanged. */}
+          {/* A text post's 1 image (app/post/new.tsx) — no carousel/FlatList
+              for a case that never needs to page. Sized by the same
+              measured-ratio frame as the carousel below (textPhotoFrame) with
+              contentFit="contain", instead of AttachmentImageGrid's fixed
+              4:3 'cover' tile, which cropped most portrait/card photos.
+              Every image_url in post.images is already durable
+              share-snapshots data (same pipeline as the legacy single photo
+              below), so no signed-image branch is needed here either.
+              Tapping opens post detail (onPostPress) — unchanged. */}
           {isTextPost && post.images.length === 1 ? (
             <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
               <TouchableOpacity
-                style={styles.mediaImageWrapText}
+                style={[styles.mediaImageWrap, styles.mediaImageWrapText, textPhotoFrame]}
                 onPress={onPostPress}
                 activeOpacity={0.95}>
-                <AttachmentImageGrid
-                  images={post.images.map((img) => ({ key: img.id, uri: img.image_url }))}
-                  borderRadius={MEDIA_CORNER_RADIUS}
-                />
+                {post.images[0].image_url ? (
+                  // Rounds/clips the photo's own rectangle (see
+                  // FittedRoundedImage) — the wrapper's radius alone only
+                  // rounds the frame, which is larger than a letterboxed
+                  // photo.
+                  <FittedRoundedImage uri={post.images[0].image_url} radius={MEDIA_CORNER_RADIUS} />
+                ) : null}
               </TouchableOpacity>
             </View>
           ) : isTextPost && post.images.length > 1 ? (
             /* 2-4 images — horizontal swipeable carousel (collage → carousel
                 pass) instead of AttachmentImageGrid's collage, one image at
                 a time, full post media width, native paging. Sized via the
-                exact same measure→clamp pipeline (mediaAspectRatio/
-                clampMediaAspectRatio, 'cover') the legacy single-photo
-                branch below already uses — measured once from post.images[0]
+                exact same measure→clamp→maxHeight frame (textPhotoFrame,
+                'contain') the single-image and legacy branches use —
+                measured once from post.images[0]
                 (postImagesLeadUrl above) and held fixed while swiping, same
                 "measured from the lead, frame never resizes mid-swipe"
                 precedent CardSharePostBody already established for
@@ -599,15 +611,7 @@ export function PostCard({
                 offered (there is still no separate full-screen image viewer
                 in this app to defer to instead). */
             <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
-              <View
-                style={[
-                  styles.mediaImageWrap,
-                  styles.mediaImageWrapText,
-                  {
-                    aspectRatio:
-                      mediaAspectRatio != null ? clampMediaAspectRatio(mediaAspectRatio) : MEDIA_DEFAULT_ASPECT_RATIO,
-                  },
-                ]}>
+              <View style={[styles.mediaImageWrap, styles.mediaImageWrapText, textPhotoFrame]}>
                 <PostImageCarousel
                   images={post.images.map((img) => ({ key: img.id, uri: img.image_url }))}
                   mediaBorderRadius={MEDIA_CORNER_RADIUS}
@@ -648,43 +652,48 @@ export function PostCard({
                     // an 'item' (sports card) post keeps the unchanged shared
                     // frame.
                     isTextPost ? styles.mediaImageWrapText : styles.mediaImageWrapSingle,
-                    {
-                      aspectRatio:
-                        mediaAspectRatio != null
-                          ? isTextPost
-                            ? clampMediaAspectRatio(mediaAspectRatio)
-                            : clampSingleCardAspectRatio(mediaAspectRatio)
-                          : MEDIA_DEFAULT_ASPECT_RATIO,
-                      // Viewport-relative height cap, single-card posts only
-                      // (see singleCardMaxHeight's own comment above) — Yoga
-                      // resolves this alongside aspectRatio as a true cap:
-                      // the box is min(width / aspectRatio, this), never
-                      // taller. When that cap is what actually binds (a tall
-                      // portrait card at typical widths), the box's
-                      // rendered shape no longer exactly matches the image's
-                      // own ratio — contentFit="contain" (below) is what
-                      // keeps the full card visible in that case, via
-                      // letterboxing instead of a crop.
-                      ...(isTextPost ? null : { maxHeight: singleCardMaxHeight }),
-                    },
+                    isTextPost
+                      ? textPhotoFrame
+                      : {
+                          aspectRatio:
+                            mediaAspectRatio != null
+                              ? clampSingleCardAspectRatio(mediaAspectRatio)
+                              : MEDIA_DEFAULT_ASPECT_RATIO,
+                          // Viewport-relative height cap, single-card posts
+                          // only (see singleCardMaxHeight's own comment
+                          // above) — Yoga resolves this alongside
+                          // aspectRatio as a true cap: the box is
+                          // min(width / aspectRatio, this), never taller.
+                          // When that cap is what actually binds (a tall
+                          // portrait card at typical widths), the box's
+                          // rendered shape no longer exactly matches the
+                          // image's own ratio — contentFit="contain" (below)
+                          // is what keeps the full card visible in that
+                          // case, via letterboxing instead of a crop.
+                          maxHeight: singleCardMaxHeight,
+                        },
                   ]}
                   onPress={onPostPress}
                   activeOpacity={0.95}>
-                  <Image
-                    source={{ uri: post.image_url }}
-                    style={StyleSheet.absoluteFill}
-                    // 'contain' for a single-card share (never crops — an
-                    // aspect mismatch against the box below only ever
-                    // letterboxes, so the full card is always visible even
-                    // for an unusually-cropped upload); text posts keep
-                    // 'cover' exactly as before — that path's own tighter
-                    // clamp (clampMediaAspectRatio) already keeps cropping
-                    // minor there, and this isn't the behavior being changed
-                    // for text posts.
-                    contentFit={isTextPost ? 'cover' : 'contain'}
-                    transition={200}
-                    onError={() => setImageError(true)}
-                  />
+                  {isTextPost ? (
+                    // Text-post photo: same photo-rectangle rounding as the
+                    // single-image branch above. (imageError only ever hides
+                    // non-text posts — see the early return — so no onError
+                    // is needed here.)
+                    <FittedRoundedImage uri={post.image_url} radius={MEDIA_CORNER_RADIUS} />
+                  ) : (
+                    <Image
+                      source={{ uri: post.image_url }}
+                      style={StyleSheet.absoluteFill}
+                      // 'contain' (never crops — an aspect mismatch against
+                      // the box above only ever letterboxes, so the full
+                      // card is always visible even for an unusually-cropped
+                      // upload).
+                      contentFit="contain"
+                      transition={200}
+                      onError={() => setImageError(true)}
+                    />
+                  )}
                 </TouchableOpacity>
               </View>
             )
@@ -776,14 +785,16 @@ const MEDIA_CORNER_RADIUS = 11;
 // standard 2.5"x3.5" trading card almost exactly — is used as a
 // same-as-before fallback so there's no layout jump for the common case
 // and no broken box if getSize ever errors.
-const MEDIA_MIN_ASPECT_RATIO = 3 / 4;
+const MEDIA_MIN_ASPECT_RATIO = 4 / 5;
 const MEDIA_MAX_ASPECT_RATIO = 2 / 1;
 const MEDIA_DEFAULT_ASPECT_RATIO = 5 / 7;
 
-// Text-post-with-photo path only — unchanged bound, paired with
-// contentFit="cover" (a mismatch here crops slightly; 3/4 keeps that crop
-// minor). Not used by single-card ('item') posts any more — see
-// clampSingleCardAspectRatio below.
+// Text-post-with-photo path only, paired with contentFit="contain" (a
+// mismatch letterboxes rather than crops). 4/5 — the tallest portrait a
+// text photo may present — is what keeps it visibly shorter than a shared
+// card's 1/2-bounded frame; a real 5/7 card photo just gets thin side bars.
+// Not used by single-card ('item') posts — see clampSingleCardAspectRatio
+// below.
 function clampMediaAspectRatio(ratio: number): number {
   return Math.min(MEDIA_MAX_ASPECT_RATIO, Math.max(MEDIA_MIN_ASPECT_RATIO, ratio));
 }
@@ -822,17 +833,20 @@ function clampSingleCardAspectRatio(ratio: number): number {
 const SINGLE_CARD_WIDTH_FRACTION = 0.86;
 const SINGLE_CARD_MAX_HEIGHT_FRACTION = 0.58;
 
-// Text-post attached-photo path only (single AttachmentImageGrid image,
-// the 2-4 image PostImageCarousel, and the legacy single post.image_url
-// branch when isTextPost) — deliberately narrower than
-// SINGLE_CARD_WIDTH_FRACTION above, which item/card-share posts keep using
-// unchanged. Before this, every media-bearing post type shared the exact
-// same 86%-of-column frame, which made a multi-image text post read as
-// visually indistinguishable from a dedicated card-share post. ~90% of that
-// existing shared frame (not of the raw column) — text-post media is meant
-// to read as smaller/secondary to the post's own text content, not as the
-// primary content the way a card share or a single-card post is.
-const TEXT_POST_MEDIA_WIDTH_FRACTION = SINGLE_CARD_WIDTH_FRACTION * 0.9;
+// Text-post attached-photo path only (the single post_images photo, the 2-4
+// image PostImageCarousel, and the legacy single post.image_url branch when
+// isTextPost) — deliberately clearly smaller than the item/card-share frame
+// above, which keeps using SINGLE_CARD_* unchanged, so a text post reads as
+// text-first with a photo attached, not as a photo post. Width is 82% of that
+// shared frame; height is capped at 42% of the viewport vs. the card frame's
+// 58%, and the portrait ratio bound is 4/5 (see clampMediaAspectRatio) vs.
+// the card frame's 1/2. The photo keeps its own measured shape within those
+// bounds. TEXT_POST_DEFAULT_ASPECT_RATIO is the pre-measurement fallback —
+// the tallest allowed shape, so the common portrait/card photo doesn't jump
+// when its real ratio resolves.
+const TEXT_POST_MEDIA_WIDTH_FRACTION = SINGLE_CARD_WIDTH_FRACTION * 0.82;
+const TEXT_POST_MAX_HEIGHT_FRACTION = 0.42;
+const TEXT_POST_DEFAULT_ASPECT_RATIO = MEDIA_MIN_ASPECT_RATIO;
 
 const styles = StyleSheet.create({
   // X-style Piece 2 — flat, edge-to-edge, single unified dark surface (no
