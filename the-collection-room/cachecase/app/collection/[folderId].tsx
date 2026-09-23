@@ -52,7 +52,6 @@ import {
   useItems,
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
-import { useSavedFolder } from '@/hooks/use-saved';
 import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -247,7 +246,6 @@ export default function CollectionFolderScreen() {
   // own, scoped to this folder+player group. See GalleryCommentsSheet.
   const [galleryCommentsVisible, setGalleryCommentsVisible] = useState(false);
 
-  const { isSaved, saving: savingBookmark, toggle: toggleSave } = useSavedFolder(folderId, currentUserId);
   const {
     likeCount,
     liked,
@@ -1163,8 +1161,6 @@ export default function CollectionFolderScreen() {
     );
   }
 
-  const showBookmark = !!currentUserId;
-
   // Default (non-card-mode) grid's FlatList ListHeaderComponent — cover
   // banner + search bar, exactly the same JSX/styles that used to render as
   // plain siblings above the grid (see the removed block's comment further
@@ -1215,9 +1211,10 @@ export default function CollectionFolderScreen() {
   // Default (non-card-mode) grid's sticky FlatList row (data[0], kind:
   // 'sticky') — the entire black identity/title/actions panel as ONE
   // pinned unit, per the "do not split the black panel into multiple
-  // independently sticky pieces" requirement. Exactly the same JSX/styles
-  // as before (compactUserRow/titleRow/galleryActionsRow, unchanged) — only
-  // wrapped in one extra View (styles.folderStickyBar) so it has an opaque
+  // independently sticky pieces" requirement. compactUserRow/titleRow
+  // unchanged; the item-count + Comment/Like/Share row below them now
+  // shares one line (styles.metaActionsRow) instead of two stacked ones —
+  // still wrapped in one extra View (styles.folderStickyBar) so it has an opaque
   // background (matches styles.container's own PV2.bg) and the 10px gap to
   // whatever follows it (previously gridContent's own paddingTop:10; now
   // that this panel — not the grid's first row — is what directly precedes
@@ -1267,24 +1264,32 @@ export default function CollectionFolderScreen() {
           </Text>
         </View>
 
-        {/* Accurate item count — `items` is this folder's full,
-            unpaginated collection_items result (hooks/use-collection.ts
-            useItems), not a capped preview, so items.length is already the
-            real total and needs no separate count query. Hidden during the
-            initial load so it never flashes "0 items" before the first
-            fetch resolves. */}
-        {!showInitialLoading && (
-          <Text style={styles.itemCountLabel}>
-            {items.length} {items.length === 1 ? 'item' : 'items'}
-          </Text>
-        )}
+        {/* Item count (left) + Comment/Like/Share (right) now share one row
+            — was a stacked item-count line above a separate full-width
+            actions row. `items` is this folder's full, unpaginated
+            collection_items result (hooks/use-collection.ts useItems), not
+            a capped preview, so items.length is already the real total and
+            needs no separate count query. The count is hidden during the
+            initial load (never flashes "0 items" before the first fetch
+            resolves) but an empty View still holds its slot so
+            justifyContent: 'space-between' keeps the action group pinned
+            right even then, rather than it re-centering/left-aligning with
+            no sibling. Bookmark stays removed from this row (per the
+            collection/item bookmark-removal pass) — saved_folders/
+            useSavedFolder/the Saved screen are untouched. */}
+        <View style={styles.metaActionsRow}>
+          {showInitialLoading ? (
+            <View />
+          ) : (
+            <Text style={styles.itemCountLabel}>
+              {items.length} {items.length === 1 ? 'item' : 'items'}
+            </Text>
+          )}
 
-        {/* Same balanced left/right two-side layout (and the same
-            galleryActionsRow/galleryActionsSide styles) as the card-mode
-            header above — like+comment grouped left, bookmark+share grouped
-            right — just under the title instead of squeezed onto its row. */}
-        <View style={styles.galleryActionsRow}>
-          <View style={styles.galleryActionsSide}>
+          <View style={styles.galleryActionsGroup}>
+            <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+              <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+            </Pressable>
             <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
               <IconSymbol
                 name={liked ? 'heart.fill' : 'heart'}
@@ -1293,21 +1298,6 @@ export default function CollectionFolderScreen() {
               />
               <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
             </Pressable>
-            <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
-              <IconSymbol name="message" size={20} color={PV2.textPrimary} />
-            </Pressable>
-          </View>
-
-          <View style={styles.galleryActionsSide}>
-            {showBookmark && (
-              <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
-                <IconSymbol
-                  name={isSaved ? 'bookmark.fill' : 'bookmark'}
-                  size={20}
-                  color={isSaved ? PV2.accent : PV2.textPrimary}
-                />
-              </Pressable>
-            )}
             <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
               <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
             </Pressable>
@@ -1576,35 +1566,24 @@ export default function CollectionFolderScreen() {
               </GestureDetector>
             </View>
 
+            {/* Same Comment/Like/Share row as the default-grid sticky bar
+                above (renderFolderStickyBar) — see that block's own
+                comment for why Bookmark is gone. */}
             <View style={styles.galleryActionsRow}>
-              <View style={styles.galleryActionsSide}>
-                <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
-                  <IconSymbol
-                    name={liked ? 'heart.fill' : 'heart'}
-                    size={20}
-                    color={liked ? PV2.accent : PV2.textPrimary}
-                  />
-                  <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
-                </Pressable>
-                <Pressable onPress={() => setGalleryCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="message" size={20} color={PV2.textPrimary} />
-                </Pressable>
-              </View>
-
-              <View style={styles.galleryActionsSide}>
-                {showBookmark && (
-                  <Pressable onPress={toggleSave} disabled={savingBookmark} hitSlop={10} style={styles.iconBtn}>
-                    <IconSymbol
-                      name={isSaved ? 'bookmark.fill' : 'bookmark'}
-                      size={20}
-                      color={isSaved ? PV2.accent : PV2.textPrimary}
-                    />
-                  </Pressable>
-                )}
-                <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
-                  <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
-                </Pressable>
-              </View>
+              <Pressable onPress={() => setGalleryCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+                <IconSymbol name="message" size={20} color={PV2.textPrimary} />
+              </Pressable>
+              <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
+                <IconSymbol
+                  name={liked ? 'heart.fill' : 'heart'}
+                  size={20}
+                  color={liked ? PV2.accent : PV2.textPrimary}
+                />
+                <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+              </Pressable>
+              <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+                <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+              </Pressable>
             </View>
           </>
         ) : (
@@ -2090,14 +2069,14 @@ const styles = StyleSheet.create({
   },
   // Title's own full-width row — the like/comment/bookmark/share controls
   // that used to share this row (squeezing the title's available width)
-  // now live in their own row below (styles.galleryActionsRow, reused from
-  // the card-mode header), which carries the title-row-to-grid gap that
-  // used to live here.
+  // now live in their own row below (styles.metaActionsRow, alongside the
+  // item count), which carries the title-row-to-grid gap that used to live
+  // here.
   titleRow: {
     flexDirection: 'row',
     paddingHorizontal: 12,
     paddingTop: 4,
-    // itemCountLabel below now carries the title-to-actions-row gap (via its
+    // metaActionsRow below now carries the title-to-actions-row gap (via its
     // own marginBottom), so this only needs to clear the title's descenders.
     paddingBottom: 0,
   },
@@ -2128,16 +2107,39 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
-  // Folder metadata, not an action control — sits directly under the title
-  // and reads as part of it, so it uses the same muted secondary-text token
-  // as the rest of this screen's metadata (compactUsername/likeCount/etc.)
-  // rather than introducing a new color.
-  itemCountLabel: {
-    fontSize: 13,
-    color: PV2.textSecondary,
+  // Item count (left) + Comment/Like/Share (right), one row — see this
+  // block's own JSX comment (renderFolderStickyBar) for why an empty View
+  // (not omitting the child entirely) fills this slot during initial load.
+  // Owns the horizontal/vertical spacing itemCountLabel and galleryActionsRow
+  // used to carry separately when they were two stacked rows.
+  metaActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 12,
     marginTop: 4,
     marginBottom: 6,
+  },
+  // Folder metadata, not an action control — reads as part of the title
+  // above it, so it uses the same muted secondary-text token as the rest of
+  // this screen's metadata (compactUsername/likeCount/etc.) rather than
+  // introducing a new color. No margin/padding of its own now — metaActionsRow
+  // (its flex parent) owns that.
+  itemCountLabel: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+  },
+  // Comment/Like/Share group as it sits nested inside metaActionsRow —
+  // same icon gap (24) as galleryActionsRow below, but no padding/margin of
+  // its own (metaActionsRow's own paddingHorizontal already provides the
+  // row's right edge). Distinct from galleryActionsRow (still used
+  // unchanged by the card-mode header further down, which is NOT part of
+  // this layout pass) so that row's own self-contained padding is never
+  // doubled up by being nested here.
+  galleryActionsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
   },
   privateIcon: {
     fontSize: 40,
@@ -2235,20 +2237,20 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
   },
-  // Like/comment on the left, search/bookmark/share on the right — layout
-  // only for now, see chat for which of these still need real handlers.
+  // Comment / Like / Share — one row, left-aligned, evenly gapped (same
+  // three-action social model as the feed's own post cards, see
+  // components/feed/post-card.tsx's actionsRow). Replaces the old two-side
+  // left/right split that grouped like+comment on one side and
+  // bookmark+share on the other — Bookmark is gone from this row entirely
+  // (removed, not hidden; saved_folders/useSavedFolder/the Saved screen are
+  // untouched elsewhere).
   galleryActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 24,
     paddingHorizontal: 12,
     paddingTop: 10,
     paddingBottom: 10,
-  },
-  galleryActionsSide: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
   },
   // Folder cover/hero banner — edge-to-edge (no horizontal margin, like
   // this screen's own grid below), landscape FOLDER_COVER_ASPECT_RATIO,

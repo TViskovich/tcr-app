@@ -351,6 +351,22 @@ export default function HomeScreen() {
   const refreshControllerRef = useRef<AbortController | null>(null);
   const loadMoreControllerRef = useRef<AbortController | null>(null);
 
+  // Feed state preservation — set right before pushing into a post's own
+  // detail screen (onPostPress below), consumed the next time this screen's
+  // useFocusEffect fires (i.e. the moment the user presses Back and this
+  // tab regains focus). This screen is never actually unmounted by that
+  // round trip — app/post/[id].tsx is a normal pushed stack screen on top
+  // of (tabs), which react-navigation keeps mounted-but-unfocused beneath
+  // it, not destroyed — so a plain ref surviving the trip is enough; no
+  // navigation param, event bus, or persisted storage needed. Left false
+  // (its default) for every OTHER way this screen can regain focus —
+  // switching tabs away and back, returning from the reply composer,
+  // returning from Notifications, or a fresh compose flow's router.back()
+  // (app/post/new.tsx's leaveScreen) — so loadFeed() still runs in all of
+  // those cases exactly as before. Only the "just went and looked at one
+  // post" round trip is special-cased to skip the refetch.
+  const skipNextFocusReloadRef = useRef(false);
+
   const loadFeed = useCallback(async () => {
     loadFeedControllerRef.current?.abort();
     const controller = new AbortController();
@@ -457,9 +473,17 @@ export default function HomeScreen() {
 
   // useFocusEffect re-runs whenever loadFeed changes identity (i.e. when feedMode or
   // currentUserId changes) AND the screen is currently focused — so tab switches reload.
+  // Skipped exactly once when returning from a post's own detail screen —
+  // see skipNextFocusReloadRef's own comment above — so that specific
+  // round trip preserves the existing list/scroll position instead of
+  // popping back to a freshly reloaded, scrolled-to-top FlatList.
   useFocusEffect(
     useCallback(() => {
-      loadFeed();
+      if (skipNextFocusReloadRef.current) {
+        skipNextFocusReloadRef.current = false;
+      } else {
+        loadFeed();
+      }
       return () => {
         loadFeedControllerRef.current?.abort();
         refreshControllerRef.current?.abort();
@@ -662,6 +686,11 @@ export default function HomeScreen() {
                 currentUserId={currentUserId}
                 onUserPress={() => navigateToProfile(router, currentUserId, item.user_id, item.username)}
                 onPostPress={() => {
+                  // See skipNextFocusReloadRef's own comment above — set
+                  // right before the push so the focus effect that fires
+                  // when this tab regains focus on the way back knows to
+                  // skip its usual refetch this one time.
+                  skipNextFocusReloadRef.current = true;
                   router.push({
                     pathname: '/post/[id]',
                     params: { id: item.id },

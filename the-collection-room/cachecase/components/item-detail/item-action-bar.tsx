@@ -15,73 +15,81 @@ type Props = {
   // cachecase-id-sheet.tsx, removed) with no real data; this button now
   // leads to the one real registry screen instead of a second, fake one.
   onPressCacheCaseId: () => void;
-  // Bookmark is the one icon in this row with real, already-existing
-  // business logic elsewhere on the same screen (useSavedCard) — wired
-  // here rather than left as a placeholder. Omitted entirely — renders the
-  // same static placeholder icon as before — when the viewer is the
-  // item's owner, matching the header BookmarkButton's own owner-gating
-  // (an owner isn't offered a control to bookmark their own card).
-  isSaved?: boolean;
-  onPressBookmark?: () => void;
-  savingBookmark?: boolean;
+  // Comment/Like/Share — the item-detail social row, one-for-one matching
+  // app/collection/[folderId].tsx's own galleryActionsGroup (order, icons,
+  // active-state color). Comment opens ItemCommentsSheet (item_comments,
+  // hooks/use-item-comments.ts); Like is the optimistic item_likes toggle
+  // (hooks/use-item-likes.ts). Share is native Share.share(), shown for the
+  // owner too (never owner-gated). No logic here changed by the one-row
+  // layout pass below — same props, same handlers, just repositioned.
+  onPressComment: () => void;
+  liked: boolean;
+  likeCount: number;
+  likeInFlight: boolean;
+  onPressLike: () => void;
+  onPressShare: () => void;
 };
 
-// Heart/comment/search/share were removed from this row (beta polish —
-// they rendered as plain, non-interactive Views that looked identically
-// tappable to the real CacheCase ID and Bookmark controls beside them, but
-// had no backing feature at all: this app has no item-like, item-comment,
-// or item-search concept anywhere, and share exists elsewhere — e.g.
-// app/collection/[folderId].tsx's own handleShare — but was never wired
-// here). Only CacheCase ID (always wired) and Bookmark (wired when
-// onPressBookmark is passed) remain. The centered dots stay as a
-// deliberate decorative accent, not a control — flex:1 on both `side`
-// containers keeps it truly centered regardless of how many real icons
-// end up on either side.
-export function ItemActionBar({ onPressCacheCaseId, isSaved, onPressBookmark, savingBookmark }: Props) {
+// One row now: CacheCase ID on the left, Comment/Like/Share grouped on the
+// right — replaces the previous two-row layout (CacheCase ID + decorative
+// "•  •  •" dots on top, Comment/Like/Share on their own row below). The
+// dots are gone entirely (they read as a second, redundant overflow
+// control sitting below the header's own real "..."/Edit-Save menu) rather
+// than folded into this row — there was never a real action behind them.
+export function ItemActionBar({
+  onPressCacheCaseId,
+  onPressComment,
+  liked,
+  likeCount,
+  likeInFlight,
+  onPressLike,
+  onPressShare,
+}: Props) {
   return (
     <View style={styles.row}>
-      <View style={styles.side}>
+      <TouchableOpacity
+        style={styles.iconBtn}
+        onPress={onPressCacheCaseId}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="CacheCase ID">
+        {/* Brand mark, not a tintable glyph — no color prop, kept exactly
+            as designed (metallic silver, own transparency). */}
+        <Image source={IcLogo} contentFit="contain" style={styles.icLogo} />
+      </TouchableOpacity>
+
+      {/* Comment / Like / Share — same order/icons/active-state color as
+          the collection detail screen's own social row. */}
+      <View style={styles.socialRow}>
         <TouchableOpacity
           style={styles.iconBtn}
-          onPress={onPressCacheCaseId}
+          onPress={onPressComment}
           activeOpacity={0.7}
           accessibilityRole="button"
-          accessibilityLabel="CacheCase ID">
-          {/* Brand mark, not a tintable glyph — no color prop, kept exactly
-              as designed (metallic silver, own transparency). */}
-          <Image source={IcLogo} contentFit="contain" style={styles.icLogo} />
+          accessibilityLabel="Comment">
+          <IconSymbol name="message" size={20} color={PV2.textPrimary} />
         </TouchableOpacity>
-      </View>
 
-      <View style={styles.center}>
-        <Text style={styles.dots}>•  •  •</Text>
-      </View>
+        <TouchableOpacity
+          style={styles.likeBtn}
+          onPress={onPressLike}
+          disabled={likeInFlight}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={liked ? 'Unlike' : 'Like'}
+          accessibilityState={{ selected: liked, disabled: likeInFlight }}>
+          <IconSymbol name={liked ? 'heart.fill' : 'heart'} size={20} color={liked ? PV2.accent : PV2.textPrimary} />
+          <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
+        </TouchableOpacity>
 
-      <View style={[styles.side, styles.sideRight]}>
-        {onPressBookmark ? (
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={onPressBookmark}
-            disabled={savingBookmark}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel={isSaved ? 'Remove bookmark' : 'Bookmark'}
-            accessibilityState={{ selected: !!isSaved, disabled: !!savingBookmark }}>
-            {/* Same active/inactive glyph+color convention as the folder-
-                detail bookmark control (app/collection/[folderId].tsx) —
-                filled + PV2.accent when saved, outline + PV2.textPrimary
-                otherwise. */}
-            <IconSymbol
-              name={isSaved ? 'bookmark.fill' : 'bookmark'}
-              size={21}
-              color={isSaved ? PV2.accent : PV2.textPrimary}
-            />
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.iconBtn}>
-            <IconSymbol name="bookmark" size={21} color={PV2.textPrimary} />
-          </View>
-        )}
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={onPressShare}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Share">
+          <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -91,26 +99,10 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 6,
-  },
-  side: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  sideRight: {
-    justifyContent: 'flex-end',
-  },
-  center: {
-    paddingHorizontal: 10,
-  },
-  dots: {
-    color: PV2.textTertiary,
-    fontSize: 13,
-    letterSpacing: 1,
+    paddingBottom: 10,
   },
   iconBtn: {
     width: 36,
@@ -125,5 +117,27 @@ const styles = StyleSheet.create({
   icLogo: {
     height: 21,
     aspectRatio: 563 / 350,
+  },
+  // Comment/Like/Share — same gap as before (24, unchanged), now the
+  // row's right-hand flex child instead of a separate row underneath.
+  socialRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
+  },
+  likeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 36,
+  },
+  likeCount: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: PV2.textSecondary,
+    minWidth: 16,
+  },
+  likeCountActive: {
+    color: PV2.accent,
   },
 });

@@ -5,6 +5,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -21,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
+import { ItemCommentsSheet } from '@/components/item-detail/item-comments-sheet';
 import { ItemDescription } from '@/components/item-detail/item-description';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { buildItemImageList, ItemImageCarousel, type CarouselImage } from '@/components/item-detail/item-image-carousel';
@@ -35,9 +37,9 @@ import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrails } from '@/hooks/use-grails';
 import { useItemImages } from '@/hooks/use-item-images';
+import { useItemLikes } from '@/hooks/use-item-likes';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
-import { useSavedCard } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { getComicBookDetails, updateComicBookItem } from '@/lib/comic-book-items';
@@ -542,8 +544,18 @@ export default function ItemDetailScreen() {
   // rather than hiding many individual buttons).
   const isTransferredOut = item?.collection_status === 'transferred_out';
 
+  // Item-level social row (Comment/Like/Share) — Like is the optimistic
+  // item_likes toggle, same shape as hooks/use-folder-likes.ts's own
+  // toggle(). Comment (below) opens ItemCommentsSheet, which owns its own
+  // useItemComments call internally (mounted-gated, same convention as
+  // FolderCommentsSheet/GalleryCommentsSheet) — this screen only tracks
+  // whether that sheet is open. Not owner-gated — everyone (including the
+  // owner) can comment/like/share, matching the collection detail screen.
+  const { likeCount: itemLikeCount, liked: itemLiked, inFlight: itemLikeInFlight, toggle: toggleItemLike } =
+    useItemLikes(id, currentUserId);
+  const [itemCommentsVisible, setItemCommentsVisible] = useState(false);
+
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
-  const { isSaved: cardSaved, saving: savingCard, toggle: toggleCardSave } = useSavedCard(id, currentUserId);
   // Not gated on isOwner — RLS (registered_cards_select_visible) already
   // restricts what a non-owner can read (public rows, or their own), so
   // this only lets an already-permitted read happen. It has to run for
@@ -1275,6 +1287,29 @@ export default function ItemDetailScreen() {
     Alert.alert('Not Registered', 'This card has not been registered with CacheCase yet.');
   }
 
+  // Same native Share.share()+deep-link pattern as
+  // app/collection/[folderId].tsx's own handleShare — not a new share
+  // mechanism, just the existing one pointed at an item deep link instead
+  // of a collection one. item.title (not the richer, type-specific
+  // `identity.title` computed just below, near the JSX) — plain and
+  // available regardless of item_type, and this function is defined well
+  // above that computation.
+  async function handleShare() {
+    if (!item) return;
+    const handle = isOwner
+      ? (session?.user?.email?.split('@')[0] ?? 'me')
+      : (ownerProfile?.username ?? 'user');
+    const title = item.title || 'this card';
+    try {
+      await Share.share({
+        title,
+        message: `Check out "${title}" by @${handle} on The Collection Room\nthecollectionroom://item/${item.id}`,
+      });
+    } catch {
+      // user dismissed share sheet — no-op
+    }
+  }
+
   async function handleGrailsToggle() {
     if (!item) return;
     setGrailsLoading(true);
@@ -1383,11 +1418,11 @@ export default function ItemDetailScreen() {
     <View style={styles.screen}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Non-owner viewers no longer get a header-right control at all —
-          the ItemActionBar bookmark (lower on the screen) is now the sole
-          bookmark entry point; see that component for the
-          cardSaved/toggleCardSave/savingCard wiring, still owned by this
-          same useSavedCard() call below. */}
+      {/* Non-owner viewers get no header-right control — unchanged from
+          before. The ItemActionBar bookmark that used to sit lower on the
+          screen is gone (Bookmark-removal pass); that row's right-hand
+          slot is now Share (handleShare, below), shown for every viewer
+          including the owner. */}
       <ItemDetailHeaderBar
         insetsTop={insets.top}
         title={headerTitle}
@@ -1822,9 +1857,12 @@ export default function ItemDetailScreen() {
             <>
               <ItemActionBar
                 onPressCacheCaseId={handleCacheCaseIdPress}
-                isSaved={!isOwner ? cardSaved : undefined}
-                onPressBookmark={!isOwner ? toggleCardSave : undefined}
-                savingBookmark={savingCard}
+                onPressComment={() => setItemCommentsVisible(true)}
+                liked={itemLiked}
+                likeCount={itemLikeCount}
+                likeInFlight={itemLikeInFlight}
+                onPressLike={toggleItemLike}
+                onPressShare={handleShare}
               />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
@@ -1966,6 +2004,14 @@ export default function ItemDetailScreen() {
           onCancel={handleQueueCancelled}
         />
       )}
+
+      <ItemCommentsSheet
+        visible={itemCommentsVisible}
+        onClose={() => setItemCommentsVisible(false)}
+        itemId={id}
+        itemTitle={item.title || 'Card'}
+        currentUserId={currentUserId}
+      />
     </View>
   );
 }
