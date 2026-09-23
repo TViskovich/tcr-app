@@ -4,10 +4,12 @@ import {
   Alert,
   Animated,
   FlatList,
+  Image as RNImage,
   Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -16,16 +18,38 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
+import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { fetchPostImages } from '@/components/feed/post-card';
+import { PostImageCarousel } from '@/components/feed/post-image-carousel';
+import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CardShareItem, RateMyGrailCard } from '@/types';
+import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
+
+// Post Detail's immersive text+photo media frame (app/post/[id].tsx's own
+// tuning, distinct from the feed's TEXT_POST_* constants in post-card.tsx —
+// this screen is meant to show the photo MUCH larger than the feed does).
+// Bounds are looser than the feed's text-post frame (which deliberately
+// keeps a photo "attached to text", not the main event) and the height cap
+// is a bigger share of the viewport, while still leaving room below for the
+// engagement row and reply bar to stay reachable without scrolling on a
+// typical phone.
+const DETAIL_MEDIA_MIN_ASPECT_RATIO = 3 / 5;
+const DETAIL_MEDIA_MAX_ASPECT_RATIO = 4 / 3;
+const DETAIL_MEDIA_DEFAULT_ASPECT_RATIO = 4 / 5;
+const DETAIL_MEDIA_MAX_HEIGHT_FRACTION = 0.62;
+
+function clampDetailMediaAspectRatio(ratio: number): number {
+  return Math.min(DETAIL_MEDIA_MAX_ASPECT_RATIO, Math.max(DETAIL_MEDIA_MIN_ASPECT_RATIO, ratio));
+}
 
 // Extra clearance so the "Add a comment..." row sits above the
 // globally-rendered floating tab bar (see components/navigation/
@@ -58,6 +82,11 @@ type PostDetail = {
   ratingCount: number;
   myRating: number | null;
   cardShareItems: CardShareItem[];
+  // Text posts' 0-4 mixed-source images (see post-card.tsx's own FeedPost.images
+  // comment) — empty for every non-'text' post_type and for any 'text' post
+  // created before this feature existed (which may still fall back to the
+  // legacy image_url below).
+  images: PostImage[];
 };
 
 type Comment = {
@@ -77,6 +106,116 @@ function formatAge(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Custom black top bar for the immersive text+photo layout ONLY — replaces
+// the native Stack header for that one branch (see the screen's own
+// isImmersiveText decision below). Back button on the left (BackButton,
+// this app's one standardized back control), owner-only overflow/delete on
+// the right (same confirm-then-delete action the native header's old
+// headerRight offered — no new backend behavior), a same-size empty spacer
+// in its place for a non-owner viewer so the back button stays put on the
+// left rather than the row re-centering around one child. paddingTop
+// absorbs the safe-area inset the native header used to provide.
+function ImmersiveHeaderBar({
+  insetTop,
+  isOwner,
+  deletingPost,
+  onDeletePress,
+}: {
+  insetTop: number;
+  isOwner: boolean;
+  deletingPost: boolean;
+  onDeletePress: () => void;
+}) {
+  return (
+    <View style={[styles.immersiveTopBar, { paddingTop: insetTop + 6 }]}>
+      <BackButton fallbackHref="/(tabs)" />
+      {isOwner ? (
+        deletingPost ? (
+          <View style={styles.immersiveOverflowBtn}>
+            <ActivityIndicator size="small" color={PV2.accent} />
+          </View>
+        ) : (
+          <TouchableOpacity
+            onPress={onDeletePress}
+            hitSlop={10}
+            style={styles.immersiveOverflowBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Post options">
+            <IconSymbol name="ellipsis" size={20} color={PV2.textPrimary} />
+          </TouchableOpacity>
+        )
+      ) : (
+        <View style={styles.immersiveOverflowBtn} />
+      )}
+    </View>
+  );
+}
+
+// Large immersive media for a text post's attached photo(s) — the whole
+// point of Phase 1. Reuses PostImageCarousel (multi-image) and
+// FittedRoundedImage (single-image) unchanged from the feed rather than
+// reimplementing paging/contain-fit — only the OUTER frame (edge-to-edge,
+// no rounding, bigger max-height fraction) and the dots' POSITION (below
+// the media, not overlaid on it — see PostImageCarousel's showDots prop)
+// differ from the feed's own treatment of the exact same images. Tapping
+// the current page opens the existing full-screen viewer
+// (ItemPhotoViewerModal) via onOpenViewer — see this screen's own comment
+// on that choice.
+function ImmersiveMedia({
+  images,
+  legacyImageUrl,
+  aspectRatio,
+  maxHeight,
+  activeIndex,
+  onActiveIndexChange,
+  onOpenViewer,
+}: {
+  images: PostImage[];
+  legacyImageUrl: string | null;
+  aspectRatio: number;
+  maxHeight: number;
+  activeIndex: number;
+  onActiveIndexChange: (index: number) => void;
+  onOpenViewer: (uri: string) => void;
+}) {
+  const frameStyle = { aspectRatio, maxHeight };
+
+  if (images.length > 1) {
+    return (
+      <View style={styles.immersiveMediaWrap}>
+        <View style={[styles.immersiveMediaBox, frameStyle]}>
+          <PostImageCarousel
+            images={images.map((img) => ({ key: img.id, uri: img.image_url }))}
+            mediaBorderRadius={0}
+            showDots={false}
+            onActiveIndexChange={onActiveIndexChange}
+            onPress={() => onOpenViewer(images[activeIndex]?.image_url ?? images[0].image_url)}
+          />
+        </View>
+        <View style={styles.immersiveDots} pointerEvents="none">
+          {images.map((img, index) => (
+            <View key={img.id} style={[styles.immersiveDot, index === activeIndex && styles.immersiveDotActive]} />
+          ))}
+        </View>
+      </View>
+    );
+  }
+
+  const uri = images[0]?.image_url ?? legacyImageUrl;
+  if (!uri) return null;
+
+  return (
+    <View style={styles.immersiveMediaWrap}>
+      <TouchableOpacity
+        style={[styles.immersiveMediaBox, frameStyle]}
+        onPress={() => onOpenViewer(uri)}
+        activeOpacity={0.95}>
+        <FittedRoundedImage uri={uri} radius={0} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // Defined outside the screen so FlatList ListHeaderComponent doesn't remount on re-renders
 function PostHeader({
   post,
@@ -85,6 +224,11 @@ function PostHeader({
   onLikeTap,
   rating,
   onRate,
+  hasImmersiveMedia,
+  mediaFrame,
+  activeMediaIndex,
+  onActiveMediaIndexChange,
+  onOpenMediaViewer,
 }: {
   post: PostDetail;
   commentCount: number;
@@ -92,6 +236,12 @@ function PostHeader({
   onLikeTap: () => void;
   rating: { avg: number | null; count: number; myRating: number | null; isOwner: boolean; submitting: boolean };
   onRate: (score: number) => void;
+  // Text-post-with-media-only — see the screen's own hasImmersiveMedia calc.
+  hasImmersiveMedia: boolean;
+  mediaFrame: { aspectRatio: number; maxHeight: number };
+  activeMediaIndex: number;
+  onActiveMediaIndexChange: (index: number) => void;
+  onOpenMediaViewer: (uri: string) => void;
 }) {
   const displayName = post.display_name || post.username;
   return (
@@ -114,10 +264,28 @@ function PostHeader({
         <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
       </View>
 
-      {/* Post body — text for text posts, grails grid for Rate My Grails,
-          carousel for card_share, image otherwise */}
+      {/* Post body — text for text posts (immersive media block first when
+          a text post actually has an attached photo — see hasImmersiveMedia
+          below; this branch previously never rendered any image for a text
+          post at all, even when one existed), grails grid for Rate My
+          Grails, carousel for card_share, image otherwise */}
       {post.post_type === 'text' ? (
-        <Text style={styles.textContent}>{post.content}</Text>
+        hasImmersiveMedia ? (
+          <>
+            <ImmersiveMedia
+              images={post.images}
+              legacyImageUrl={post.image_url}
+              aspectRatio={mediaFrame.aspectRatio}
+              maxHeight={mediaFrame.maxHeight}
+              activeIndex={activeMediaIndex}
+              onActiveIndexChange={onActiveMediaIndexChange}
+              onOpenViewer={onOpenMediaViewer}
+            />
+            {post.content ? <Text style={styles.caption}>{post.content}</Text> : null}
+          </>
+        ) : (
+          <Text style={styles.textContent}>{post.content}</Text>
+        )
       ) : post.post_type === 'rate_my_grails' ? (
         <View style={styles.grailsWrap}>
           <GrailsPostBody
@@ -242,6 +410,23 @@ export default function PostDetailScreen() {
   const [deletingPost, setDeletingPost] = useState(false);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
+
+  // Immersive text+photo media (Phase 1) — natural aspect ratio of the lead
+  // image, measured client-side exactly like post-card.tsx's own
+  // mediaAspectRatio (nothing in the schema stores source width/height).
+  // null until measured (or on failure), meaning "use
+  // DETAIL_MEDIA_DEFAULT_ASPECT_RATIO". Only ever used for a text post that
+  // actually has media — see hasImmersiveMedia below.
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
+  // Which page of a multi-image carousel is currently showing — surfaced by
+  // PostImageCarousel's onActiveIndexChange (momentum-end-only commits, same
+  // as its own internal state) so tapping the media opens the full-screen
+  // viewer on the actual visible photo, not always the first.
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  // Full-screen image viewer (ItemPhotoViewerModal, reused as-is — see this
+  // screen's own comment on that choice) — null when closed.
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  const { height: windowHeight } = useWindowDimensions();
   // Tracks each render's own comment count purely so the focus-refetch
   // effect below (which re-fetches on every refocus, e.g. returning from
   // the reply composer) can tell "a new comment actually arrived" apart
@@ -252,6 +437,42 @@ export default function PostDetailScreen() {
   useEffect(() => {
     commentCountRef.current = comments.length;
   }, [comments.length]);
+
+  // Lead media URL for a text post's attached photo(s) — post_images (if
+  // any, already ordered) first, then the legacy single image_url. Only
+  // ever non-null for post_type 'text'; a stable primitive (not the images
+  // array itself) so the measurement effect below doesn't re-run on every
+  // unrelated post-object replacement.
+  const leadMediaUri =
+    post?.post_type === 'text' ? (post.images[0]?.image_url ?? post.image_url) : null;
+
+  useEffect(() => {
+    setMediaAspectRatio(null);
+    if (!leadMediaUri) return;
+    let cancelled = false;
+    RNImage.getSize(
+      leadMediaUri,
+      (width, height) => {
+        if (!cancelled && height > 0) setMediaAspectRatio(width / height);
+      },
+      () => {
+        // Left as null (DETAIL_MEDIA_DEFAULT_ASPECT_RATIO fallback) — same
+        // "measurement failure ≠ image-load failure" split as post-card.tsx's
+        // own identical effect.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [leadMediaUri]);
+
+  // Resets the carousel page back to the first image whenever the post
+  // itself changes (e.g. a cold deep link straight into a different postId
+  // while this screen instance is somehow reused) — never carries a stale
+  // index from a previously-viewed post into a new one.
+  useEffect(() => {
+    setActiveMediaIndex(0);
+  }, [post?.id]);
 
   // Owns the mount/postId-change load's request batch only — the
   // Retry-comments and post-a-comment refresh paths below are user-
@@ -413,8 +634,9 @@ export default function PostDetailScreen() {
         const row = postRow as any;
         const isRateMyGrails = row.post_type === 'rate_my_grails';
         const isCardShare = row.post_type === 'card_share';
+        const isText = row.post_type === 'text';
 
-        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes] = await Promise.all([
+        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap] = await Promise.all([
           supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).abortSignal(controller.signal).single(),
           // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
           row.item_id
@@ -441,6 +663,15 @@ export default function PostDetailScreen() {
                 .order('display_order', { ascending: true })
                 .abortSignal(controller.signal)
             : Promise.resolve({ data: [], error: null }),
+          // Same "throws, not caught here" convention fetchPostImages
+          // documents itself — a failure here propagates up through this
+          // Promise.all rejection into the try/catch below (same handling
+          // fetchCardShareItems's own failures get via cardShareItemsRes.error
+          // just above, just via the throw path instead of a returned
+          // {error} — see post-reply/[id].tsx's own identical call for
+          // precedent), rather than silently rendering this text post with
+          // no photo.
+          isText ? fetchPostImages([postId], controller.signal) : Promise.resolve(new Map<string, PostImage[]>()),
         ]);
 
         if (loadControllerRef.current !== controller || controller.signal.aborted) return;
@@ -484,6 +715,7 @@ export default function PostDetailScreen() {
           ratingCount: ratingRows.length,
           myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
           cardShareItems: (cardShareItemsRes.data ?? []) as CardShareItem[],
+          images: (postImagesMap as Map<string, PostImage[]>).get(row.id) ?? [],
         });
 
         setComments(commentsResult.comments);
@@ -646,35 +878,61 @@ export default function PostDetailScreen() {
     );
   }
 
+  // Phase 1 scope gate — the immersive layout is for TEXT posts that
+  // actually carry a photo (post_images and/or the legacy image_url) ONLY.
+  // rate_my_grails/card_share/item posts and a plain text-only post all
+  // keep the existing native-header layout below, completely untouched.
+  const hasImmersiveMedia = post.post_type === 'text' && (post.images.length > 0 || !!post.image_url);
+  const mediaFrame = {
+    aspectRatio:
+      mediaAspectRatio != null ? clampDetailMediaAspectRatio(mediaAspectRatio) : DETAIL_MEDIA_DEFAULT_ASPECT_RATIO,
+    maxHeight: windowHeight * DETAIL_MEDIA_MAX_HEIGHT_FRACTION,
+  };
+  const isOwner = post.user_id === currentUserId;
+
   return (
     <>
       <Stack.Screen
-        options={{
-          title: `@${post.username}`,
-          headerBackTitle: '',
-          headerLeft: headerBackLeft,
-          headerRight:
-            post.user_id === currentUserId
-              ? () =>
-                  deletingPost ? (
-                    <ActivityIndicator size="small" color="#0a7ea4" style={styles.headerDeleteBtn} />
-                  ) : (
-                    <TouchableOpacity
-                      onPress={handleDeletePostPress}
-                      style={styles.headerDeleteBtn}
-                      accessibilityRole="button"
-                      accessibilityLabel="Post options">
-                      <Text style={styles.headerDeleteText}>Delete</Text>
-                    </TouchableOpacity>
-                  )
-              : undefined,
-        }}
+        options={
+          hasImmersiveMedia
+            ? // Immersive layout renders its own black top bar (below) in
+              // place of the native header — see ImmersiveHeaderBar's own
+              // comment for why.
+              { headerShown: false }
+            : {
+                title: `@${post.username}`,
+                headerBackTitle: '',
+                headerLeft: headerBackLeft,
+                headerRight: isOwner
+                  ? () =>
+                      deletingPost ? (
+                        <ActivityIndicator size="small" color="#0a7ea4" style={styles.headerDeleteBtn} />
+                      ) : (
+                        <TouchableOpacity
+                          onPress={handleDeletePostPress}
+                          style={styles.headerDeleteBtn}
+                          accessibilityRole="button"
+                          accessibilityLabel="Post options">
+                          <Text style={styles.headerDeleteText}>Delete</Text>
+                        </TouchableOpacity>
+                      )
+                  : undefined,
+              }
+        }
       />
       {/* Feed comment/reply redesign — this screen no longer hosts its own
           text input/keyboard, so it no longer needs KeyboardAvoidingView
           either (nothing on this screen ever raises the keyboard now; the
           reply composer is a separate routed screen that owns that). */}
       <View style={styles.container}>
+        {hasImmersiveMedia && (
+          <ImmersiveHeaderBar
+            insetTop={insets.top}
+            isOwner={isOwner}
+            deletingPost={deletingPost}
+            onDeletePress={handleDeletePostPress}
+          />
+        )}
         <FlatList
           ref={flatListRef}
           data={comments}
@@ -694,6 +952,11 @@ export default function PostDetailScreen() {
               onLikeTap={handleLikeTap}
               rating={rating}
               onRate={rating.submitRating}
+              hasImmersiveMedia={hasImmersiveMedia}
+              mediaFrame={mediaFrame}
+              activeMediaIndex={activeMediaIndex}
+              onActiveMediaIndexChange={setActiveMediaIndex}
+              onOpenMediaViewer={setViewerUri}
             />
           }
           ListEmptyComponent={
@@ -729,6 +992,15 @@ export default function PostDetailScreen() {
           <Text style={styles.addCommentPlaceholder}>Add a comment...</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Full-screen image viewer — reused as-is from Edit Item's photo
+          inspector (components/item-detail/item-photo-viewer-modal.tsx)
+          rather than building a second pinch/pan/zoom system. It shows only
+          the single tapped photo (no paging of its own) — for a multi-image
+          post this opens whichever page the carousel is currently on;
+          swiping between images while zoomed in full-screen is deferred
+          (see this screen's own Phase 2 notes). */}
+      <ItemPhotoViewerModal visible={!!viewerUri} uri={viewerUri ?? undefined} onClose={() => setViewerUri(null)} />
     </>
   );
 }
@@ -737,6 +1009,59 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: PV2.bg,
+  },
+  // Immersive text+photo layout only (replaces the native Stack header for
+  // that one branch — see ImmersiveHeaderBar's own comment). Strong black,
+  // not PV2.bg — this bar sits directly above the equally-black media, per
+  // the "strong black/dark background" direction, rather than the app's
+  // usual near-black panel shade.
+  immersiveTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    backgroundColor: '#000',
+  },
+  // Same 44x44 footprint as BackButton's own touch target, for visual
+  // symmetry on the row's opposite side (both an active button and the
+  // non-owner empty-spacer case share this one size).
+  immersiveOverflowBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Media + its below-media dot row — the "black background around any
+  // unused space" the media box's own letterboxing/maxHeight cap can leave.
+  immersiveMediaWrap: {
+    backgroundColor: '#000',
+    paddingBottom: 10,
+  },
+  // width: 100% + aspectRatio + maxHeight (the latter two set inline from
+  // mediaFrame — see the JSX) is the same "Yoga resolves a true cap"
+  // pattern post-card.tsx's own singleCardMaxHeight uses. No horizontal
+  // padding/margin — edge-to-edge per the "use nearly the full available
+  // width" direction, and no borderRadius — square corners read as more
+  // "immersive" here than the feed's own rounded media frame.
+  immersiveMediaBox: {
+    width: '100%',
+    backgroundColor: '#000',
+  },
+  immersiveDots: {
+    flexDirection: 'row',
+    gap: 5,
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  immersiveDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  immersiveDotActive: {
+    width: 16,
+    backgroundColor: PV2.accent,
   },
   headerDeleteBtn: {
     paddingHorizontal: 4,

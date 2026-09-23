@@ -29,6 +29,19 @@ type Props = {
   // There is no per-image full-screen viewer in this app to defer to
   // instead.
   onPress?: () => void;
+  // Defaults to true (unchanged behavior for every existing call site —
+  // the feed's own overlaid bottom-of-media dots). Post Detail's immersive
+  // layout (app/post/[id].tsx) sets this false and renders its own dot row
+  // BELOW the media box instead, via onActiveIndexChange below, rather than
+  // duplicating this component's paging/measurement logic just to move the
+  // dots.
+  showDots?: boolean;
+  // Fires whenever the committed active page changes (same
+  // handleMomentumEnd-driven, momentum-end-only commit as the internal
+  // activeIndex state below — never a per-onScroll-frame callback). Optional
+  // — omitted by every existing call site, which has no use for the current
+  // page outside this component.
+  onActiveIndexChange?: (index: number) => void;
 };
 
 // Feed-only multi-image carousel for a text post's 2-4 post_images (Phase:
@@ -53,7 +66,13 @@ type Props = {
 // sizing/positioning the fixed-aspect-ratio box this fills —
 // this component only ever fills 100%/100% of its own parent, same as
 // CardSharePostBody.
-export function PostImageCarousel({ images, mediaBorderRadius = 0, onPress }: Props) {
+export function PostImageCarousel({
+  images,
+  mediaBorderRadius = 0,
+  onPress,
+  showDots = true,
+  onActiveIndexChange,
+}: Props) {
   const [pageWidth, setPageWidth] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -81,7 +100,10 @@ export function PostImageCarousel({ images, mediaBorderRadius = 0, onPress }: Pr
     if (!pageWidth) return;
     const index = Math.round(e.nativeEvent.contentOffset.x / pageWidth);
     const clamped = Math.min(images.length - 1, Math.max(0, index));
-    if (clamped !== activeIndex) setActiveIndex(clamped);
+    if (clamped !== activeIndex) {
+      setActiveIndex(clamped);
+      onActiveIndexChange?.(clamped);
+    }
   }
 
   // Callers are responsible for not rendering this for an empty/1-image
@@ -133,7 +155,7 @@ export function PostImageCarousel({ images, mediaBorderRadius = 0, onPress }: Pr
         ) : null}
       </View>
 
-      {images.length > 1 && (
+      {showDots && images.length > 1 && (
         <View style={styles.dots} pointerEvents="none">
           {images.map((img, index) => (
             <View key={img.key} style={[styles.dot, index === activeIndex && styles.dotActive]} />
