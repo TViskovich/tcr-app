@@ -54,7 +54,7 @@ export type FeedPost = {
   images: PostImage[];
 };
 
-// Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
+// Shared by app/(tabs)/index.tsx's queryFeed and
 // fetchUserPosts below — batch-fetches the grail snapshot rows + ratings for
 // whichever of the given posts are Rate My Grails posts, keyed by post_id,
 // so every caller builds FeedPost the same way. `signal` is required, not
@@ -92,7 +92,7 @@ export async function fetchGrailData(postIds: string[], signal: AbortSignal, cur
   return { cardsMap, ratingTotals };
 }
 
-// Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
+// Shared by app/(tabs)/index.tsx's queryFeed and
 // fetchUserPosts below — batch-fetches card_share_items for whichever of
 // the given posts are 'card_share' posts, keyed by post_id, mirroring
 // fetchGrailData's shape above. `signal` required for the same reason as
@@ -112,7 +112,7 @@ export async function fetchCardShareItems(postIds: string[], signal: AbortSignal
     .abortSignal(signal);
 
   if (error) {
-    // Same reasoning as app/(tabs)/index.tsx's queryFeed/queryFollowingFeed
+    // Same reasoning as app/(tabs)/index.tsx's queryFeed
     // — expected cancellation (focus-loss/request-replacement) must not be
     // logged as a real failure. Still thrown either way, unchanged: the
     // caller's own controller.signal.aborted check already discards an
@@ -132,7 +132,7 @@ export async function fetchCardShareItems(postIds: string[], signal: AbortSignal
   return map;
 }
 
-// Shared by app/(tabs)/index.tsx's queryFeed/queryFollowingFeed and
+// Shared by app/(tabs)/index.tsx's queryFeed and
 // fetchUserPosts below — batch-fetches post_images for whichever of the
 // given posts are 'text' posts, keyed by post_id. Exact same shape/
 // convention as fetchCardShareItems above (one batched query across every
@@ -264,8 +264,8 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
       username: profile.username ?? 'user',
       // Hero/display name first, matching the profile identity card's own
       // source of truth (profile-v2-screen.tsx's `hero_display_name ||
-      // display_name || ...`) — same fallback queryFeed/queryFollowingFeed
-      // in app/(tabs)/index.tsx now use, so every PostCard consumer (Feed,
+      // display_name || ...`) — same fallback queryFeed
+      // in app/(tabs)/index.tsx uses, so every PostCard consumer (Feed,
       // and this file's own fetchUserPosts for a profile's Posts tab)
       // resolves the author name identically. PostCard's own
       // `post.display_name || post.username` (unchanged) completes the

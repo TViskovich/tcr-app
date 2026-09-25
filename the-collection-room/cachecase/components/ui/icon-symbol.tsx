@@ -54,6 +54,8 @@ const MAPPING = {
   'mappin': 'place',
   // Move Item modal's current-folder indicator (move-item-modal.tsx).
   'checkmark.circle.fill': 'check-circle',
+  // Following tab's "N new items today" activity row (following-items-feed.tsx).
+  'person.2.fill': 'people',
 } as IconMapping;
 
 /**

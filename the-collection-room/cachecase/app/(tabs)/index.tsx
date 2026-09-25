@@ -21,6 +21,7 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
+import { FollowingItemsFeed } from '@/components/feed/following-items-feed';
 import { fetchCardShareItems, fetchGrailData, fetchPostImages, PostCard, type FeedPost } from '@/components/feed/post-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -178,124 +179,6 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   return sortPostsByCreatedAtDesc(posts);
 }
 
-// `signal` required — see queryFeed's comment above.
-async function queryFollowingFeed(currentUserId: string | undefined, page: number, signal: AbortSignal): Promise<FeedPost[]> {
-  if (!currentUserId) return [];
-
-  const { data: followRows } = await supabase
-    .from('follows')
-    .select('following_id')
-    .eq('follower_id', currentUserId)
-    .abortSignal(signal);
-
-  const followedIds = ((followRows ?? []) as any[]).map((f) => f.following_id as string);
-  if (!followedIds.length) return [];
-
-  const from = page * PAGE_SIZE;
-
-  const { data: postRows, error: postsError } = await supabase
-    .from('posts')
-    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
-    .in('user_id', followedIds)
-    .order('created_at', { ascending: false })
-    .range(from, from + PAGE_SIZE - 1)
-    .abortSignal(signal);
-
-  if (postsError) {
-    // Same reasoning as queryFeed's identical guard above — expected
-    // cancellation must not be logged as a real failure, but still throws
-    // unchanged so the caller's own abort check discards it correctly.
-    if (!signal.aborted) {
-      console.error('[queryFollowingFeed] posts query failed:', postsError.message, postsError);
-    }
-    throw postsError;
-  }
-
-  if (!postRows?.length) return [];
-
-  const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
-  const postIds = (postRows as any[]).map((p) => p.id as string);
-  const grailPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'rate_my_grails')
-    .map((p) => p.id as string);
-  const cardSharePostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'card_share')
-    .map((p) => p.id as string);
-  const textPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'text')
-    .map((p) => p.id as string);
-
-  const [profilesRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('id, username, display_name, hero_display_name, avatar_url')
-      .in('id', userIds)
-      .abortSignal(signal),
-    itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
-      : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
-    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
-    grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, signal, currentUserId)
-      : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
-    fetchCardShareItems(cardSharePostIds, signal),
-    fetchPostImages(textPostIds, signal),
-  ]);
-
-  const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
-  const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
-
-  const likeCountMap = new Map<string, number>();
-  const likedSet = new Set<string>();
-  for (const row of (likesRes.data ?? []) as any[]) {
-    likeCountMap.set(row.post_id, (likeCountMap.get(row.post_id) ?? 0) + 1);
-    if (row.user_id === currentUserId) likedSet.add(row.post_id);
-  }
-
-  const commentCountMap = new Map<string, number>();
-  for (const row of (commentsRes.data ?? []) as any[]) {
-    commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
-  }
-
-  const { cardsMap, ratingTotals } = grailData;
-
-  // Query already orders by created_at DESC; wrapped in the same canonical
-  // sort as queryFeed so both paths share one ordering guarantee.
-  return sortPostsByCreatedAtDesc((postRows as any[]).map((post) => {
-    const profile = profileMap.get(post.user_id) ?? {};
-    const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
-    const rating = ratingTotals.get(post.id);
-    return {
-      id: post.id,
-      user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
-      image_url: post.image_url ?? (item as any).image_url ?? null,
-      content: post.content ?? null,
-      caption: post.caption ?? null,
-      created_at: post.created_at,
-      item_name: (item as any).name ?? null,
-      username: profile.username ?? 'user',
-      // See queryFeed's matching comment above — same hero-name-first
-      // fallback, same shared source of truth as the profile screen.
-      display_name: profile.hero_display_name || profile.display_name || null,
-      avatar_url: profile.avatar_url ?? null,
-      likeCount: likeCountMap.get(post.id) ?? 0,
-      liked: likedSet.has(post.id),
-      commentCount: commentCountMap.get(post.id) ?? 0,
-      isFollowing: true,
-      grailCards: cardsMap.get(post.id) ?? [],
-      avgRating: rating ? rating.sum / rating.count : null,
-      ratingCount: rating?.count ?? 0,
-      myRating: rating?.mine ?? null,
-      cardShareItems: cardShareMap.get(post.id) ?? [],
-      images: postImagesMap.get(post.id) ?? [],
-    };
-  }));
-}
-
 export default function HomeScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -327,11 +210,12 @@ export default function HomeScreen() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   // Distinct from "posts.length === 0" (the empty state below) — a failed
-  // query must never look identical to "you have no posts." queryFeed/
-  // queryFollowingFeed now throw on a genuine query failure (they used to
-  // silently swallow it), so this needs to be caught here rather than left
-  // as an unhandled rejection that would also leave loading/refreshing
-  // spinners stuck on forever.
+  // query must never look identical to "you have no posts." queryFeed
+  // throws on a genuine query failure (it used to silently swallow it), so
+  // this needs to be caught here rather than left as an unhandled rejection
+  // that would also leave loading/refreshing spinners stuck on forever.
+  // (For-you mode only now — Following mode's own error state lives inside
+  // FollowingItemsFeed.)
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Three separate controllers, one per operation below — loadFeed,
@@ -368,6 +252,11 @@ export default function HomeScreen() {
   const skipNextFocusReloadRef = useRef(false);
 
   const loadFeed = useCallback(async () => {
+    // Following mode now renders FollowingItemsFeed (a separate,
+    // item-based component that owns its own data/loading/error state) —
+    // this posts-based loader has nothing to do for it.
+    if (feedMode !== 'for-you') return;
+
     loadFeedControllerRef.current?.abort();
     const controller = new AbortController();
     loadFeedControllerRef.current = controller;
@@ -377,10 +266,7 @@ export default function HomeScreen() {
     setHasMore(true);
     setLoadError(null);
     try {
-      const data =
-        feedMode === 'for-you'
-          ? await queryFeed(currentUserId, 0, controller.signal)
-          : await queryFollowingFeed(currentUserId, 0, controller.signal);
+      const data = await queryFeed(currentUserId, 0, controller.signal);
       // Superseded (a newer loadFeed call, or the tab lost focus) — this
       // batch's result is stale regardless of whether it actually finished
       // or carries an abort error; never let it commit over newer state.
@@ -400,6 +286,10 @@ export default function HomeScreen() {
   }, [currentUserId, feedMode]);
 
   const onRefresh = useCallback(async () => {
+    // See loadFeed's identical guard above — Following mode has its own
+    // pull-to-refresh inside FollowingItemsFeed now.
+    if (feedMode !== 'for-you') return;
+
     refreshControllerRef.current?.abort();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
@@ -408,10 +298,7 @@ export default function HomeScreen() {
     setPage(0);
     setHasMore(true);
     try {
-      const data =
-        feedMode === 'for-you'
-          ? await queryFeed(currentUserId, 0, controller.signal)
-          : await queryFollowingFeed(currentUserId, 0, controller.signal);
+      const data = await queryFeed(currentUserId, 0, controller.signal);
       if (refreshControllerRef.current !== controller || controller.signal.aborted) return;
       setPosts(data);
       setHasMore(data.length === PAGE_SIZE);
@@ -431,6 +318,9 @@ export default function HomeScreen() {
   }, [currentUserId, feedMode]);
 
   const loadMore = useCallback(async () => {
+    // Following mode has no post pagination anymore — see loadFeed's
+    // identical guard above.
+    if (feedMode !== 'for-you') return;
     if (loadingMore || !hasMore || loading) return;
     loadMoreControllerRef.current?.abort();
     const controller = new AbortController();
@@ -439,10 +329,7 @@ export default function HomeScreen() {
     setLoadingMore(true);
     const nextPage = page + 1;
     try {
-      const data =
-        feedMode === 'for-you'
-          ? await queryFeed(currentUserId, nextPage, controller.signal)
-          : await queryFollowingFeed(currentUserId, nextPage, controller.signal);
+      const data = await queryFeed(currentUserId, nextPage, controller.signal);
       if (loadMoreControllerRef.current !== controller || controller.signal.aborted) return;
       if (data.length > 0) {
         // Merge, dedupe by post ID (a page boundary can shift if a new post
@@ -558,10 +445,9 @@ export default function HomeScreen() {
     }
   }
 
-  const emptyBody =
-    feedMode === 'for-you'
-      ? 'Add an item to your collection and enable "Share to feed" to post here.'
-      : 'Follow people to see their posts here.';
+  // For You only now — Following renders FollowingItemsFeed, which owns
+  // its own empty/error states below.
+  const emptyBody = 'Add an item to your collection and enable "Share to feed" to post here.';
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -656,7 +542,17 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {loading ? (
+      {feedMode === 'following' ? (
+        // Entirely separate data model/layout — recently uploaded
+        // collection items from followed collectors, not posts. Owns its
+        // own loading/error/empty states and data fetching; nothing below
+        // this branch (posts/loading/loadError/FlatList) applies to it.
+        <FollowingItemsFeed
+          currentUserId={currentUserId}
+          onScroll={navbarOnScroll}
+          scrollEventThrottle={scrollEventThrottle}
+        />
+      ) : loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
