@@ -38,8 +38,18 @@ import { imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 // are different bytes under the same image id, so they must never share a
 // key. 'original' has no suffix — every pre-tier caller and every already-
 // cached original keeps its exact existing key.
-export function itemImageCacheKey(identity: string, imageId: string, tier: ImageTier = 'original'): string {
-  return `${identity}:item-image:${imageId}${imageTierCacheSuffix(tier)}`;
+//
+// `servedTiers` (optional) is the map useSignedItemImages returns for ids
+// whose URL is a tier FALLBACK (requested tier wasn't served): when present
+// for this image, its tier wins, so fallback original bytes are keyed as
+// original and never land under the requested tier's key.
+export function itemImageCacheKey(
+  identity: string,
+  imageId: string,
+  tier: ImageTier = 'original',
+  servedTiers?: Map<string, ImageTier>,
+): string {
+  return `${identity}:item-image:${imageId}${imageTierCacheSuffix(servedTiers?.get(imageId) ?? tier)}`;
 }
 
 // Folder covers — trickier, because the RESOLVED underlying image for a

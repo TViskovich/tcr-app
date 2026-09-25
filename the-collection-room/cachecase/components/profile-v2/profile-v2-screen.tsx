@@ -50,6 +50,7 @@ import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import {
@@ -419,10 +420,11 @@ export function ProfileV2Screen({ userId }: Props) {
   // tab switch) reads the by-then-likely-already-resolved cache instead of
   // starting the request from scratch.
   const previewGridEntries = Object.values(previewEntries).flat();
-  const { urls: previewItemUrls } = useSignedItemImages(
+  const { urls: previewItemUrls, servedTiers: previewServedTiers } = useSignedItemImages(
     previewGridEntries
       .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
       .map((e) => e.item.primary_image_id),
+    COMPACT_IMAGE_TIER,
   );
   useSignedFolderCovers(
     previewGridEntries
@@ -455,9 +457,11 @@ export function ProfileV2Screen({ userId }: Props) {
           const imageId = e.item.primary_image_id;
           const uri = imageId ? previewItemUrls.get(imageId) : undefined;
           if (!imageId || !uri) return [];
-          return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+          return [
+            { id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, previewServedTiers) },
+          ];
         }),
-    [previewGridEntries, previewItemUrls, identity],
+    [previewGridEntries, previewItemUrls, previewServedTiers, identity],
   );
 
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();

@@ -16,6 +16,11 @@ export type ImageTier = 'preview' | 'detail' | 'original';
 
 export const DEFAULT_IMAGE_TIER: ImageTier = 'original';
 
+// Tier for small/compact surfaces (grid cells, thumbnails, compact cards).
+// Every such surface uses this one constant for its signed-URL request AND
+// its expo-image/warmup cacheKeys, so the three layers can't disagree.
+export const COMPACT_IMAGE_TIER: ImageTier = 'preview';
+
 // Suffix used to keep a tier's identity distinct from the same image's other
 // tiers in every cache layer (in-memory signed-URL cache, persisted
 // AsyncStorage cache, expo-image cacheKey). 'original' deliberately maps to

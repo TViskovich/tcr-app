@@ -8,6 +8,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { PREVIEW_ITEM_LIMIT, type CollectionGridEntry } from '@/hooks/use-collection';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder } from '@/types';
@@ -132,7 +133,10 @@ export function HorizontalCardPreview({
   const folderEntries = entries.filter(
     (e): e is Extract<CollectionGridEntry, { kind: 'folder' }> => e.kind === 'folder',
   );
-  const { urls: signedUrls } = useSignedItemImages(itemEntries.map((e) => e.item.primary_image_id));
+  const { urls: signedUrls, servedTiers } = useSignedItemImages(
+    itemEntries.map((e) => e.item.primary_image_id),
+    COMPACT_IMAGE_TIER,
+  );
   const { urls: coverUrls } = useSignedFolderCovers(folderEntries.map((e) => e.folder.id));
 
   // Overflow math — see the PR description's formula. hasOverflow only
@@ -202,7 +206,11 @@ export function HorizontalCardPreview({
         ) : (
           <CollectionPreviewCard
             imageUrl={entry.item.primary_image_id ? (signedUrls.get(entry.item.primary_image_id) ?? null) : null}
-            cacheKey={entry.item.primary_image_id ? itemImageCacheKey(identity, entry.item.primary_image_id) : undefined}
+            cacheKey={
+              entry.item.primary_image_id
+                ? itemImageCacheKey(identity, entry.item.primary_image_id, COMPACT_IMAGE_TIER, servedTiers)
+                : undefined
+            }
             tileWidth={tileWidth}
             variant={variant}
             squareEdges={!compact}

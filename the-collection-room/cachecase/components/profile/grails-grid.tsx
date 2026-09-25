@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { PremiumCardHeader, PremiumEmptyCard, VAULT_COLORS } from '@/components/ui/premium-empty-card';
 import { GrailsSlot } from '@/components/profile/grails-slot';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import type { ShowcaseItem } from '@/types';
 
 type Props = {
@@ -129,7 +130,7 @@ export function GrailsGrid({
   // One batched call for the whole vault — never one signing request per
   // card (item-images beta privacy hardening, Phase 3C). Declared before
   // the zero-state early return below to satisfy Rules of Hooks.
-  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id));
+  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id), COMPACT_IMAGE_TIER);
 
   // Press animation — declared before early return to satisfy Rules of Hooks.
   const pressScale = useRef(new Animated.Value(1)).current;

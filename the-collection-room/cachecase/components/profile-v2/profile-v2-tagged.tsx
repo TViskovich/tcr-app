@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSavedAll, type SavedCardEntry, type SavedFolderEntry } from '@/hooks/use-saved';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import type { CollectionItem, Folder } from '@/types';
 
 import { PV2 } from './profile-v2-theme';
@@ -55,7 +56,7 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
   const { folders, cards, loading } = useSavedAll(isOwnProfile ? userId : undefined);
   // Same batched-signing convention as every other grid in this codebase —
   // one call for the whole tab, never one request per tile.
-  const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id));
+  const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id), COMPACT_IMAGE_TIER);
   const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
 
   const isEmpty = folders.length === 0 && cards.length === 0;

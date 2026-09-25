@@ -6,6 +6,7 @@ import { Image } from 'expo-image';
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem } from '@/types';
 
@@ -72,8 +73,9 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
 
   // One batched signing call for the whole visible grid, same convention as
   // ProfileV2Grid — never one request per tile.
-  const { urls: signedImageUrls } = useSignedItemImages(
+  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(
     items.map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
   );
 
   // Bounded byte-cache warmup for the first ITEMS_GRID_PREFETCH_LIMIT
@@ -94,9 +96,9 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
         const imageId = item.primary_image_id;
         const uri = imageId ? signedImageUrls.get(imageId) : undefined;
         if (!imageId || !uri) return [];
-        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }];
       }),
-    [items, signedImageUrls, identity],
+    [items, signedImageUrls, servedTiers, identity],
   );
 
   if (loading && items.length === 0) {
@@ -127,7 +129,9 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
               <Image
                 source={{
                   uri,
-                  cacheKey: item.primary_image_id ? itemImageCacheKey(identity, item.primary_image_id) : undefined,
+                  cacheKey: item.primary_image_id
+                    ? itemImageCacheKey(identity, item.primary_image_id, COMPACT_IMAGE_TIER, servedTiers)
+                    : undefined,
                 }}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"

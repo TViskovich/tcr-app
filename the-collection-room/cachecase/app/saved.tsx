@@ -19,6 +19,7 @@ import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 
 export default function SavedScreen() {
@@ -29,7 +30,7 @@ export default function SavedScreen() {
   const { folders, cards, grails, loading, refresh } = useSavedAll(currentUserId);
   // One batched call for the whole Saved Cards section — never one signing
   // request per row (item-images beta privacy hardening, Phase 3C).
-  const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id));
+  const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id), COMPACT_IMAGE_TIER);
   // One batched call for the whole Saved Collections section (Phase 3D) —
   // useSavedAll's own folder query is already public-only
   // (hooks/use-saved.ts: .eq('is_public', true)), so every id requested

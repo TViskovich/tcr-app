@@ -19,6 +19,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 import { attachPrimaryImageIds } from '@/lib/item-images';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -208,7 +209,7 @@ export default function SearchScreen() {
   // (queryCards' own .eq('folders.is_public', true)); this is the
   // cross-user counterpart to the owner-only signed lookups elsewhere in
   // the app, authorized the same way via get-collection-item-image-signed-url.
-  const { urls: signedCardImageUrls } = useSignedItemImages(cardResults.map((c) => c.primary_image_id));
+  const { urls: signedCardImageUrls } = useSignedItemImages(cardResults.map((c) => c.primary_image_id), COMPACT_IMAGE_TIER);
   const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);

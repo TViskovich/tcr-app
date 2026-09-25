@@ -14,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 
 import { useAuth } from '@/lib/auth';
+import { COMPACT_IMAGE_TIER, type ImageTier } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
@@ -56,6 +57,10 @@ type Props = {
   // slot's own primary_image_id, or (signed-delivery migration) one of a
   // collection slot's slot.previewImageIds — never a raw storage path.
   signedImageUrls: Map<string, string>;
+  // From the same useSignedItemImages call as signedImageUrls — ids whose
+  // URL is a tier fallback, so their cacheKey reflects the tier actually
+  // served (see itemImageCacheKey).
+  servedTiers: Map<string, ImageTier>;
   isOwnProfile: boolean;
   onPressEmpty: (slotIndex: number) => void;
   onPressItem: (item: CollectionItem) => void;
@@ -68,6 +73,7 @@ export function GrailSlotPreview({
   slot,
   slotIndex,
   signedImageUrls,
+  servedTiers,
   isOwnProfile,
   onPressEmpty,
   onPressItem,
@@ -467,7 +473,7 @@ export function GrailSlotPreview({
             <Image
               source={{
                 uri: signedImageUrls.get(slot.item!.primary_image_id!),
-                cacheKey: itemImageCacheKey(identity, slot.item!.primary_image_id!),
+                cacheKey: itemImageCacheKey(identity, slot.item!.primary_image_id!, COMPACT_IMAGE_TIER, servedTiers),
               }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
@@ -483,7 +489,12 @@ export function GrailSlotPreview({
           {activeUri ? (
             <>
               <Image
-                source={{ uri: activeUri, cacheKey: idByUri.get(activeUri) ? itemImageCacheKey(identity, idByUri.get(activeUri)!) : undefined }}
+                source={{
+                  uri: activeUri,
+                  cacheKey: idByUri.get(activeUri)
+                    ? itemImageCacheKey(identity, idByUri.get(activeUri)!, COMPACT_IMAGE_TIER, servedTiers)
+                    : undefined,
+                }}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 cachePolicy="memory-disk"
@@ -494,7 +505,9 @@ export function GrailSlotPreview({
                 <AnimatedExpoImage
                   source={{
                     uri: incomingUri,
-                    cacheKey: idByUri.get(incomingUri) ? itemImageCacheKey(identity, idByUri.get(incomingUri)!) : undefined,
+                    cacheKey: idByUri.get(incomingUri)
+                      ? itemImageCacheKey(identity, idByUri.get(incomingUri)!, COMPACT_IMAGE_TIER, servedTiers)
+                      : undefined,
                   }}
                   style={[StyleSheet.absoluteFill, topAnimatedStyle]}
                   contentFit="cover"

@@ -4,6 +4,7 @@ import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
@@ -90,7 +91,7 @@ export function ProfileV2Grid({
   // collection slot contributes every id in its previewImageIds, all
   // resolved together in this single call.
   const slotImageIds = slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? [])));
-  const { urls: signedImageUrls } = useSignedItemImages(slotImageIds);
+  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(slotImageIds, COMPACT_IMAGE_TIER);
 
   // Warms expo-image's own cache for the whole grid up front, the moment
   // the signing batch resolves — same pattern app/collection/[folderId].tsx
@@ -117,10 +118,10 @@ export function ProfileV2Grid({
       slotImageIds.flatMap((imageId) => {
         const uri = imageId ? signedImageUrls.get(imageId) : undefined;
         if (!imageId || !uri) return [];
-        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }];
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slotImageIds.join(','), signedImageUrls, identity],
+    [slotImageIds.join(','), signedImageUrls, servedTiers, identity],
   );
 
   // State: initial load failed, nothing loaded yet — never render 9 empty
@@ -173,6 +174,7 @@ export function ProfileV2Grid({
                 slot={slot}
                 slotIndex={slotIndex}
                 signedImageUrls={signedImageUrls}
+                servedTiers={servedTiers}
                 isOwnProfile={isOwnProfile}
                 onPressEmpty={onPressEmpty}
                 onPressItem={onPressItem}

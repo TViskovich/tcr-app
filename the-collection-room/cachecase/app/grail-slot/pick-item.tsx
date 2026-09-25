@@ -19,6 +19,7 @@ import { BackButton } from '@/components/ui/back-button';
 import { useAllItems } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
 
@@ -76,7 +77,7 @@ export default function PickGrailItemScreen() {
   const dataLoading = itemsLoading || slotsLoading;
   const dataError = itemsError ?? slotsError;
   // One batched call for every item currently rendered in this picker.
-  const { urls: signedImageUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
+  const { urls: signedImageUrls } = useSignedItemImages(items.map((i) => i.primary_image_id), COMPACT_IMAGE_TIER);
 
   function retryAll() {
     refreshItems();
