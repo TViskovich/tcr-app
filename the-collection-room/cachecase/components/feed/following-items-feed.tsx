@@ -22,6 +22,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
 import { attachPrimaryImageIds } from '@/lib/item-images';
+import type { ImageTier } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -97,6 +98,13 @@ const MAX_TILE_ASPECT_RATIO = 1.6;
 // slices them, so this approximates "what's on screen before any
 // scrolling" without real viewport measurement.
 const INITIAL_VISIBLE_ITEM_COUNT = 4;
+
+// Following tiles are small (roughly half-screen-wide) previews, so they
+// request the ~500px 'preview' representation (see lib/image-tiers.ts)
+// instead of the full-resolution original. Used for BOTH the signed-URL
+// requests and every cacheKey below so a preview never shares an identity
+// with the same image's original.
+const FOLLOWING_IMAGE_TIER: ImageTier = 'preview';
 
 function clampTileAspectRatio(ratio: number): number {
   return Math.min(MAX_TILE_ASPECT_RATIO, Math.max(MIN_TILE_ASPECT_RATIO, ratio));
@@ -798,8 +806,19 @@ export function FollowingItemsFeed({
     () => mountedDisplayItems.slice(INITIAL_VISIBLE_ITEM_COUNT).map((i) => i.primary_image_id),
     [mountedDisplayItems],
   );
-  const { urls: priorityUrls } = useSignedItemImages(priorityImageIds);
-  const { urls: backgroundUrls } = useSignedItemImages(backgroundImageIds);
+  const { urls: priorityUrls, servedTiers: priorityServedTiers } = useSignedItemImages(
+    priorityImageIds,
+    FOLLOWING_IMAGE_TIER,
+  );
+  const { urls: backgroundUrls, servedTiers: backgroundServedTiers } = useSignedItemImages(
+    backgroundImageIds,
+    FOLLOWING_IMAGE_TIER,
+  );
+  // If the server fell back to the original for an image, key expo-image's
+  // cache on the tier actually served, never on 'preview' — otherwise
+  // full-size bytes would be cached under the preview identity.
+  const servedTierOf = (imageId: string): ImageTier =>
+    priorityServedTiers.get(imageId) ?? backgroundServedTiers.get(imageId) ?? FOLLOWING_IMAGE_TIER;
 
   // Bounded byte-cache warmup (components/images/private-image-warmup.tsx),
   // scoped to the priority set only — same convention as
@@ -812,9 +831,15 @@ export function FollowingItemsFeed({
         const imageId = item.primary_image_id;
         const uri = imageId ? priorityUrls.get(imageId) : undefined;
         if (!imageId || !uri) return [];
-        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId) }];
+        return [
+          {
+            id: imageId,
+            uri,
+            cacheKey: itemImageCacheKey(identity, imageId, priorityServedTiers.get(imageId) ?? FOLLOWING_IMAGE_TIER),
+          },
+        ];
       }),
-    [mountedDisplayItems, priorityUrls, identity],
+    [mountedDisplayItems, priorityUrls, priorityServedTiers, identity],
   );
 
   const newItemsTodayCount = useMemo(() => {
@@ -903,7 +928,7 @@ export function FollowingItemsFeed({
               key={item.id}
               item={item}
               imageUrl={imageUrl}
-              imageCacheKey={imageId ? itemImageCacheKey(identity, imageId) : undefined}
+              imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
               columnWidth={width}
               isNewest={item.id === newestItemId}
               onPress={() => router.push({ pathname: '/item/[id]', params: { id: item.id } })}

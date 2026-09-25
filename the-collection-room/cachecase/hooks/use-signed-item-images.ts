@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import { DEFAULT_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 import {
   ITEM_IMAGES_CACHE_DOMAIN,
   mergePersistedSignedUrlEntries,
@@ -105,7 +106,18 @@ export type SignedImageStatus = 'loading' | 'ready' | 'unavailable';
 // two are never conflated: a real authorization denial and "the request
 // itself never got a real answer" are different facts with different
 // expected lifetimes, and only the former is ever persisted to disk.
-type CacheEntry = { url: string | null; expiresAt: number; isTransientFailure?: boolean };
+// servedTier is set ONLY when the server served a different tier than was
+// requested (a transformed-URL fallback to the original) — such an entry is
+// display-only: held in memory under the requested tier so the image still
+// renders, never persisted, and always treated as not-fresh (see isFresh) so
+// a later request for the requested tier retries the real transform instead
+// of trusting the fallback.
+type CacheEntry = {
+  url: string | null;
+  expiresAt: number;
+  isTransientFailure?: boolean;
+  servedTier?: ImageTier;
+};
 
 // Module-level, in-memory first-level cache, shared across every hook
 // instance/screen — cleared on app reload, but now backed by a persisted
@@ -143,6 +155,10 @@ const inFlight = new Map<string, Promise<void>>();
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
   if (entry.isTransientFailure) return entry.expiresAt > Date.now();
+  // A tier-fallback entry is never "fresh": every effect pass (and the
+  // single bounded follow-up pass) re-requests the real transform. It is
+  // still SERVED meanwhile — isUsable ignores this flag.
+  if (entry.servedTier) return false;
   return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
 }
 
@@ -159,7 +175,9 @@ function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
 }
 
 type EdgeResult =
-  | { id: string; status: 'ok'; signed_url: string; expires_in: number }
+  // `tier` is what the server ACTUALLY served ('original' when a requested
+  // transform fell back). Absent from a not-yet-redeployed function.
+  | { id: string; status: 'ok'; signed_url: string; expires_in: number; tier?: ImageTier }
   | { id: string; status: 'unavailable' };
 
 type BatchAttempt = { ok: true; results: EdgeResult[] } | { ok: false; status: number | null };
@@ -197,6 +215,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 async function fetchSignedImageBatchAttempt(
   imageIds: string[],
   accessToken: string | null,
+  tier: ImageTier,
 ): Promise<BatchAttempt> {
   const headers: Record<string, string> = {
     apikey: supabaseAnonKey,
@@ -214,7 +233,9 @@ async function fetchSignedImageBatchAttempt(
     res = await fetch(`${supabaseUrl}/functions/v1/${EDGE_FUNCTION}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ image_ids: imageIds }),
+      // `tier` is only sent for non-original requests, so an 'original'
+      // request body is byte-identical to what it was before tiers existed.
+      body: JSON.stringify(tier === 'original' ? { image_ids: imageIds } : { image_ids: imageIds, tier }),
       signal: controller.signal,
     });
   } catch (e) {
@@ -274,12 +295,13 @@ async function fetchSignedImageBatchWithRetry(
   imageIds: string[],
   initialAccessToken: string | null,
   isCancelled: () => boolean,
+  tier: ImageTier,
 ): Promise<BatchAttempt> {
   let accessToken = initialAccessToken;
   let attempt = 0;
 
   for (;;) {
-    const result = await fetchSignedImageBatchAttempt(imageIds, accessToken);
+    const result = await fetchSignedImageBatchAttempt(imageIds, accessToken, tier);
     if (isCancelled()) return { ok: false, status: null };
     if (result.ok) return result;
 
@@ -316,9 +338,24 @@ async function fetchSignedImageBatchWithRetry(
 // exactly the requested ids, plus a per-id status so callers can
 // distinguish "still resolving" from "the server said no" without treating
 // either as a reason to fall back to a raw public URL.
-export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
+//
+// `tier` (default 'original' — unchanged behavior for every existing caller)
+// picks which server-approved representation of each image to sign: see
+// lib/image-tiers.ts. The returned maps stay keyed by the plain image id; the
+// tier only changes which cached/signed representation backs each entry, and
+// is part of every cache identity below (in-memory, persisted, in-flight) so
+// the same image at two tiers never collides.
+export function useSignedItemImages(
+  imageIds: (string | null | undefined)[],
+  tier: ImageTier = DEFAULT_IMAGE_TIER,
+): {
   urls: Map<string, string>;
   statuses: Map<string, SignedImageStatus>;
+  // Only present for an id whose URL is a tier FALLBACK (requested tier
+  // wasn't served — see CacheEntry.servedTier). Callers key expo-image's
+  // byte cache on `servedTiers.get(id) ?? requestedTier` so fallback
+  // original bytes never land under the requested tier's cacheKey.
+  servedTiers: Map<string, ImageTier>;
 } {
   // The existing app-wide auth subscription (lib/auth.tsx), not a second
   // one — reusing it is what lets this hook react to sign-in/sign-out
@@ -332,6 +369,12 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
 
   const ids = Array.from(new Set(imageIds.filter((id): id is string => !!id))).sort();
   const key = ids.join(',');
+
+  // Tier-qualified identity for one image in the module cache, in-flight map,
+  // and persisted AsyncStorage map. 'original' has no suffix, so every
+  // pre-tier cache entry (memory or persisted) keeps its exact old key.
+  const tierSuffix = imageTierCacheSuffix(tier);
+  const cacheIdOf = (id: string) => `${id}${tierSuffix}`;
 
   // Forces a re-render once a batch resolves — the cache itself lives
   // outside React state (see `cache` above) so multiple hook instances
@@ -357,27 +400,34 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
     // identical rather than risking drift between two hand-written copies
     // of the same logic.
     async function runPass(idsToTry: string[]): Promise<void> {
-      const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${id}`));
-      const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${id}`));
+      const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${cacheIdOf(id)}`));
+      const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${cacheIdOf(id)}`));
 
       const newBatchPromises: Promise<void>[] = [];
       for (let i = 0; i < toBatch.length; i += MAX_BATCH_SIZE) {
         const batch = toBatch.slice(i, i + MAX_BATCH_SIZE);
         const batchPromise: Promise<void> = (async () => {
           try {
-            const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled);
+            const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled, tier);
             if (cancelled) return;
 
             const now = Date.now();
             if (outcome.ok) {
               const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
               for (const r of outcome.results) {
+                // Fallback = a non-original tier was requested but the
+                // server didn't confirm serving it (it fell back to the
+                // original, or an older un-redeployed function ignored
+                // `tier`). Display-only: memory cache only, tagged with
+                // what was actually served, and NOT persisted.
+                const isFallback = tier !== 'original' && r.status === 'ok' && r.tier !== tier;
                 const entry: CacheEntry = {
                   url: r.status === 'ok' ? r.signed_url : null,
                   expiresAt: now + TTL_MS,
+                  ...(isFallback ? { servedTier: r.tier ?? ('original' as const) } : {}),
                 };
-                cache.set(`${identity}:${r.id}`, entry);
-                toPersist[r.id] = entry;
+                cache.set(`${identity}:${cacheIdOf(r.id)}`, entry);
+                if (!isFallback) toPersist[cacheIdOf(r.id)] = entry;
               }
               // Fire-and-forget — never blocks rendering; a write failure
               // here only costs a future cold-launch network round trip,
@@ -397,7 +447,11 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
               // future fetch for up to FAILURE_TTL_MS after every cold
               // launch, which defeats the whole point of that short TTL.
               for (const id of batch) {
-                cache.set(`${identity}:${id}`, { url: null, expiresAt: now + FAILURE_TTL_MS, isTransientFailure: true });
+                cache.set(`${identity}:${cacheIdOf(id)}`, {
+                  url: null,
+                  expiresAt: now + FAILURE_TTL_MS,
+                  isTransientFailure: true,
+                });
               }
             }
           } finally {
@@ -410,17 +464,17 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
             // nothing else can be sitting under these keys when this
             // batch settles.
             for (const id of batch) {
-              inFlight.delete(`${identity}:${id}`);
+              inFlight.delete(`${identity}:${cacheIdOf(id)}`);
             }
           }
         })();
         newBatchPromises.push(batchPromise);
-        for (const id of batch) inFlight.set(`${identity}:${id}`, batchPromise);
+        for (const id of batch) inFlight.set(`${identity}:${cacheIdOf(id)}`, batchPromise);
       }
 
       await Promise.all([
         ...newBatchPromises,
-        ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${id}`) ?? Promise.resolve()),
+        ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${cacheIdOf(id)}`) ?? Promise.resolve()),
       ]);
     }
 
@@ -434,22 +488,22 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
       // entry is simply skipped here and falls through to the normal
       // missing/fetch path below, exactly as if nothing had been
       // persisted for it.
-      const needsHydration = ids.filter((id) => !cache.has(`${identity}:${id}`));
+      const needsHydration = ids.filter((id) => !cache.has(`${identity}:${cacheIdOf(id)}`));
       if (needsHydration.length) {
         const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
         if (cancelled) return;
         let hydratedAny = false;
         for (const id of needsHydration) {
-          const entry = persisted[id];
+          const entry = persisted[cacheIdOf(id)];
           if (entry && entry.expiresAt > Date.now()) {
-            cache.set(`${identity}:${id}`, { url: entry.url, expiresAt: entry.expiresAt });
+            cache.set(`${identity}:${cacheIdOf(id)}`, { url: entry.url, expiresAt: entry.expiresAt });
             hydratedAny = true;
           }
         }
         if (hydratedAny) bump((n) => n + 1);
       }
 
-      const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      const missing = ids.filter((id) => !isFresh(cache.get(`${identity}:${cacheIdOf(id)}`)));
       if (!missing.length) return;
 
       await runPass(missing);
@@ -465,7 +519,7 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
       // screen happening to warm the shared cache first. Exactly one
       // follow-up, never a loop or a repeating timer, so a genuinely
       // down backend still gives up rather than retrying forever.
-      const stillMissing = missing.filter((id) => !isFresh(cache.get(`${identity}:${id}`)));
+      const stillMissing = missing.filter((id) => !isFresh(cache.get(`${identity}:${cacheIdOf(id)}`)));
       if (!stillMissing.length) return;
       await delay(FOLLOWUP_RETRY_DELAY_MS);
       if (cancelled) return;
@@ -484,16 +538,18 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
     // actually fires after such a rotation already reads the latest token
     // via this closure once `key`/`identity` next change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, identity]);
+  }, [key, identity, tier]);
 
   const urls = new Map<string, string>();
   const statuses = new Map<string, SignedImageStatus>();
+  const servedTiers = new Map<string, ImageTier>();
   for (const id of ids) {
-    const entry = cache.get(`${identity}:${id}`);
+    const entry = cache.get(`${identity}:${cacheIdOf(id)}`);
     if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
         statuses.set(id, 'ready');
+        if (entry.servedTier) servedTiers.set(id, entry.servedTier);
       } else {
         statuses.set(id, 'unavailable');
       }
@@ -502,5 +558,5 @@ export function useSignedItemImages(imageIds: (string | null | undefined)[]): {
     }
   }
 
-  return { urls, statuses };
+  return { urls, statuses, servedTiers };
 }

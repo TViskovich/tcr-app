@@ -23,6 +23,8 @@
 // public URLs with no rotation problem to solve, so nothing there should
 // ever call into this file.
 
+import { imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
+
 // Item images (collection_item_images) — the id itself is immutable per
 // upload: lib/item-images.ts's addItemImages only ever INSERTs a new row
 // with a freshly-generated storage path, and removeItemImage only ever
@@ -30,8 +32,14 @@
 // in this codebase. A replaced/re-ordered/re-primaried image is therefore
 // always a genuinely different id, so the id alone is already a complete,
 // collision-free version signal — no updated_at/revision field needed.
-export function itemImageCacheKey(identity: string, imageId: string): string {
-  return `${identity}:item-image:${imageId}`;
+//
+// `tier` (default 'original') keeps the same image's tiers from colliding in
+// expo-image's byte cache: a 500px preview and the full-resolution original
+// are different bytes under the same image id, so they must never share a
+// key. 'original' has no suffix — every pre-tier caller and every already-
+// cached original keeps its exact existing key.
+export function itemImageCacheKey(identity: string, imageId: string, tier: ImageTier = 'original'): string {
+  return `${identity}:item-image:${imageId}${imageTierCacheSuffix(tier)}`;
 }
 
 // Folder covers — trickier, because the RESOLVED underlying image for a

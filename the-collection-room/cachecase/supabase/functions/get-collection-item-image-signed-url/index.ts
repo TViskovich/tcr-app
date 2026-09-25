@@ -40,12 +40,15 @@
 // instead enforced inside this function, per request, below — identical
 // posture to get-registry-snapshot-image-url.
 //
-// Request:  POST { image_ids: string[] }   (1-50 collection_item_images.id
+// Request:  POST { image_ids: string[]; tier?: 'preview' | 'detail' | 'original' }
+//                                           (1-50 collection_item_images.id
 //                                            values; never a raw storage_path,
-//                                            item id, folder id, or owner id)
+//                                            item id, folder id, or owner id.
+//                                            `tier` is optional, defaults to
+//                                            'original' — see below.)
 //           Authorization: Bearer <user JWT>  (optional)
 // Response: { results: Array<
-//               { id: string; status: 'ok'; signed_url: string; expires_in: number }
+//               { id: string; status: 'ok'; signed_url: string; expires_in: number; tier: ImageTier }
 //             | { id: string; status: 'unavailable' }
 //           > }
 //
@@ -59,9 +62,22 @@
 // request (401) — never silently downgraded to an anonymous request, same
 // design as resolveCaller's documented contract.
 //
+// Tiered delivery: `tier` selects a server-approved Storage image transform
+// (see ../_shared/image-tiers.ts — clients send a tier NAME only, never
+// arbitrary width/quality). The transform is applied purely at the final
+// createSignedUrl step, AFTER canViewItem has already authorized the row, so
+// a transformed URL is exactly as private as the original signed URL (same
+// private bucket, same 300s token, same authorization decision). If the
+// transformed signing fails (e.g. transformations unavailable), it falls back
+// to the ordinary original signed URL for that same already-authorized row —
+// one fallback attempt, no retry loop — and the result's `tier` reports what
+// was ACTUALLY served ('original' on fallback). Omitting `tier` is identical
+// to the pre-tier behavior.
+//
 // storage_path itself is never included in the response — only the signed
 // URL the client actually needs to render the image.
 
+import { IMAGE_TIER_TRANSFORMS, parseImageTier, type ImageTier } from '../_shared/image-tiers.ts';
 import {
   handleCorsPreflight,
   jsonResponse,
@@ -147,7 +163,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'method_not_allowed' }, 405);
   }
 
-  let body: { image_ids?: unknown };
+  let body: { image_ids?: unknown; tier?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -168,6 +184,11 @@ Deno.serve(async (req: Request) => {
     !imageIds.every((id): id is string => typeof id === 'string' && UUID_RE.test(id))
   ) {
     return jsonResponse({ error: 'invalid_image_ids' }, 400);
+  }
+
+  const tier: ImageTier | null = parseImageTier(body.tier);
+  if (tier === null) {
+    return jsonResponse({ error: 'invalid_tier' }, 400);
   }
 
   const client = serviceRoleClient();
@@ -291,6 +312,25 @@ Deno.serve(async (req: Request) => {
         return { id, ...UNAVAILABLE };
       }
 
+      if (tier !== 'original') {
+        const { data: transformed, error: transformError } = await client.storage
+          .from('item-images')
+          .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS, {
+            transform: IMAGE_TIER_TRANSFORMS[tier],
+          });
+        if (!transformError && transformed?.signedUrl) {
+          return {
+            id,
+            status: 'ok' as const,
+            signed_url: transformed.signedUrl,
+            expires_in: SIGNED_URL_TTL_SECONDS,
+            tier,
+          };
+        }
+        // Fall through to the untransformed signed URL below — row is
+        // already authorized above; this only changes which bytes are served.
+      }
+
       const { data: signed, error: signError } = await client.storage
         .from('item-images')
         .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
@@ -299,7 +339,13 @@ Deno.serve(async (req: Request) => {
         return { id, ...UNAVAILABLE };
       }
 
-      return { id, status: 'ok' as const, signed_url: signed.signedUrl, expires_in: SIGNED_URL_TTL_SECONDS };
+      return {
+        id,
+        status: 'ok' as const,
+        signed_url: signed.signedUrl,
+        expires_in: SIGNED_URL_TTL_SECONDS,
+        tier: 'original' as const,
+      };
     }),
   );
 
