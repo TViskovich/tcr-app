@@ -4,7 +4,6 @@ import {
   Alert,
   Animated,
   FlatList,
-  Image as RNImage,
   Pressable,
   StyleSheet,
   Text,
@@ -34,22 +33,59 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
 
-// Post Detail's immersive text+photo media frame (app/post/[id].tsx's own
-// tuning, distinct from the feed's TEXT_POST_* constants in post-card.tsx —
-// this screen is meant to show the photo MUCH larger than the feed does).
-// Bounds are looser than the feed's text-post frame (which deliberately
-// keeps a photo "attached to text", not the main event) and the height cap
-// is a bigger share of the viewport, while still leaving room below for the
-// engagement row and reply bar to stay reachable without scrolling on a
-// typical phone.
-const DETAIL_MEDIA_MIN_ASPECT_RATIO = 3 / 5;
-const DETAIL_MEDIA_MAX_ASPECT_RATIO = 4 / 3;
-const DETAIL_MEDIA_DEFAULT_ASPECT_RATIO = 4 / 5;
-const DETAIL_MEDIA_MAX_HEIGHT_FRACTION = 0.62;
+// Opening-viewport budget for the immersive media frame — each constant
+// below is a direct reflection of an existing style further down this file
+// (not a guess, and not a flat percentage of window height), so the
+// Comment/Like row and the floating CacheCase nav both land inside the
+// FIRST viewport on open, with the photo taking up whatever's left. See
+// "availableImmersiveMediaHeight" at this screen's own render for how these
+// combine with useWindowDimensions()/insets.
+//
+// ImmersiveHeaderBar's own content: the 44pt back/overflow touch target
+// plus its 6px extra paddingTop (insets.top itself is added separately,
+// since it varies per device rather than being a fixed component height).
+const IMMERSIVE_TOP_BAR_CONTENT_HEIGHT = 50;
+// PostHeader's userRow, rendered above the media for every post type
+// including this one: 36px avatar + 10+10 paddingVertical.
+const IMMERSIVE_IDENTITY_ROW_HEIGHT = 56;
+// styles.actions (Comment/Like row): icon/count content plus its own
+// paddingBottom.
+const IMMERSIVE_ACTIONS_ROW_HEIGHT = 40;
+// A "reasonably sized" caption allowance — about 2 lines of styles.caption
+// (lineHeight 22 * 2 + its own paddingBottom 12) — not a live measurement
+// of the actual caption (no two-pass text measurement here). A short
+// caption like "Test" renders well under this, which just leaves a little
+// harmless breathing room before the actions row; a genuinely long caption
+// exceeds it and makes the screen scrollable, which is the accepted
+// tradeoff. 0 when the post has no caption at all, so a bare photo gets
+// that space back instead of leaving a dead gap.
+const IMMERSIVE_CAPTION_RESERVE_HEIGHT = 56;
+// immersiveMediaWrap's own paddingBottom (10 — the dots gutter, present
+// even for a single image with no dots) plus the hairline divider and
+// general layout rounding slop.
+const IMMERSIVE_SPACING_BUFFER = 10;
+// Absolute floor — guards against a pathological combination of insets/
+// caption reserve on a very small device collapsing the photo to an
+// unusable sliver. A safety net, not a sizing target; normal devices never
+// reach it.
+const IMMERSIVE_MEDIA_MIN_HEIGHT = 160;
 
-function clampDetailMediaAspectRatio(ratio: number): number {
-  return Math.min(DETAIL_MEDIA_MAX_ASPECT_RATIO, Math.max(DETAIL_MEDIA_MIN_ASPECT_RATIO, ratio));
-}
+// The floating CacheCase nav's own real geometry (see
+// components/navigation/global-floating-tab-bar.tsx's BAR_BOTTOM_GAP/
+// BAR_HEIGHT — mirrored here as plain numbers since that component doesn't
+// export them, not re-derived from a different guess) — its pill sits at
+// `insets.bottom + GLOBAL_NAV_BOTTOM_GAP` from the screen's bottom edge and
+// is `GLOBAL_NAV_HEIGHT` tall, so its own top edge is
+// `insets.bottom + GLOBAL_NAV_BOTTOM_GAP + GLOBAL_NAV_HEIGHT` up from the
+// bottom of the screen.
+const GLOBAL_NAV_BOTTOM_GAP = 4;
+const GLOBAL_NAV_HEIGHT = TAB_BAR_HEIGHT;
+// Small, deliberate breathing room above the nav's own top edge — much
+// tighter than the removed bottom "Add a comment..." bar's own
+// TAB_BAR_CLEARANCE (+16) convention, which was sized for a whole separate
+// tappable bar; the Comment/Like row here has no such bar and can sit much
+// closer to the nav, per the "feel visually attached" request.
+const IMMERSIVE_NAV_GAP = 6;
 
 // Extra clearance so the "Add a comment..." row sits above the
 // globally-rendered floating tab bar (see components/navigation/
@@ -155,30 +191,39 @@ function ImmersiveHeaderBar({
 // point of Phase 1. Reuses PostImageCarousel (multi-image) and
 // FittedRoundedImage (single-image) unchanged from the feed rather than
 // reimplementing paging/contain-fit — only the OUTER frame (edge-to-edge,
-// no rounding, bigger max-height fraction) and the dots' POSITION (below
-// the media, not overlaid on it — see PostImageCarousel's showDots prop)
-// differ from the feed's own treatment of the exact same images. Tapping
-// the current page opens the existing full-screen viewer
-// (ItemPhotoViewerModal) via onOpenViewer — see this screen's own comment
-// on that choice.
+// no rounding) and the dots' POSITION (below the media, not overlaid on
+// it — see PostImageCarousel's showDots prop) differ from the feed's own
+// treatment of the exact same images. Tapping the current page opens the
+// existing full-screen viewer (ItemPhotoViewerModal) via onOpenViewer — see
+// this screen's own comment on that choice.
+//
+// `height` is a FIXED height (not aspectRatio + maxHeight) — deliberately
+// independent of any measured image dimension, so this frame's own size is
+// known synchronously on first render and never changes after that. Both
+// FittedRoundedImage (single image) and PostImageCarousel's own per-page
+// FittedRoundedImage (multi-image) already do their own natural-aspect-
+// ratio "contain and center" fit entirely internally (measuring the real
+// image via onLoad, independent of any prop from here) — contentFit is
+// still 'contain', the photo is still shown at its true proportions, only
+// the OUTER box it's centered within no longer resizes once that
+// measurement resolves. See this screen's own render for where `height`
+// comes from (availableImmersiveMediaHeight) and why.
 function ImmersiveMedia({
   images,
   legacyImageUrl,
-  aspectRatio,
-  maxHeight,
+  height,
   activeIndex,
   onActiveIndexChange,
   onOpenViewer,
 }: {
   images: PostImage[];
   legacyImageUrl: string | null;
-  aspectRatio: number;
-  maxHeight: number;
+  height: number;
   activeIndex: number;
   onActiveIndexChange: (index: number) => void;
   onOpenViewer: (uri: string) => void;
 }) {
-  const frameStyle = { aspectRatio, maxHeight };
+  const frameStyle = { height };
 
   if (images.length > 1) {
     return (
@@ -229,6 +274,8 @@ function PostHeader({
   activeMediaIndex,
   onActiveMediaIndexChange,
   onOpenMediaViewer,
+  commentTappable,
+  onCommentTap,
 }: {
   post: PostDetail;
   commentCount: number;
@@ -238,10 +285,20 @@ function PostHeader({
   onRate: (score: number) => void;
   // Text-post-with-media-only — see the screen's own hasImmersiveMedia calc.
   hasImmersiveMedia: boolean;
-  mediaFrame: { aspectRatio: number; maxHeight: number };
+  // Fixed height (not aspectRatio/maxHeight) — see ImmersiveMedia's own
+  // comment for why.
+  mediaFrame: { height: number };
   activeMediaIndex: number;
   onActiveMediaIndexChange: (index: number) => void;
   onOpenMediaViewer: (uri: string) => void;
+  // Simplified interaction-row pass (text/card_share posts only — see the
+  // screen's own usesInlineCommentTap calc) — when true, the comment
+  // icon+count itself opens the reply composer and the bottom "Add a
+  // comment..." bar is hidden entirely (see the screen's own render below).
+  // False for every other post type, which keeps the exact same
+  // non-interactive comment count + separate bottom bar as before.
+  commentTappable: boolean;
+  onCommentTap: () => void;
 }) {
   const displayName = post.display_name || post.username;
   return (
@@ -275,8 +332,7 @@ function PostHeader({
             <ImmersiveMedia
               images={post.images}
               legacyImageUrl={post.image_url}
-              aspectRatio={mediaFrame.aspectRatio}
-              maxHeight={mediaFrame.maxHeight}
+              height={mediaFrame.height}
               activeIndex={activeMediaIndex}
               onActiveIndexChange={onActiveMediaIndexChange}
               onOpenViewer={onOpenMediaViewer}
@@ -338,10 +394,23 @@ function PostHeader({
           </Text>
         </Pressable>
 
-        <View style={[styles.actionBtn, styles.commentCountBtn]}>
-          <Text style={[styles.actionEmoji, styles.dim]}>💬</Text>
-          <Text style={styles.actionCount}>{commentCount}</Text>
-        </View>
+        {/* text/card_share posts (commentTappable) — tapping the comment
+            icon or its count opens the existing reply composer
+            (app/post-reply/[id].tsx) directly, same navigation the removed
+            bottom "Add a comment..." bar used to trigger, instead of
+            showing a separate bar underneath. Every other post type keeps
+            the original plain, non-interactive View — unchanged. */}
+        {commentTappable ? (
+          <Pressable onPress={onCommentTap} hitSlop={8} style={[styles.actionBtn, styles.commentCountBtn]}>
+            <Text style={[styles.actionEmoji, styles.dim]}>💬</Text>
+            <Text style={styles.actionCount}>{commentCount}</Text>
+          </Pressable>
+        ) : (
+          <View style={[styles.actionBtn, styles.commentCountBtn]}>
+            <Text style={[styles.actionEmoji, styles.dim]}>💬</Text>
+            <Text style={styles.actionCount}>{commentCount}</Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.divider} />
@@ -411,13 +480,6 @@ export default function PostDetailScreen() {
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const flatListRef = useRef<FlatList<Comment>>(null);
 
-  // Immersive text+photo media (Phase 1) — natural aspect ratio of the lead
-  // image, measured client-side exactly like post-card.tsx's own
-  // mediaAspectRatio (nothing in the schema stores source width/height).
-  // null until measured (or on failure), meaning "use
-  // DETAIL_MEDIA_DEFAULT_ASPECT_RATIO". Only ever used for a text post that
-  // actually has media — see hasImmersiveMedia below.
-  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
   // Which page of a multi-image carousel is currently showing — surfaced by
   // PostImageCarousel's onActiveIndexChange (momentum-end-only commits, same
   // as its own internal state) so tapping the media opens the full-screen
@@ -437,34 +499,6 @@ export default function PostDetailScreen() {
   useEffect(() => {
     commentCountRef.current = comments.length;
   }, [comments.length]);
-
-  // Lead media URL for a text post's attached photo(s) — post_images (if
-  // any, already ordered) first, then the legacy single image_url. Only
-  // ever non-null for post_type 'text'; a stable primitive (not the images
-  // array itself) so the measurement effect below doesn't re-run on every
-  // unrelated post-object replacement.
-  const leadMediaUri =
-    post?.post_type === 'text' ? (post.images[0]?.image_url ?? post.image_url) : null;
-
-  useEffect(() => {
-    setMediaAspectRatio(null);
-    if (!leadMediaUri) return;
-    let cancelled = false;
-    RNImage.getSize(
-      leadMediaUri,
-      (width, height) => {
-        if (!cancelled && height > 0) setMediaAspectRatio(width / height);
-      },
-      () => {
-        // Left as null (DETAIL_MEDIA_DEFAULT_ASPECT_RATIO fallback) — same
-        // "measurement failure ≠ image-load failure" split as post-card.tsx's
-        // own identical effect.
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [leadMediaUri]);
 
   // Resets the carousel page back to the first image whenever the post
   // itself changes (e.g. a cold deep link straight into a different postId
@@ -495,6 +529,15 @@ export default function PostDetailScreen() {
       return;
     }
     router.replace('/(tabs)');
+  }
+
+  // Same navigation the removed bottom "Add a comment..." bar used to
+  // trigger — reused as-is (not a new composer) both by the comment
+  // icon/count (text/card_share posts, see usesInlineCommentTap below) and
+  // by the bottom bar that's still shown for every other post type.
+  function handleOpenReply() {
+    if (!post) return;
+    router.push({ pathname: '/post-reply/[id]', params: { id: post.id } });
   }
 
   const rating = useGrailRating({
@@ -883,12 +926,41 @@ export default function PostDetailScreen() {
   // rate_my_grails/card_share/item posts and a plain text-only post all
   // keep the existing native-header layout below, completely untouched.
   const hasImmersiveMedia = post.post_type === 'text' && (post.images.length > 0 || !!post.image_url);
-  const mediaFrame = {
-    aspectRatio:
-      mediaAspectRatio != null ? clampDetailMediaAspectRatio(mediaAspectRatio) : DETAIL_MEDIA_DEFAULT_ASPECT_RATIO,
-    maxHeight: windowHeight * DETAIL_MEDIA_MAX_HEIGHT_FRACTION,
-  };
+  // Real top edge of the floating CacheCase nav's own pill, plus a small
+  // deliberate gap above it — see GLOBAL_NAV_*/IMMERSIVE_NAV_GAP's own
+  // comments. Used both below (to cap the media) and as this screen's own
+  // bottom content clearance for the immersive layout, so both numbers stay
+  // in sync with each other and with the nav's actual position.
+  const immersiveBottomClearance = insets.bottom + GLOBAL_NAV_BOTTOM_GAP + GLOBAL_NAV_HEIGHT + IMMERSIVE_NAV_GAP;
+  // Available height for the media — windowHeight minus everything else
+  // that has to share this same opening viewport (top bar, identity row,
+  // caption allowance, actions row, spacing, and the floating CacheCase
+  // nav's own footprint above). See each constant's own comment above for
+  // where its number comes from — this is a real box-model subtraction, not
+  // a flat percentage of window height. This is now a FIXED height (not an
+  // aspectRatio+maxHeight pair) — see ImmersiveMedia's own comment for why:
+  // it depends only on window height/safe-area insets/caption presence, all
+  // known synchronously on first render, so it never changes after that
+  // (unlike the previous formula, which depended on an async-measured image
+  // aspect ratio and caused a visible post-open resize).
+  const captionReserve = post.content ? IMMERSIVE_CAPTION_RESERVE_HEIGHT : 0;
+  const reservedForChrome =
+    insets.top +
+    IMMERSIVE_TOP_BAR_CONTENT_HEIGHT +
+    IMMERSIVE_IDENTITY_ROW_HEIGHT +
+    captionReserve +
+    IMMERSIVE_ACTIONS_ROW_HEIGHT +
+    IMMERSIVE_SPACING_BUFFER +
+    immersiveBottomClearance;
+  const availableImmersiveMediaHeight = Math.max(IMMERSIVE_MEDIA_MIN_HEIGHT, windowHeight - reservedForChrome);
+  const mediaFrame = { height: availableImmersiveMediaHeight };
   const isOwner = post.user_id === currentUserId;
+  // Simplified interaction row — text posts (with or without the immersive
+  // media above; hasImmersiveMedia doesn't matter here, both variants are
+  // post_type 'text') and card_share posts only, per request. item/
+  // rate_my_grails posts are deliberately untouched: same non-interactive
+  // comment count + separate bottom "Add a comment..." bar as before.
+  const usesInlineCommentTap = post.post_type === 'text' || post.post_type === 'card_share';
 
   return (
     <>
@@ -957,6 +1029,8 @@ export default function PostDetailScreen() {
               activeMediaIndex={activeMediaIndex}
               onActiveMediaIndexChange={setActiveMediaIndex}
               onOpenMediaViewer={setViewerUri}
+              commentTappable={usesInlineCommentTap}
+              onCommentTap={handleOpenReply}
             />
           }
           ListEmptyComponent={
@@ -964,7 +1038,28 @@ export default function PostDetailScreen() {
               <Text style={styles.emptyCommentsText}>No comments yet. Be the first!</Text>
             </View>
           }
-          contentContainerStyle={{ flexGrow: 1 }}
+          // Without the bottom "Add a comment..." bar (usesInlineCommentTap
+          // post types), the FlatList itself needs to reserve enough
+          // clearance above the globally-rendered floating tab bar. The
+          // immersive (hasImmersiveMedia) case uses the tighter
+          // immersiveBottomClearance computed above (no flexGrow: 1 —
+          // deliberately dropped here, since stretching this content
+          // container to fill any leftover viewport height would insert
+          // extra blank space between the actions row/empty-comments state
+          // and this padding, undoing the tighter gap the whole point of
+          // this pass is to create; the surrounding styles.container view
+          // already carries this screen's own PV2.bg regardless of the
+          // FlatList's own rendered height, so there's no background gap
+          // risk from dropping it here). card_share (usesInlineCommentTap
+          // but not hasImmersiveMedia) and every other post type keep the
+          // exact previous behavior, unchanged.
+          contentContainerStyle={
+            hasImmersiveMedia
+              ? { paddingBottom: immersiveBottomClearance }
+              : usesInlineCommentTap
+                ? { flexGrow: 1, paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }
+                : { flexGrow: 1 }
+          }
         />
 
         {commentsError && (
@@ -978,19 +1073,24 @@ export default function PostDetailScreen() {
           </View>
         )}
 
-        {/* Replaces the old inline TextInput/"Post" bar — tapping this row
-            now opens the dedicated reply composer (app/post-reply/[id].tsx)
-            instead of composing in place. Extra bottom clearance
-            (TAB_BAR_CLEARANCE) is now unconditional (no keyboard ever opens
-            on this screen anymore) so it always sits above the floating tab
-            bar's touch-absorbing surface — see that constant's comment. */}
-        <TouchableOpacity
-          style={[styles.addCommentRow, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
-          onPress={() => post && router.push({ pathname: '/post-reply/[id]', params: { id: post.id } })}
-          disabled={!post}
-          activeOpacity={0.7}>
-          <Text style={styles.addCommentPlaceholder}>Add a comment...</Text>
-        </TouchableOpacity>
+        {/* text/card_share posts (usesInlineCommentTap) drop this bar
+            entirely — the comment icon/count in the actions row above opens
+            the reply composer directly instead (see PostHeader's own
+            commentTappable branch). Every other post type keeps this
+            unchanged: tapping this row still opens the same dedicated reply
+            composer (app/post-reply/[id].tsx) instead of composing in
+            place. Extra bottom clearance (TAB_BAR_CLEARANCE) is
+            unconditional (no keyboard ever opens on this screen anymore) so
+            it always sits above the floating tab bar's touch-absorbing
+            surface — see that constant's comment. */}
+        {!usesInlineCommentTap && (
+          <TouchableOpacity
+            style={[styles.addCommentRow, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
+            onPress={handleOpenReply}
+            activeOpacity={0.7}>
+            <Text style={styles.addCommentPlaceholder}>Add a comment...</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Full-screen image viewer — reused as-is from Edit Item's photo
@@ -1032,17 +1132,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   // Media + its below-media dot row — the "black background around any
-  // unused space" the media box's own letterboxing/maxHeight cap can leave.
+  // unused space" the media box's own letterboxing (contentFit="contain"
+  // inside a fixed-height frame) can leave.
   immersiveMediaWrap: {
     backgroundColor: '#000',
     paddingBottom: 10,
   },
-  // width: 100% + aspectRatio + maxHeight (the latter two set inline from
-  // mediaFrame — see the JSX) is the same "Yoga resolves a true cap"
-  // pattern post-card.tsx's own singleCardMaxHeight uses. No horizontal
-  // padding/margin — edge-to-edge per the "use nearly the full available
-  // width" direction, and no borderRadius — square corners read as more
-  // "immersive" here than the feed's own rounded media frame.
+  // width: 100% + a FIXED height (set inline from mediaFrame.height — see
+  // the JSX and ImmersiveMedia's own comment on why it's fixed rather than
+  // aspectRatio-driven). No horizontal padding/margin — edge-to-edge per
+  // the "use nearly the full available width" direction, and no
+  // borderRadius — square corners read as more "immersive" here than the
+  // feed's own rounded media frame.
   immersiveMediaBox: {
     width: '100%',
     backgroundColor: '#000',
