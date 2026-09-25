@@ -192,7 +192,7 @@ function ReplyContextPreview({ preview }: { preview: ReplyPostPreview }) {
                 <Image
                   source={{ uri: preview.previewImageUrl }}
                   style={StyleSheet.absoluteFill}
-                  contentFit="cover"
+                  contentFit="contain"
                   transition={150}
                 />
                 {preview.additionalImageCount > 0 && (
@@ -616,10 +616,16 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: PV2.textPrimary,
   },
+  // Enlarged from the original 56x56 icon-sized box — noticeably bigger so
+  // it reads as an actual preview of the original photo, not a tiny badge.
+  // contentFit="contain" (not "cover") on the Image inside means a
+  // non-square source letterboxes within this box rather than being
+  // cropped — this box's own dimensions are just the bounding frame, not
+  // the shape the photo is forced into.
   contextImageWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 8,
+    width: 112,
+    height: 112,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: PV2.collectorPanelBg,
   },

@@ -291,11 +291,11 @@ function PostHeader({
   activeMediaIndex: number;
   onActiveMediaIndexChange: (index: number) => void;
   onOpenMediaViewer: (uri: string) => void;
-  // Simplified interaction-row pass (text/card_share posts only — see the
+  // Simplified interaction-row pass (text/card_share/item posts — see the
   // screen's own usesInlineCommentTap calc) — when true, the comment
   // icon+count itself opens the reply composer and the bottom "Add a
   // comment..." bar is hidden entirely (see the screen's own render below).
-  // False for every other post type, which keeps the exact same
+  // False only for rate_my_grails, which keeps the exact same
   // non-interactive comment count + separate bottom bar as before.
   commentTappable: boolean;
   onCommentTap: () => void;
@@ -394,7 +394,7 @@ function PostHeader({
           </Text>
         </Pressable>
 
-        {/* text/card_share posts (commentTappable) — tapping the comment
+        {/* text/card_share/item posts (commentTappable) — tapping the comment
             icon or its count opens the existing reply composer
             (app/post-reply/[id].tsx) directly, same navigation the removed
             bottom "Add a comment..." bar used to trigger, instead of
@@ -533,8 +533,8 @@ export default function PostDetailScreen() {
 
   // Same navigation the removed bottom "Add a comment..." bar used to
   // trigger — reused as-is (not a new composer) both by the comment
-  // icon/count (text/card_share posts, see usesInlineCommentTap below) and
-  // by the bottom bar that's still shown for every other post type.
+  // icon/count (text/card_share/item posts, see usesInlineCommentTap below)
+  // and by the bottom bar that's still shown for rate_my_grails.
   function handleOpenReply() {
     if (!post) return;
     router.push({ pathname: '/post-reply/[id]', params: { id: post.id } });
@@ -955,12 +955,13 @@ export default function PostDetailScreen() {
   const availableImmersiveMediaHeight = Math.max(IMMERSIVE_MEDIA_MIN_HEIGHT, windowHeight - reservedForChrome);
   const mediaFrame = { height: availableImmersiveMediaHeight };
   const isOwner = post.user_id === currentUserId;
-  // Simplified interaction row — text posts (with or without the immersive
-  // media above; hasImmersiveMedia doesn't matter here, both variants are
-  // post_type 'text') and card_share posts only, per request. item/
-  // rate_my_grails posts are deliberately untouched: same non-interactive
-  // comment count + separate bottom "Add a comment..." bar as before.
-  const usesInlineCommentTap = post.post_type === 'text' || post.post_type === 'card_share';
+  // Simplified interaction row — text, card_share, and item posts (with or
+  // without immersive media above; hasImmersiveMedia doesn't factor in here).
+  // rate_my_grails is the only post type still on the old separate bottom
+  // "Add a comment..." bar (its GrailsPostBody already has its own dedicated
+  // rating UI in the same footprint, unlike the other three).
+  const usesInlineCommentTap =
+    post.post_type === 'text' || post.post_type === 'card_share' || post.post_type === 'item';
 
   return (
     <>
@@ -1050,9 +1051,9 @@ export default function PostDetailScreen() {
           // this pass is to create; the surrounding styles.container view
           // already carries this screen's own PV2.bg regardless of the
           // FlatList's own rendered height, so there's no background gap
-          // risk from dropping it here). card_share (usesInlineCommentTap
-          // but not hasImmersiveMedia) and every other post type keep the
-          // exact previous behavior, unchanged.
+          // risk from dropping it here). card_share/item (usesInlineCommentTap
+          // but not hasImmersiveMedia) and rate_my_grails keep the exact
+          // previous behavior, unchanged.
           contentContainerStyle={
             hasImmersiveMedia
               ? { paddingBottom: immersiveBottomClearance }
@@ -1073,10 +1074,10 @@ export default function PostDetailScreen() {
           </View>
         )}
 
-        {/* text/card_share posts (usesInlineCommentTap) drop this bar
+        {/* text/card_share/item posts (usesInlineCommentTap) drop this bar
             entirely — the comment icon/count in the actions row above opens
             the reply composer directly instead (see PostHeader's own
-            commentTappable branch). Every other post type keeps this
+            commentTappable branch). Only rate_my_grails keeps this
             unchanged: tapping this row still opens the same dedicated reply
             composer (app/post-reply/[id].tsx) instead of composing in
             place. Extra bottom clearance (TAB_BAR_CLEARANCE) is
