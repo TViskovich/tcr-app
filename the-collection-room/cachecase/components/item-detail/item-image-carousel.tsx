@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -106,6 +106,13 @@ export type CarouselImage = {
   // omitted (undefined) falls back to expo-image's own default of keying
   // on `uri`.
   cacheKey?: string;
+  // Source-quality ('original') URL + cacheKey for THIS slide, present only
+  // while this slide is the one being pinch-zoomed (the caller requests it
+  // on demand — see onZoomedImageChange). Layered over the normal `uri`
+  // only during zoom, so inspecting printed card text isn't limited to the
+  // 'detail'-tier resolution the resting slide uses.
+  zoomUri?: string;
+  zoomCacheKey?: string;
 };
 
 type ZoomableItemImageProps = {
@@ -118,6 +125,8 @@ type ZoomableItemImageProps = {
   // for a slide that was never actually going to resolve.
   status?: SignedImageStatus;
   cacheKey?: string;
+  zoomUri?: string;
+  zoomCacheKey?: string;
   pageWidth: number;
   index: number;
   totalImages: number;
@@ -128,7 +137,10 @@ type ZoomableItemImageProps = {
   // one-finger reposition drag can never be mistaken for a page-change
   // swipe. No-op wiring for the single-image case, which has no sibling
   // scroll to protect.
-  onZoomChange: (zoomed: boolean) => void;
+  onZoomChange: (zoomed: boolean, imageId: string) => void;
+  // This slide's CarouselImage.id — passed back through onZoomChange so one
+  // stable handler can serve every page.
+  imageId: string;
 };
 
 // One carousel page's image, pinch-to-zoom-and-inspect enabled. Owns its
@@ -150,11 +162,14 @@ function ZoomableItemImage({
   uri,
   status,
   cacheKey,
+  zoomUri,
+  zoomCacheKey,
   pageWidth,
   index,
   totalImages,
   onPress,
   onZoomChange,
+  imageId,
 }: ZoomableItemImageProps) {
   const pageHeight = pageWidth / IMAGE_ASPECT_RATIO;
 
@@ -179,8 +194,8 @@ function ZoomableItemImage({
   const [zoomed, setZoomed] = useState(false);
 
   useEffect(() => {
-    onZoomChange(zoomed);
-  }, [zoomed, onZoomChange]);
+    onZoomChange(zoomed, imageId);
+  }, [zoomed, onZoomChange, imageId]);
 
   // Smooth, controlled ease-out back to the exact resting transform — no
   // spring, no overshoot. Only the scale animation's completion drives
@@ -289,6 +304,15 @@ function ZoomableItemImage({
                 <Text style={styles.placeholderText}>No image</Text>
               </View>
             )}
+            {uri && zoomed && zoomUri ? (
+              <Image
+                source={{ uri: zoomUri, cacheKey: zoomCacheKey }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+                transition={200}
+                cachePolicy="memory-disk"
+              />
+            ) : null}
           </Pressable>
         </Animated.View>
       </View>
@@ -303,6 +327,11 @@ type Props = {
   // open at the right spot.
   onPress?: (index: number) => void;
   initialIndex?: number;
+  // Reports a slide (by CarouselImage.id) entering/leaving pinch-zoom — lets
+  // the caller request that one slide's 'original' on demand and pass it
+  // back as zoomUri/zoomCacheKey. Called with zoomed=false for every page's
+  // initial mount too, so callers must only clear state for the SAME id.
+  onZoomedImageChange?: (imageId: string, zoomed: boolean) => void;
 };
 
 // Portrait hero, horizontally swipeable across an item's real gallery (see
@@ -318,7 +347,7 @@ type Props = {
 // before deciding how many pages/dots to render; an entry with no `uri` yet
 // simply renders ZoomableItemImage's existing placeholder until one arrives
 // on a later render, in place, under the same `id` key.
-export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) {
+export function ItemImageCarousel({ images, onPress, initialIndex = 0, onZoomedImageChange }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const pageWidth = windowWidth - HERO_OUTER_PADDING * 2;
   const clampedInitial = Math.min(Math.max(initialIndex, 0), Math.max(images.length - 1, 0));
@@ -329,6 +358,13 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
   // gate) so zoom interaction can never be mistaken for a page swipe, and
   // re-enables the instant that page has fully snapped back.
   const [zoomedActive, setZoomedActive] = useState(false);
+  const handleZoomChange = useCallback(
+    (zoomed: boolean, imageId: string) => {
+      setZoomedActive(zoomed);
+      onZoomedImageChange?.(imageId, zoomed);
+    },
+    [onZoomedImageChange],
+  );
 
   const handleMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const index = Math.round(e.nativeEvent.contentOffset.x / pageWidth);
@@ -345,11 +381,14 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
           uri={images[0]?.uri}
           status={images[0]?.status}
           cacheKey={images[0]?.cacheKey}
+          zoomUri={images[0]?.zoomUri}
+          zoomCacheKey={images[0]?.zoomCacheKey}
           pageWidth={pageWidth}
           index={0}
           totalImages={images.length}
           onPress={onPress}
-          onZoomChange={setZoomedActive}
+          onZoomChange={handleZoomChange}
+          imageId={images[0]?.id ?? 'none'}
         />
         <LinearGradient colors={['rgba(0,0,0,0.22)', 'transparent']} style={styles.fade} pointerEvents="none" />
       </View>
@@ -395,11 +434,14 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0 }: Props) 
             uri={item.uri}
             status={item.status}
             cacheKey={item.cacheKey}
+            zoomUri={item.zoomUri}
+            zoomCacheKey={item.zoomCacheKey}
             pageWidth={pageWidth}
             index={index}
             totalImages={images.length}
             onPress={onPress}
-            onZoomChange={setZoomedActive}
+            onZoomChange={handleZoomChange}
+            imageId={item.id}
           />
         )}
       />

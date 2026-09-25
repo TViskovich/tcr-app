@@ -24,6 +24,7 @@ import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 import type { CardShareItem } from '@/types';
@@ -73,8 +74,10 @@ export default function ShareCardScreen() {
   const shareableItems = items.filter((i) => !!i.image_url?.trim());
   // One batched call for the whole picker grid — never one signing
   // request per card (item-images beta privacy hardening, Phase 3E).
+  // Picker grid + reorder thumbnails are small — 'preview' tier.
   const { urls: signedItemImageUrls } = useSignedItemImages(
     shareableItems.map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
   );
 
   // Effective (most-restrictive-wins) public visibility — the same rule
@@ -106,6 +109,16 @@ export default function ShareCardScreen() {
     .map((id) => shareableItems.find((i) => i.id === id))
     .filter((i): i is (typeof shareableItems)[number] => !!i);
 
+  // The compose Preview below renders the SELECTED cards through
+  // CardSharePostBody at (near) full width, where a 500px preview would look
+  // soft — so ONLY the selected items' images (never the whole picker grid)
+  // are requested at 'detail'. The already-resolved preview URL is the
+  // fallback while a just-selected card's detail URL is still resolving.
+  const { urls: signedDetailImageUrls } = useSignedItemImages(
+    selectedItems.map((i) => i.primary_image_id),
+    DETAIL_IMAGE_TIER,
+  );
+
   // Fake, LOCAL-ONLY CardShareItem rows for the preview — no post exists
   // yet, so there is no real card_share_items id/post_id to read. Reuses
   // the exact fields CardSharePostBody actually renders (snapshot_title/
@@ -121,7 +134,9 @@ export default function ShareCardScreen() {
     id: item.id,
     post_id: 'preview',
     item_id: null,
-    snapshot_image_url: item.primary_image_id ? (signedItemImageUrls.get(item.primary_image_id) ?? null) : null,
+    snapshot_image_url: item.primary_image_id
+      ? (signedDetailImageUrls.get(item.primary_image_id) ?? signedItemImageUrls.get(item.primary_image_id) ?? null)
+      : null,
     snapshot_title: item.title,
     snapshot_subtitle: item.brand,
     display_order: index,

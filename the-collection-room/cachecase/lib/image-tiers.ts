@@ -21,6 +21,12 @@ export const DEFAULT_IMAGE_TIER: ImageTier = 'original';
 // its expo-image/warmup cacheKeys, so the three layers can't disagree.
 export const COMPACT_IMAGE_TIER: ImageTier = 'preview';
 
+// Tier for large in-app presentations (item hero/carousel, active photo in an
+// editor, full-width compose previews) where 500px would look soft but the
+// untransformed original isn't needed. 'original' stays reserved for
+// full-screen/zoom viewing.
+export const DETAIL_IMAGE_TIER: ImageTier = 'detail';
+
 // Suffix used to keep a tier's identity distinct from the same image's other
 // tiers in every cache layer (in-memory signed-URL cache, persisted
 // AsyncStorage cache, expo-image cacheKey). 'original' deliberately maps to

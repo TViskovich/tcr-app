@@ -20,6 +20,7 @@ import { useGrails } from '@/hooks/use-grails';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { createSnapshotPost } from '@/lib/share-snapshots';
 
 const MAX_CHARS = 280;
@@ -31,7 +32,12 @@ export default function NewRateMyGrailsScreen() {
   const { grails, loading } = useGrails(currentUserId);
   // One batched call for the whole preview grid — never one signing
   // request per card (item-images beta privacy hardening, Phase 3C).
-  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id));
+  // GrailsSlot renders full-width here (no cell wrapper, unlike the profile
+  // grid), so these are large images — 'detail', not the compact preview.
+  const { urls: signedImageUrls } = useSignedItemImages(
+    grails.map((g) => g.item.primary_image_id),
+    DETAIL_IMAGE_TIER,
+  );
   // A create form, not a scrollable browsing list — no scroll-hide effect,
   // but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });

@@ -56,6 +56,7 @@ import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -234,6 +235,23 @@ export default function CollectionFolderScreen() {
     | { kind: 'library'; uri: string }
     | null
   >(null);
+  // "Choose from Folder" pick waiting for its own 'detail' URL: the adjuster
+  // frames the photo across the full hero width, where the grid's 500px
+  // preview would look soft, so it opens once ONLY this one item's detail
+  // URL resolves (see the effect below) instead of borrowing a preview URL.
+  const [pendingCoverItem, setPendingCoverItem] = useState<CollectionItem | null>(null);
+  const { urls: pendingCoverUrls } = useSignedItemImages(
+    pendingCoverItem?.primary_image_id ? [pendingCoverItem.primary_image_id] : [],
+    DETAIL_IMAGE_TIER,
+  );
+  useEffect(() => {
+    const imageId = pendingCoverItem?.primary_image_id;
+    if (!pendingCoverItem || !imageId) return;
+    const uri = pendingCoverUrls.get(imageId);
+    if (!uri) return;
+    setAdjustingCover({ kind: 'item', item: pendingCoverItem, uri });
+    setPendingCoverItem(null);
+  }, [pendingCoverItem, pendingCoverUrls]);
   const [savingCover, setSavingCover] = useState(false);
   // iOS only — set right before closing FolderCoverMenu when the user picks
   // "Choose from Photo Library," then consumed by that Modal's onDismiss
@@ -545,10 +563,15 @@ export default function CollectionFolderScreen() {
   const cardThumbWidth =
     (windowWidth - GRID_PAGE_PADDING * 2 - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
 
-  // One batched call covering every item currently loaded for this folder —
-  // both the hero carousel (isCardMode) and the default item grid below
-  // read from this same map (item-images beta privacy hardening, Phase 3B).
-  const { urls: signedUrls } = useSignedItemImages(items.map((i) => i.primary_image_id));
+  // One batched call covering every item currently loaded for this folder,
+  // at the small 'preview' tier — this map now backs only the grid cells
+  // (and the cover item picker's grid). The card-mode hero requests its own
+  // bounded 'detail' set below instead of sharing this one (item-images beta
+  // privacy hardening, Phase 3B).
+  const { urls: signedUrls, servedTiers: gridServedTiers } = useSignedItemImages(
+    items.map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
+  );
 
   // The folder-level cover/hero banner (below, default view only) — same
   // privacy-enforced signed-delivery hook already used by app/saved.tsx,
@@ -670,17 +693,46 @@ export default function CollectionFolderScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heroItems]);
 
-  // Warm the cache for every image in this gallery up front, so a swipe or
-  // grid tap never has to wait on a network fetch mid-transition. Prefetches
-  // whichever signed URLs have resolved so far — re-runs as signedUrls
-  // fills in, so a hero item whose signing request is still in flight when
-  // this first runs still gets prefetched the moment it resolves.
+  // Hero images render large, so they use the 'detail' tier — but ONLY for
+  // what the hero can actually show next: the displayed item, its immediate
+  // neighbours (so a swipe is ready), and any in-flight pending target. Never
+  // the whole folder (a folder can hold far more cards than a hero ever
+  // shows), and nothing at all outside card mode, where the hero isn't
+  // mounted. Grid cells keep their own 'preview' map above.
+  const heroDetailIds = useMemo(() => {
+    if (!activePlayer) return [];
+    const indexes = [heroIndex - 1, heroIndex, heroIndex + 1, ...(heroPendingIndex !== null ? [heroPendingIndex] : [])];
+    return indexes.map((i) => heroItems[i]?.primary_image_id).filter((id): id is string => !!id);
+  }, [activePlayer, heroItems, heroIndex, heroPendingIndex]);
+  const { urls: heroDetailUrls, servedTiers: heroServedTiers } = useSignedItemImages(heroDetailIds, DETAIL_IMAGE_TIER);
+
+  // What a hero <Image> should show for one image: its 'detail' URL when
+  // resolved, else the already-resolved grid 'preview' URL for that same
+  // image as a temporary stand-in (e.g. a grid tap that jumps far from the
+  // current neighbours) — each keyed by the tier actually served, so the two
+  // never share an expo-image cacheKey. Null when neither has resolved.
+  function heroImageSource(imageId: string): { uri: string; cacheKey: string } | null {
+    const detailUri = heroDetailUrls.get(imageId);
+    if (detailUri) {
+      return { uri: detailUri, cacheKey: itemImageCacheKey(identity, imageId, DETAIL_IMAGE_TIER, heroServedTiers) };
+    }
+    const previewUri = signedUrls.get(imageId);
+    if (previewUri) {
+      return { uri: previewUri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, gridServedTiers) };
+    }
+    return null;
+  }
+
+  // Warm the cache for the hero's bounded 'detail' set (displayed item,
+  // neighbours, pending target — see heroDetailIds), so a swipe or grid tap
+  // never has to wait on a network fetch mid-transition. Re-runs as
+  // heroDetailUrls fills in.
   useEffect(() => {
-    const uris = heroItems
-      .map((i) => (i.primary_image_id ? signedUrls.get(i.primary_image_id) : undefined))
+    const uris = heroDetailIds
+      .map((id) => heroDetailUrls.get(id))
       .filter((u): u is string => !!u);
     if (uris.length) Image.prefetch(uris).catch(() => {});
-  }, [heroItems, signedUrls]);
+  }, [heroDetailIds, heroDetailUrls]);
 
   // Single entry point for every hero change (swipe or grid tap) — decodes
   // the target image first, then runs one 240ms opacity crossfade on the UI
@@ -725,7 +777,7 @@ export default function CollectionFolderScreen() {
     // below simply renders nothing until signedUrls fills in, per the
     // "no raw URL fallback" requirement, rather than blocking the gesture.
     const targetImageId = heroItems[targetIndex].primary_image_id;
-    const targetUri = targetImageId ? signedUrls.get(targetImageId) : undefined;
+    const targetUri = targetImageId ? heroDetailUrls.get(targetImageId) : undefined;
     setHeroPendingIndex(targetIndex);
     heroOverlayOpacity.value = 0;
     (targetUri ? Image.prefetch(targetUri) : Promise.resolve())
@@ -878,11 +930,12 @@ export default function CollectionFolderScreen() {
   // adjuster on a blank image.
   function handleChooseFromFolderItem(item: CollectionItem) {
     if (savingCover || !item.primary_image_id) return;
-    const uri = signedUrls.get(item.primary_image_id);
-    if (!uri) return;
+    // Same no-op-if-unresolved guard as before: the picker's own (preview)
+    // URL resolving is what proves this item is signable at all.
+    if (!signedUrls.get(item.primary_image_id)) return;
     setShowCoverItemPicker(false);
     setShowCoverMenu(false);
-    setAdjustingCover({ kind: 'item', item, uri });
+    setPendingCoverItem(item);
   }
 
   // Single save path for both adjustingCover sources — an 'item' cover
@@ -1405,7 +1458,7 @@ export default function CollectionFolderScreen() {
           <Image
             source={{
               uri: signedUrls.get(entry.item.primary_image_id),
-              cacheKey: itemImageCacheKey(identity, entry.item.primary_image_id),
+              cacheKey: itemImageCacheKey(identity, entry.item.primary_image_id, COMPACT_IMAGE_TIER, gridServedTiers),
             }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
@@ -1510,12 +1563,9 @@ export default function CollectionFolderScreen() {
                           nothing (the panel's own dark background shows
                           through) rather than falling back to a raw public
                           URL while the signed URL is still resolving. */}
-                      {activeHeroItem.primary_image_id && signedUrls.get(activeHeroItem.primary_image_id) && (
+                      {activeHeroItem.primary_image_id && heroImageSource(activeHeroItem.primary_image_id) && (
                         <Image
-                          source={{
-                            uri: signedUrls.get(activeHeroItem.primary_image_id),
-                            cacheKey: itemImageCacheKey(identity, activeHeroItem.primary_image_id),
-                          }}
+                          source={heroImageSource(activeHeroItem.primary_image_id)!}
                           style={StyleSheet.absoluteFill}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}
@@ -1528,12 +1578,9 @@ export default function CollectionFolderScreen() {
                           layer unmounts with no visible change. Same
                           contentPosition as the base layer so nothing jumps
                           vertically during the crossfade. */}
-                      {pendingHeroItem && pendingHeroItem.primary_image_id && signedUrls.get(pendingHeroItem.primary_image_id) && (
+                      {pendingHeroItem && pendingHeroItem.primary_image_id && heroImageSource(pendingHeroItem.primary_image_id) && (
                         <AnimatedExpoImage
-                          source={{
-                            uri: signedUrls.get(pendingHeroItem.primary_image_id),
-                            cacheKey: itemImageCacheKey(identity, pendingHeroItem.primary_image_id),
-                          }}
+                          source={heroImageSource(pendingHeroItem.primary_image_id)!}
                           style={[StyleSheet.absoluteFill, heroOverlayStyle]}
                           contentFit="cover"
                           contentPosition={HERO_IMAGE_CONTENT_POSITION}

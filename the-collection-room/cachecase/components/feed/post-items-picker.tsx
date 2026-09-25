@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAllItems } from '@/hooks/use-collection';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 
 export type PickedPostItem = {
   itemId: string;
@@ -67,7 +68,21 @@ export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlot
   }, [visible]);
 
   const shareableItems = items.filter((i) => !!i.image_url?.trim());
-  const { urls: signedItemImageUrls } = useSignedItemImages(shareableItems.map((i) => i.primary_image_id));
+  // Picker grid cells are small — 'preview' tier.
+  const { urls: signedItemImageUrls } = useSignedItemImages(
+    shareableItems.map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
+  );
+  // The picked item's `previewUri` is handed to the post composer, whose
+  // attachment grid can render a single image full-width (4:3) — too large
+  // for a 500px preview. So ONLY the currently-selected items are also
+  // requested at 'detail' (bounded by the selection cap, resolving while the
+  // user is still choosing); confirm prefers that URL and falls back to the
+  // preview URL if it hasn't resolved yet, rather than dropping the item.
+  const { urls: signedDetailImageUrls } = useSignedItemImages(
+    selectedIds.map((id) => shareableItems.find((i) => i.id === id)?.primary_image_id),
+    DETAIL_IMAGE_TIER,
+  );
 
   function isPubliclyShareable(item: (typeof shareableItems)[number]) {
     return item.folder_is_public && item.is_public;
@@ -89,7 +104,9 @@ export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlot
     const picked: PickedPostItem[] = selectedIds
       .map((id) => {
         const item = shareableItems.find((i) => i.id === id);
-        const previewUri = item?.primary_image_id ? signedItemImageUrls.get(item.primary_image_id) : undefined;
+        const previewUri = item?.primary_image_id
+          ? (signedDetailImageUrls.get(item.primary_image_id) ?? signedItemImageUrls.get(item.primary_image_id))
+          : undefined;
         return item && previewUri ? { itemId: item.id, previewUri } : null;
       })
       // An item whose signed URL genuinely hasn't resolved yet by the

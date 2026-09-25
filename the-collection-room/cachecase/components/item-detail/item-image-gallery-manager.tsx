@@ -7,6 +7,7 @@ import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import type { CollectionItemImage } from '@/types';
 
 // Same 5:7 trading-card portrait ratio already used throughout this app
@@ -74,9 +75,14 @@ export function ItemImageGalleryManager({
   // no image (see the imageBox fallback below) rather than falling back to
   // image.image_url's raw public URL, so this surface actually exercises
   // the authorized delivery path instead of masking it. The large photo
-  // and the thumbnail strip both read from this same map — no second
-  // signing call for the large image.
-  const { urls: signedUrls } = useSignedItemImages(images.map((img) => img.id));
+  // and the thumbnail strip used to read from this same map; now the strip
+  // stays on the small 'preview' tier for every image (below), while the
+  // large photo and the full-screen viewer each request ONLY the active
+  // image at their own tier, further down once the active image is known.
+  const { urls: thumbUrls } = useSignedItemImages(
+    images.map((img) => img.id),
+    COMPACT_IMAGE_TIER,
+  );
 
   // The user's explicit pick (via tapping a thumbnail or the nav
   // chevrons) — null means "no explicit choice yet, use the default
@@ -94,7 +100,20 @@ export function ItemImageGalleryManager({
       : (images.find((img) => img.is_primary)?.id ?? images[0]?.id ?? null);
   const activeIndex = images.findIndex((img) => img.id === resolvedActiveId);
   const activeImage = activeIndex >= 0 ? images[activeIndex] : null;
-  const activeUrl = activeImage ? signedUrls.get(activeImage.id) : undefined;
+  // Large photo: 'detail' for the ACTIVE image only. Falls back to the
+  // already-resolved thumbnail (preview) URL of that same image while its
+  // detail URL is still resolving after a change of active image, rather
+  // than showing an empty box.
+  const { urls: detailUrls } = useSignedItemImages(activeImage ? [activeImage.id] : [], DETAIL_IMAGE_TIER);
+  const activeUrl = activeImage ? (detailUrls.get(activeImage.id) ?? thumbUrls.get(activeImage.id)) : undefined;
+  // Full-screen viewer: true source quality, requested ONLY while the viewer
+  // is actually open, for the active image only — never inherited from the
+  // detail URL above.
+  const { urls: originalUrls } = useSignedItemImages(
+    viewerVisible && activeImage ? [activeImage.id] : [],
+    'original',
+  );
+  const viewerUrl = activeImage ? originalUrls.get(activeImage.id) : undefined;
 
   function confirmRemove(imageId: string) {
     Alert.alert('Remove Photo', 'Are you sure you want to remove this photo?', [
@@ -236,9 +255,9 @@ export function ItemImageGalleryManager({
                   accessibilityRole="button"
                   accessibilityLabel={image.is_primary ? 'Cover photo' : 'Photo'}
                   accessibilityState={{ selected: isActive }}>
-                  {signedUrls.has(image.id) && (
+                  {thumbUrls.has(image.id) && (
                     <Image
-                      source={{ uri: signedUrls.get(image.id) }}
+                      source={{ uri: thumbUrls.get(image.id) }}
                       style={styles.thumbImage}
                       contentFit="cover"
                       transition={150}
@@ -273,7 +292,7 @@ export function ItemImageGalleryManager({
         </>
       )}
 
-      <ItemPhotoViewerModal visible={viewerVisible} uri={activeUrl} onClose={() => setViewerVisible(false)} />
+      <ItemPhotoViewerModal visible={viewerVisible} uri={viewerUrl} onClose={() => setViewerVisible(false)} />
     </View>
   );
 }

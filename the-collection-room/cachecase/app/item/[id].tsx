@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -53,6 +53,7 @@ import {
 } from '@/lib/comic-book-options';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { getPokemonCardDetails, updatePokemonItem } from '@/lib/pokemon-items';
+import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -1327,7 +1328,28 @@ export default function ItemDetailScreen() {
   // fired the moment `galleryImages` itself is known (see useItemImages),
   // never waiting on anything else first.
   const galleryImageIds = useMemo(() => galleryImages.map((img) => img.id), [galleryImages]);
-  const { urls: signedGalleryUrls, statuses: signedGalleryStatuses } = useSignedItemImages(galleryImageIds);
+  // The carousel is full-width (5:7), so it uses the 'detail' tier rather
+  // than the untransformed original. Only a slide the user is actively
+  // pinch-zooming additionally requests 'original' (below), on demand.
+  const {
+    urls: signedGalleryUrls,
+    statuses: signedGalleryStatuses,
+    servedTiers: galleryServedTiers,
+  } = useSignedItemImages(galleryImageIds, DETAIL_IMAGE_TIER);
+
+  // Source-quality image for the ONE slide currently being pinch-zoomed —
+  // empty (no request at all) whenever nothing is zoomed. The handler only
+  // clears when the reporting id is the zoomed one, since every page
+  // reports zoomed=false on mount.
+  const [zoomedImageId, setZoomedImageId] = useState<string | null>(null);
+  const handleZoomedImageChange = useCallback((imageId: string, zoomed: boolean) => {
+    setZoomedImageId((prev) => (zoomed ? imageId : prev === imageId ? null : prev));
+  }, []);
+  // The legacy single-image fallback slide carries a synthetic id (not a
+  // collection_item_images.id), which must never be sent for signing.
+  const zoomedGalleryImageId =
+    zoomedImageId && galleryImages.some((img) => img.id === zoomedImageId) ? zoomedImageId : null;
+  const { urls: zoomOriginalUrls } = useSignedItemImages(zoomedGalleryImageId ? [zoomedGalleryImageId] : [], 'original');
 
   // Gallery STRUCTURE vs. IMAGE AVAILABILITY are deliberately separate here.
   // One carouselImages entry per gallery row, ALWAYS — never filtered down
@@ -1359,14 +1381,26 @@ export default function ItemDetailScreen() {
         id: img.id,
         uri: signedGalleryUrls.get(img.id),
         status: signedGalleryStatuses.get(img.id),
-        cacheKey: itemImageCacheKey(cacheIdentity, img.id),
+        cacheKey: itemImageCacheKey(cacheIdentity, img.id, DETAIL_IMAGE_TIER, galleryServedTiers),
+        zoomUri: img.id === zoomedImageId ? zoomOriginalUrls.get(img.id) : undefined,
+        zoomCacheKey: img.id === zoomedImageId ? itemImageCacheKey(cacheIdentity, img.id, 'original') : undefined,
       }));
     }
     return buildItemImageList([item?.image_url]).map((uri, i) => ({
       id: `legacy-${item?.id ?? 'unknown'}-${i}`,
       uri,
     }));
-  }, [galleryImages, signedGalleryUrls, signedGalleryStatuses, cacheIdentity, item?.image_url, item?.id]);
+  }, [
+    galleryImages,
+    signedGalleryUrls,
+    signedGalleryStatuses,
+    galleryServedTiers,
+    zoomedImageId,
+    zoomOriginalUrls,
+    cacheIdentity,
+    item?.image_url,
+    item?.id,
+  ]);
 
   const headerTitle = editMode ? 'Edit Item' : (item?.title ?? 'Item Detail');
 
@@ -1503,7 +1537,7 @@ export default function ItemDetailScreen() {
               onReorder={handleReorderPhotos}
             />
           ) : (
-            <ItemImageCarousel images={carouselImages} />
+            <ItemImageCarousel images={carouselImages} onZoomedImageChange={handleZoomedImageChange} />
           )}
 
           {editMode ? (
