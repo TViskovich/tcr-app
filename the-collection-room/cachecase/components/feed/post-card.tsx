@@ -860,14 +860,36 @@ const styles = StyleSheet.create({
   // exactly as before and must not inherit any new inset from this
   // container. Only the background is shared/unified now; every section
   // still owns its own spacing, same as before this pass.
-  // Piece 3 — bottom hairline divider replaces the FlatList's old
-  // paddingHorizontal/gap floating-card spacing (see app/(tabs)/index.tsx's
-  // own list style): posts now sit edge-to-edge in a true stream, each
-  // separated by this one divider instead of a gap on all sides.
+  // Card-frame polish pass — each post is now its own contained card
+  // (PV2.panel, slightly lighter than the screen's PV2.bg) rather than
+  // sitting edge-to-edge in a stream separated by Piece 3's old bottom
+  // hairline. That per-post borderBottom divider is removed here — it's
+  // fully redundant now that every card has its own complete border.
+  // marginHorizontal/marginBottom reuse this file's own existing 12px
+  // inset unit (cardHeader's paddingHorizontal, mediaContentColumnFull's
+  // "12px inset") rather than introducing a new spacing value.
+  // borderColor is PV2.panelBorder specifically (not the more general
+  // PV2.border) since that's the token this app's theme already pairs
+  // with a PV2.panel background elsewhere. overflow: 'hidden' clips
+  // content to the new rounded corners; every internal section still
+  // renders exactly as before; nothing inside this card's box was moved,
+  // resized, or restyled.
   card: {
-    backgroundColor: PV2.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: PV2.dividerColor,
+    backgroundColor: PV2.panel,
+    marginHorizontal: 6,
+    marginBottom: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    overflow: 'hidden',
+    // Very subtle depth only — same restrained shadow recipe this app's
+    // theme already uses for an elevated dark surface (e.g. search.tsx's
+    // toggleBtnActive), not a new visual language.
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.16,
+    shadowRadius: 3,
+    elevation: 2,
   },
   cardHeader: {
     flexDirection: 'row',
