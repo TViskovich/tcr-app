@@ -4,9 +4,13 @@ import {
   Alert,
   Animated,
   FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -19,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
+import { FolderShareCollage } from '@/components/feed/folder-share-collage';
 import { fetchPostImages } from '@/components/feed/post-card';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer-modal';
@@ -28,6 +33,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
 import { deletePost } from '@/lib/posts';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -70,6 +76,14 @@ const IMMERSIVE_SPACING_BUFFER = 10;
 // reach it.
 const IMMERSIVE_MEDIA_MIN_HEIGHT = 160;
 
+// Every post type's main media box is shrunk by this fraction (12%) so more
+// of the caption / like-comment row / comments stays visible below it.
+// Applied to the text-photo box's computed height and folded into the
+// item/card box's aspect ratio (below), so both post types shrink together.
+// Both are still known synchronously on first render — the box never
+// changes after an image loads.
+const POST_DETAIL_MEDIA_HEIGHT_SCALE = 0.88;
+
 // The floating CacheCase nav's own real geometry (see
 // components/navigation/global-floating-tab-bar.tsx's BAR_BOTTOM_GAP/
 // BAR_HEIGHT — mirrored here as plain numbers since that component doesn't
@@ -87,22 +101,10 @@ const GLOBAL_NAV_HEIGHT = TAB_BAR_HEIGHT;
 // closer to the nav, per the "feel visually attached" request.
 const IMMERSIVE_NAV_GAP = 6;
 
-// Extra clearance so the "Add a comment..." row sits above the
-// globally-rendered floating tab bar (see components/navigation/
-// global-floating-tab-bar.tsx, rendered as a root-level sibling of every
-// screen outside app/(tabs) — it is NOT part of this screen's own view
-// tree). Without this, the row sits underneath that bar's touch-absorbing
-// surface and taps land on the tab bar's inert background instead — no
-// error, no navigation, nothing happens. Unconditional now (feed comment/
-// reply redesign moved the actual text input to its own screen, so nothing
-// on this screen ever raises the keyboard anymore — no keyboard-open/closed
-// distinction is needed here the way the old inline input bar required).
-const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
-
 type PostDetail = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -123,6 +125,8 @@ type PostDetail = {
   // created before this feature existed (which may still fall back to the
   // legacy image_url below).
   images: PostImage[];
+  // 'folder_share' posts only — see lib/folder-share-post.ts.
+  folderShare: FolderShareData | null;
 };
 
 type Comment = {
@@ -274,6 +278,7 @@ function PostHeader({
   activeMediaIndex,
   onActiveMediaIndexChange,
   onOpenMediaViewer,
+  onOpenFolder,
   commentTappable,
   onCommentTap,
 }: {
@@ -291,6 +296,7 @@ function PostHeader({
   activeMediaIndex: number;
   onActiveMediaIndexChange: (index: number) => void;
   onOpenMediaViewer: (uri: string) => void;
+  onOpenFolder: (folderId: string, name: string) => void;
   // Simplified interaction-row pass (text/card_share/item posts — see the
   // screen's own usesInlineCommentTap calc) — when true, the comment
   // icon+count itself opens the reply composer and the bottom "Add a
@@ -354,6 +360,37 @@ function PostHeader({
             submitting={rating.submitting}
             onRate={onRate}
           />
+        </View>
+      ) : post.post_type === 'folder_share' ? (
+        // Folder share — same collage as the feed card, plus a clear way to
+        // open the actual collection (the snapshot's folder id; null if the
+        // folder has since been deleted).
+        <View style={styles.folderShareWrap}>
+          <FolderShareCollage
+            items={post.folderShare?.items ?? []}
+            totalCount={post.folderShare?.itemCount ?? 0}
+            coverUrl={post.folderShare?.coverUrl}
+            liveCoverUri={post.folderShare?.liveCoverUri}
+          />
+          <View style={styles.folderShareMeta}>
+            <View style={styles.folderShareMetaText}>
+              <Text style={styles.folderShareName} numberOfLines={1}>
+                {post.folderShare?.folderName ?? 'Folder'}
+              </Text>
+              <Text style={styles.folderShareCount}>
+                {post.folderShare?.itemCount ?? 0} public {(post.folderShare?.itemCount ?? 0) === 1 ? 'item' : 'items'}
+              </Text>
+            </View>
+            {post.folderShare?.folderId ? (
+              <TouchableOpacity
+                onPress={() => onOpenFolder(post.folderShare!.folderId!, post.folderShare!.folderName)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="View collection">
+                <Text style={styles.folderShareLink}>View collection ›</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
       ) : post.post_type === 'card_share' ? (
         // card_share posts have no top-level image_url (their images live
@@ -499,6 +536,44 @@ export default function PostDetailScreen() {
   useEffect(() => {
     commentCountRef.current = comments.length;
   }, [comments.length]);
+
+  // Inline comment composer (bottom bar). Same `comments` table insert and
+  // create_comment_notification RPC as app/post-reply/[id].tsx.
+  const [commentText, setCommentText] = useState('');
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [myProfile, setMyProfile] = useState<{
+    username: string;
+    display_name: string | null;
+    avatar_url: string | null;
+  } | null>(null);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+  // The signed-in user's own avatar/name for the composer bar and for the
+  // optimistic comment row — this screen had no current-user profile yet.
+  useEffect(() => {
+    if (!currentUserId) return;
+    let cancelled = false;
+    supabase
+      .from('profiles')
+      .select('username, display_name, avatar_url')
+      .eq('id', currentUserId)
+      .single()
+      .then(({ data }) => {
+        if (!cancelled && data) setMyProfile(data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
 
   // Resets the carousel page back to the first image whenever the post
   // itself changes (e.g. a cold deep link straight into a different postId
@@ -654,7 +729,7 @@ export default function PostDetailScreen() {
       try {
         const { data: postRow, error: postError } = await supabase
           .from('posts')
-          .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
+          .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
           .eq('id', postId)
           .abortSignal(controller.signal)
           .single();
@@ -679,7 +754,7 @@ export default function PostDetailScreen() {
         const isCardShare = row.post_type === 'card_share';
         const isText = row.post_type === 'text';
 
-        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap] = await Promise.all([
+        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap, folderShareMap] = await Promise.all([
           supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).abortSignal(controller.signal).single(),
           // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
           row.item_id
@@ -715,6 +790,9 @@ export default function PostDetailScreen() {
           // precedent), rather than silently rendering this text post with
           // no photo.
           isText ? fetchPostImages([postId], controller.signal) : Promise.resolve(new Map<string, PostImage[]>()),
+          row.post_type === 'folder_share'
+            ? fetchFolderShareItems([postId], controller.signal)
+            : Promise.resolve(new Map<string, FolderShareItemT[]>()),
         ]);
 
         if (loadControllerRef.current !== controller || controller.signal.aborted) return;
@@ -740,7 +818,7 @@ export default function PostDetailScreen() {
         setPost({
           id: row.id,
           user_id: row.user_id,
-          post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
+          post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
           image_url: row.image_url ?? null,
           content: row.content ?? null,
           caption: row.caption ?? null,
@@ -759,6 +837,16 @@ export default function PostDetailScreen() {
           myRating: ratingRows.find((r) => r.rater_user_id === currentUserId)?.score ?? null,
           cardShareItems: (cardShareItemsRes.data ?? []) as CardShareItem[],
           images: (postImagesMap as Map<string, PostImage[]>).get(row.id) ?? [],
+          folderShare:
+            row.post_type === 'folder_share'
+              ? {
+                  folderId: row.folder_id ?? null,
+                  folderName: row.folder_name ?? 'Folder',
+                  itemCount: row.folder_item_count ?? 0,
+                  items: folderShareMap.get(row.id) ?? [],
+                  coverUrl: row.folder_cover_snapshot_url ?? null,
+                }
+              : null,
         });
 
         setComments(commentsResult.comments);
@@ -830,6 +918,48 @@ export default function PostDetailScreen() {
     } else {
       setComments(result.comments);
       setCommentsError(null);
+    }
+  }
+
+  async function handleSubmitComment() {
+    const body = commentText.trim();
+    if (!body || submittingComment || !post || !currentUserId) return;
+    setSubmittingComment(true);
+    try {
+      const { data: inserted, error } = await supabase
+        .from('comments')
+        .insert({ user_id: currentUserId, post_id: post.id, body })
+        .select('id, created_at')
+        .single();
+      if (error || !inserted) throw new Error(error?.message ?? 'insert failed');
+
+      if (post.user_id !== currentUserId) {
+        supabase.rpc('create_comment_notification', { p_post_id: post.id, p_comment_id: inserted.id }).then(({ error: e }) => {
+          if (e) console.error('[PostDetail] comment notification failed:', e.message);
+        });
+      }
+
+      // Shown immediately (the comment count is comments.length, so it
+      // follows); a later focus refetch reconciles with the server.
+      setComments((prev) => [
+        ...prev,
+        {
+          id: inserted.id,
+          user_id: currentUserId,
+          body,
+          created_at: inserted.created_at,
+          username: myProfile?.username ?? 'you',
+          display_name: myProfile?.display_name ?? null,
+          avatar_url: myProfile?.avatar_url ?? null,
+        },
+      ]);
+      setCommentText('');
+      requestAnimationFrame(() => flatListRef.current?.scrollToEnd({ animated: true }));
+    } catch (e) {
+      console.error('[PostDetail] handleSubmitComment failed:', e);
+      Alert.alert('Comment failed', 'Could not post your comment. Please try again.');
+    } finally {
+      setSubmittingComment(false);
     }
   }
 
@@ -953,7 +1083,7 @@ export default function PostDetailScreen() {
     IMMERSIVE_SPACING_BUFFER +
     immersiveBottomClearance;
   const availableImmersiveMediaHeight = Math.max(IMMERSIVE_MEDIA_MIN_HEIGHT, windowHeight - reservedForChrome);
-  const mediaFrame = { height: availableImmersiveMediaHeight };
+  const mediaFrame = { height: Math.round(availableImmersiveMediaHeight * POST_DETAIL_MEDIA_HEIGHT_SCALE) };
   const isOwner = post.user_id === currentUserId;
   // Simplified interaction row — text, card_share, and item posts (with or
   // without immersive media above; hasImmersiveMedia doesn't factor in here).
@@ -961,7 +1091,10 @@ export default function PostDetailScreen() {
   // "Add a comment..." bar (its GrailsPostBody already has its own dedicated
   // rating UI in the same footprint, unlike the other three).
   const usesInlineCommentTap =
-    post.post_type === 'text' || post.post_type === 'card_share' || post.post_type === 'item';
+    post.post_type === 'text' ||
+    post.post_type === 'card_share' ||
+    post.post_type === 'item' ||
+    post.post_type === 'folder_share';
 
   return (
     <>
@@ -997,7 +1130,10 @@ export default function PostDetailScreen() {
           text input/keyboard, so it no longer needs KeyboardAvoidingView
           either (nothing on this screen ever raises the keyboard now; the
           reply composer is a separate routed screen that owns that). */}
-      <View style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' && !hasImmersiveMedia ? insets.top + 44 : 0}>
         {hasImmersiveMedia && (
           <ImmersiveHeaderBar
             insetTop={insets.top}
@@ -1030,6 +1166,9 @@ export default function PostDetailScreen() {
               activeMediaIndex={activeMediaIndex}
               onActiveMediaIndexChange={setActiveMediaIndex}
               onOpenMediaViewer={setViewerUri}
+              onOpenFolder={(folderId, name) =>
+                router.push({ pathname: '/collection/[folderId]', params: { folderId, title: name } })
+              }
               commentTappable={usesInlineCommentTap}
               onCommentTap={handleOpenReply}
             />
@@ -1054,13 +1193,11 @@ export default function PostDetailScreen() {
           // risk from dropping it here). card_share/item (usesInlineCommentTap
           // but not hasImmersiveMedia) and rate_my_grails keep the exact
           // previous behavior, unchanged.
-          contentContainerStyle={
-            hasImmersiveMedia
-              ? { paddingBottom: immersiveBottomClearance }
-              : usesInlineCommentTap
-                ? { flexGrow: 1, paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }
-                : { flexGrow: 1 }
-          }
+          // The comment composer below now owns the clearance above the
+          // floating nav, so the list itself only needs a small tail.
+          contentContainerStyle={hasImmersiveMedia ? { paddingBottom: 12 } : { flexGrow: 1, paddingBottom: 12 }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         />
 
         {commentsError && (
@@ -1074,25 +1211,51 @@ export default function PostDetailScreen() {
           </View>
         )}
 
-        {/* text/card_share/item posts (usesInlineCommentTap) drop this bar
-            entirely — the comment icon/count in the actions row above opens
-            the reply composer directly instead (see PostHeader's own
-            commentTappable branch). Only rate_my_grails keeps this
-            unchanged: tapping this row still opens the same dedicated reply
-            composer (app/post-reply/[id].tsx) instead of composing in
-            place. Extra bottom clearance (TAB_BAR_CLEARANCE) is
-            unconditional (no keyboard ever opens on this screen anymore) so
-            it always sits above the floating tab bar's touch-absorbing
-            surface — see that constant's comment. */}
-        {!usesInlineCommentTap && (
-          <TouchableOpacity
-            style={[styles.addCommentRow, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
-            onPress={handleOpenReply}
-            activeOpacity={0.7}>
-            <Text style={styles.addCommentPlaceholder}>Add a comment...</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+        {/* Inline comment composer. Sits below the list (outside it), so
+            KeyboardAvoidingView lifts it above the keyboard; with the
+            keyboard closed its bottom padding clears the floating nav. */}
+        <View
+          style={[
+            styles.commentComposer,
+            { paddingBottom: keyboardVisible ? 8 : immersiveBottomClearance },
+          ]}>
+          <View style={styles.composerAvatar}>
+            {myProfile?.avatar_url ? (
+              <Image source={{ uri: myProfile.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.commentAvatarPlaceholder]}>
+                <Text style={styles.commentAvatarInitial}>
+                  {(myProfile?.display_name || myProfile?.username || '?').charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.composerPill}>
+            <TextInput
+              style={styles.composerInput}
+              placeholder="Add a comment..."
+              placeholderTextColor={PV2.textTertiary}
+              value={commentText}
+              onChangeText={setCommentText}
+              maxLength={500}
+              multiline
+              editable={!submittingComment}
+            />
+            <TouchableOpacity
+              onPress={handleSubmitComment}
+              disabled={!commentText.trim() || submittingComment}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Post comment">
+              {submittingComment ? (
+                <ActivityIndicator size="small" color={PV2.link} />
+              ) : (
+                <Text style={[styles.composerPost, !commentText.trim() && styles.composerPostDisabled]}>Post</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
 
       {/* Full-screen image viewer — reused as-is from Edit Item's photo
           inspector (components/item-detail/item-photo-viewer-modal.tsx)
@@ -1214,9 +1377,40 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PV2.accent,
   },
+  folderShareWrap: {
+    paddingHorizontal: 12,
+  },
+  folderShareMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  folderShareMetaText: {
+    flex: 1,
+  },
+  folderShareName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  folderShareCount: {
+    fontSize: 12,
+    color: PV2.textSecondary,
+    marginTop: 1,
+  },
+  folderShareLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PV2.link,
+  },
   // Post header
   imageWrap: {
-    aspectRatio: 5 / 7,
+    // 5:7 card ratio, made proportionally wider so the box is 12% shorter at
+    // the same width — see POST_DETAIL_MEDIA_HEIGHT_SCALE.
+    aspectRatio: 5 / 7 / POST_DETAIL_MEDIA_HEIGHT_SCALE,
     backgroundColor: PV2.collectorPanelBg,
     overflow: 'hidden',
   },
@@ -1402,6 +1596,51 @@ const styles = StyleSheet.create({
   },
   // Add-comment row — replaces the old inline input bar; tapping it opens
   // the dedicated reply composer (app/post-reply/[id].tsx) instead.
+  commentComposer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
+  },
+  composerAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  composerPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 44,
+    maxHeight: 96,
+    paddingLeft: 16,
+    paddingRight: 14,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    backgroundColor: PV2.panel,
+  },
+  composerInput: {
+    flex: 1,
+    fontSize: 15,
+    color: PV2.textPrimary,
+    paddingVertical: 8,
+  },
+  composerPost: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: PV2.link,
+  },
+  composerPostDisabled: {
+    color: PV2.textTertiary,
+  },
   addCommentRow: {
     paddingHorizontal: 16,
     paddingTop: 12,

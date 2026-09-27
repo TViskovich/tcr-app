@@ -107,7 +107,7 @@ export async function copyItemImageIntoShareSnapshots(
   client: SupabaseClient,
   callerId: string,
   itemId: string,
-  snapshotType: 'post' | 'card_share' | 'rate_my_grails',
+  snapshotType: 'post' | 'card_share' | 'rate_my_grails' | 'folder_share',
   targetId: string,
 ): Promise<CopyItemImageResult> {
   const { data: item } = await client
@@ -222,4 +222,23 @@ export async function copyOwnedItemImageIntoShareSnapshots(
   }
 
   return result;
+}
+
+// Copies a folder's explicit UPLOADED cover (folders.cover_storage_path, an
+// item-images object) into share-snapshots for a folder_share post. Callers
+// must already have verified the caller owns the folder and that the folder
+// is effectively public; the path itself is re-validated against this
+// project's own item-images bucket shape here, never trusted as given.
+export async function copyFolderCoverIntoShareSnapshots(
+  client: SupabaseClient,
+  callerId: string,
+  coverStoragePath: string,
+  targetId: string,
+): Promise<CopyItemImageResult> {
+  const sourcePath = validateItemImagesStoragePath(coverStoragePath);
+  if (!sourcePath) {
+    return { ok: false, reason: 'invalid_source' };
+  }
+  const destinationPath = `${callerId}/folder_share/${targetId}/cover-${crypto.randomUUID()}`;
+  return downloadValidateUpload(client, sourcePath, destinationPath);
 }

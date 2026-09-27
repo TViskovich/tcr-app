@@ -1688,16 +1688,6 @@ export default function CollectionFolderScreen() {
                       />
                     </Pressable>
                   )}
-                  {isOwner && !showInitialLoading && items.length > 0 && (
-                    <Pressable
-                      onPress={() => enterSelectMode()}
-                      hitSlop={10}
-                      style={styles.selectEntryBtn}
-                      accessibilityRole="button"
-                      accessibilityLabel="Select items">
-                      <Text style={styles.selectEntryText}>Select</Text>
-                    </Pressable>
-                  )}
                   {isOwner && (
                     <Pressable onPress={() => setShowAddMenu(true)} hitSlop={10} style={styles.iconBtn}>
                       <IconSymbol name="plus" size={24} color={PV2.textPrimary} />
@@ -2007,17 +1997,6 @@ const styles = StyleSheet.create({
   // `iconBtn` (fixed 36x36 square, sized for a single glyph) — these are
   // variable-width text, so they get their own minimal hit-area padding
   // instead.
-  selectEntryBtn: {
-    paddingHorizontal: 6,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  selectEntryText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: PV2.textPrimary,
-  },
   selectCancelText: {
     fontSize: 16,
     color: PV2.textSecondary,

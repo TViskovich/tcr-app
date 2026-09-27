@@ -12,6 +12,7 @@ import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
 import { useMessageBadgeCount, useMessageBadgeRefresh } from '@/lib/message-badge-context';
+import { requestScrollToTop } from '@/lib/scroll-to-top';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
@@ -238,6 +239,11 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     });
     if (event.defaultPrevented) return;
     if (featured) {
+      // Already on the owner profile itself (not a screen pushed on top of
+      // it): behave like tapping the status bar — scroll to top, no
+      // navigation, no refetch. Falls through to the normal navigation if
+      // no screen handled it.
+      if (isFocused && pathname === '/profile' && requestScrollToTop('profile')) return;
       // Always land on the owner's own profile — same reset-to-root
       // mechanism the Collection tab used before this button's
       // destination changed.

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +15,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
+import { fetchFolderShareItems } from '@/lib/folder-share-post';
 import { deletePost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -55,8 +56,8 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
 
   const { data: postRows, error: postsError } = await supabase
     .from('posts')
-    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
-    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
+    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
+    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share', 'folder_share'])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1)
@@ -90,8 +91,11 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   const textPostIds = (postRows as any[])
     .filter((p) => p.post_type === 'text')
     .map((p) => p.id as string);
+  const folderSharePostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'folder_share')
+    .map((p) => p.id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap, folderShareMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -116,6 +120,7 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     // Same throws-loudly convention — see fetchCardShareItems's comment
     // just above.
     fetchPostImages(textPostIds, signal),
+    fetchFolderShareItems(folderSharePostIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -146,7 +151,7 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -173,6 +178,16 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
       myRating: rating?.mine ?? null,
       cardShareItems: cardShareMap.get(post.id) ?? [],
       images: postImagesMap.get(post.id) ?? [],
+      folderShare:
+        post.post_type === 'folder_share'
+          ? {
+              folderId: post.folder_id ?? null,
+              folderName: post.folder_name ?? 'Folder',
+              itemCount: post.folder_item_count ?? 0,
+              items: folderShareMap.get(post.id) ?? [],
+              coverUrl: post.folder_cover_snapshot_url ?? null,
+            }
+          : null,
     };
   });
 
@@ -251,19 +266,30 @@ export default function HomeScreen() {
   // post" round trip is special-cased to skip the refetch.
   const skipNextFocusReloadRef = useRef(false);
 
-  const loadFeed = useCallback(async () => {
-    // Following mode now renders FollowingItemsFeed (a separate,
-    // item-based component that owns its own data/loading/error state) —
-    // this posts-based loader has nothing to do for it.
-    if (feedMode !== 'for-you') return;
+  // Mirrors feedMode for the focus effect below, which must NOT re-run when
+  // feedMode changes (a For You <-> Following toggle is not a refresh).
+  const feedModeRef = useRef(feedMode);
+  useEffect(() => {
+    feedModeRef.current = feedMode;
+  }, [feedMode]);
 
+  // Which user the current `posts` were loaded for, and whether that load
+  // ever succeeded. Once posts exist for the current user, loadFeed refreshes
+  // quietly (stale-while-revalidate) instead of blanking the list behind the
+  // full-screen loader.
+  const loadedForUserRef = useRef<string | undefined | null>(null);
+
+  const loadFeed = useCallback(async () => {
     loadFeedControllerRef.current?.abort();
     const controller = new AbortController();
     loadFeedControllerRef.current = controller;
 
-    setLoading(true);
-    setPage(0);
-    setHasMore(true);
+    const quiet = loadedForUserRef.current === currentUserId;
+    if (!quiet) {
+      setLoading(true);
+      setPage(0);
+      setHasMore(true);
+    }
     setLoadError(null);
     try {
       const data = await queryFeed(currentUserId, 0, controller.signal);
@@ -271,19 +297,31 @@ export default function HomeScreen() {
       // batch's result is stale regardless of whether it actually finished
       // or carries an abort error; never let it commit over newer state.
       if (loadFeedControllerRef.current !== controller || controller.signal.aborted) return;
-      setPosts(data);
-      setHasMore(data.length === PAGE_SIZE);
+      if (quiet) {
+        // Fresh page-0 rows replace their stale copies and new ones slot in
+        // by created_at; already-paginated older posts (and page/hasMore)
+        // stay, so the list and scroll position aren't disturbed.
+        setPosts((prev) => {
+          const freshIds = new Set(data.map((p) => p.id));
+          return sortPostsByCreatedAtDesc([...data, ...prev.filter((p) => !freshIds.has(p.id))]);
+        });
+      } else {
+        setPosts(data);
+        setHasMore(data.length === PAGE_SIZE);
+      }
+      loadedForUserRef.current = currentUserId;
     } catch (e) {
       if (controller.signal.aborted || loadFeedControllerRef.current !== controller) return;
       console.error('[loadFeed] failed:', e);
-      setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
+      // A failed quiet refresh keeps the posts already on screen.
+      if (!quiet) setLoadError(e instanceof Error ? e.message : 'Failed to load feed.');
     } finally {
       if (loadFeedControllerRef.current === controller) {
         loadFeedControllerRef.current = null;
         setLoading(false);
       }
     }
-  }, [currentUserId, feedMode]);
+  }, [currentUserId]);
 
   const onRefresh = useCallback(async () => {
     // See loadFeed's identical guard above — Following mode has its own
@@ -303,6 +341,7 @@ export default function HomeScreen() {
       setPosts(data);
       setHasMore(data.length === PAGE_SIZE);
       setLoadError(null);
+      loadedForUserRef.current = currentUserId;
     } catch (e) {
       if (controller.signal.aborted || refreshControllerRef.current !== controller) return;
       console.error('[onRefresh] failed:', e);
@@ -358,8 +397,10 @@ export default function HomeScreen() {
     }
   }, [loadingMore, hasMore, loading, page, feedMode, currentUserId]);
 
-  // useFocusEffect re-runs whenever loadFeed changes identity (i.e. when feedMode or
-  // currentUserId changes) AND the screen is currently focused — so tab switches reload.
+  // useFocusEffect re-runs on real screen focus (and if currentUserId
+  // changes) — NOT on feedMode changes: loadFeed no longer depends on
+  // feedMode, so toggling For You <-> Following never reloads. A real focus
+  // still refreshes, quietly when posts are already loaded (see loadFeed).
   // Skipped exactly once when returning from a post's own detail screen —
   // see skipNextFocusReloadRef's own comment above — so that specific
   // round trip preserves the existing list/scroll position instead of
@@ -368,7 +409,7 @@ export default function HomeScreen() {
     useCallback(() => {
       if (skipNextFocusReloadRef.current) {
         skipNextFocusReloadRef.current = false;
-      } else {
+      } else if (feedModeRef.current === 'for-you') {
         loadFeed();
       }
       return () => {
@@ -542,17 +583,23 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {feedMode === 'following' ? (
+      {feedMode === 'following' && (
         // Entirely separate data model/layout — recently uploaded
         // collection items from followed collectors, not posts. Owns its
         // own loading/error/empty states and data fetching; nothing below
-        // this branch (posts/loading/loadError/FlatList) applies to it.
+        // (posts/loading/loadError/FlatList) applies to it.
         <FollowingItemsFeed
           currentUserId={currentUserId}
           onScroll={navbarOnScroll}
           scrollEventThrottle={scrollEventThrottle}
         />
-      ) : loading ? (
+      )}
+
+      {/* For You pane stays mounted (just hidden) while Following is shown,
+          so switching back is instant and keeps the list's scroll position
+          instead of remounting the FlatList. */}
+      <View style={[styles.forYouPane, feedMode === 'following' && styles.forYouPaneHidden]}>
+      {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
         </View>
@@ -618,6 +665,7 @@ export default function HomeScreen() {
           />
         </View>
       )}
+      </View>
 
       <CreateMenu
         visible={createMenuOpen}
@@ -743,6 +791,12 @@ const styles = StyleSheet.create({
   },
   listWrap: {
     flex: 1,
+  },
+  forYouPane: {
+    flex: 1,
+  },
+  forYouPaneHidden: {
+    display: 'none',
   },
   // Piece 3 of the X-style redesign — posts are flat/dark/borderless now
   // (see PostCard's own card style), each separated by its own bottom

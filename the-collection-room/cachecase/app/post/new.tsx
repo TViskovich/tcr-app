@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -22,6 +24,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import {
   cleanupShareSnapshots,
   copyPostPhotoToShareSnapshots,
@@ -49,6 +52,19 @@ export default function NewPostScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const insets = useSafeAreaInsets();
+  // Bottom controls sit right above the keyboard when it's open; when it's
+  // closed they clear the floating nav + safe area instead.
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   // A create form, not a scrollable browsing list — no scroll-hide effect,
   // but still resets the shared navbar to visible on focus.
   useScrollResponsiveNavbar({ enabled: false });
@@ -57,6 +73,16 @@ export default function NewPostScreen() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [showAddPhotoMenu, setShowAddPhotoMenu] = useState(false);
   const [showItemsPicker, setShowItemsPicker] = useState(false);
+
+  // Re-opens the keyboard after a successful photo/item selection returns to
+  // the composer. One-shot: focusInput is only ever called from those
+  // selection handlers (never from an effect), so it can't loop or reopen the
+  // keyboard after a manual dismiss.
+  const inputRef = useRef<TextInput>(null);
+  const focusAfterItemsPickerRef = useRef(false);
+  function focusInput() {
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
 
   const charCount = text.length;
   // A post now needs text OR at least one image, not text alone — mirrors
@@ -106,6 +132,7 @@ export default function NewPostScreen() {
       );
     }
 
+    focusInput();
     setAttachments((prev) => [
       ...prev,
       ...usable.map(
@@ -125,6 +152,13 @@ export default function NewPostScreen() {
 
   function handleItemsConfirmed(picked: PickedPostItem[]) {
     setShowItemsPicker(false);
+    if (picked.length > 0) {
+      // iOS: wait for the picker Modal's close animation (its onDismiss,
+      // below) — focusing while it's still on screen doesn't raise the
+      // keyboard. Android's Modal has no onDismiss, so focus right away.
+      if (Platform.OS === 'ios') focusAfterItemsPickerRef.current = true;
+      else focusInput();
+    }
     setAttachments((prev) => {
       const remaining = MAX_ATTACHMENTS - prev.length;
       const existingItemIds = new Set(
@@ -275,8 +309,18 @@ export default function NewPostScreen() {
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}>
+        {/* Text + attachment preview scroll in the flexible area; Add Photo and
+            the character count live in a fixed bottom row below it (outside
+            the ScrollView), so KeyboardAvoidingView lifts them to sit right
+            above the keyboard. With attachments the input is compact so the
+            preview sits right under it. */}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled">
         <TextInput
-          style={styles.input}
+          ref={inputRef}
+          style={[styles.input, attachments.length > 0 && styles.inputCompact]}
           placeholder="What are you collecting?"
           placeholderTextColor={PV2.textTertiary}
           multiline
@@ -304,7 +348,13 @@ export default function NewPostScreen() {
             />
           </View>
         )}
+        </ScrollView>
 
+        <View
+          style={[
+            styles.bottomBar,
+            { paddingBottom: keyboardVisible ? 20 : TAB_BAR_HEIGHT + insets.bottom + 8 },
+          ]}>
         {attachments.length < MAX_ATTACHMENTS ? (
           <TouchableOpacity
             onPress={() => setShowAddPhotoMenu(true)}
@@ -320,8 +370,6 @@ export default function NewPostScreen() {
         ) : (
           <Text style={styles.maxHint}>Maximum {MAX_ATTACHMENTS} photos</Text>
         )}
-
-        <View style={styles.footer}>
           <Text
             style={[
               styles.counter,
@@ -346,6 +394,11 @@ export default function NewPostScreen() {
         currentUserId={session?.user?.id}
         remainingSlots={remainingSlots}
         onConfirm={handleItemsConfirmed}
+        onDismiss={() => {
+          if (!focusAfterItemsPickerRef.current) return;
+          focusAfterItemsPickerRef.current = false;
+          focusInput();
+        }}
       />
     </>
   );
@@ -368,19 +421,38 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: PV2.bg,
   },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    // Breathing room below the header/divider before the text area starts.
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
   input: {
     flex: 1,
+    minHeight: 96,
     fontSize: 17,
     color: PV2.textPrimary,
     padding: 16,
     lineHeight: 24,
   },
-  footer: {
+  // Only when a preview is attached: stop growing so the preview follows the
+  // text directly rather than being pushed to the bottom.
+  inputCompact: {
+    flex: 0,
+    flexGrow: 0,
+  },
+  bottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    alignItems: 'flex-end',
+    paddingTop: 4,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
   },
   counter: {
     fontSize: 13,
@@ -395,10 +467,8 @@ const styles = StyleSheet.create({
   addPhotoBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   addPhotoLabel: {
     fontSize: 15,
@@ -408,8 +478,7 @@ const styles = StyleSheet.create({
   maxHint: {
     fontSize: 13,
     color: PV2.textTertiary,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   // Kept compact (not full-bleed) so the composer still reads as a post
   // composer, not an image-editing screen — same horizontal inset as the

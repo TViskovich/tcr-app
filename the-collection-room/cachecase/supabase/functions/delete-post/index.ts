@@ -10,6 +10,8 @@
 //   notifications.comment_id -> comments.id ON DELETE CASCADE
 //   likes.post_id, rate_my_grail_cards.post_id, grail_ratings.post_id,
 //   card_share_items.post_id -> posts.id ON DELETE CASCADE (schema.sql)
+//   folder_share_items.post_id -> posts.id ON DELETE CASCADE (supabase/
+//   migrations/20260927120000_add_folder_share_posts.sql)
 //   post_images.post_id      -> posts.id ON DELETE CASCADE (supabase/
 //   migrations/20260911150000_create_post_images.sql — text posts' 0-4
 //   mixed-source images)
@@ -102,7 +104,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: post, error: postError } = await client
     .from('posts')
-    .select('id, user_id, post_type, image_url')
+    .select('id, user_id, post_type, image_url, folder_cover_snapshot_url')
     .eq('id', postId)
     .maybeSingle();
 
@@ -130,6 +132,15 @@ Deno.serve(async (req: Request) => {
   } else if (post.post_type === 'card_share') {
     const { data: rows } = await client
       .from('card_share_items')
+      .select('snapshot_image_url')
+      .eq('post_id', postId);
+    for (const row of (rows ?? []) as { snapshot_image_url: string | null }[]) {
+      if (row.snapshot_image_url) candidateUrls.push(row.snapshot_image_url);
+    }
+  } else if (post.post_type === 'folder_share') {
+    if (post.folder_cover_snapshot_url) candidateUrls.push(post.folder_cover_snapshot_url as string);
+    const { data: rows } = await client
+      .from('folder_share_items')
       .select('snapshot_image_url')
       .eq('post_id', postId);
     for (const row of (rows ?? []) as { snapshot_image_url: string | null }[]) {

@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -110,23 +110,10 @@ function clampTileAspectRatio(ratio: number): number {
   return Math.min(MAX_TILE_ASPECT_RATIO, Math.max(MIN_TILE_ASPECT_RATIO, ratio));
 }
 
-// "2m ago" / "3h ago" / "1d ago" per the design spec — distinct from this
-// app's other formatAge variants (e.g. app/post/[id].tsx's, which drops to
-// an absolute "MMM d" date beyond a day) since this screen's own reference
-// explicitly calls for a relative "Xd ago" step first. Falls back to an
-// absolute date only past a week, matching the general convention that a
-// relative age stops being useful after that.
-function formatAge(iso: string): string {
-  const diffSeconds = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diffSeconds < 3600) return `${Math.max(1, Math.floor(diffSeconds / 60))}m ago`;
-  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
-  if (diffSeconds < 7 * 86400) return `${Math.floor(diffSeconds / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
 type FollowingItem = {
   id: string;
   title: string | null;
+  player: string | null;
   item_type: CollectibleItemType;
   created_at: string;
   user_id: string;
@@ -181,7 +168,7 @@ function updateSessionSnapshot(userId: string, patch: Partial<FollowingFeedSessi
   });
 }
 
-type ItemRow = { id: string; title: string | null; item_type: string | null; created_at: string; user_id: string };
+type ItemRow = { id: string; title: string | null; player: string | null; item_type: string | null; created_at: string; user_id: string };
 type LoadRowsResult = { followedCount: number; itemRows: ItemRow[] };
 
 // Phase 1 — ONLY the item rows themselves (plus the follows lookup they
@@ -209,7 +196,7 @@ async function queryFollowingItemRows(currentUserId: string, signal: AbortSignal
 
   const { data: itemRows, error: itemsError } = await supabase
     .from('collection_items')
-    .select('id, title, item_type, created_at, user_id')
+    .select('id, title, player, item_type, created_at, user_id')
     .in('user_id', followedIds)
     .eq('is_public', true)
     .eq('collection_status', 'active')
@@ -244,6 +231,7 @@ function buildShellItems(itemRows: ItemRow[], previousById?: Map<string, Followi
     return {
       id: row.id,
       title: row.title ?? null,
+      player: row.player ?? null,
       item_type: (row.item_type ?? 'sports_card') as CollectibleItemType,
       created_at: row.created_at,
       user_id: row.user_id,
@@ -318,7 +306,6 @@ function FollowingItemTile({
   isNewest,
   onPress,
   onOwnerPress,
-  onMorePress,
 }: {
   item: FollowingItem;
   imageUrl: string | undefined;
@@ -327,7 +314,6 @@ function FollowingItemTile({
   isNewest: boolean;
   onPress: () => void;
   onOwnerPress: () => void;
-  onMorePress: () => void;
 }) {
   // Fixed at mount from the category table — never reassigned from a real
   // image measurement (see TYPE_DEFAULT_ASPECT_RATIO's own comment) so the
@@ -335,6 +321,12 @@ function FollowingItemTile({
   // stable from first render instead of jumping once the image resolves.
   const ratio = clampTileAspectRatio(TYPE_DEFAULT_ASPECT_RATIO[item.item_type]);
   const ownerName = item.owner_display_name || item.owner_username;
+  // Player name leads; the item title (set/product) sits below it. Either
+  // field may be missing — a lone value takes the lead line.
+  const playerLine = item.player?.trim() || null;
+  const titleLine = item.title?.trim() || null;
+  const primaryLine = playerLine ?? titleLine ?? 'Untitled';
+  const secondaryLine = playerLine ? titleLine : null;
 
   return (
     <TouchableOpacity
@@ -370,15 +362,6 @@ function FollowingItemTile({
           <View style={StyleSheet.absoluteFill} />
         )}
 
-        <TouchableOpacity
-          onPress={onMorePress}
-          hitSlop={8}
-          style={styles.tileMoreBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Item options">
-          <IconSymbol name="ellipsis" size={16} color="#fff" />
-        </TouchableOpacity>
-
         {isNewest && (
           <View style={styles.justAddedBadge}>
             <Text style={styles.justAddedText}>Just added</Text>
@@ -386,48 +369,53 @@ function FollowingItemTile({
         )}
       </View>
 
-      <TouchableOpacity style={styles.tileOwnerRow} onPress={onOwnerPress} activeOpacity={0.7} hitSlop={4}>
-        <View style={styles.tileAvatar}>
-          {item.owner_avatar_url ? (
-            <Image source={{ uri: item.owner_avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.tileAvatarPlaceholder]}>
-              <Text style={styles.tileAvatarInitial}>{ownerName.charAt(0).toUpperCase()}</Text>
-            </View>
-          )}
-        </View>
-        <Text style={styles.tileOwnerName} numberOfLines={1}>
-          {ownerName}
-        </Text>
-      </TouchableOpacity>
-
-      <Text style={styles.tileAge}>{formatAge(item.created_at)}</Text>
-      <Text style={styles.tileTitle} numberOfLines={1}>
-        {item.title || 'Untitled'}
-      </Text>
-
-      <View style={styles.tileFooterRow}>
-        <View style={styles.categoryPill}>
-          <Text style={styles.categoryPillText}>{ITEM_TYPE_LABEL[item.item_type]}</Text>
-        </View>
-
-        {(item.likeCount > 0 || item.commentCount > 0) && (
-          <View style={styles.engagementRow}>
-            {item.likeCount > 0 && (
-              <View style={styles.engagementStat}>
-                <IconSymbol name="heart.fill" size={12} color={PV2.textTertiary} />
-                <Text style={styles.engagementText}>{item.likeCount}</Text>
-              </View>
-            )}
-            {item.commentCount > 0 && (
-              <View style={styles.engagementStat}>
-                <IconSymbol name="message" size={12} color={PV2.textTertiary} />
-                <Text style={styles.engagementText}>{item.commentCount}</Text>
+      <View style={styles.tileOwnerRow}>
+        <TouchableOpacity style={styles.tileOwnerPress} onPress={onOwnerPress} activeOpacity={0.7} hitSlop={4}>
+          <View style={styles.tileAvatar}>
+            {item.owner_avatar_url ? (
+              <Image source={{ uri: item.owner_avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.tileAvatarPlaceholder]}>
+                <Text style={styles.tileAvatarInitial}>{ownerName.charAt(0).toUpperCase()}</Text>
               </View>
             )}
           </View>
-        )}
+          <Text style={styles.tileOwnerName} numberOfLines={1}>
+            {ownerName}
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.categoryPill}>
+          <Text style={styles.categoryPillText}>{ITEM_TYPE_LABEL[item.item_type]}</Text>
+        </View>
       </View>
+
+      <View style={styles.tileTextBlock}>
+        <Text style={styles.tileTitle} numberOfLines={1}>
+          {primaryLine}
+        </Text>
+        {/* Always rendered so every tile reserves the same two text lines;
+            empty (no placeholder text) when there is no set/title. */}
+        <Text style={styles.tileSubtitle} numberOfLines={1}>
+          {secondaryLine ?? ''}
+        </Text>
+      </View>
+
+      {(item.likeCount > 0 || item.commentCount > 0) && (
+        <View style={[styles.engagementRow, styles.engagementRowBelow]}>
+          {item.likeCount > 0 && (
+            <View style={styles.engagementStat}>
+              <IconSymbol name="heart.fill" size={12} color={PV2.textTertiary} />
+              <Text style={styles.engagementText}>{item.likeCount}</Text>
+            </View>
+          )}
+          {item.commentCount > 0 && (
+            <View style={styles.engagementStat}>
+              <IconSymbol name="message" size={12} color={PV2.textTertiary} />
+              <Text style={styles.engagementText}>{item.commentCount}</Text>
+            </View>
+          )}
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
@@ -513,6 +501,22 @@ export function FollowingItemsFeed({
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  // One-navigation-per-visit lock: a second tap (same tile, another tile, or
+  // an avatar/username) that lands before the pushed screen has taken over is
+  // ignored. Released when this screen regains focus (i.e. after coming back),
+  // not by a timer.
+  const navigatingRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      navigatingRef.current = false;
+    }, []),
+  );
+  function navigateOnce(go: () => void) {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+    go();
+  }
+
   // Moved up (still an ordinary unconditional hook call every render, so
   // this is safe) so columnWidth is available for the mountCount initializer
   // below, which needs it to estimate tile heights for scroll-position
@@ -584,7 +588,6 @@ export function FollowingItemsFeed({
     // Deliberately mount-once ([]) — this screen fully remounts on every
     // feedMode toggle (see FollowingFeedSession's own comment), so "once per
     // mount" already means "once per tab switch back to Following."
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const controllerRef = useRef<AbortController | null>(null);
@@ -740,6 +743,10 @@ export function FollowingItemsFeed({
     // immediately and refreshes quietly behind it ('background').
     const isFresh = cachedSession && Date.now() - cachedSession.fetchedAt < FOLLOWING_FEED_FRESHNESS_MS;
     if (!isFresh) {
+      // Mount/user-change data fetch — load's synchronous loading-flag
+      // setState is the intended "start fetching" transition, not a derived
+      // state sync, so the set-state-in-effect rule doesn't apply here.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       load(cachedSession ? 'background' : 'initial');
     }
     return () => controllerRef.current?.abort();
@@ -874,17 +881,6 @@ export function FollowingItemsFeed({
     ]);
   }
 
-  function handleMorePress(item: FollowingItem) {
-    const ownerName = item.owner_display_name || item.owner_username;
-    Alert.alert(item.title || 'Item options', undefined, [
-      {
-        text: `View ${ownerName}'s profile`,
-        onPress: () => navigateToProfile(router, currentUserId, item.user_id, item.owner_username),
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }
-
   // Scroll-position preservation — same session cache as items/sort above,
   // not persistent storage. cachedScrollOffsetRef is captured once, at
   // mount, from whatever was last recorded for this user (0 for a genuinely
@@ -931,9 +927,10 @@ export function FollowingItemsFeed({
               imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
               columnWidth={width}
               isNewest={item.id === newestItemId}
-              onPress={() => router.push({ pathname: '/item/[id]', params: { id: item.id } })}
-              onOwnerPress={() => navigateToProfile(router, currentUserId, item.user_id, item.owner_username)}
-              onMorePress={() => handleMorePress(item)}
+              onPress={() => navigateOnce(() => router.push({ pathname: '/item/[id]', params: { id: item.id } }))}
+              onOwnerPress={() =>
+                navigateOnce(() => navigateToProfile(router, currentUserId, item.user_id, item.owner_username))
+              }
             />
           );
         })}
@@ -1100,17 +1097,6 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: PV2.collectorPanelBg,
   },
-  tileMoreBtn: {
-    position: 'absolute',
-    top: 6,
-    right: 6,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
   justAddedBadge: {
     position: 'absolute',
     top: 6,
@@ -1130,9 +1116,17 @@ const styles = StyleSheet.create({
   tileOwnerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 6,
     paddingHorizontal: 8,
     paddingTop: 8,
+  },
+  tileOwnerPress: {
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
   },
   tileAvatar: {
     width: 18,
@@ -1152,31 +1146,32 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   tileOwnerName: {
-    flex: 1,
+    flexShrink: 1,
     fontSize: 12,
     fontWeight: '600',
     color: PV2.textSecondary,
   },
-  tileAge: {
-    fontSize: 11,
-    color: PV2.textTertiary,
-    paddingHorizontal: 8,
+  // Left: the tile's 8px gutter + a 10px inset, so player/set text sits
+  // slightly right of the avatar row. Right stays at the plain 8px gutter.
+  tileTextBlock: {
+    paddingLeft: 18,
+    paddingRight: 8,
+    paddingBottom: 8,
+  },
+  tileSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    height: 16,
     marginTop: 2,
+    color: PV2.textSecondary,
   },
   tileTitle: {
     fontSize: 13,
     fontWeight: '600',
+    lineHeight: 18,
+    height: 18,
     color: PV2.textPrimary,
-    paddingHorizontal: 8,
     marginTop: 3,
-  },
-  tileFooterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingTop: 6,
-    paddingBottom: 8,
   },
   categoryPill: {
     paddingHorizontal: 8,
@@ -1190,6 +1185,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: PV2.textSecondary,
+  },
+  engagementRowBelow: {
+    paddingHorizontal: 8,
+    paddingBottom: 8,
   },
   engagementRow: {
     flexDirection: 'row',

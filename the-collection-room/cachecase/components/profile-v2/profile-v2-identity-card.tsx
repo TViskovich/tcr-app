@@ -61,12 +61,12 @@ const BORDER_WIDTH_LEFT = GRID_HORIZONTAL_MARGIN;
 const CARD_PADDING_RIGHT = 10;
 const CACHECASE_LOGO_HEIGHT = 33;
 
-// No dedicated account/collector-number column exists on Profile yet (see
-// types/index.ts) — this derives a stable, real, per-user display code from
-// the profile's own id (a UUID) rather than inventing a fake number. Not a
-// substitute for a real "member number" column if one gets added later.
-function accountCodeFromId(id: string): string {
-  return id.replace(/-/g, '').slice(-6).toUpperCase();
+// Permanent sequential member number (profiles.account_number, assigned by
+// the database), shown as CC + 6 zero-padded digits, e.g. 42 -> CC000042.
+// Null (not assigned/loaded) renders a plain dash — never a made-up number.
+function formatAccountNumber(n: number | null | undefined): string {
+  if (n == null) return '—';
+  return `CC${String(n).padStart(6, '0')}`;
 }
 
 type Props = {
@@ -76,7 +76,7 @@ type Props = {
   title: string;
   itemCount: number;
   avatarUri: string | null;
-  profileId: string;
+  accountNumber: number | null | undefined;
   // Owner-only avatar tap target, same convention as the collector panel
   // this replaces — omitted entirely for a visitor, leaving the avatar
   // non-interactive.
@@ -102,12 +102,12 @@ export function ProfileV2IdentityCard({
   title,
   itemCount,
   avatarUri,
-  profileId,
+  accountNumber,
   onAvatarPress,
   onPress,
   expanded,
 }: Props) {
-  const acctCode = accountCodeFromId(profileId);
+  const acctCode = formatAccountNumber(accountNumber);
 
   return (
     <LinearGradient

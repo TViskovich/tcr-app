@@ -216,6 +216,9 @@ export type Profile = {
   hero_theme: string | null;
   showcase_badge_url: string | null;
   created_at: string;
+  // Permanent sequential member number assigned by the database (shown as
+  // CC000042); never set client-side.
+  account_number: number | null;
   // Profile 2.0 — collector identity + preferences (infrastructure only;
   // no editing UI yet). tagline/website/location are nullable free text;
   // the four array fields are NOT NULL with an empty-array default in the
@@ -232,7 +235,7 @@ export type Profile = {
 export type Post = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
   item_id: string | null;
   image_url: string | null;
   content: string | null;

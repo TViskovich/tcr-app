@@ -31,6 +31,9 @@ type Props = {
   // already used up some of the 4-image budget.
   remainingSlots: number;
   onConfirm: (picked: PickedPostItem[]) => void;
+  // iOS only (RN Modal's own onDismiss) — fires once the close animation has
+  // fully finished.
+  onDismiss?: () => void;
 };
 
 // "Choose from My Items" step of the post composer's Add Photo flow
@@ -45,7 +48,7 @@ type Props = {
 // reusable component. Selection state is local and resets every time this
 // modal opens/closes; the caller only ever learns the final chosen set via
 // onConfirm.
-export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlots, onConfirm }: Props) {
+export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlots, onConfirm, onDismiss }: Props) {
   // Explicit, not SafeAreaView's own automatic top-edge inset — this
   // Modal is statusBarTranslucent (so its content draws edge-to-edge
   // under the status bar/Dynamic Island by design, for the full-bleed
@@ -118,7 +121,7 @@ export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlot
   }
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} onDismiss={onDismiss} statusBarTranslucent>
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         <View style={styles.header}>
           {/* minHeight 44 on the button itself (not just hitSlop) — the

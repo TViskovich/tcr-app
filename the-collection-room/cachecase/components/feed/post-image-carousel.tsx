@@ -173,7 +173,6 @@ const styles = StyleSheet.create({
   viewport: {
     width: '100%',
     height: '100%',
-    backgroundColor: PV2.collectorPanelBg,
   },
   flatList: {
     width: '100%',

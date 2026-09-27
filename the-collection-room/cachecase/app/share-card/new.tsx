@@ -15,6 +15,7 @@ import {
 
 import { Image } from 'expo-image';
 import { Stack, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { SharePostPreview } from '@/components/feed/share-post-preview';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
@@ -27,6 +28,7 @@ import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem } from '@/types';
 
 const MAX_CHARS = 280;
@@ -44,6 +46,7 @@ const MAX_CARDS = 5;
 // server-side, as one all-or-nothing unit — see that function's own
 // module comment for the full invariant.
 export default function ShareCardScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -301,7 +304,7 @@ export default function ShareCardScreen() {
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView
-            contentContainerStyle={styles.scroll}
+            contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
             <View style={styles.selectRow}>

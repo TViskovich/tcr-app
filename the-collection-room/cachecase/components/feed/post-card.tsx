@@ -16,17 +16,19 @@ import { Image } from 'expo-image';
 import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
+import { FolderShareCollage } from '@/components/feed/folder-share-collage';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { supabase } from '@/lib/supabase';
+import { fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
 
 export type FeedPost = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -52,6 +54,9 @@ export type FeedPost = {
   // and this stays [], which is exactly what keeps it rendering unchanged
   // (see PostCard's own isTextPost branch below).
   images: PostImage[];
+  // 'folder_share' posts only — snapshot of the shared folder (see
+  // lib/folder-share-post.ts). null/undefined for every other post type.
+  folderShare?: FolderShareData | null;
 };
 
 // Shared by app/(tabs)/index.tsx's queryFeed and
@@ -181,9 +186,9 @@ export async function fetchPostImages(postIds: string[], signal: AbortSignal): P
 export async function fetchUserPosts(userId: string, signal: AbortSignal, currentUserId?: string): Promise<FeedPost[]> {
   const { data: postRows, error: postsError } = await supabase
     .from('posts')
-    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at')
+    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
     .eq('user_id', userId)
-    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share'])
+    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share', 'folder_share'])
     .order('created_at', { ascending: false })
     .abortSignal(signal);
 
@@ -205,8 +210,11 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
   const textPostIds = (postRows as any[])
     .filter((p) => p.post_type === 'text')
     .map((p) => p.id as string);
+  const folderSharePostIds = (postRows as any[])
+    .filter((p) => p.post_type === 'folder_share')
+    .map((p) => p.id as string);
 
-  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap] = await Promise.all([
+  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap, folderShareMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -230,6 +238,7 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     // a post_images query failure must fail this whole fetch loudly, not
     // silently render text posts with missing images.
     fetchPostImages(textPostIds, signal),
+    fetchFolderShareItems(folderSharePostIds, signal),
   ]);
 
   const profile = (profileRes.data as any) ?? {};
@@ -255,7 +264,7 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     return {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share',
+      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
@@ -282,6 +291,16 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
       myRating: rating?.mine ?? null,
       cardShareItems: cardShareMap.get(post.id) ?? [],
       images: postImagesMap.get(post.id) ?? [],
+      folderShare:
+        post.post_type === 'folder_share'
+          ? {
+              folderId: post.folder_id ?? null,
+              folderName: post.folder_name ?? 'Folder',
+              itemCount: post.folder_item_count ?? 0,
+              items: folderShareMap.get(post.id) ?? [],
+              coverUrl: post.folder_cover_snapshot_url ?? null,
+            }
+          : null,
     };
   });
 }
@@ -324,6 +343,7 @@ export function PostCard({
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
   const isCardShare = post.post_type === 'card_share';
+  const isFolderShare = post.post_type === 'folder_share';
   const isOwner = !!currentUserId && currentUserId === post.user_id;
 
   // Single-card ('item') post media height cap — SINGLE_CARD_MAX_HEIGHT_FRACTION
@@ -526,6 +546,35 @@ export function PostCard({
             onRate={rating.submitRating}
           />
         </View>
+      ) : isFolderShare ? (
+        // Folder share — a square collage of the folder's snapshot items
+        // (see lib/folder-share-post.ts), with the folder name/count
+        // underneath. Tapping either opens post detail like every other
+        // feed post; the detail screen has the "View collection" link.
+        <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
+          <TouchableOpacity
+            style={styles.mediaImageWrapSingle}
+            onPress={onPostPress}
+            activeOpacity={0.95}
+            accessibilityRole="button"
+            accessibilityLabel={`${post.folderShare?.folderName ?? 'Folder'}, shared folder`}>
+            <FolderShareCollage
+              items={post.folderShare?.items ?? []}
+              totalCount={post.folderShare?.itemCount ?? 0}
+              coverUrl={post.folderShare?.coverUrl}
+              liveCoverUri={post.folderShare?.liveCoverUri}
+              radius={MEDIA_CORNER_RADIUS}
+            />
+          </TouchableOpacity>
+          <View style={[styles.mediaImageWrapSingle, styles.folderShareMeta]}>
+            <Text style={styles.folderShareName} numberOfLines={1}>
+              {post.folderShare?.folderName ?? 'Folder'}
+            </Text>
+            <Text style={styles.folderShareCount}>
+              {post.folderShare?.itemCount ?? 0} public {(post.folderShare?.itemCount ?? 0) === 1 ? 'item' : 'items'}
+            </Text>
+          </View>
+        </View>
       ) : isCardShare ? (
         // card_share posts have no top-level image_url (their images live
         // in card_share_items instead) — must never fall through to the
@@ -705,7 +754,7 @@ export function PostCard({
           wrapper, unchanged from Piece 3). Rate My Grails renders its own
           caption inside GrailsPostBody, above; the standard image path's
           caption already moved into mediaContentColumn in Piece 3. */}
-      {isCardShare && (post.caption || post.item_name) ? (
+      {(isCardShare || isFolderShare) && (post.caption || post.item_name) ? (
         <View style={styles.cardBody}>
           <Text style={styles.cardCaption}>{post.caption || post.item_name}</Text>
         </View>
@@ -1061,6 +1110,10 @@ const styles = StyleSheet.create({
   mediaImageWrapText: {
     width: `${TEXT_POST_MEDIA_WIDTH_FRACTION * 100}%`,
     alignSelf: 'center',
+    // The photo is clipped by its own fitted, rounded View
+    // (FittedRoundedImage), so this frame's dark panel fill would only show
+    // as a thin dark fringe along the photo's anti-aliased rounded edge.
+    backgroundColor: 'transparent',
   },
   // Padding (10, all sides) deliberately untouched — GrailsPostBody
   // renders a media grid, and any padding change would shift its internal
@@ -1092,6 +1145,19 @@ const styles = StyleSheet.create({
   },
   // CardShare caption only now (Piece 4). Piece 5 — same left-inset
   // consolidation as cardTextWrap above, for the same reason.
+  folderShareMeta: {
+    paddingTop: 8,
+  },
+  folderShareName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  folderShareCount: {
+    fontSize: 12,
+    color: PV2.textSecondary,
+    marginTop: 1,
+  },
   cardBody: {
     paddingLeft: MEDIA_CONTENT_LEFT_INSET,
     paddingRight: 12,

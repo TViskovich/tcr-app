@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   runOnJS,
@@ -67,6 +67,13 @@ type Props = {
   onPressCollection: (collection: Folder) => void;
   onReplace: (slotIndex: number) => void;
   onRemove: (slotIndex: number) => void;
+  // Reorder mode (owner only, tap-to-rank — same idea as a folder's item
+  // reorder): a tap ranks/unranks this slot instead of navigating, and
+  // long-press management is off. rank is 1-based, 0 = unranked.
+  reorderMode?: boolean;
+  rank?: number;
+  onToggleRank?: (slotId: string) => void;
+  onEnterReorder?: () => void;
 };
 
 export function GrailSlotPreview({
@@ -80,6 +87,10 @@ export function GrailSlotPreview({
   onPressCollection,
   onReplace,
   onRemove,
+  reorderMode = false,
+  rank = 0,
+  onToggleRank,
+  onEnterReorder,
 }: Props) {
   const reducedMotion = useReducedMotion();
 
@@ -425,18 +436,21 @@ export function GrailSlotPreview({
   const canPressEmpty = isOwnProfile && !slot;
   const isInteractive = canNavigate || canOpenOwnerMenu || canPressEmpty;
 
+  // Long-press on an occupied slot (owner only) enters Grail reorder mode.
+  // The press-suppression window below keeps the release of that same
+  // gesture from also navigating or ranking.
   function handleLongPress() {
-    if (!canOpenOwnerMenu) return;
+    if (reorderMode || !canOpenOwnerMenu) return;
     suppressPressUntilRef.current = Date.now() + SUPPRESS_WINDOW_MS;
-    Alert.alert('Grail Slot', undefined, [
-      { text: 'Replace', onPress: () => onReplace(slotIndex) },
-      { text: 'Remove', style: 'destructive', onPress: () => onRemove(slotIndex) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    onEnterReorder?.();
   }
 
   function handlePress() {
     if (Date.now() < suppressPressUntilRef.current) return;
+    if (reorderMode) {
+      if (slot) onToggleRank?.(slot.id);
+      return;
+    }
     if (!slot) {
       if (canPressEmpty) onPressEmpty(slotIndex);
       return;
@@ -451,10 +465,11 @@ export function GrailSlotPreview({
 
   return (
     <Pressable
-      style={styles.slot}
-      onPress={isInteractive ? handlePress : undefined}
-      onLongPress={canOpenOwnerMenu ? handleLongPress : undefined}
-      disabled={!isInteractive}>
+      style={[styles.slot, reorderMode && rank > 0 && styles.slotRanked]}
+      onPress={isInteractive || (reorderMode && !!slot) ? handlePress : undefined}
+      onLongPress={canOpenOwnerMenu && !reorderMode ? handleLongPress : undefined}
+      delayLongPress={350}
+      disabled={!isInteractive && !(reorderMode && !!slot)}>
       {!slot ? (
         // Background simplification pass (Profile V3) — the dashed border
         // + "+" icon that used to mark an owner-addable empty slot are
@@ -532,6 +547,11 @@ export function GrailSlotPreview({
           </LinearGradient>
         </View>
       )}
+      {reorderMode && rank > 0 && (
+        <View style={styles.rankBadge} pointerEvents="none">
+          <Text style={styles.rankBadgeText}>{rank}</Text>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -556,6 +576,29 @@ const styles = StyleSheet.create({
   },
   slotEmpty: {
     flex: 1,
+  },
+  slotRanked: {
+    borderWidth: 2,
+    borderColor: PV2.accent,
+  },
+  rankBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 5,
+    backgroundColor: PV2.accent,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rankBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
   slotEmptyFill: {
     flex: 1,

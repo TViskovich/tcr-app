@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PostgrestError } from '@supabase/supabase-js';
 
@@ -198,6 +198,16 @@ export function useGrailSlots(userId: string | undefined) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Last successfully committed slots (and for which user), plus a sequence
+  // number so an older, slower load can never overwrite a newer one. A
+  // refresh (e.g. on returning from an item's detail screen) is
+  // stale-while-revalidate: once slots exist for this user they stay on
+  // screen — `loading` (which blanks the whole grid) is only raised for a
+  // genuine first load — and an image-id lookup failure keeps the ids
+  // already known instead of nulling every slot's photo.
+  const slotsRef = useRef<{ userId: string | undefined; slots: GrailSlot[] }>({ userId: undefined, slots: [] });
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
     if (!userId) {
       setSlots([]);
@@ -205,17 +215,30 @@ export function useGrailSlots(userId: string | undefined) {
       setError(null);
       return;
     }
-    setLoading(true);
+    const seq = ++loadSeqRef.current;
+    const hasData = slotsRef.current.userId === userId;
+    if (!hasData) setLoading(true);
+    try {
+      await runLoad(seq);
+    } catch (e) {
+      // Never leave the grid stuck in its loading state over an unexpected
+      // throw — whatever was already loaded stays as it was.
+      console.error('[useGrailSlots] load threw:', e);
+    } finally {
+      if (loadSeqRef.current === seq) setLoading(false);
+    }
+
+    async function runLoad(loadSeq: number) {
     const { data, error: queryError } = await supabase
       .from('profile_grail_slots')
       .select('*, item:collection_items(*), collection:folders(*)')
       .eq('user_id', userId)
       .order('slot_index', { ascending: true });
 
+    if (loadSeqRef.current !== loadSeq) return;
     if (queryError) {
       console.error('[useGrailSlots] query failed:', queryError.message, queryError);
       setError(queryError.message);
-      setLoading(false);
       // Deliberately does not touch `slots` here — whatever was already
       // loaded (from a prior successful call) stays exactly as it was,
       // rather than a failed refresh wiping good data back to [].
@@ -238,7 +261,10 @@ export function useGrailSlots(userId: string | undefined) {
       (s): s is typeof s & { item: CollectionItem } => s.entry_type === 'item' && !!s.item,
     );
     if (itemSlots.length) {
-      const withPrimaryIds = await attachPrimaryImageIds(itemSlots.map((s) => s.item));
+      const previousIds = new Map(
+        slotsRef.current.slots.flatMap((s) => (s.item ? [[s.item.id, s.item.primary_image_id ?? null] as const] : [])),
+      );
+      const withPrimaryIds = await attachPrimaryImageIds(itemSlots.map((s) => s.item), previousIds);
       const byItemId = new Map(withPrimaryIds.map((i) => [i.id, i]));
       nextSlots = nextSlots.map((s) =>
         s.entry_type === 'item' && s.item ? { ...s, item: byItemId.get(s.item.id) ?? s.item } : s,
@@ -318,13 +344,40 @@ export function useGrailSlots(userId: string | undefined) {
       }
     }
 
+    if (loadSeqRef.current !== loadSeq) return;
+    slotsRef.current = { userId, slots: nextSlots };
     setSlots(nextSlots);
-    setLoading(false);
+    }
   }, [userId]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  return { slots, loading, error, refresh: load };
+  // Persists a manual reorder (reorder_grail_slots RPC — see its migration)
+  // and then applies the same permutation locally, so the grid updates in
+  // place: the slot rows keep their ids/images/signed URLs and only their
+  // slot_index changes, with no reload, blanking or image remount. The RPC
+  // reuses the caller's occupied slot indexes in ascending order.
+  const reorder = useCallback(async (orderedSlotIds: string[]): Promise<{ error: string | null }> => {
+    const { error: rpcError } = await supabase.rpc('reorder_grail_slots', { p_slot_ids: orderedSlotIds });
+    if (rpcError) {
+      console.error('[useGrailSlots] reorder failed:', rpcError.message, rpcError);
+      return { error: rpcError.message };
+    }
+    setSlots((prev) => {
+      const indexes = prev.map((s) => s.slot_index).sort((a, b) => a - b);
+      const byId = new Map(prev.map((s) => [s.id, s]));
+      const next = orderedSlotIds.flatMap((id, i) => {
+        const slot = byId.get(id);
+        return slot ? [{ ...slot, slot_index: indexes[i] }] : [];
+      });
+      next.sort((a, b) => a.slot_index - b.slot_index);
+      slotsRef.current = { userId, slots: next };
+      return next;
+    });
+    return { error: null };
+  }, [userId]);
+
+  return { slots, loading, error, refresh: load, reorder };
 }

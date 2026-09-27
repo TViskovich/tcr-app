@@ -1,4 +1,4 @@
-import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -28,14 +28,15 @@ export function CreateMenu({ visible, onClose }: Props) {
     router.push('/share-card/new');
   }
 
-  // TODO: Share Folder — app/collection/[folderId].tsx already has a working
-  // Share.share() call (see its handleShare), but it operates on a folder
-  // already loaded in that screen's state. This menu has no folder selected
-  // yet, so there's nothing to reuse directly until a folder-picker exists
-  // here.
+  // Share Folder = compose a CacheCase feed post showcasing one of your
+  // folders (folder picker -> caption/preview -> Post). Not external
+  // sharing: the folder screen's own Share icon is what opens the native
+  // share sheet.
   function handleShareFolder() {
     onClose();
-    Alert.alert('Folder sharing', "Public folder links aren't available yet.");
+    // Cast: expo-router's generated typed-routes file doesn't know this new
+    // route until the dev server next regenerates it.
+    router.push('/share-folder/new' as never);
   }
 
   function handleRateMyGrails() {

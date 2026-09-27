@@ -13,7 +13,6 @@ type Props = {
   // already read — no new query, no new field.
   location: string | null;
   bio: string | null;
-  collectingCategories: string[];
   website: string | null;
   followers: number;
   following: number;
@@ -48,7 +47,6 @@ type Props = {
 export function ProfileV2ExpandedDetails({
   location,
   bio,
-  collectingCategories,
   website,
   followers,
   following,
@@ -104,13 +102,6 @@ export function ProfileV2ExpandedDetails({
       </View>
 
       {bio ? <Text style={styles.bio}>{bio}</Text> : null}
-
-      {collectingCategories.length > 0 ? (
-        <Text style={styles.collecting}>
-          Currently collecting:{' '}
-          <Text style={styles.collectingHighlight}>{collectingCategories.join(', ')}</Text>
-        </Text>
-      ) : null}
 
       {website ? (
         safeWebsiteUrl ? (
@@ -206,26 +197,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 10,
   },
-  // Larger gap from bio (16, vs. bio's own 10 from the top row) — this is
-  // deliberately bigger than the other inter-section gaps so "Currently
-  // collecting" reads as its own metadata section rather than a second
-  // line of the bio.
-  collecting: {
-    color: PV2.textSecondary,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 16,
-  },
-  // Same accent as `website` below — the app's one existing non-destructive
-  // "notable/tappable" text color (already used for website links
-  // elsewhere), reused here rather than inventing a new one-off color.
-  collectingHighlight: {
-    color: PV2.link,
-    fontWeight: '600',
-  },
-  // Smaller, tighter gap from `collecting` above (9) than `collecting`'s
-  // own gap from bio — website reads as directly associated with the
-  // collecting line above it, not a third independent section.
   website: {
     color: PV2.link,
     fontSize: 13,

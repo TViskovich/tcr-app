@@ -59,6 +59,7 @@ import {
   uploadHeroImage,
   type ProfileImageKind,
 } from '@/lib/storage';
+import { registerScrollToTop } from '@/lib/scroll-to-top';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
@@ -361,6 +362,7 @@ export function ProfileV2Screen({ userId }: Props) {
     loading: grailSlotsLoading,
     error: grailSlotsError,
     refresh: refreshGrailSlots,
+    reorder: reorderGrailSlots,
   } = useGrailSlots(userId);
   // Explicit chooser intent, not a bare slotIndex — an 'add' can never
   // silently become a 'replace' (or vice versa) if the target slot's
@@ -546,6 +548,13 @@ export function ProfileV2Screen({ userId }: Props) {
     setDetailsExpanded(false);
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   }, [userId]);
+
+  // Lets the bottom nav's CacheCase (center) button scroll this screen to
+  // the top when it's tapped while already on this tab — see
+  // lib/scroll-to-top.ts. Registered only while focused.
+  useFocusEffect(
+    useCallback(() => registerScrollToTop('profile', () => scrollRef.current?.scrollTo({ y: 0, animated: true })), []),
+  );
 
   // Screen-local, transient only (never persisted) — collapses again the
   // moment this screen loses focus, so returning to a profile (this one or
@@ -847,6 +856,65 @@ export function ProfileV2Screen({ userId }: Props) {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log Out', style: 'destructive', onPress: signOut },
     ]);
+  }
+
+  // Grail reorder (owner only, tap-to-rank — same model as a folder's item
+  // reorder in app/collection/[folderId].tsx): rankedGrailSlotIds is the ONLY
+  // reorder state, the slot ids in tap order; a slot's rank is its index + 1.
+  // `grailSlots` isn't touched until Done persists, so Cancel just discards
+  // the ranking. Ranked slots take the front of the order in tap order and
+  // unranked ones follow in their current order, all placed into the
+  // already-occupied slot indexes (gaps stay put).
+  const [grailReorderMode, setGrailReorderMode] = useState(false);
+  const [rankedGrailSlotIds, setRankedGrailSlotIds] = useState<string[]>([]);
+  const [savingGrailReorder, setSavingGrailReorder] = useState(false);
+  const savingGrailReorderRef = useRef(false);
+
+  function toggleGrailRank(slotId: string) {
+    setRankedGrailSlotIds((prev) => (prev.includes(slotId) ? prev.filter((id) => id !== slotId) : [...prev, slotId]));
+  }
+
+  function cancelGrailReorder() {
+    setGrailReorderMode(false);
+    setRankedGrailSlotIds([]);
+  }
+
+  // Leaving the screen mid-reorder discards the unsaved ranking.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setGrailReorderMode(false);
+        setRankedGrailSlotIds([]);
+      };
+    }, []),
+  );
+
+  async function handleGrailReorderDone() {
+    if (savingGrailReorderRef.current) return;
+    if (rankedGrailSlotIds.length === 0) {
+      cancelGrailReorder();
+      return;
+    }
+    savingGrailReorderRef.current = true;
+    setSavingGrailReorder(true);
+    try {
+      const rankedSet = new Set(rankedGrailSlotIds);
+      const unranked = [...grailSlots]
+        .sort((a, b) => a.slot_index - b.slot_index)
+        .filter((s) => !rankedSet.has(s.id))
+        .map((s) => s.id);
+      const { error } = await reorderGrailSlots([...rankedGrailSlotIds, ...unranked]);
+      if (error) {
+        // Stays in reorder mode with the ranking intact so Done can be retried.
+        Alert.alert('Reorder failed', 'Could not save your Grail order. Please try again.');
+        return;
+      }
+      setGrailReorderMode(false);
+      setRankedGrailSlotIds([]);
+    } finally {
+      savingGrailReorderRef.current = false;
+      setSavingGrailReorder(false);
+    }
   }
 
   function openGrailAdd(slotIndex: number) {
@@ -1712,7 +1780,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 title={displayName}
                 itemCount={stats.itemCount}
                 avatarUri={avatarUri}
-                profileId={profile.id}
+                accountNumber={profile.account_number}
                 onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
                 onPress={!editMode ? () => setDetailsExpanded((v) => !v) : undefined}
                 expanded={detailsExpanded}
@@ -1735,7 +1803,6 @@ export function ProfileV2Screen({ userId }: Props) {
                 <ProfileV2ExpandedDetails
                   location={profile.location ?? null}
                   bio={profile.bio ?? null}
-                  collectingCategories={profile.collecting_categories ?? []}
                   website={profile.website ?? null}
                   followers={stats.followerCount}
                   following={stats.followingCount}
@@ -1777,7 +1844,34 @@ export function ProfileV2Screen({ userId }: Props) {
                   onCancelPress={cancelEdit}
                   onSavePress={handleEditProfileSave}>
                   {!editMode && (
-                    <ProfileV2Grid
+                    <>
+                  {isOwnProfile && grailReorderMode && (
+                    <View style={styles.grailReorderBar}>
+                      <TouchableOpacity onPress={cancelGrailReorder} disabled={savingGrailReorder} hitSlop={10}>
+                        <Text style={styles.grailReorderText}>Cancel</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.grailReorderTitle}>Reorder Grails</Text>
+                      <TouchableOpacity
+                        onPress={handleGrailReorderDone}
+                        disabled={savingGrailReorder}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel="Save Grail order">
+                        {savingGrailReorder ? (
+                          <ActivityIndicator size="small" color={PV2.accent} />
+                        ) : (
+                          <Text style={[styles.grailReorderText, styles.grailReorderDone]}>Save</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  <ProfileV2Grid
+                      reorderMode={grailReorderMode}
+                      rankedSlotIds={rankedGrailSlotIds}
+                      onToggleRank={toggleGrailRank}
+                      onEnterReorder={
+                        isOwnProfile && grailSlots.length >= 2 ? () => setGrailReorderMode(true) : undefined
+                      }
                       slots={grailSlots}
                       loading={grailSlotsLoading}
                       error={grailSlotsError}
@@ -1789,6 +1883,7 @@ export function ProfileV2Screen({ userId }: Props) {
                       onReplace={openGrailReplace}
                       onRemove={handleRemoveGrailSlot}
                     />
+                    </>
                   )}
                 </ProfileV2HeroCanvas>
               </Animated.View>
@@ -2164,6 +2259,28 @@ export function ProfileV2Screen({ userId }: Props) {
 }
 
 const styles = StyleSheet.create({
+  // Grail reorder controls — a slim row directly above the Grails grid.
+  grailReorderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 6,
+  },
+  grailReorderText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+  },
+  grailReorderTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+  },
+  grailReorderDone: {
+    color: PV2.accent,
+    fontWeight: '700',
+  },
   container: {
     flex: 1,
     backgroundColor: PV2.bg,

@@ -63,6 +63,12 @@ type Props = {
   onPressCollection: (collection: Folder) => void;
   onReplace: (slotIndex: number) => void;
   onRemove: (slotIndex: number) => void;
+  // Reorder mode (owner only) — ranked slot ids, in tap order; see
+  // GrailSlotPreview.
+  reorderMode?: boolean;
+  rankedSlotIds?: string[];
+  onToggleRank?: (slotId: string) => void;
+  onEnterReorder?: () => void;
 };
 
 export function ProfileV2Grid({
@@ -76,6 +82,10 @@ export function ProfileV2Grid({
   onPressCollection,
   onReplace,
   onRemove,
+  reorderMode = false,
+  rankedSlotIds,
+  onToggleRank,
+  onEnterReorder,
 }: Props) {
   // Same identity useSignedItemImages itself keys its cache by — reused
   // here only to build each warmed image's stable expo-image cacheKey
@@ -181,6 +191,10 @@ export function ProfileV2Grid({
                 onPressCollection={onPressCollection}
                 onReplace={onReplace}
                 onRemove={onRemove}
+                reorderMode={reorderMode}
+                rank={reorderMode && slot && rankedSlotIds ? rankedSlotIds.indexOf(slot.id) + 1 : 0}
+                onToggleRank={onToggleRank}
+                onEnterReorder={onEnterReorder}
               />
             );
           })}
