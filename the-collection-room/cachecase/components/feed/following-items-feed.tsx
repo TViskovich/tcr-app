@@ -121,7 +121,6 @@ type FollowingItem = {
   owner_username: string;
   owner_display_name: string | null;
   owner_avatar_url: string | null;
-  likeCount: number;
   commentCount: number;
 };
 
@@ -239,7 +238,6 @@ function buildShellItems(itemRows: ItemRow[], previousById?: Map<string, Followi
       owner_username: prev?.owner_username ?? 'user',
       owner_display_name: prev?.owner_display_name ?? null,
       owner_avatar_url: prev?.owner_avatar_url ?? null,
-      likeCount: prev?.likeCount ?? 0,
       commentCount: prev?.commentCount ?? 0,
     };
   });
@@ -259,43 +257,36 @@ function mergePrimaryImageIds(
 
 type FollowingItemsMeta = {
   profileMap: Map<string, { username?: string; display_name?: string; hero_display_name?: string; avatar_url?: string }>;
-  likeCountMap: Map<string, number>;
   commentCountMap: Map<string, number>;
 };
 
-// Phase 2 — owner profiles plus item_likes/item_comments counts
-// (supabase/migrations/20260923120000_create_item_social.sql), the same
-// three already-batched, already-parallel queries the old single-phase
-// version ran, just no longer blocking the grid's first paint. Counts only;
-// no per-item "did I like this" lookup, since these tiles render a
-// read-only count, not a tappable like toggle.
+// Phase 2 — owner profiles plus item_comments counts
+// (supabase/migrations/20260923120000_create_item_social.sql), two
+// already-batched, already-parallel queries, no longer blocking the grid's
+// first paint. Counts only, since these tiles render a read-only count.
+// Likes are intentionally not shown (or fetched) on this screen.
 async function queryFollowingItemsMeta(
   ownerIds: string[],
   itemIds: string[],
   signal: AbortSignal,
 ): Promise<FollowingItemsMeta> {
-  const [profilesRes, likesRes, commentsRes] = await Promise.all([
+  const [profilesRes, commentsRes] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
       .in('id', ownerIds)
       .abortSignal(signal),
-    supabase.from('item_likes').select('item_id').in('item_id', itemIds).abortSignal(signal),
     supabase.from('item_comments').select('item_id').in('item_id', itemIds).abortSignal(signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
 
-  const likeCountMap = new Map<string, number>();
-  for (const row of (likesRes.data ?? []) as any[]) {
-    likeCountMap.set(row.item_id, (likeCountMap.get(row.item_id) ?? 0) + 1);
-  }
   const commentCountMap = new Map<string, number>();
   for (const row of (commentsRes.data ?? []) as any[]) {
     commentCountMap.set(row.item_id, (commentCountMap.get(row.item_id) ?? 0) + 1);
   }
 
-  return { profileMap, likeCountMap, commentCountMap };
+  return { profileMap, commentCountMap };
 }
 
 function FollowingItemTile({
@@ -400,20 +391,12 @@ function FollowingItemTile({
         </Text>
       </View>
 
-      {(item.likeCount > 0 || item.commentCount > 0) && (
+      {item.commentCount > 0 && (
         <View style={[styles.engagementRow, styles.engagementRowBelow]}>
-          {item.likeCount > 0 && (
-            <View style={styles.engagementStat}>
-              <IconSymbol name="heart.fill" size={12} color={PV2.textTertiary} />
-              <Text style={styles.engagementText}>{item.likeCount}</Text>
-            </View>
-          )}
-          {item.commentCount > 0 && (
-            <View style={styles.engagementStat}>
-              <IconSymbol name="message" size={12} color={PV2.textTertiary} />
-              <Text style={styles.engagementText}>{item.commentCount}</Text>
-            </View>
-          )}
+          <View style={styles.engagementStat}>
+            <IconSymbol name="message" size={12} color={PV2.textTertiary} />
+            <Text style={styles.engagementText}>{item.commentCount}</Text>
+          </View>
         </View>
       )}
     </TouchableOpacity>
@@ -715,7 +698,6 @@ export function FollowingItemsFeed({
                 owner_username: p?.username ?? item.owner_username,
                 owner_display_name: (p?.hero_display_name || p?.display_name) ?? item.owner_display_name,
                 owner_avatar_url: p?.avatar_url ?? item.owner_avatar_url,
-                likeCount: meta.likeCountMap.get(item.id) ?? 0,
                 commentCount: meta.commentCountMap.get(item.id) ?? 0,
               };
             }),
