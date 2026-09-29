@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deleteFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
@@ -93,6 +94,10 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
         .single();
       if (error) throw new Error(error.message);
       if (data) onSaved(data as Folder);
+      // Mark the own-profile cache stale — this folder's name/privacy shows
+      // on Profile's Collection tab. See lib/own-profile-cache.ts's own
+      // invalidateOwnProfileCache comment.
+      if (currentUserId) invalidateOwnProfileCache(currentUserId);
       onClose();
     } catch (e) {
       Alert.alert('Save failed', e instanceof Error ? e.message : 'Something went wrong.');
@@ -126,6 +131,10 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
       // lib/item-images.ts's cleanupOrphanedItemImages/removeItemImage).
       if (currentUserId) {
         await deleteFolderCover(folder.cover_storage_path, currentUserId);
+        // Mark the own-profile cache stale — this folder no longer exists
+        // on Profile's Collection tab. See lib/own-profile-cache.ts's own
+        // invalidateOwnProfileCache comment.
+        invalidateOwnProfileCache(currentUserId);
       }
 
       onClose();

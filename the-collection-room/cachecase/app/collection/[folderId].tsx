@@ -58,6 +58,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -466,6 +467,11 @@ export default function CollectionFolderScreen() {
     cancelSelectMode();
     refreshItems();
     Alert.alert('Moved', `Moved ${movedCount} ${movedCount === 1 ? 'item' : 'items'} to ${folderName}`);
+    // Mark the own-profile cache stale — both the source and destination
+    // folder's item counts/previews on Profile's Collection tab are now
+    // wrong until a fresh load. See lib/own-profile-cache.ts's own
+    // invalidateOwnProfileCache comment.
+    if (currentUserId) invalidateOwnProfileCache(currentUserId);
   }
 
   // Manual item reordering — tap-to-rank, a third mode alongside normal
@@ -549,6 +555,10 @@ export default function CollectionFolderScreen() {
       await refreshItems();
       setReorderMode(false);
       setRankedIds([]);
+      // Mark the own-profile cache stale — this folder's preview order on
+      // Profile's Collection tab is now wrong until a fresh load. See
+      // lib/own-profile-cache.ts's own invalidateOwnProfileCache comment.
+      if (currentUserId) invalidateOwnProfileCache(currentUserId);
     } catch (e) {
       // Stays in reorder mode with the tapped ranking intact — the user
       // can retry Done without re-tapping everything.
@@ -912,6 +922,12 @@ export default function CollectionFolderScreen() {
       if (data) {
         setFolder(data as Folder);
         invalidateSignedFolderCover(folder.id, currentUserId);
+        // Single shared write path for every cover change (item, upload,
+        // remove — see this function's own doc comment) — one wiring point
+        // covers all three. Mark the own-profile cache stale, since this
+        // folder's cover thumbnail shows on Profile's Collection tab. See
+        // lib/own-profile-cache.ts's own invalidateOwnProfileCache comment.
+        invalidateOwnProfileCache(currentUserId);
         return data as Folder;
       }
       return null;

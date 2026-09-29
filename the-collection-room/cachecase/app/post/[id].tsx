@@ -34,6 +34,7 @@ import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost } from '@/lib/posts';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -1008,6 +1009,12 @@ export default function PostDetailScreen() {
               Alert.alert('Error', 'Could not delete post. Please try again.');
               return;
             }
+            // Mark the own-profile cache stale — this Delete action is only
+            // reachable for the post's own owner (isOwner gate above), so
+            // it no longer shows on their Profile Posts tab. See
+            // lib/own-profile-cache.ts's own invalidateOwnProfileCache
+            // comment.
+            if (currentUserId) invalidateOwnProfileCache(currentUserId);
             handleBack();
           },
         },

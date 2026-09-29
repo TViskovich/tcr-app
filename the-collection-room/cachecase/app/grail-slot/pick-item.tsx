@@ -22,6 +22,7 @@ import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 
 const NUM_COLUMNS = 3;
 const GRID_GAP = 10;
@@ -145,6 +146,10 @@ export default function PickGrailItemScreen() {
           }
           return;
         }
+        // Mark the own-profile cache stale — this Grail slot now shows on
+        // Profile's Grails grid. See lib/own-profile-cache.ts's own
+        // invalidateOwnProfileCache comment.
+        invalidateOwnProfileCache(currentUserId);
         leaveScreen();
         return;
       }
@@ -175,6 +180,8 @@ export default function PickGrailItemScreen() {
         }
         return;
       }
+      // See the 'add' branch's own comment above.
+      invalidateOwnProfileCache(currentUserId);
       leaveScreen();
     } finally {
       setSaving(false);

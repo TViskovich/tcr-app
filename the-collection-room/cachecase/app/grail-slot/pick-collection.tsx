@@ -21,6 +21,7 @@ import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-gr
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
 
@@ -231,6 +232,10 @@ export default function PickGrailCollectionScreen() {
           }
           return;
         }
+        // Mark the own-profile cache stale — this Grail slot now shows on
+        // Profile's Grails grid. See lib/own-profile-cache.ts's own
+        // invalidateOwnProfileCache comment.
+        invalidateOwnProfileCache(currentUserId);
         leaveScreen();
         return;
       }
@@ -260,6 +265,8 @@ export default function PickGrailCollectionScreen() {
         }
         return;
       }
+      // See the 'add' branch's own comment above.
+      invalidateOwnProfileCache(currentUserId);
       leaveScreen();
     } finally {
       setSaving(false);

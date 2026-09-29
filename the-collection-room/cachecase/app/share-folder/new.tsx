@@ -27,6 +27,7 @@ import { useAuth } from '@/lib/auth';
 import { createFolderSharePost, fetchShareableFolderItems, type FolderShareItem } from '@/lib/folder-share-post';
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { attachPrimaryImageIds } from '@/lib/item-images';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -182,6 +183,10 @@ export default function ShareFolderScreen() {
       setPosting(false);
       return;
     }
+    // Mark the own-profile cache stale — this post now shows on Profile's
+    // Posts tab. See lib/own-profile-cache.ts's own invalidateOwnProfileCache
+    // comment.
+    if (currentUserId) invalidateOwnProfileCache(currentUserId);
     leaveScreen();
   }
 

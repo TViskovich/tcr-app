@@ -193,10 +193,19 @@ export async function removeGrailSlot(
   return { error: null, conflict: null };
 }
 
-export function useGrailSlots(userId: string | undefined) {
-  const [slots, setSlots] = useState<GrailSlot[]>([]);
-  const [loading, setLoading] = useState(true);
+// `seed`, when given (own-profile local cache — see lib/own-profile-cache.ts,
+// own-profile only), hydrates `slots` synchronously at mount, for this exact
+// `userId`, so load() below treats it as "already has data" (a background,
+// non-blanking refresh) rather than a first load. Read once, at mount only.
+export function useGrailSlots(
+  userId: string | undefined,
+  seed?: GrailSlot[] | null,
+  skipInitialLoad?: boolean,
+) {
+  const [slots, setSlots] = useState<GrailSlot[]>(() => seed ?? []);
+  const [loading, setLoading] = useState(() => !seed);
   const [error, setError] = useState<string | null>(null);
+  const skipInitialLoadRef = useRef(skipInitialLoad ?? false);
 
   // Last successfully committed slots (and for which user), plus a sequence
   // number so an older, slower load can never overwrite a newer one. A
@@ -205,7 +214,9 @@ export function useGrailSlots(userId: string | undefined) {
   // screen — `loading` (which blanks the whole grid) is only raised for a
   // genuine first load — and an image-id lookup failure keeps the ids
   // already known instead of nulling every slot's photo.
-  const slotsRef = useRef<{ userId: string | undefined; slots: GrailSlot[] }>({ userId: undefined, slots: [] });
+  const slotsRef = useRef<{ userId: string | undefined; slots: GrailSlot[] }>(
+    seed ? { userId, slots: seed } : { userId: undefined, slots: [] },
+  );
   const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -350,7 +361,19 @@ export function useGrailSlots(userId: string | undefined) {
     }
   }, [userId]);
 
+  // skipInitialLoad, when true, suppresses exactly this ONE automatic call
+  // (captured once, at mount — a later change to the prop is ignored, same
+  // as a seed); every subsequent invocation of `load` (a real userId
+  // change, or the caller's own explicit refresh()) runs normally. Used by
+  // Profile V2's own-profile freshness gate (see
+  // components/profile-v2/profile-v2-screen.tsx) so a fresh local cache can
+  // skip the redundant network round trip its own seed already made
+  // unnecessary.
   useEffect(() => {
+    if (skipInitialLoadRef.current) {
+      skipInitialLoadRef.current = false;
+      return;
+    }
     load();
   }, [load]);
 

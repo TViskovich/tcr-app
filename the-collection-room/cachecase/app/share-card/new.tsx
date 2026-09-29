@@ -26,6 +26,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -239,6 +240,10 @@ export default function ShareCardScreen() {
           throw new Error('Could not prepare these cards’ images. Please try again.');
         }
       }
+      // Mark the own-profile cache stale — this post now shows on
+      // Profile's Posts tab. See lib/own-profile-cache.ts's own
+      // invalidateOwnProfileCache comment.
+      invalidateOwnProfileCache(currentUserId);
       leaveScreen();
     } catch (e) {
       // Full detail stays in the console; the user gets a stable, generic

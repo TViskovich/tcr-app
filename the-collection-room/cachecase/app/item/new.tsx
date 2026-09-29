@@ -38,6 +38,7 @@ import {
   COMIC_SPECIAL_COVER_FINISH_OPTIONS,
 } from '@/lib/comic-book-options';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { createPokemonItem } from '@/lib/pokemon-items';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -744,6 +745,13 @@ export default function AddItemScreen() {
           `${failed} of ${orderedUris.length} photo${orderedUris.length === 1 ? '' : 's'} could not be uploaded. The item was created with the rest.`,
         );
       }
+
+      // New item is now real and visible (own-profile Items/Collection tabs
+      // and folder counts all reflect it) — mark the own-profile cache
+      // stale so returning to Profile refreshes right away instead of
+      // waiting out the freshness window. See lib/own-profile-cache.ts's
+      // own invalidateOwnProfileCache comment.
+      invalidateOwnProfileCache(userId);
 
       // No back history when this screen was deep-linked, reloaded directly,
       // or opened during development — fall back to the folder we just added

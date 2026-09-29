@@ -24,6 +24,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import {
   cleanupShareSnapshots,
@@ -258,6 +259,10 @@ export default function NewPostScreen() {
       const result = await createTextPost(text.trim() || null, resolved);
       if (result.status !== 'ok') throw new Error(result.reason);
 
+      // Mark the own-profile cache stale — this post now shows on
+      // Profile's Posts tab. See lib/own-profile-cache.ts's own
+      // invalidateOwnProfileCache comment.
+      invalidateOwnProfileCache(userId);
       leaveScreen();
     } catch (e) {
       console.error('[post/new] post failed:', e);

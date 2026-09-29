@@ -54,6 +54,11 @@ import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import {
+  invalidateOwnProfileCache,
+  peekOwnProfileCacheSync,
+  writeOwnProfileCache,
+} from '@/lib/own-profile-cache';
+import {
   deleteProfileImage,
   uploadAvatar,
   uploadHeroImage,
@@ -356,14 +361,69 @@ export function ProfileV2Screen({ userId }: Props) {
   const isOwnProfile = currentUserId === userId;
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { profile, stats, loading, refresh, adjustFollowerCount } = useProfile(userId);
+
+  // Startup-performance cache (lib/own-profile-cache.ts) — OWN profile
+  // only, never a visitor's. peekOwnProfileCacheSync is a synchronous
+  // memory-mirror read (warmed as early as a session is known — see
+  // lib/auth.tsx — well before this screen could mount), read once here so
+  // every hook below can seed from the SAME snapshot rather than each
+  // hitting the mirror independently at a potentially different moment.
+  // Supabase stays authoritative: each hook's own load()/refresh() below is
+  // completely unchanged and still runs and still overwrites this seed —
+  // this only changes what the very first render already shows. Read once,
+  // via useState's lazy initializer, not on every render — a later mirror
+  // write (e.g. this same screen's own cache-write effect below) must not
+  // retroactively change what "the seed" was for this mount.
+  const [ownCacheEntry] = useState(() => (isOwnProfile ? peekOwnProfileCacheSync(userId) : null));
+  const ownProfileSeed = ownCacheEntry?.payload ?? null;
+  // Whether the seed was fresh (< OWN_PROFILE_CACHE_FRESHNESS_MS old) AT
+  // MOUNT — this is what gates the one-shot skipInitialLoad passed to each
+  // hook below (each hook only ever consults its own skipInitialLoad value
+  // once, at its own first mount effect — see each hook's own comment).
+  const ownProfileSeedFresh = ownCacheEntry?.fresh ?? false;
+  // True once any of the five own-profile pipelines below has ACTUALLY run
+  // a real network load in this mount — starts true when there was no
+  // fresh seed (so the very first settle, from a real load, is correctly
+  // persisted, exactly like before this pass), and false when a fresh seed
+  // let every pipeline skip its initial load — in that case nothing has
+  // ever really been fetched yet, so the cache-write effect below must NOT
+  // persist yet (that would just be re-writing what hydration already
+  // handed it — the exact "do not rewrite just because cached state was
+  // hydrated" rule this pass adds). Flipped to true the moment a real
+  // refresh is actually triggered (the useFocusEffect's non-skip branch,
+  // or an explicit in-screen mutation like handleEditProfileSave/grail
+  // actions below).
+  const hasRealSettleOccurredRef = useRef(!ownProfileSeedFresh);
+  // Freshness is read straight from lib/own-profile-cache.ts's own memory
+  // mirror (peekOwnProfileCacheSync) on EVERY focus, not a screen-local
+  // timestamp — deliberately, because Profile is a Tabs screen that stays
+  // mounted across tab switches (never remounts on blur/refocus). A
+  // mutation made on a DIFFERENT screen (add/edit/delete/move an item,
+  // folder changes, grail add via the picker route, create/delete a post)
+  // calls invalidateOwnProfileCache from that other screen's own component
+  // tree — it has no way to reach back into this already-mounted screen
+  // instance's local state, but it DOES update the shared module mirror
+  // directly. Consulting that same mirror here is what makes an external
+  // invalidation actually visible on the next focus, instead of only ever
+  // being caught by this screen's own writes (which is all a screen-local
+  // ref could ever see).
+  function isOwnProfileCacheStillFresh(): boolean {
+    if (!isOwnProfile) return false;
+    return peekOwnProfileCacheSync(userId)?.fresh ?? false;
+  }
+
+  const { profile, stats, loading, refresh, adjustFollowerCount } = useProfile(
+    userId,
+    ownProfileSeed && { profile: ownProfileSeed.profile, stats: ownProfileSeed.stats },
+    ownProfileSeedFresh,
+  );
   const {
     slots: grailSlots,
     loading: grailSlotsLoading,
     error: grailSlotsError,
     refresh: refreshGrailSlots,
     reorder: reorderGrailSlots,
-  } = useGrailSlots(userId);
+  } = useGrailSlots(userId, ownProfileSeed?.grailSlots, ownProfileSeedFresh);
   // Explicit chooser intent, not a bare slotIndex — an 'add' can never
   // silently become a 'replace' (or vice versa) if the target slot's
   // occupancy changes while the chooser/picker is open. expectedSlotId/
@@ -392,8 +452,23 @@ export function ProfileV2Screen({ userId }: Props) {
   );
   // Someone else's private folders never load client-side at all — not
   // just hidden in the UI, per hooks/use-collection.ts's publicOnly.
-  const { folders, previewEntries, itemCounts, refresh: refreshFolders } = useFolders(userId, {
+  const {
+    folders,
+    previewEntries,
+    itemCounts,
+    loading: foldersLoading,
+    refresh: refreshFolders,
+  } = useFolders(userId, {
     publicOnly: !isOwnProfile,
+    seed:
+      ownProfileSeed &&
+      {
+        folders: ownProfileSeed.folders,
+        itemCounts: ownProfileSeed.folderItemCounts,
+        previewItems: {},
+        previewEntries: ownProfileSeed.folderPreviewEntries,
+      },
+    skipInitialLoad: ownProfileSeedFresh,
   });
   // Profile V3's Items tab — flat, all-folders view of this profile's own
   // items (see ProfileV2ItemsGrid below). Same publicOnly convention as
@@ -405,6 +480,8 @@ export function ProfileV2Screen({ userId }: Props) {
     refresh: refreshAllItems,
   } = useAllItems(userId, {
     publicOnly: !isOwnProfile,
+    seed: ownProfileSeed?.items,
+    skipInitialLoad: ownProfileSeedFresh,
   });
 
   // Warms the Collection tab's signed image/cover URLs as soon as the
@@ -479,7 +556,7 @@ export function ProfileV2Screen({ userId }: Props) {
   // (posts.created_at DESC), scoped to the profile being viewed
   // (`userId`), not the viewer. currentUserId is passed separately only
   // for like-state/ownership within each post — see fetchUserPosts.
-  const [profilePosts, setProfilePosts] = useState<FeedPost[]>([]);
+  const [profilePosts, setProfilePosts] = useState<FeedPost[]>(() => ownProfileSeed?.posts ?? []);
   // Distinct from "profilePosts.length === 0" — fetchUserPosts now throws
   // on a genuine query failure (it used to silently swallow it), which
   // must never be presented identically to "this user has no posts."
@@ -516,6 +593,51 @@ export function ProfileV2Screen({ userId }: Props) {
   // Profile V3 shell: the new ProfileV2TabRow's four pills are posts/
   // collections/items/tagged — 'cachecase' (the old default) has no pill in
   // that row anymore, so 'posts' is now the default/first-selected tab.
+  // Persists the own-profile cache once every underlying piece has settled
+  // (no full network load or background refresh currently in flight) AND
+  // that settle came from a REAL fetch, not just this mount's own fresh-
+  // cache hydration (hasRealSettleOccurredRef — see its own comment above:
+  // without this guard, a fresh-cache mount would re-persist the exact same
+  // hydrated snapshot on its very first render, which is not "fresh
+  // server-backed state" and must not count as a legitimate cache write).
+  // writeOwnProfileCache stamps a fresh cachedAt into the shared module
+  // mirror synchronously (before this effect's own call even returns —
+  // see that function's own comment), which is what makes the NEXT
+  // isOwnProfileCacheStillFresh() check (the focus effect below, which
+  // reads that same mirror) agree with a freshly-persisted cache instead
+  // of an earlier, now-stale timestamp. Own profile only; never runs for a
+  // visitor's profile.
+  useEffect(() => {
+    if (!isOwnProfile || !profile) return;
+    if (loading || grailSlotsLoading || foldersLoading || allItemsLoading) return;
+    if (!hasRealSettleOccurredRef.current) return;
+    writeOwnProfileCache(userId, {
+      profile,
+      stats,
+      grailSlots,
+      folders,
+      folderItemCounts: itemCounts,
+      folderPreviewEntries: previewEntries,
+      items: allItems,
+      posts: profilePosts,
+    });
+  }, [
+    isOwnProfile,
+    userId,
+    profile,
+    stats,
+    loading,
+    grailSlots,
+    grailSlotsLoading,
+    folders,
+    itemCounts,
+    previewEntries,
+    foldersLoading,
+    allItems,
+    allItemsLoading,
+    profilePosts,
+  ]);
+
   const [section, setSection] = useState<ProfileV2Section>('posts');
   // Measured once off the posts section's real rendered height (see
   // ProfileV2SectionPage below) — posts is now both the default tab and the
@@ -625,11 +747,25 @@ export function ProfileV2Screen({ userId }: Props) {
 
   useFocusEffect(
     useCallback(() => {
-      refresh();
-      refreshGrailSlots();
-      refreshFolders();
-      refreshAllItems();
-      refreshPosts();
+      // Own-profile freshness gate: when a fresh cache/settle already covers
+      // this moment (< OWN_PROFILE_CACHE_FRESHNESS_MS old), this focus event
+      // — including the very first one, immediately after mount, which is
+      // exactly what would otherwise defeat each hook's own skipInitialLoad
+      // one render later — skips every one of these five redundant
+      // requests. Re-evaluated on EVERY focus (not a one-shot flag), so a
+      // quick tab-away-and-back still skips, while a focus after the
+      // window has elapsed — or after an in-screen mutation explicitly
+      // reset lastSettledAtRef, see handleEditProfileSave's finishSuccess —
+      // runs the normal full refresh. Always unconditional for a visitor's
+      // profile (isOwnProfileCacheStillFresh is hard-false there).
+      if (!isOwnProfileCacheStillFresh()) {
+        hasRealSettleOccurredRef.current = true;
+        refresh();
+        refreshGrailSlots();
+        refreshFolders();
+        refreshAllItems();
+        refreshPosts();
+      }
       return () => {
         // Only cancels the fetchUserPosts batch owned by postsControllerRef
         // — refresh/refreshGrailSlots/refreshFolders/refreshAllItems own
@@ -637,6 +773,7 @@ export function ProfileV2Screen({ userId }: Props) {
         // and are deliberately left untouched here.
         postsControllerRef.current?.abort();
       };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [refresh, refreshGrailSlots, refreshFolders, refreshAllItems, refreshPosts]),
   );
 
@@ -675,6 +812,16 @@ export function ProfileV2Screen({ userId }: Props) {
         }
         setIsFollowing(false);
         adjustFollowerCount(-1);
+        // Unlike the rest of this screen's mutations, this one changes a
+        // stat on the ACTOR's (currentUserId's) own profile, not on the
+        // profile being viewed (`userId`, someone else's here — toggleFollow
+        // is only ever reachable when !isOwnProfile). adjustFollowerCount
+        // above already corrected the viewed profile's follower count
+        // locally; this separately marks the signed-in user's own cached
+        // "following" count stale so their own Profile screen (a different,
+        // already-mounted instance) picks up the change on its next focus
+        // instead of serving up to 45s of stale count.
+        if (currentUserId) invalidateOwnProfileCache(currentUserId);
       } else {
         const { error } = await supabase
           .from('follows')
@@ -691,6 +838,9 @@ export function ProfileV2Screen({ userId }: Props) {
         }
         setIsFollowing(true);
         adjustFollowerCount(1);
+        // See the unfollow branch's own comment above for why this targets
+        // currentUserId, not userId.
+        if (currentUserId) invalidateOwnProfileCache(currentUserId);
         // Notification delivery is secondary to the follow mutation above,
         // which has already succeeded — never let a notification failure
         // surface as a failed follow.
@@ -827,6 +977,17 @@ export function ProfileV2Screen({ userId }: Props) {
         return next;
       });
       Alert.alert('Error', 'Could not delete post. Please try again.');
+      return;
+    }
+    // Real mutation succeeded — same reasoning as handleGrailReorderDone
+    // above. Only meaningful when this IS the signed-in user's own
+    // profile (the Posts tab this screen shows always belongs to `userId`,
+    // which only equals the cache's own key when isOwnProfile) — deleting
+    // someone else's post is never reachable here (PostCard gates the
+    // delete affordance to the post's own owner).
+    if (isOwnProfile) {
+      hasRealSettleOccurredRef.current = true;
+      invalidateOwnProfileCache(userId);
     }
   }
 
@@ -909,6 +1070,15 @@ export function ProfileV2Screen({ userId }: Props) {
         Alert.alert('Reorder failed', 'Could not save your Grail order. Please try again.');
         return;
       }
+      // Real mutation succeeded — see handleEditProfileSave's finishSuccess
+      // for why both of these are needed: hasRealSettleOccurredRef lets the
+      // cache-write effect actually persist the reordered slots (already
+      // updated in useGrailSlots' own local state by reorderGrailSlots
+      // above), and invalidateOwnProfileCache marks the shared cache stale
+      // in case that effect doesn't fire before this screen is next
+      // queried (e.g. another loading pipeline is still in flight).
+      hasRealSettleOccurredRef.current = true;
+      invalidateOwnProfileCache(userId);
       setGrailReorderMode(false);
       setRankedGrailSlotIds([]);
     } finally {
@@ -1011,6 +1181,10 @@ export function ProfileV2Screen({ userId }: Props) {
               }
               return;
             }
+            // Real mutation succeeded — same reasoning as
+            // handleGrailReorderDone above.
+            hasRealSettleOccurredRef.current = true;
+            invalidateOwnProfileCache(userId);
             await refreshGrailSlots();
           },
         },
@@ -1517,6 +1691,16 @@ export function ProfileV2Screen({ userId }: Props) {
         ]);
 
         await refresh();
+        // Explicit mutation — marks the shared own-profile cache stale (see
+        // invalidateOwnProfileCache's own comment) so a fresh-cache window
+        // from before this edit can't make a later focus, or a different
+        // screen instance, skip past this just-saved change.
+        // hasRealSettleOccurredRef is set so the cache-write effect above
+        // actually persists this real settle rather than skipping it.
+        if (isOwnProfile) {
+          hasRealSettleOccurredRef.current = true;
+          invalidateOwnProfileCache(userId);
+        }
         setNewAvatarUri(null);
         setRemoveAvatar(false);
         setNewHeroUri(null);

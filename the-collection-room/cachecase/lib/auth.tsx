@@ -7,6 +7,7 @@ import {
   ITEM_IMAGES_CACHE_DOMAIN,
   purgePersistedSignedUrlCache,
 } from './persisted-signed-url-cache';
+import { purgeOwnProfileCache, readOwnProfileCache } from './own-profile-cache';
 import { supabase } from './supabase';
 
 type AuthContextValue = {
@@ -60,9 +61,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const nextIdentity = newSession?.user?.id ?? 'anon';
       const previousIdentity = identityRef.current;
       identityRef.current = nextIdentity;
+
+      // Best-effort warm of the (possibly new) identity's own-profile cache
+      // into memory, the moment a real session is known — including the
+      // very first observation on a cold launch — well before the user
+      // could possibly navigate to the Profile tab, so ProfileV2Screen's
+      // own peekOwnProfileCacheSync (used in its useState lazy
+      // initializers) is already warm by the time it mounts. No-ops
+      // harmlessly if there's nothing persisted yet.
+      if (nextIdentity !== 'anon' && nextIdentity !== previousIdentity) {
+        readOwnProfileCache(nextIdentity).catch(() => {});
+      }
+
       if (previousIdentity === undefined || previousIdentity === nextIdentity) return;
       purgePersistedSignedUrlCache(ITEM_IMAGES_CACHE_DOMAIN, previousIdentity).catch(() => {});
       purgePersistedSignedUrlCache(FOLDER_COVERS_CACHE_DOMAIN, previousIdentity).catch(() => {});
+      // Own-profile cache (lib/own-profile-cache.ts, Profile V2 startup
+      // caching) is keyed by real user id only — 'anon' never has one.
+      if (previousIdentity !== 'anon') purgeOwnProfileCache(previousIdentity).catch(() => {});
     }
 
     supabase.auth.getSession().then(({ data }) => {

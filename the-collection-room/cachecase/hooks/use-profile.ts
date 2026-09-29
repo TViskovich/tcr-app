@@ -15,10 +15,23 @@ export type ProfileStats = {
   gradedCount: number;
 };
 
-export function useProfile(userId: string | undefined) {
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [stats, setStats] = useState<ProfileStats>({ folderCount: 0, itemCount: 0, postCount: 0, followerCount: 0, followingCount: 0, gradedCount: 0 });
-  const [loading, setLoading] = useState(true);
+// `seed`, when given, hydrates profile/stats synchronously from an
+// already-known-good source (Profile V2's own local cache, see
+// lib/own-profile-cache.ts — own-profile only) so this hook's normal
+// load() still runs and still overwrites this state once it resolves, but
+// the FIRST render already has real content instead of null/zeros. Only
+// read once, at mount (a later seed identity change is not re-applied) —
+// exactly like every other lazy useState initializer below.
+export function useProfile(
+  userId: string | undefined,
+  seed?: { profile: Profile; stats: ProfileStats } | null,
+  skipInitialLoad?: boolean,
+) {
+  const [profile, setProfile] = useState<Profile | null>(() => seed?.profile ?? null);
+  const [stats, setStats] = useState<ProfileStats>(
+    () => seed?.stats ?? { folderCount: 0, itemCount: 0, postCount: 0, followerCount: 0, followingCount: 0, gradedCount: 0 },
+  );
+  const [loading, setLoading] = useState(() => !seed);
   // Holds the AbortController for whichever load() batch is currently
   // "active" (the only one allowed to commit state). A batch left running
   // past the point anything still needs it (superseded by a newer load(),
@@ -38,6 +51,7 @@ export function useProfile(userId: string | undefined) {
   // identity (below), and genuine failures are guarded by checking each
   // result's own `.error`, not by catching a thrown AbortError.
   const abortControllerRef = useRef<AbortController | null>(null);
+  const skipInitialLoadRef = useRef(skipInitialLoad ?? false);
 
   // Shared by both the mount/userId-change effect and manual refresh() —
   // the caller owns creating/registering `controller` so each has full
@@ -130,7 +144,19 @@ export function useProfile(userId: string | undefined) {
     return runLoad(controller);
   }, [runLoad]);
 
+  // skipInitialLoad, when true, suppresses exactly this ONE automatic call
+  // (captured once, at mount — a later change to the prop is ignored, same
+  // as a seed); every subsequent invocation of `load` (a real userId
+  // change, or the caller's own explicit refresh()) runs normally. Used by
+  // Profile V2's own-profile freshness gate (see
+  // components/profile-v2/profile-v2-screen.tsx) so a fresh local cache can
+  // skip the redundant network round trip its own seed already made
+  // unnecessary.
   useEffect(() => {
+    if (skipInitialLoadRef.current) {
+      skipInitialLoadRef.current = false;
+      return;
+    }
     abortControllerRef.current?.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;

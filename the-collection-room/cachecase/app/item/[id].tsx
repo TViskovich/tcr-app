@@ -52,6 +52,7 @@ import {
   COMIC_SPECIAL_COVER_FINISH_OPTIONS,
 } from '@/lib/comic-book-options';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { getPokemonCardDetails, updatePokemonItem } from '@/lib/pokemon-items';
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
@@ -856,6 +857,11 @@ export default function ItemDetailScreen() {
       setPokemonDetails(updatedDetails);
       setPokemonForm(pokemonItemToForm(updated, updatedDetails));
       setEditMode(false);
+      // Mark the own-profile cache stale — this item's edited fields (and
+      // possibly is_public) can change what Profile's Items/Collection tabs
+      // show. See lib/own-profile-cache.ts's own invalidateOwnProfileCache
+      // comment.
+      invalidateOwnProfileCache(currentUserId);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
@@ -959,6 +965,8 @@ export default function ItemDetailScreen() {
       setComicDetails(updatedDetails);
       setComicForm(comicItemToForm(updated, updatedDetails));
       setEditMode(false);
+      // See handleSavePokemon's own comment above.
+      invalidateOwnProfileCache(currentUserId);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
@@ -1009,6 +1017,8 @@ export default function ItemDetailScreen() {
         setEditItemIsPublic(updated.is_public);
       }
       setEditMode(false);
+      // See handleSavePokemon's own comment above.
+      invalidateOwnProfileCache(currentUserId);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
@@ -1036,6 +1046,11 @@ export default function ItemDetailScreen() {
     setItem((prev) => (prev ? { ...prev, folder_id: destinationFolderId } : prev));
     setShowMoveModal(false);
     Alert.alert('Moved', `Moved to ${folderName}`);
+    // Mark the own-profile cache stale — both the source and destination
+    // folder's item counts/previews on Profile's Collection tab are now
+    // wrong until a fresh load. See lib/own-profile-cache.ts's own
+    // invalidateOwnProfileCache comment.
+    if (currentUserId) invalidateOwnProfileCache(currentUserId);
   }
 
   // Reconciliation for the two ambiguous delete outcomes (resolved {error}
@@ -1080,6 +1095,10 @@ export default function ItemDetailScreen() {
 
       if (data === null) {
         await cleanupOrphanedItemImages(capturedPaths);
+        // Confirmed deleted (despite the ambiguous original response) —
+        // mark the own-profile cache stale. See lib/own-profile-cache.ts's
+        // own invalidateOwnProfileCache comment.
+        if (currentUserId) invalidateOwnProfileCache(currentUserId);
         router.back();
         return;
       }
@@ -1203,6 +1222,10 @@ export default function ItemDetailScreen() {
               }
 
               await cleanupOrphanedItemImages(capturedPaths);
+              // Mark the own-profile cache stale — see
+              // lib/own-profile-cache.ts's own invalidateOwnProfileCache
+              // comment.
+              invalidateOwnProfileCache(currentUserId);
               router.back();
             } catch (e) {
               console.error('[ItemDetail] delete threw:', e);

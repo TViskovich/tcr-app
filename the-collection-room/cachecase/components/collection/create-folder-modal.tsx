@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { supabase } from '@/lib/supabase';
 
 type Props = {
@@ -90,6 +91,12 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
     } else {
       setName('');
       setIsPublic(true);
+      // Mark the own-profile cache stale — one wiring point covers every
+      // caller of this shared modal (Collections tab, folder detail's Add
+      // Folder, and Profile's own inline "+"). userId here is always the
+      // person creating their own folder. See lib/own-profile-cache.ts's
+      // own invalidateOwnProfileCache comment.
+      invalidateOwnProfileCache(userId);
       onCreated();
     }
     setLoading(false);

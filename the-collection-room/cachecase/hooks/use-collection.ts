@@ -162,11 +162,31 @@ function buildPreviewEntries(
 // someone else's profile — the account owner still sees every folder,
 // public or private, so the default (false) preserves existing behavior
 // for every current call site.
-export function useFolders(userId: string | undefined, options?: { publicOnly?: boolean }) {
+// `seed`, when given (Profile V2's own local cache — own-profile only, see
+// lib/own-profile-cache.ts), hydrates every field below synchronously at
+// mount so the first render already shows the caller's last-known folders
+// instead of an empty/loading grid; load() below still runs and still
+// overwrites this state once the real query resolves. Read once, at mount
+// only.
+export function useFolders(
+  userId: string | undefined,
+  options?: {
+    publicOnly?: boolean;
+    seed?: {
+      folders: Folder[];
+      itemCounts: Record<string, number>;
+      previewItems: Record<string, CollectionItem[]>;
+      previewEntries: Record<string, CollectionGridEntry[]>;
+    } | null;
+    skipInitialLoad?: boolean;
+  },
+) {
   const publicOnly = options?.publicOnly ?? false;
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [itemCounts, setItemCounts] = useState<Record<string, number>>({});
-  const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>({});
+  const seed = options?.seed;
+  const skipInitialLoadRef = useRef(options?.skipInitialLoad ?? false);
+  const [folders, setFolders] = useState<Folder[]>(() => seed?.folders ?? []);
+  const [itemCounts, setItemCounts] = useState<Record<string, number>>(() => seed?.itemCounts ?? {});
+  const [previewItems, setPreviewItems] = useState<Record<string, CollectionItem[]>>(() => seed?.previewItems ?? {});
   // Mixed item/child-folder rows for rendering (see buildPreviewEntries) —
   // kept separate from previewItems above, which stays items-only and
   // drives filteredFolders' search matching in app/(tabs)/collection.tsx
@@ -174,8 +194,8 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
   // items available to search whenever a folder's recent activity pushes an
   // item out of the shared cap — previewItems intentionally never competes
   // with folders for its own slots.
-  const [previewEntries, setPreviewEntries] = useState<Record<string, CollectionGridEntry[]>>({});
-  const [loading, setLoading] = useState(true);
+  const [previewEntries, setPreviewEntries] = useState<Record<string, CollectionGridEntry[]>>(() => seed?.previewEntries ?? {});
+  const [loading, setLoading] = useState(() => !seed);
   // Captures and surfaces `error` (unlike a plain `{ data }` destructure) so
   // a failed query is never indistinguishable from "you have zero
   // collections" — same convention as useAllItems below. Only the primary
@@ -322,7 +342,19 @@ export function useFolders(userId: string | undefined, options?: { publicOnly?: 
     }
   }, [userId, publicOnly]);
 
+  // skipInitialLoad, when true, suppresses exactly this ONE automatic call
+  // (captured once, at mount — a later change to the prop is ignored, same
+  // as a seed); every subsequent invocation of `load` (a real userId
+  // change, or the caller's own explicit refresh()) runs normally. Used by
+  // Profile V2's own-profile freshness gate (see
+  // components/profile-v2/profile-v2-screen.tsx) so a fresh local cache can
+  // skip the redundant network round trip its own seed already made
+  // unnecessary.
   useEffect(() => {
+    if (skipInitialLoadRef.current) {
+      skipInitialLoadRef.current = false;
+      return;
+    }
     load();
   }, [load]);
 
@@ -545,11 +577,23 @@ export type CollectionItemWithFolderVisibility = CollectionItem & {
 // folder trees. Defaults to false so the existing Share Card picker call
 // site (always the signed-in user's own id) is unaffected; a caller viewing
 // someone else's profile (Profile V2/V3's own isOwnProfile) should pass true.
-export function useAllItems(userId: string | undefined, options?: { publicOnly?: boolean }) {
+// `seed`, when given (own-profile local cache, see
+// lib/own-profile-cache.ts), hydrates `items` synchronously at mount; load()
+// below still runs and still overwrites it once the real query resolves.
+// Read once, at mount only.
+export function useAllItems(
+  userId: string | undefined,
+  options?: {
+    publicOnly?: boolean;
+    seed?: CollectionItemWithFolderVisibility[] | null;
+    skipInitialLoad?: boolean;
+  },
+) {
   const publicOnly = options?.publicOnly ?? false;
-  const [items, setItems] = useState<CollectionItemWithFolderVisibility[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<CollectionItemWithFolderVisibility[]>(() => options?.seed ?? []);
+  const [loading, setLoading] = useState(() => !options?.seed);
   const [error, setError] = useState<string | null>(null);
+  const skipInitialLoadRef = useRef(options?.skipInitialLoad ?? false);
 
   // Mirrors useItems' own itemsRef/loadGenerationRef pair above — same
   // primary_image_id-blanking regression is structurally possible here too
@@ -665,7 +709,19 @@ export function useAllItems(userId: string | undefined, options?: { publicOnly?:
     setLoading(false);
   }, [userId, publicOnly]);
 
+  // skipInitialLoad, when true, suppresses exactly this ONE automatic call
+  // (captured once, at mount — a later change to the prop is ignored, same
+  // as a seed); every subsequent invocation of `load` (a real userId
+  // change, or the caller's own explicit refresh()) runs normally. Used by
+  // Profile V2's own-profile freshness gate (see
+  // components/profile-v2/profile-v2-screen.tsx) so a fresh local cache can
+  // skip the redundant network round trip its own seed already made
+  // unnecessary.
   useEffect(() => {
+    if (skipInitialLoadRef.current) {
+      skipInitialLoadRef.current = false;
+      return;
+    }
     load();
   }, [load]);
 

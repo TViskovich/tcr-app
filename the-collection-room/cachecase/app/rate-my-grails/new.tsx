@@ -21,6 +21,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { createSnapshotPost } from '@/lib/share-snapshots';
 
 const MAX_CHARS = 280;
@@ -83,6 +84,10 @@ export default function NewRateMyGrailsScreen() {
       return;
     }
 
+    // Mark the own-profile cache stale — this post now shows on Profile's
+    // Posts tab. See lib/own-profile-cache.ts's own invalidateOwnProfileCache
+    // comment.
+    invalidateOwnProfileCache(currentUserId);
     leaveScreen();
   }
 

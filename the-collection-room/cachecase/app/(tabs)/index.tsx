@@ -16,6 +16,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { fetchFolderShareItems } from '@/lib/folder-share-post';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -483,7 +484,13 @@ export default function HomeScreen() {
         return next;
       });
       Alert.alert('Error', 'Could not delete post. Please try again.');
+      return;
     }
+    // Mark the own-profile cache stale — PostCard's own delete affordance
+    // is owner-gated, so a reachable delete is always the signed-in user's
+    // own post, and it no longer shows on their Profile Posts tab. See
+    // lib/own-profile-cache.ts's own invalidateOwnProfileCache comment.
+    if (currentUserId) invalidateOwnProfileCache(currentUserId);
   }
 
   // For You only now — Following renders FollowingItemsFeed, which owns
