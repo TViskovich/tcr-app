@@ -1322,10 +1322,10 @@ export default function ItemDetailScreen() {
     Alert.alert('Not Registered', 'This card has not been registered with CacheCase yet.');
   }
 
-  // Native Share.share()+deep-link — now only reachable via the Share Item
-  // sheet's "Share Outside CacheCase" row (see ItemShareSheet below), not
-  // the item's Share button directly. Branding/scheme updated off the
-  // legacy "The Collection Room"/`thecollectionroom://` copy still used by
+  // Native Share.share()+deep-link — reached via the Share Item sheet's
+  // "Share Outside CacheCase" row (see ItemShareSheet below), not the
+  // item's Share button directly. Branding/scheme updated off the legacy
+  // "The Collection Room"/`thecollectionroom://` copy still used by
   // app/collection/[folderId].tsx's own handleShare (out of scope here) to
   // the current CacheCase branding and the app's one registered scheme
   // (app.json's "scheme": "cachecase" — `thecollectionroom://` was never
@@ -1333,12 +1333,31 @@ export default function ItemDetailScreen() {
   // (not the richer, type-specific `identity.title` computed just below,
   // near the JSX) — plain and available regardless of item_type, and this
   // function is defined well above that computation.
+  //
+  // handle: always the ITEM'S OWNER (ownerProfile — fetched unconditionally
+  // in fetchItem() above, for every viewer, owner included — see that
+  // effect's own "Always fetched now" comment), never the viewer's own
+  // email-derived guess. For a non-owner viewing someone else's item (the
+  // exact case this matters for — e.g. reposting a foreign public card),
+  // this was already correct; for the owner's own item it previously fell
+  // back to session?.user?.email?.split('@')[0] instead of their real
+  // username, which is both unnecessary (ownerProfile already has it) and
+  // wrong whenever their profile username differs from their email's local
+  // part.
   async function handleShareOutside() {
     if (!item) return;
-    const handle = isOwner
-      ? (session?.user?.email?.split('@')[0] ?? 'me')
-      : (ownerProfile?.username ?? 'user');
+    const handle = ownerProfile?.username ?? 'user';
     const title = item.title || 'this card';
+    // Short delay before presenting the native share sheet — the
+    // CacheCase bottom sheet (a React Native <Modal>) is still mid-
+    // dismiss-animation when this fires (ItemShareSheet's own
+    // handleShareOutside calls onClose() and onShareOutside() back to
+    // back, synchronously); presenting Share.share()'s own native share
+    // controller before that dismiss has actually finished is a known
+    // iOS "already presenting a view controller" conflict. 350ms clears
+    // a standard Modal slide-down comfortably without being perceptible
+    // as a deliberate pause.
+    await new Promise((resolve) => setTimeout(resolve, 350));
     try {
       await Share.share({
         title,
