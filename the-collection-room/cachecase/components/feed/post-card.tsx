@@ -18,6 +18,7 @@ import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { FolderShareCollage } from '@/components/feed/folder-share-collage';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
+import { RepostHeader, type SourceOwnerAttribution } from '@/components/feed/repost-header';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
@@ -25,10 +26,20 @@ import { supabase } from '@/lib/supabase';
 import { fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
 
+export type { SourceOwnerAttribution };
+
 export type FeedPost = {
   id: string;
   user_id: string;
   post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
+  // 'item' posts only — the live collection_items.id this post was created
+  // from (posts.item_id, ON DELETE SET NULL — null once the source item is
+  // deleted, same "tap to view original" gap card_share_items' own item_id
+  // already accepts). Used only to navigate to the source item; never
+  // required for rendering the post itself, which always renders from the
+  // durable image_url/caption/item_name fields below regardless of whether
+  // this resolves.
+  item_id?: string | null;
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -57,6 +68,18 @@ export type FeedPost = {
   // 'folder_share' posts only — snapshot of the shared folder (see
   // lib/folder-share-post.ts). null/undefined for every other post type.
   folderShare?: FolderShareData | null;
+  // 'item' posts only, and only when the source item's owner (collection_
+  // items.user_id, resolved live — see queryFeed/fetchUserPosts) differs
+  // from this post's own user_id — i.e. this is a REPOST of someone else's
+  // public card, not a share of the poster's own. null/undefined for an
+  // own-item share (existing behavior, completely unchanged) and for every
+  // other post_type. Resolved via a live join, not a durable snapshot — see
+  // this field's own audit note in the PR that introduced it: if the
+  // source item is later deleted (item_id goes null, same as above) or its
+  // owner's profile is deleted, this simply comes back null/missing on a
+  // FUTURE fetch and the post quietly falls back to rendering with no
+  // special repost header, rather than crashing or showing stale data.
+  sourceOwner?: SourceOwnerAttribution | null;
 };
 
 // Shared by app/(tabs)/index.tsx's queryFeed and
@@ -221,8 +244,12 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
       .eq('id', userId)
       .abortSignal(signal)
       .single(),
+    // 'title' (was 'name' — collection_items has no such column; see
+    // queryFeed's own identical comment in app/(tabs)/index.tsx for the
+    // full root-cause writeup, confirmed live via a direct read-only REST
+    // query against the production project).
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
+      ? supabase.from('collection_items').select('id, title, image_url, user_id').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
     supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
@@ -242,7 +269,43 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
   ]);
 
   const profile = (profileRes.data as any) ?? {};
+  if ((itemsRes as any).error) {
+    console.error('[fetchUserPosts] collection_items query failed:', (itemsRes as any).error.message, (itemsRes as any).error);
+  }
   const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
+
+  // Foreign-repost attribution ("Share → Post to Feed" on someone else's
+  // public card) — a SECOND, separate profiles query for the source
+  // items' own owners, since an item's owner is frequently not `userId`
+  // (this whole function's one post-author) at all. Only fetched for
+  // owner ids that actually differ from `userId` — an own-item share's
+  // owner is trivially `userId` itself, which this profile query already
+  // has (profileRes above), so there's nothing to look up for it.
+  const foreignOwnerIds = [
+    ...new Set(
+      (itemsRes.data ?? [])
+        .map((i: any) => i.user_id as string | null)
+        .filter((id): id is string => !!id && id !== userId),
+    ),
+  ];
+  const ownerProfileMap = new Map<string, any>();
+  if (foreignOwnerIds.length > 0) {
+    const { data: ownerProfiles, error: ownerProfilesError } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .in('id', foreignOwnerIds)
+      .abortSignal(signal);
+    if (ownerProfilesError) {
+      // Best-effort — a failure here must not fail the whole post list;
+      // it only means those specific reposts render without the owner
+      // attribution header this render, exactly like a since-deleted
+      // source item/profile already does (see FeedPost.sourceOwner's own
+      // comment).
+      console.error('[fetchUserPosts] source-owner profiles query failed:', ownerProfilesError.message, ownerProfilesError);
+    } else {
+      for (const row of (ownerProfiles ?? []) as any[]) ownerProfileMap.set(row.id, row);
+    }
+  }
 
   const likeCountMap = new Map<string, number>();
   const likedSet = new Set<string>();
@@ -260,16 +323,27 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
 
   return (postRows as any[]).map((post) => {
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
+    const itemOwnerId = (item as any).user_id as string | undefined;
+    const ownerProfile = itemOwnerId && itemOwnerId !== post.user_id ? ownerProfileMap.get(itemOwnerId) : undefined;
     const rating = ratingTotals.get(post.id);
     return {
       id: post.id,
       user_id: post.user_id,
       post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
+      item_id: post.item_id ?? null,
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,
-      item_name: (item as any).name ?? null,
+      item_name: (item as any).title ?? null,
+      sourceOwner: ownerProfile
+        ? {
+            id: ownerProfile.id,
+            username: ownerProfile.username ?? 'user',
+            displayName: ownerProfile.display_name ?? null,
+            avatarUrl: ownerProfile.avatar_url ?? null,
+          }
+        : null,
       username: profile.username ?? 'user',
       // Hero/display name first, matching the profile identity card's own
       // source of truth (profile-v2-screen.tsx's `hero_display_name ||
@@ -320,6 +394,8 @@ export function PostCard({
   onCommentPress,
   onLike,
   onDelete,
+  onSourceOwnerPress,
+  onSourceItemPress,
 }: {
   post: FeedPost;
   currentUserId: string | undefined;
@@ -337,6 +413,12 @@ export function PostCard({
   // and local list update; this component only surfaces the confirmed
   // intent.
   onDelete?: () => void;
+  // Foreign-repost only (post.sourceOwner set — see isForeignRepost below);
+  // ignored/never called otherwise. Both optional so every existing call
+  // site (SharePostPreview, app/share-folder/new.tsx) that never renders a
+  // repost keeps compiling unchanged.
+  onSourceOwnerPress?: () => void;
+  onSourceItemPress?: () => void;
 }) {
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -345,6 +427,9 @@ export function PostCard({
   const isCardShare = post.post_type === 'card_share';
   const isFolderShare = post.post_type === 'folder_share';
   const isOwner = !!currentUserId && currentUserId === post.user_id;
+  // A "Post to Feed" repost of someone else's public card — see
+  // FeedPost.sourceOwner's own comment for exactly when this is set.
+  const isForeignRepost = post.post_type === 'item' && !!post.sourceOwner;
 
   // Single-card ('item') post media height cap — SINGLE_CARD_MAX_HEIGHT_FRACTION
   // of the actual device viewport, not a fixed pixel value, so this scales
@@ -470,47 +555,66 @@ export function PostCard({
     <View style={styles.card}>
       {/* User row — tapping the avatar/name/date group navigates to their
           public profile; the owner-only "..." sits outside that touch
-          target as its own sibling, in the same row. */}
-      <View style={styles.cardHeader}>
-        <TouchableOpacity style={styles.cardHeaderUserTouch} onPress={onUserPress} activeOpacity={0.7}>
-          <View style={styles.cardAvatar}>
-            {post.avatar_url ? (
-              <Image
-                source={{ uri: post.avatar_url }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-                transition={200}
-              />
-            ) : (
-              <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
-                <Text style={styles.cardAvatarInitial}>
-                  {displayName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-          </View>
-          <View style={styles.cardIdentityLine}>
-            <Text style={styles.cardDisplayName} numberOfLines={1}>
-              {displayName}
-            </Text>
-            <Text style={styles.cardUsername} numberOfLines={1}>
-              @{post.username}
-            </Text>
-          </View>
-          <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
-        </TouchableOpacity>
-
-        {isOwner && onDelete && (
-          <TouchableOpacity
-            onPress={handleDeleteTap}
-            hitSlop={10}
-            style={styles.moreBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Post options">
-            <IconSymbol name="ellipsis" size={18} color="rgba(255,255,255,0.55)" />
+          target as its own sibling, in the same row. Foreign repost:
+          replaced entirely by the compact RepostHeader (its own repost
+          strip + owner row, including its own "..." rendered inline on
+          the strip) — see isForeignRepost's own comment above. Rendered
+          directly, NOT inside styles.cardHeader — RepostHeader owns its
+          own horizontal insets/margins for its two stacked rows, matching
+          cardHeader's paddingHorizontal (12) itself. */}
+      {isForeignRepost ? (
+        <RepostHeader
+          reposterUsername={post.username}
+          reposterDisplayName={post.display_name}
+          reposterAvatarUrl={post.avatar_url}
+          createdAt={post.created_at}
+          onReposterPress={onUserPress}
+          owner={post.sourceOwner!}
+          onOwnerPress={onSourceOwnerPress}
+          onDeletePress={isOwner && onDelete ? handleDeleteTap : undefined}
+        />
+      ) : (
+        <View style={styles.cardHeader}>
+          <TouchableOpacity style={styles.cardHeaderUserTouch} onPress={onUserPress} activeOpacity={0.7}>
+            <View style={styles.cardAvatar}>
+              {post.avatar_url ? (
+                <Image
+                  source={{ uri: post.avatar_url }}
+                  style={StyleSheet.absoluteFill}
+                  contentFit="cover"
+                  transition={200}
+                />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, styles.cardAvatarPlaceholder]}>
+                  <Text style={styles.cardAvatarInitial}>
+                    {displayName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.cardIdentityLine}>
+              <Text style={styles.cardDisplayName} numberOfLines={1}>
+                {displayName}
+              </Text>
+              <Text style={styles.cardUsername} numberOfLines={1}>
+                @{post.username}
+              </Text>
+            </View>
+            <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
           </TouchableOpacity>
-        )}
-      </View>
+
+          {isOwner && onDelete && (
+            <TouchableOpacity
+              onPress={handleDeleteTap}
+              hitSlop={10}
+              style={styles.moreBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Post options">
+              <IconSymbol name="ellipsis" size={18} color="rgba(255,255,255,0.55)" />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {/* Post body — text block for text posts (optionally followed by an
           attached photo, see app/post/new.tsx), grails grid for Rate My
@@ -722,6 +826,12 @@ export function PostCard({
                           maxHeight: singleCardMaxHeight,
                         },
                   ]}
+                  // The repost IS a social post first — tapping its large
+                  // media opens this post's own Post Detail (comments,
+                  // likes, repost context, caption), same as every other
+                  // post type's media tap. The original source item is
+                  // reached via the explicit source-context row below
+                  // instead (onSourceItemPress), not this tap.
                   onPress={onPostPress}
                   activeOpacity={0.95}>
                   {isTextPost ? (
@@ -744,6 +854,35 @@ export function PostCard({
                     />
                   )}
                 </TouchableOpacity>
+
+                {/* Source context row — foreign repost only; now the ONE
+                    explicit way to reach the original source item from the
+                    feed (the large media tap above opens this post's own
+                    Post Detail instead — see that TouchableOpacity's own
+                    comment). No folder/collection NAME is available
+                    anywhere in FeedPost (never fetched for this feature —
+                    audited, not invented), so the label still reads "From
+                    @owner's collection"; only the destination changed.
+                    Disabled (never a dead tap) when onSourceItemPress isn't
+                    supplied — e.g. the source item was since deleted,
+                    item_id is null (see FeedPost.item_id's own comment).
+                    The OWNER's profile is still reached via the owner row
+                    in RepostHeader above (onSourceOwnerPress), unchanged. */}
+                {isForeignRepost && post.sourceOwner && (
+                  <TouchableOpacity
+                    style={styles.sourceContextRow}
+                    onPress={onSourceItemPress}
+                    disabled={!onSourceItemPress}
+                    activeOpacity={0.7}
+                    accessibilityRole={onSourceItemPress ? 'button' : undefined}
+                    accessibilityLabel={`View item — from @${post.sourceOwner.username}'s collection`}>
+                    <IconSymbol name="rectangle.stack.fill" size={13} color={PV2.textTertiary} />
+                    <Text style={styles.sourceContextText} numberOfLines={1}>
+                      From <Text style={styles.sourceContextHandle}>@{post.sourceOwner.username}</Text>&apos;s collection
+                    </Text>
+                    <IconSymbol name="chevron.right" size={12} color={PV2.textTertiary} />
+                  </TouchableOpacity>
+                )}
               </View>
             )
           )}
@@ -1070,6 +1209,30 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: PV2.textPrimary,
     lineHeight: 19,
+  },
+  // Foreign repost only — compact row below the card media, same width as
+  // mediaImageWrapSingle (alignSelf: 'center' resolves against this row's
+  // own flex parent, mediaContentColumn, exactly like the image above it).
+  sourceContextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    width: `${SINGLE_CARD_WIDTH_FRACTION * 100}%`,
+    alignSelf: 'center',
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  sourceContextText: {
+    flex: 1,
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  sourceContextHandle: {
+    color: PV2.textSecondary,
+    fontWeight: '600',
   },
   // aspectRatio no longer lives here — it's now set inline per-post from
   // the measured (and clamped) natural ratio, or MEDIA_DEFAULT_ASPECT_RATIO

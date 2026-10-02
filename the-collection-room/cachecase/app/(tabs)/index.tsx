@@ -102,8 +102,19 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
       .select('id, username, display_name, hero_display_name, avatar_url')
       .in('id', userIds)
       .abortSignal(signal),
+    // 'title' (was 'name' — collection_items has no such column; that
+    // select was silently failing this whole query with a 42703 Postgres
+    // error on every page that had ANY 'item' post, for as long as this
+    // line has existed. Neither this call's own {data} destructure nor the
+    // itemMap builder below ever checked `error`, so the failure surfaced
+    // as nothing worse than a blank item_name fallback caption — until
+    // sourceOwner (foreign-repost attribution) started depending on this
+    // same, always-failing query too, which is what actually made it
+    // visible). Confirmed live via a direct read-only REST query against
+    // the production project: the unqualified 'name' column errors with
+    // PGRST 42703, 'title' resolves correctly.
     itemIds.length > 0
-      ? supabase.from('collection_items').select('id, name, image_url').in('id', itemIds).abortSignal(signal)
+      ? supabase.from('collection_items').select('id, title, image_url, user_id').in('id', itemIds).abortSignal(signal)
       : Promise.resolve({ data: [] }),
     supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
     supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
@@ -125,7 +136,46 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
+  // Logged (not thrown) — a failure here degrades item_name/sourceOwner
+  // for this page's 'item' posts (itemMap stays empty, same as zero
+  // matching rows) rather than failing the whole feed load, but must never
+  // go silent again the way the 'name'-column typo above did for however
+  // long it went unnoticed.
+  if ((itemsRes as any).error) {
+    console.error('[queryFeed] collection_items query failed:', (itemsRes as any).error.message, (itemsRes as any).error);
+  }
   const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
+
+  // Foreign-repost attribution — same "second, separate profiles query for
+  // just the source items' own owners" pattern as fetchUserPosts (post-
+  // card.tsx) for the exact same reason: an item's owner is frequently not
+  // any post's own author in this page, so profileMap above can't be
+  // assumed to already have it. Reuses profileMap as a fallback first
+  // (when an owner DOES happen to already be a post author on this page,
+  // e.g. multiple people reposting the same popular card), so this only
+  // ever queries for ids genuinely missing from it.
+  const missingOwnerIds = [
+    ...new Set(
+      (itemsRes.data ?? [])
+        .map((i: any) => i.user_id as string | null)
+        .filter((id): id is string => !!id && !profileMap.has(id)),
+    ),
+  ];
+  if (missingOwnerIds.length > 0) {
+    const { data: ownerProfiles, error: ownerProfilesError } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .in('id', missingOwnerIds)
+      .abortSignal(signal);
+    if (ownerProfilesError) {
+      // Best-effort — see FeedPost.sourceOwner's own comment: a failure
+      // here must not fail the whole feed page, only means those specific
+      // reposts render without the owner attribution header this render.
+      console.error('[queryFeed] source-owner profiles query failed:', ownerProfilesError.message, ownerProfilesError);
+    } else {
+      for (const row of (ownerProfiles ?? []) as any[]) profileMap.set(row.id, row);
+    }
+  }
 
   const likeCountMap = new Map<string, number>();
   const likedSet = new Set<string>();
@@ -148,16 +198,27 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   const posts = (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
+    const itemOwnerId = (item as any).user_id as string | undefined;
+    const ownerProfile = itemOwnerId && itemOwnerId !== post.user_id ? profileMap.get(itemOwnerId) : undefined;
     const rating = ratingTotals.get(post.id);
     return {
       id: post.id,
       user_id: post.user_id,
       post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
+      item_id: post.item_id ?? null,
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
       caption: post.caption ?? null,
       created_at: post.created_at,
-      item_name: (item as any).name ?? null,
+      item_name: (item as any).title ?? null,
+      sourceOwner: ownerProfile
+        ? {
+            id: ownerProfile.id,
+            username: ownerProfile.username ?? 'user',
+            displayName: ownerProfile.display_name ?? null,
+            avatarUrl: ownerProfile.avatar_url ?? null,
+          }
+        : null,
       username: profile.username ?? 'user',
       // Hero/display name is what the profile screen's own identity card
       // shows as the large primary name (profile-v2-screen.tsx's own
@@ -654,6 +715,16 @@ export default function HomeScreen() {
                 }}
                 onLike={() => handleLike(item.id)}
                 onDelete={() => handleDeletePost(item.id)}
+                onSourceOwnerPress={
+                  item.sourceOwner
+                    ? () => navigateToProfile(router, currentUserId, item.sourceOwner!.id, item.sourceOwner!.username)
+                    : undefined
+                }
+                onSourceItemPress={
+                  item.item_id
+                    ? () => router.push({ pathname: '/item/[id]', params: { id: item.item_id! } })
+                    : undefined
+                }
               />
             )}
             contentContainerStyle={[styles.list, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}

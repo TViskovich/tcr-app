@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,23 +14,24 @@ import {
 } from 'react-native';
 
 import { Image } from 'expo-image';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { SharePostPreview } from '@/components/feed/share-post-preview';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useAllItems } from '@/hooks/use-collection';
+import { type CollectionItemWithFolderVisibility, useAllItems } from '@/hooks/use-collection';
 import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { attachPrimaryImageIds } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CardShareItem } from '@/types';
+import type { CardShareItem, CollectionItem } from '@/types';
 
 const MAX_CHARS = 280;
 const MAX_CARDS = 5;
@@ -47,6 +48,13 @@ const MAX_CARDS = 5;
 // server-side, as one all-or-nothing unit — see that function's own
 // module comment for the full invariant.
 export default function ShareCardScreen() {
+  // Optional preselection — set when this screen is opened from Item
+  // Detail's Share Item sheet ("Post to Feed") via
+  // /share-card/new?itemId=<id>, so the user never has to pick that card
+  // again here. Absent (undefined) for every other entry point (the
+  // Create menu's own "Share Card" option), which is exactly today's
+  // behavior — nothing seeded, picker starts empty.
+  const { itemId } = useLocalSearchParams<{ itemId?: string }>();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { session } = useAuth();
@@ -76,11 +84,163 @@ export default function ShareCardScreen() {
   // remains an accurate proxy for "has an image" without needing to wait
   // on a signed lookup just to decide the picker's contents.
   const shareableItems = items.filter((i) => !!i.image_url?.trim());
+
+  // Route-param preselection ("Post to Feed" from Item Detail's Share Item
+  // sheet, via /share-card/new?itemId=<id>) — fetched directly by id,
+  // never through useAllItems/shareableItems above (which is scoped to the
+  // SIGNED-IN USER'S OWN items only). This is what lets the source item
+  // belong to someone else: a plain by-id select is still subject to
+  // items_select_public RLS, so a foreign row only ever comes back at all
+  // when it's genuinely public (is_public AND its whole folder chain
+  // effectively visible) — a private foreign item is indistinguishable
+  // from "not found" here, by design (this must never leak whether a
+  // private item exists). isPubliclyShareable (below) re-checks the same
+  // "publicly shareable" rule this screen already enforces for the
+  // signed-in user's own items, as defense-in-depth and so an owned-but-
+  // private source item is rejected identically to a private foreign one
+  // — this screen has never allowed posting a private card to the public
+  // feed, owned or not, and this entry path doesn't change that.
+  const [sourceItem, setSourceItem] = useState<CollectionItemWithFolderVisibility | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(!!itemId);
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  // Foreign-repost attribution ("Share → Post to Feed" on someone else's
+  // public card) — the ORIGINAL OWNER's own profile, fetched once
+  // sourceItem resolves as not-the-signed-in-user's. Feeds the simplified
+  // repost composer's own preview (below) so it's genuinely WYSIWYG with
+  // the resulting feed post (same PostCard/RepostHeader rendering — see
+  // SharePostPreview's own itemPost prop).
+  const [sourceOwnerProfile, setSourceOwnerProfile] = useState<{
+    username: string;
+    display_name: string | null;
+    avatar_url: string | null;
+  } | null>(null);
+  // Guards against re-fetching the same itemId twice (e.g. React Strict
+  // Mode's double-invoke in dev) — itemId itself never changes for the
+  // lifetime of this screen (it's a route param), so this only ever needs
+  // to fire once per mount.
+  const sourceFetchStartedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!itemId || sourceFetchStartedRef.current === itemId) return;
+    sourceFetchStartedRef.current = itemId;
+    let cancelled = false;
+
+    async function loadSourceItem() {
+      setSourceLoading(true);
+      setSourceError(null);
+      try {
+        // Explicit !collection_items_folder_id_fkey — same PostgREST
+        // embed ambiguity useAllItems' own query already documents
+        // (folders.cover_item_id gives it a second FK path to
+        // collection_items).
+        const { data: rawItem, error: fetchError } = await supabase
+          .from('collection_items')
+          .select('*, folders!collection_items_folder_id_fkey(is_public)')
+          .eq('id', itemId)
+          .eq('collection_status', 'active')
+          .maybeSingle();
+        if (cancelled) return;
+
+        if (fetchError) {
+          console.error('[share-card] source item fetch failed:', fetchError.message, fetchError);
+          setSourceError('Something went wrong loading this card. Please try again.');
+          return;
+        }
+
+        // null covers every ineligible case identically (not found,
+        // inactive/deleted, or hidden from this viewer by RLS because
+        // it's a private foreign item) — never distinguished further, so
+        // this can't be used to probe whether a private item exists.
+        if (!rawItem || !(rawItem as CollectionItem).image_url?.trim()) {
+          setSourceError('This card isn’t available to share right now.');
+          return;
+        }
+
+        const { folders, ...itemFields } = rawItem as CollectionItem & {
+          folders: { is_public: boolean } | null;
+        };
+        const withFolderVisibility: CollectionItemWithFolderVisibility = {
+          ...itemFields,
+          folder_is_public: folders?.is_public ?? false,
+        };
+
+        if (!(withFolderVisibility.is_public && withFolderVisibility.folder_is_public)) {
+          setSourceError('This card is private and can’t be shared to the feed.');
+          return;
+        }
+
+        const [withPrimaryId] = await attachPrimaryImageIds([withFolderVisibility]);
+        if (cancelled) return;
+        setSourceItem(withPrimaryId);
+        setSelectedIds((prev) => (prev.includes(withPrimaryId.id) ? prev : [withPrimaryId.id, ...prev]));
+
+        // Foreign-repost attribution — one extra, conditional profile
+        // fetch, exactly like app/post/[id].tsx's own equivalent (a
+        // single-item screen, not worth the batched-query pattern
+        // queryFeed/fetchUserPosts use for a whole page of posts).
+        if (withPrimaryId.user_id !== currentUserId) {
+          const { data: ownerProfile, error: ownerProfileError } = await supabase
+            .from('profiles')
+            .select('username, display_name, avatar_url')
+            .eq('id', withPrimaryId.user_id)
+            .maybeSingle();
+          if (cancelled) return;
+          if (ownerProfileError) {
+            console.error('[share-card] source-owner profile fetch failed:', ownerProfileError.message, ownerProfileError);
+          } else if (ownerProfile) {
+            setSourceOwnerProfile(ownerProfile);
+          }
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.error('[share-card] source item load threw:', e);
+          setSourceError('Something went wrong loading this card. Please try again.');
+        }
+      } finally {
+        if (!cancelled) setSourceLoading(false);
+      }
+    }
+
+    loadSourceItem();
+    return () => {
+      cancelled = true;
+    };
+    // currentUserId is read inside (for the owner-profile fetch branch)
+    // but intentionally not what gates re-running this effect — the
+    // sourceFetchStartedRef guard above already makes any re-invocation
+    // (e.g. a currentUserId change) an immediate no-op, since itemId itself
+    // never changes for this screen's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemId]);
+
+  // Merges the route-preselected source item into every id-based lookup
+  // below (selectedItems, handlePost's re-validation/single-item path) —
+  // but deliberately NOT into shareableItems/the tappable picker grid
+  // itself, which stays exactly "the signed-in user's own items" as
+  // before. A source item that already IS one of the user's own (already
+  // present in shareableItems) is never duplicated.
+  const resolvableItems: CollectionItemWithFolderVisibility[] =
+    sourceItem && !shareableItems.some((i) => i.id === sourceItem.id)
+      ? [sourceItem, ...shareableItems]
+      : shareableItems;
+
+  // A repost of someone else's public card — per product decision, this
+  // stays a fixed SINGLE-item share: no own-item grid, no reorder UI, no
+  // 1-5 selection (see the simplified composer branch in this screen's own
+  // render, and toggleSelect's own mixed-selection guard above/below for
+  // why mixing isn't supported yet). An own-item preselection (sourceItem
+  // present but sourceItem.user_id === currentUserId) keeps the full normal
+  // Share Card flow, completely unaffected.
+  const isForeignRepost = !!sourceItem && sourceItem.user_id !== currentUserId;
+
   // One batched call for the whole picker grid — never one signing
   // request per card (item-images beta privacy hardening, Phase 3E).
-  // Picker grid + reorder thumbnails are small — 'preview' tier.
+  // Picker grid + reorder thumbnails are small — 'preview' tier. Sourced
+  // from resolvableItems (not shareableItems) so a foreign preselected
+  // source item's reorder-strip thumbnail (below) resolves too, even
+  // though it never appears in the picker grid itself.
   const { urls: signedItemImageUrls } = useSignedItemImages(
-    shareableItems.map((i) => i.primary_image_id),
+    resolvableItems.map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
   );
 
@@ -105,13 +265,13 @@ export default function ShareCardScreen() {
   // createSnapshotPost/the single-card insert; display_order on the
   // persisted card_share_items rows is assigned server-side from this same
   // array's index — see create-snapshot-post's own module comment). Filters
-  // out any id that no longer resolves against shareableItems defensively
+  // out any id that no longer resolves against resolvableItems defensively
   // (mirrors handlePost's own re-validation below) rather than assuming
-  // selectedIds and shareableItems can never disagree for a render in
+  // selectedIds and resolvableItems can never disagree for a render in
   // between state updates.
   const selectedItems = selectedIds
-    .map((id) => shareableItems.find((i) => i.id === id))
-    .filter((i): i is (typeof shareableItems)[number] => !!i);
+    .map((id) => resolvableItems.find((i) => i.id === id))
+    .filter((i): i is (typeof resolvableItems)[number] => !!i);
 
   // The compose Preview below renders the SELECTED cards through
   // CardSharePostBody at (near) full width, where a 500px preview would look
@@ -183,6 +343,22 @@ export default function ShareCardScreen() {
     setSelectedIds((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
       if (prev.length >= MAX_CARDS) return prev;
+      // A foreign (not-owned) preselected source item can only be posted
+      // through the single-card path today — create-snapshot-post's
+      // multi-item path (2-5 cards) still requires every item to belong
+      // to the caller (see its own ownership query), by design (this pass
+      // deliberately doesn't broaden that). Adding a second card while the
+      // foreign source item is still selected would only fail confusingly
+      // at Post time, so it's blocked here instead, with a clear reason —
+      // removing the foreign card first (via the reorder strip's own X)
+      // frees this back up for a normal multi-card, all-own-items post.
+      if (sourceItem && sourceItem.user_id !== currentUserId && prev.includes(sourceItem.id)) {
+        Alert.alert(
+          'Cannot add more cards',
+          'This card isn’t yours, so it can only be shared by itself right now — not together with your own cards.',
+        );
+        return prev;
+      }
       return [...prev, id];
     });
   }
@@ -194,7 +370,9 @@ export default function ShareCardScreen() {
     // just relying on toggleSelect/the disabled grid state having kept
     // private cards out of selectedIds. Re-reads the actual item objects'
     // current privacy flags rather than trusting stale selection state.
-    const selectedItems = shareableItems.filter((i) => selectedIds.includes(i.id));
+    // resolvableItems (not shareableItems) so this still resolves a
+    // foreign preselected source item correctly.
+    const selectedItems = resolvableItems.filter((i) => selectedIds.includes(i.id));
     if (selectedItems.length !== selectedIds.length || selectedItems.some((i) => !isPubliclyShareable(i))) {
       Alert.alert('Cannot share', 'Private cards can’t be shared to the public feed.');
       return;
@@ -204,7 +382,16 @@ export default function ShareCardScreen() {
 
     try {
       if (selectedIds.length === 1) {
-        const item = shareableItems.find((i) => i.id === selectedIds[0]);
+        // resolvableItems (not shareableItems) — this is the exact path a
+        // foreign preselected source item posts through (copyShareSnapshotImage
+        // -> copy-share-snapshot-image, whose shared authorization core now
+        // permits a genuinely-public non-owned item for this single-card
+        // 'post' snapshot type; see supabase/functions/_shared/
+        // share-snapshot.ts). posts_insert_own RLS only checks
+        // auth.uid() = user_id (the poster), not item_id ownership, so
+        // this insert already worked for a foreign item_id — nothing
+        // about this INSERT itself needed to change.
+        const item = resolvableItems.find((i) => i.id === selectedIds[0]);
         if (!item) throw new Error('Selected card is missing an image.');
 
         // Copy-before-insert (Phase 3E) — a feed post is never created
@@ -256,11 +443,20 @@ export default function ShareCardScreen() {
     }
   }
 
+  // Foreign-repost preview image — reuses the exact same already-signed
+  // urls the normal compose flow's own previewCards already resolves
+  // (detail tier, falling back to the picker-grid's compact tier while
+  // detail is still resolving) rather than a third signing call.
+  const foreignRepostPreviewImageUrl =
+    isForeignRepost && sourceItem?.primary_image_id
+      ? (signedDetailImageUrls.get(sourceItem.primary_image_id) ?? signedItemImageUrls.get(sourceItem.primary_image_id) ?? null)
+      : null;
+
   return (
     <>
       <Stack.Screen
         options={{
-          title: 'Share Card',
+          title: isForeignRepost ? 'Repost' : 'Share Card',
           headerLeft: () => (
             <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
               <Text style={styles.headerCancel}>Cancel</Text>
@@ -278,7 +474,11 @@ export default function ShareCardScreen() {
         }}
       />
 
-      {loading ? (
+      {/* loading (own items) OR still resolving a route-param source item —
+          combined into one gate so the composer (and its "1/5 selected"
+          count) never flashes an intermediate 0-selected state while a
+          preselected source item is still loading in. */}
+      {loading || (!!itemId && sourceLoading) ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.link} />
         </View>
@@ -294,7 +494,75 @@ export default function ShareCardScreen() {
             <Text style={styles.emptyButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
-      ) : shareableItems.length === 0 ? (
+      ) : itemId && sourceError ? (
+        // The route-preselected source item couldn't be loaded (private,
+        // deleted, or otherwise ineligible) — a clear, dedicated error
+        // rather than silently falling back to the normal own-items picker
+        // (which would look like "pick a different card instead" without
+        // ever saying why the requested one didn't show up).
+        <View style={styles.center}>
+          <Text style={styles.emptyTitle}>Can&apos;t share this card</Text>
+          <Text style={styles.emptyBody}>{sourceError}</Text>
+          <TouchableOpacity style={styles.emptyButton} onPress={leaveScreen}>
+            <Text style={styles.emptyButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      ) : isForeignRepost ? (
+        // Foreign-repost restrictions — a repost of someone else's public
+        // card stays a fixed single item: no own-item grid, no arrange/
+        // reorder UI, no 1-5 selection. Just the (real, WYSIWYG) preview,
+        // an optional caption, and Post — see SharePostPreview's own
+        // itemPost prop.
+        <KeyboardAvoidingView
+          style={styles.container}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <ScrollView
+            contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
+            <Text style={styles.repostNotice}>
+              This card belongs to {sourceOwnerProfile?.display_name || sourceOwnerProfile?.username || 'another collector'}.
+              Sharing it reposts their card to your followers — it doesn&apos;t add it to your own collection.
+            </Text>
+
+            <Text style={styles.sectionLabel}>Caption</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Add a caption (optional)"
+              placeholderTextColor={PV2.textTertiary}
+              multiline
+              value={caption}
+              onChangeText={setCaption}
+              maxLength={MAX_CHARS}
+              textAlignVertical="top"
+            />
+            <Text style={styles.counter}>
+              {caption.length}/{MAX_CHARS}
+            </Text>
+
+            <Text style={styles.sectionLabel}>Preview</Text>
+            <SharePostPreview
+              avatarUrl={currentProfile?.avatar_url ?? null}
+              displayName={currentProfile?.display_name || currentProfile?.username || ''}
+              username={currentProfile?.username ?? ''}
+              caption={caption}
+              cards={[]}
+              itemPost={{
+                imageUrl: foreignRepostPreviewImageUrl,
+                title: sourceItem!.title,
+                sourceOwner: sourceOwnerProfile
+                  ? {
+                      id: sourceItem!.user_id,
+                      username: sourceOwnerProfile.username,
+                      displayName: sourceOwnerProfile.display_name,
+                      avatarUrl: sourceOwnerProfile.avatar_url,
+                    }
+                  : null,
+              }}
+            />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      ) : shareableItems.length === 0 && !itemId ? (
         <View style={styles.center}>
           <Text style={styles.emptyTitle}>No cards to share</Text>
           <Text style={styles.emptyBody}>
@@ -672,5 +940,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  repostNotice: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+    lineHeight: 19,
+    marginBottom: 4,
   },
 });

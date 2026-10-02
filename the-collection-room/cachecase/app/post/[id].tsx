@@ -24,8 +24,9 @@ import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { FolderShareCollage } from '@/components/feed/folder-share-collage';
-import { fetchPostImages } from '@/components/feed/post-card';
+import { fetchPostImages, type SourceOwnerAttribution } from '@/components/feed/post-card';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
+import { RepostHeader } from '@/components/feed/repost-header';
 import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
@@ -36,6 +37,7 @@ import { useAuth } from '@/lib/auth';
 import { fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost } from '@/lib/posts';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
@@ -106,6 +108,8 @@ type PostDetail = {
   id: string;
   user_id: string;
   post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
+  // 'item' posts only — see post-card.tsx's own FeedPost.item_id comment.
+  item_id: string | null;
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -128,6 +132,9 @@ type PostDetail = {
   images: PostImage[];
   // 'folder_share' posts only — see lib/folder-share-post.ts.
   folderShare: FolderShareData | null;
+  // 'item' posts only, foreign-repost only — see post-card.tsx's own
+  // FeedPost.sourceOwner comment for exactly when this is set.
+  sourceOwner: SourceOwnerAttribution | null;
 };
 
 type Comment = {
@@ -282,6 +289,8 @@ function PostHeader({
   onOpenFolder,
   commentTappable,
   onCommentTap,
+  onOpenSourceOwnerProfile,
+  onOpenSourceItem,
 }: {
   post: PostDetail;
   commentCount: number;
@@ -306,27 +315,55 @@ function PostHeader({
   // non-interactive comment count + separate bottom bar as before.
   commentTappable: boolean;
   onCommentTap: () => void;
+  // Foreign-repost only (post.sourceOwner set — see isForeignRepost below).
+  onOpenSourceOwnerProfile: () => void;
+  onOpenSourceItem: () => void;
 }) {
   const displayName = post.display_name || post.username;
+  // Same "Post to Feed" repost distinction as post-card.tsx's own
+  // isForeignRepost — see FeedPost.sourceOwner's own comment for exactly
+  // when this is set.
+  const isForeignRepost = post.post_type === 'item' && !!post.sourceOwner;
   return (
     <View>
-      {/* Header bar — avatar + name above the photo */}
-      <View style={styles.userRow}>
-        <View style={styles.avatar}>
-          {post.avatar_url ? (
-            <Image source={{ uri: post.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
-              <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
-            </View>
-          )}
+      {/* Header bar — avatar + name above the photo. Foreign repost:
+          replaced by the compact RepostHeader (its own repost strip +
+          owner row), giving the ORIGINAL OWNER (not the reposter) the
+          primary identity — see isForeignRepost above. Rendered directly,
+          NOT inside styles.userRow — RepostHeader owns its own horizontal
+          insets/margins for its two stacked rows, matching userRow's own
+          paddingHorizontal (12) itself. No onDeletePress/reposter tap —
+          this screen's delete affordance already lives in the native
+          Stack.Screen header (see the screen's own headerRight further
+          down), and its identity row has never been tappable (unlike
+          Feed's own row), so the repost strip stays consistent with that. */}
+      {isForeignRepost ? (
+        <RepostHeader
+          reposterUsername={post.username}
+          reposterDisplayName={post.display_name}
+          reposterAvatarUrl={post.avatar_url}
+          createdAt={post.created_at}
+          owner={post.sourceOwner!}
+          onOwnerPress={onOpenSourceOwnerProfile}
+        />
+      ) : (
+        <View style={styles.userRow}>
+          <View style={styles.avatar}>
+            {post.avatar_url ? (
+              <Image source={{ uri: post.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
+                <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.userInfo}>
+            <Text style={styles.postDisplayName}>{displayName}</Text>
+            <Text style={styles.postUsername}>@{post.username}</Text>
+          </View>
+          <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
         </View>
-        <View style={styles.userInfo}>
-          <Text style={styles.postDisplayName}>{displayName}</Text>
-          <Text style={styles.postUsername}>@{post.username}</Text>
-        </View>
-        <Text style={styles.postAge}>{formatAge(post.created_at)}</Text>
-      </View>
+      )}
 
       {/* Post body — text for text posts (immersive media block first when
           a text post actually has an attached photo — see hasImmersiveMedia
@@ -409,6 +446,33 @@ function PostHeader({
             </View>
           )}
         </View>
+      ) : isForeignRepost ? (
+        // Foreign repost: the media stays non-navigation content here too
+        // (same as the plain-image sibling branch below) — this screen IS
+        // already the post's own detail (comments/likes/attribution), so
+        // there's nowhere further the image itself needs to bounce the
+        // user to. The ONE explicit way to reach the original source item
+        // is the source-context row below (onOpenSourceItem); the OWNER's
+        // profile is reached via RepostHeader's own owner row, above.
+        <>
+          <View style={styles.imageWrap}>
+            <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+          </View>
+          {post.sourceOwner && (
+            <TouchableOpacity
+              style={styles.sourceContextRow}
+              onPress={onOpenSourceItem}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={`View item — from @${post.sourceOwner.username}'s collection`}>
+              <IconSymbol name="rectangle.stack.fill" size={13} color={PV2.textTertiary} />
+              <Text style={styles.sourceContextText} numberOfLines={1}>
+                From <Text style={styles.sourceContextHandle}>@{post.sourceOwner.username}</Text>&apos;s collection
+              </Text>
+              <IconSymbol name="chevron.right" size={12} color={PV2.textTertiary} />
+            </TouchableOpacity>
+          )}
+        </>
       ) : (
         <View style={styles.imageWrap}>
           <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
@@ -616,6 +680,21 @@ export default function PostDetailScreen() {
     router.push({ pathname: '/post-reply/[id]', params: { id: post.id } });
   }
 
+  // Foreign-repost navigation (see PostHeader's own isForeignRepost) — same
+  // navigateToProfile convention every other user-row tap in this app
+  // already uses, and the same /item/[id] route Item Detail itself lives
+  // at. No-ops if either is somehow missing (defensive only; PostHeader
+  // never calls these unless post.sourceOwner/post.item_id are set).
+  function handleOpenSourceOwnerProfile() {
+    if (!post?.sourceOwner) return;
+    navigateToProfile(router, currentUserId, post.sourceOwner.id, post.sourceOwner.username);
+  }
+
+  function handleOpenSourceItem() {
+    if (!post?.item_id) return;
+    router.push({ pathname: '/item/[id]', params: { id: post.item_id } });
+  }
+
   const rating = useGrailRating({
     postId: post?.id ?? '',
     postOwnerId: post?.user_id ?? '',
@@ -758,8 +837,11 @@ export default function PostDetailScreen() {
         const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap, folderShareMap] = await Promise.all([
           supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).abortSignal(controller.signal).single(),
           // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
+          // 'title' (was 'name' — collection_items has no such column; see
+          // queryFeed's own identical comment in app/(tabs)/index.tsx for
+          // the full root-cause writeup).
           row.item_id
-            ? supabase.from('collection_items').select('name').eq('id', row.item_id).abortSignal(controller.signal).maybeSingle()
+            ? supabase.from('collection_items').select('title, user_id').eq('id', row.item_id).abortSignal(controller.signal).maybeSingle()
             : Promise.resolve({ data: null }),
           supabase.from('likes').select('user_id').eq('post_id', postId).abortSignal(controller.signal),
           fetchComments(postId, controller.signal),
@@ -811,20 +893,56 @@ export default function PostDetailScreen() {
           return;
         }
 
+        if ((itemRes as any).error) {
+          console.error('[PostDetail] load: collection_items query failed:', (itemRes as any).error.message, (itemRes as any).error);
+        }
+
         const likeRows = (likesRes.data ?? []) as any[];
         const p = profileRes.data as any;
         const item = itemRes.data as any;
         const ratingRows = (ratingsRes.data ?? []) as any[];
 
+        // Foreign-repost attribution — one extra, conditional profile fetch
+        // (only when this item's owner differs from the post's own author),
+        // sequenced after the batch above since the owner id isn't known
+        // until itemRes resolves. A single-post screen, so this doesn't
+        // warrant the batched second-query pattern queryFeed/fetchUserPosts
+        // use for a whole page of posts.
+        let sourceOwner: SourceOwnerAttribution | null = null;
+        if (item?.user_id && item.user_id !== row.user_id) {
+          const { data: ownerProfile, error: ownerProfileError } = await supabase
+            .from('profiles')
+            .select('id, username, display_name, avatar_url')
+            .eq('id', item.user_id)
+            .abortSignal(controller.signal)
+            .maybeSingle();
+          if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+          if (ownerProfileError) {
+            // Best-effort — see FeedPost.sourceOwner's own comment: this
+            // post still renders, just without the repost attribution
+            // header this render.
+            console.error('[PostDetail] source-owner profile query failed:', ownerProfileError.message, ownerProfileError);
+          } else if (ownerProfile) {
+            sourceOwner = {
+              id: ownerProfile.id,
+              username: ownerProfile.username ?? 'user',
+              displayName: ownerProfile.display_name ?? null,
+              avatarUrl: ownerProfile.avatar_url ?? null,
+            };
+          }
+        }
+
         setPost({
           id: row.id,
           user_id: row.user_id,
           post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
+          item_id: row.item_id ?? null,
           image_url: row.image_url ?? null,
           content: row.content ?? null,
           caption: row.caption ?? null,
           created_at: row.created_at,
-          item_name: item?.name ?? null,
+          item_name: item?.title ?? null,
+          sourceOwner,
           username: p?.username ?? 'user',
           display_name: p?.display_name ?? null,
           avatar_url: p?.avatar_url ?? null,
@@ -1178,6 +1296,8 @@ export default function PostDetailScreen() {
               }
               commentTappable={usesInlineCommentTap}
               onCommentTap={handleOpenReply}
+              onOpenSourceOwnerProfile={handleOpenSourceOwnerProfile}
+              onOpenSourceItem={handleOpenSourceItem}
             />
           }
           ListEmptyComponent={
@@ -1497,6 +1617,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 12,
     lineHeight: 22,
+  },
+  // Foreign repost only — same compact "From @owner's collection" row as
+  // the feed card (post-card.tsx's own sourceContextRow), adapted to this
+  // screen's own full-bleed image convention (imageWrap has no horizontal
+  // inset of its own, unlike Feed's centered 86%-width image) via
+  // marginHorizontal instead of a percentage width.
+  sourceContextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 12,
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  sourceContextText: {
+    flex: 1,
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  sourceContextHandle: {
+    color: PV2.textSecondary,
+    fontWeight: '600',
   },
   actions: {
     flexDirection: 'row',

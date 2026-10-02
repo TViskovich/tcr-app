@@ -2369,6 +2369,8 @@ export function ProfileV2Screen({ userId }: Props) {
                     currentUserId={currentUserId}
                     onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
                     onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
+                    onSourceOwnerPress={(ownerId, username) => navigateToProfile(router, currentUserId, ownerId, username)}
+                    onSourceItemPress={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
                     onCommentPress={(postId) => router.push({ pathname: '/post-reply/[id]', params: { id: postId } })}
                     onLike={handleLike}
                     onDelete={handleDeletePost}

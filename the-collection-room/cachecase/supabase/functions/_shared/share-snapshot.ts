@@ -93,9 +93,29 @@ async function downloadValidateUpload(
 // share-snapshots bucket, scoped under
 // {callerId}/{snapshotType}/{targetId}/{itemId}-{uuid}.{ext}. `client`
 // must be the service-role client (both callers already construct one via
-// serviceRoleClient()) — this function performs no authorization itself,
-// callers are responsible for verifying collection_items.user_id ===
-// callerId (and any other precondition) before calling this.
+// serviceRoleClient()) — this function performs its OWN authorization
+// (below) rather than trusting callers to have verified it first, since
+// one of its two callers (copy-share-snapshot-image, the single-item
+// 'post' path) now legitimately passes a non-owned item.
+//
+// AUTHORIZATION (Post to Feed / foreign public items — see this
+// function's own PR): the caller may always snapshot their OWN item,
+// regardless of its own privacy flags (unchanged — matches
+// create_card_share_post's original rule). For an item the caller does
+// NOT own, snapshotType MUST be 'post' (the single-item path — the only
+// one that can ever reach this with a foreign item; card_share/
+// rate_my_grails pre-validate ownership themselves in create-snapshot-
+// post before ever calling this, and folder_share's own per-item calls
+// are already scoped to the folder owner's items there too), and the item
+// must be genuinely public: active, collection_items.is_public, and its
+// whole folder chain effectively visible to an anonymous viewer. That
+// last check re-derives items_select_public's own RLS rule (this function
+// runs under the service-role client, which bypasses RLS entirely) via
+// folder_effective_visibility_batch(folder_ids, caller) — the same
+// explicit-caller RPC handleFolderShare below already uses for its own
+// folder-level check, called here with caller: null (an anonymous-
+// viewer's view), since "genuinely public" must not depend on any
+// relationship between the caller and the item's actual owner.
 //
 // Source resolution mirrors copy-registry-snapshot-image's exact
 // preference order (never trusts a client-supplied path):
@@ -110,22 +130,94 @@ export async function copyItemImageIntoShareSnapshots(
   snapshotType: 'post' | 'card_share' | 'rate_my_grails' | 'folder_share',
   targetId: string,
 ): Promise<CopyItemImageResult> {
-  const { data: item } = await client
+  const { data: item, error: itemError } = await client
     .from('collection_items')
-    .select('id, user_id, image_url')
+    .select('id, user_id, image_url, is_public, collection_status, folder_id')
     .eq('id', itemId)
     .maybeSingle();
 
-  if (!item || item.user_id !== callerId) {
+  // TEMPORARY DIAGNOSTIC LOGGING (foreign-item repost investigation) — every
+  // branch below that can produce the client's generic 'unauthorized' (and
+  // therefore copy-share-snapshot-image's own generic {status:'unavailable'})
+  // now logs exactly which one fired, since neither the item query's own
+  // `error` nor the visibility RPC's own `error` were being surfaced
+  // anywhere before this — a real Postgres/RPC failure was silently
+  // indistinguishable from a legitimate "not visible" result. Non-sensitive
+  // only: ids, booleans, and error MESSAGES (never tokens/signed URLs). Safe
+  // to remove once the live failure path is confirmed; left in for now
+  // since it costs nothing at the volumes this function runs at.
+  console.log('[copyItemImageIntoShareSnapshots] start', { itemId, callerId, snapshotType });
+
+  if (itemError) {
+    console.error('[copyItemImageIntoShareSnapshots] item query failed:', itemError.message, { itemId });
+  }
+
+  if (!item) {
+    console.error('[copyItemImageIntoShareSnapshots] unauthorized: item not found', { itemId, hadQueryError: !!itemError });
     return { ok: false, reason: 'unauthorized' };
   }
 
-  const { data: primaryImage } = await client
+  console.log('[copyItemImageIntoShareSnapshots] item found', {
+    itemId,
+    ownerId: item.user_id,
+    isOwner: item.user_id === callerId,
+    isPublic: item.is_public,
+    collectionStatus: item.collection_status,
+    folderId: item.folder_id,
+  });
+
+  if (item.user_id !== callerId) {
+    if (snapshotType !== 'post') {
+      console.error('[copyItemImageIntoShareSnapshots] unauthorized: non-owner + non-post snapshotType', { itemId, snapshotType });
+      return { ok: false, reason: 'unauthorized' };
+    }
+    if (item.collection_status !== 'active') {
+      console.error('[copyItemImageIntoShareSnapshots] unauthorized: non-owner + item not active', { itemId, collectionStatus: item.collection_status });
+      return { ok: false, reason: 'unauthorized' };
+    }
+    if (!item.is_public) {
+      console.error('[copyItemImageIntoShareSnapshots] unauthorized: non-owner + item not public', { itemId });
+      return { ok: false, reason: 'unauthorized' };
+    }
+    const { data: visibility, error: visibilityError } = await client.rpc('folder_effective_visibility_batch', {
+      folder_ids: [item.folder_id],
+      caller: null,
+    });
+    if (visibilityError) {
+      console.error(
+        '[copyItemImageIntoShareSnapshots] folder_effective_visibility_batch RPC failed:',
+        visibilityError.message,
+        { itemId, folderId: item.folder_id },
+      );
+    }
+    const visibilityRow = (visibility as { folder_id: string; visible: boolean }[] | null)?.[0];
+    const isVisible = visibilityRow?.visible === true;
+    console.log('[copyItemImageIntoShareSnapshots] folder visibility result', {
+      itemId,
+      folderId: item.folder_id,
+      visibilityRow,
+      isVisible,
+      hadRpcError: !!visibilityError,
+    });
+    if (!isVisible) {
+      console.error('[copyItemImageIntoShareSnapshots] unauthorized: non-owner + folder not effectively visible', {
+        itemId,
+        folderId: item.folder_id,
+      });
+      return { ok: false, reason: 'unauthorized' };
+    }
+  }
+
+  const { data: primaryImage, error: primaryImageError } = await client
     .from('collection_item_images')
     .select('storage_path, image_url')
     .eq('item_id', itemId)
     .eq('is_primary', true)
     .maybeSingle();
+
+  if (primaryImageError) {
+    console.error('[copyItemImageIntoShareSnapshots] primary image query failed:', primaryImageError.message, { itemId });
+  }
 
   const projectUrl = Deno.env.get('SUPABASE_URL') ?? '';
   let sourcePath: string | null = null;
@@ -140,12 +232,28 @@ export async function copyItemImageIntoShareSnapshots(
     sourcePath = parseItemImagesStoragePath(item.image_url as string, projectUrl);
   }
 
+  console.log('[copyItemImageIntoShareSnapshots] source path resolution', {
+    itemId,
+    hadPrimaryImageRow: !!primaryImage,
+    primaryImageHadStoragePath: !!primaryImage?.storage_path,
+    primaryImageHadImageUrl: !!primaryImage?.image_url,
+    itemHadImageUrl: !!item.image_url,
+    resolvedSourcePath: !!sourcePath,
+  });
+
   if (!sourcePath) {
+    console.error('[copyItemImageIntoShareSnapshots] invalid_source: no resolvable image path', { itemId });
     return { ok: false, reason: 'invalid_source' };
   }
 
   const destinationPath = `${callerId}/${snapshotType}/${targetId}/${itemId}-${crypto.randomUUID()}`;
-  return downloadValidateUpload(client, sourcePath, destinationPath);
+  const result = await downloadValidateUpload(client, sourcePath, destinationPath);
+  console.log('[copyItemImageIntoShareSnapshots] downloadValidateUpload result', {
+    itemId,
+    ok: result.ok,
+    reason: result.ok ? null : result.reason,
+  });
+  return result;
 }
 
 // Copies the EXACT historical object a snapshot row's already-persisted

@@ -33,6 +33,7 @@ import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { ItemShareSheet } from '@/components/share/item-share-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrails } from '@/hooks/use-grails';
@@ -556,6 +557,16 @@ export default function ItemDetailScreen() {
   const { likeCount: itemLikeCount, liked: itemLiked, inFlight: itemLikeInFlight, toggle: toggleItemLike } =
     useItemLikes(id, currentUserId);
   const [itemCommentsVisible, setItemCommentsVisible] = useState(false);
+  // CacheCase-owned Share Item sheet (replaces jumping straight to the
+  // native share sheet) — see components/share/item-share-sheet.tsx.
+  // shareNavigatingRef is a synchronous re-entry guard for its "Post to
+  // Feed" row: the sheet's own onClose->onPostToFeed sequence still leaves
+  // a brief window (Modal close animation + router.push) where a second
+  // rapid tap could fire router.push twice before React re-renders
+  // anything that would otherwise block it, same reasoning as
+  // handleDelete's deletingRef above.
+  const [shareSheetVisible, setShareSheetVisible] = useState(false);
+  const shareNavigatingRef = useRef(false);
 
   const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   // Not gated on isOwner — RLS (registered_cards_select_visible) already
@@ -1311,14 +1322,18 @@ export default function ItemDetailScreen() {
     Alert.alert('Not Registered', 'This card has not been registered with CacheCase yet.');
   }
 
-  // Same native Share.share()+deep-link pattern as
-  // app/collection/[folderId].tsx's own handleShare — not a new share
-  // mechanism, just the existing one pointed at an item deep link instead
-  // of a collection one. item.title (not the richer, type-specific
-  // `identity.title` computed just below, near the JSX) — plain and
-  // available regardless of item_type, and this function is defined well
-  // above that computation.
-  async function handleShare() {
+  // Native Share.share()+deep-link — now only reachable via the Share Item
+  // sheet's "Share Outside CacheCase" row (see ItemShareSheet below), not
+  // the item's Share button directly. Branding/scheme updated off the
+  // legacy "The Collection Room"/`thecollectionroom://` copy still used by
+  // app/collection/[folderId].tsx's own handleShare (out of scope here) to
+  // the current CacheCase branding and the app's one registered scheme
+  // (app.json's "scheme": "cachecase" — `thecollectionroom://` was never
+  // actually registered there, so that old link never resolved). item.title
+  // (not the richer, type-specific `identity.title` computed just below,
+  // near the JSX) — plain and available regardless of item_type, and this
+  // function is defined well above that computation.
+  async function handleShareOutside() {
     if (!item) return;
     const handle = isOwner
       ? (session?.user?.email?.split('@')[0] ?? 'me')
@@ -1327,11 +1342,27 @@ export default function ItemDetailScreen() {
     try {
       await Share.share({
         title,
-        message: `Check out "${title}" by @${handle} on The Collection Room\nthecollectionroom://item/${item.id}`,
+        message: `Check out "${title}" by @${handle} on CacheCase\ncachecase://item/${item.id}`,
       });
     } catch {
       // user dismissed share sheet — no-op
     }
+  }
+
+  // Post to Feed — closes the Share Item sheet then hands off to the
+  // existing Share Card composer (app/share-card/new.tsx), preselecting
+  // this item via itemId so the user never has to pick it again there. See
+  // shareNavigatingRef's own comment above for the rapid-tap guard.
+  function handleShareToFeed() {
+    if (!item || shareNavigatingRef.current) return;
+    shareNavigatingRef.current = true;
+    router.push({ pathname: '/share-card/new', params: { itemId: item.id } });
+    // Released on next tick rather than immediately — this screen isn't
+    // unmounted by the push (Share Card is a separate stacked route), so
+    // the ref would otherwise stay permanently latched.
+    setTimeout(() => {
+      shareNavigatingRef.current = false;
+    }, 500);
   }
 
   async function handleGrailsToggle() {
@@ -1919,7 +1950,7 @@ export default function ItemDetailScreen() {
                 likeCount={itemLikeCount}
                 likeInFlight={itemLikeInFlight}
                 onPressLike={toggleItemLike}
-                onPressShare={handleShare}
+                onPressShare={() => setShareSheetVisible(true)}
               />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
@@ -2068,6 +2099,16 @@ export default function ItemDetailScreen() {
         itemId={id}
         itemTitle={item.title || 'Card'}
         currentUserId={currentUserId}
+      />
+
+      <ItemShareSheet
+        visible={shareSheetVisible}
+        onClose={() => setShareSheetVisible(false)}
+        imageUri={carouselImages[0]?.uri}
+        title={identity.title}
+        subtitle={identity.subtitleLines.filter(Boolean).join(' · ') || null}
+        onPostToFeed={handleShareToFeed}
+        onShareOutside={handleShareOutside}
       />
     </View>
   );

@@ -39,11 +39,14 @@
 // (the single-item 'post' path) passes item_id again as target_id, since
 // no post id exists yet at that point.
 //
-// Authorization: item_id must belong to the caller
-// (collection_items.user_id = caller) — no folder-visibility check is
-// needed, matching create_card_share_post's existing rule that you may
-// always share/snapshot your own item regardless of its folder's public/
-// private state.
+// Authorization (delegated entirely to copyItemImageIntoShareSnapshots, see
+// its own comment in ../_shared/share-snapshot.ts): item_id must either
+// belong to the caller (any privacy state — matching create_card_share_post's
+// existing rule that you may always share/snapshot your own item), or — for
+// this function's 'post' snapshot_type only — be genuinely public (active,
+// is_public, and its whole folder chain effectively visible to an anonymous
+// viewer). This lets "Post to Feed" work for another user's public card,
+// not just the caller's own collection.
 
 import {
   handleCorsPreflight,
@@ -99,6 +102,15 @@ Deno.serve(async (req: Request) => {
   );
 
   if (!result.ok) {
+    // TEMPORARY DIAGNOSTIC LOGGING (foreign-item repost investigation) —
+    // the client only ever sees the generic 'unavailable' status below
+    // (never result.reason, which stays server-log-only by design — see
+    // CopyFailureReason's own comment); copyItemImageIntoShareSnapshots
+    // itself already logs the specific branch that produced this, but this
+    // one extra line ties it back to the exact HTTP request/caller/item
+    // for easier log searching. Safe to remove once the live failure path
+    // is confirmed.
+    console.error('[copy-share-snapshot-image] returning unavailable:', { reason: result.reason, itemId, snapshotType, userId });
     return jsonResponse(UNAVAILABLE, 200);
   }
 

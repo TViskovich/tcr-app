@@ -56,6 +56,9 @@ const MAPPING = {
   'checkmark.circle.fill': 'check-circle',
   // Following tab's "N new items today" activity row (following-items-feed.tsx).
   'person.2.fill': 'people',
+  // Repost strip's own icon (components/feed/repost-header.tsx) — the
+  // standard "repost" glyph.
+  'arrow.2.squarepath': 'repeat',
 } as IconMapping;
 
 /**

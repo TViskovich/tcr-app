@@ -16,6 +16,11 @@ type Props = {
   // Owner-only — PostCard itself gates the affordance to posts where
   // currentUserId === post.user_id, so this is safe to always pass through.
   onDelete: (postId: string) => void;
+  // Foreign-repost only — PostCard itself gates these to posts that
+  // actually have a sourceOwner/item_id, so it's safe to always pass
+  // through (see this file's own PostCard render below).
+  onSourceOwnerPress: (ownerId: string, username: string) => void;
+  onSourceItemPress: (itemId: string) => void;
   // Set only when the posts query itself failed — distinct from a
   // genuinely empty list, so a failure is never shown as "No posts yet."
   error?: string | null;
@@ -24,7 +29,19 @@ type Props = {
 
 // Plain stacked list, not a FlatList — this renders inside the profile
 // screen's single outer ScrollView, same reasoning as ProfileV2Collections.
-export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress, onCommentPress, onLike, onDelete, error, onRetry }: Props) {
+export function ProfileV2Posts({
+  posts,
+  currentUserId,
+  onUserPress,
+  onPostPress,
+  onCommentPress,
+  onLike,
+  onDelete,
+  onSourceOwnerPress,
+  onSourceItemPress,
+  error,
+  onRetry,
+}: Props) {
   if (error && posts.length === 0) {
     return (
       <View style={styles.empty}>
@@ -59,6 +76,10 @@ export function ProfileV2Posts({ posts, currentUserId, onUserPress, onPostPress,
           onCommentPress={() => onCommentPress(post.id)}
           onLike={() => onLike(post.id)}
           onDelete={() => onDelete(post.id)}
+          onSourceOwnerPress={
+            post.sourceOwner ? () => onSourceOwnerPress(post.sourceOwner!.id, post.sourceOwner!.username) : undefined
+          }
+          onSourceItemPress={post.item_id ? () => onSourceItemPress(post.item_id!) : undefined}
         />
       ))}
     </View>
