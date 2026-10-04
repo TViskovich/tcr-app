@@ -34,6 +34,7 @@ import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { ItemShareSheet } from '@/components/share/item-share-sheet';
+import { SendItemDmSheet } from '@/components/share/send-item-dm-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrails } from '@/hooks/use-grails';
@@ -567,8 +568,10 @@ export default function ItemDetailScreen() {
   // handleDelete's deletingRef above.
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
   const shareNavigatingRef = useRef(false);
+  // Send in DM recipient sheet (components/share/send-item-dm-sheet.tsx).
+  const [sendDmVisible, setSendDmVisible] = useState(false);
 
-  const { isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
+  const { loading: grailSlotsLoading, isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
   // Not gated on isOwner — RLS (registered_cards_select_visible) already
   // restricts what a non-owner can read (public rows, or their own), so
   // this only lets an already-permitted read happen. It has to run for
@@ -1368,6 +1371,34 @@ export default function ItemDetailScreen() {
     }
   }
 
+  // Send in DM — the Share Item sheet has already started closing (its own
+  // handleSendInDM calls onClose() first). Same 350ms modal-to-modal gap as
+  // handleShareOutside above, so the recipient sheet isn't presented while
+  // the share sheet is still mid-dismiss.
+  function handleSendInDM() {
+    setTimeout(() => setSendDmVisible(true), 350);
+  }
+
+  // After a successful send, View Conversation closes the sheet and opens
+  // the DM; Done (onClose) just returns here. Short delay so the push
+  // doesn't race the page sheet's own dismiss.
+  function handleViewSentConversation(
+    conversationId: string,
+    recipient: { username: string; displayName: string | null },
+  ) {
+    setSendDmVisible(false);
+    setTimeout(() => {
+      router.push({
+        pathname: '/conversation/[id]',
+        params: {
+          id: conversationId,
+          otherUsername: recipient.username,
+          otherDisplayName: recipient.displayName ?? '',
+        },
+      });
+    }, 350);
+  }
+
   // Post to Feed — closes the Share Item sheet then hands off to the
   // existing Share Card composer (app/share-card/new.tsx), preselecting
   // this item via itemId so the user never has to pick it again there. See
@@ -1514,6 +1545,16 @@ export default function ItemDetailScreen() {
     : isComicBookItem
       ? buildComicIdentity(item, comicDetails)
       : buildIdentity(item);
+  // Send in DM client PRE-CHECK — blocks only what this screen already knows
+  // for certain, with no extra query: the viewer's OWN item with
+  // is_public = false. Excluded: an item in one of the owner's Grail slots
+  // (items_select_public's Grail exception makes it shareable despite
+  // is_public = false), and the moment before grail slots have loaded (not
+  // yet knowable → allowed). Folder privacy isn't loaded on this screen, so
+  // a public item in a private folder still goes through to the server's
+  // item_not_shareable check, which stays authoritative for every case.
+  const dmShareKnownBlocked =
+    isOwner && item.is_public === false && !grailSlotsLoading && !isInGrails(item.id);
   const metadataRows = isPokemonItem
     ? buildPokemonMetadataRows(item, pokemonDetails)
     : isComicBookItem
@@ -2120,6 +2161,7 @@ export default function ItemDetailScreen() {
         currentUserId={currentUserId}
       />
 
+      {/* Send in DM pre-check — see dmShareKnownBlocked below. */}
       <ItemShareSheet
         visible={shareSheetVisible}
         onClose={() => setShareSheetVisible(false)}
@@ -2127,7 +2169,20 @@ export default function ItemDetailScreen() {
         title={identity.title}
         subtitle={identity.subtitleLines.filter(Boolean).join(' · ') || null}
         onPostToFeed={handleShareToFeed}
+        onSendInDM={handleSendInDM}
         onShareOutside={handleShareOutside}
+        sendInDMBlocked={dmShareKnownBlocked}
+        onEditItem={isOwner && !isTransferredOut ? enterEdit : undefined}
+      />
+
+      <SendItemDmSheet
+        visible={sendDmVisible}
+        onClose={() => setSendDmVisible(false)}
+        onViewConversation={handleViewSentConversation}
+        itemId={item.id}
+        imageUri={carouselImages[0]?.uri}
+        title={identity.title}
+        subtitleLines={identity.subtitleLines}
       />
     </View>
   );

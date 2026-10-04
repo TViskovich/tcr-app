@@ -1,4 +1,5 @@
-import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useState } from 'react';
+import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
@@ -16,7 +17,16 @@ type Props = {
   title: string;
   subtitle?: string | null;
   onPostToFeed: () => void;
+  onSendInDM: () => void;
   onShareOutside: () => void;
+  // Client-side PRE-CHECK only: true when the caller already knows the item
+  // can't be sent (e.g. the owner's own private item). The row stays
+  // tappable but explains why instead of opening the recipient picker. The
+  // server's item_not_shareable check remains authoritative either way.
+  sendInDMBlocked?: boolean;
+  // Optional shortcut shown in that explanation (Item Detail's own edit
+  // mode, where visibility is changed).
+  onEditItem?: () => void;
 };
 
 // CacheCase-owned "Share Item" bottom sheet — opened from Item Detail's
@@ -27,12 +37,9 @@ type Props = {
 // gesture sheet in item-comments-sheet.tsx — this sheet has no scrollable
 // content and no keyboard, so it doesn't need swipe-to-dismiss physics.
 //
-// "Send in DM" has no real destination yet — public.messages is text-only
-// (no item/attachment column, confirmed by auditing app/conversation/
-// [id].tsx and the migration history), so this only surfaces a placeholder
-// notice rather than faking a deep link or a fake attachment. See this
-// component's own module-level comment in the implementation report for
-// the schema change that would unblock a real version.
+// "Send in DM" hands off to the CacheCase recipient picker
+// (components/share/send-item-dm-sheet.tsx), which sends a live item
+// attachment through the shared DM write path (lib/dm-send.ts).
 export function ItemShareSheet({
   visible,
   onClose,
@@ -40,23 +47,42 @@ export function ItemShareSheet({
   title,
   subtitle,
   onPostToFeed,
+  onSendInDM,
   onShareOutside,
+  sendInDMBlocked,
+  onEditItem,
 }: Props) {
-  function handlePostToFeed() {
+  const [dmNoticeVisible, setDmNoticeVisible] = useState(false);
+
+  // Every dismissal path resets the inline notice so it never reappears on
+  // the next open.
+  function close() {
+    setDmNoticeVisible(false);
     onClose();
+  }
+
+  function handlePostToFeed() {
+    close();
     onPostToFeed();
   }
 
   function handleShareOutside() {
-    onClose();
+    close();
     onShareOutside();
   }
 
   function handleSendInDM() {
-    Alert.alert(
-      'Coming Soon',
-      'Sending cards directly in a message isn’t available yet — direct messages only support text today.',
-    );
+    if (sendInDMBlocked) {
+      setDmNoticeVisible(true);
+      return;
+    }
+    close();
+    onSendInDM();
+  }
+
+  function handleEditItem() {
+    close();
+    onEditItem?.();
   }
 
   return (
@@ -64,11 +90,11 @@ export function ItemShareSheet({
       visible={visible}
       transparent
       animationType="slide"
-      onRequestClose={onClose}
+      onRequestClose={close}
       statusBarTranslucent>
       <View style={styles.backdrop}>
         {/* Tapping outside the sheet dismisses it */}
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} />
 
         <View style={styles.sheet}>
           <View style={styles.handle} />
@@ -105,15 +131,41 @@ export function ItemShareSheet({
 
             <View style={styles.divider} />
 
-            <TouchableOpacity style={styles.row} onPress={handleSendInDM} activeOpacity={0.65}>
-              <View style={[styles.iconWrap, styles.iconWrapDM]}>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={handleSendInDM}
+              activeOpacity={0.65}
+              accessibilityRole="button"
+              accessibilityHint={sendInDMBlocked ? 'Explains why this item can’t be sent yet' : undefined}>
+              <View style={[styles.iconWrap, styles.iconWrapDM, sendInDMBlocked && styles.iconWrapMuted]}>
                 <IconSymbol name="message.fill" size={20} color="#FFFFFF" />
               </View>
               <View style={styles.rowText}>
-                <Text style={styles.rowTitle}>Send in DM</Text>
-                <Text style={styles.rowSubtitle}>Coming soon</Text>
+                <Text style={[styles.rowTitle, sendInDMBlocked && styles.rowTitleMuted]}>Send in DM</Text>
+                <Text style={styles.rowSubtitle}>
+                  {sendInDMBlocked ? 'Make this item public to share' : 'Send this item to someone on CacheCase'}
+                </Text>
               </View>
+              {!sendInDMBlocked ? (
+                <IconSymbol name="chevron.right" size={14} color="rgba(255,255,255,0.28)" />
+              ) : null}
             </TouchableOpacity>
+
+            {sendInDMBlocked && dmNoticeVisible ? (
+              <View style={styles.notice} accessibilityLiveRegion="polite">
+                <Text style={styles.noticeTitle}>This item must be public before it can be shared in DM.</Text>
+                <Text style={styles.noticeText}>Change the item’s visibility and try again.</Text>
+                {onEditItem ? (
+                  <TouchableOpacity
+                    style={styles.noticeButton}
+                    onPress={handleEditItem}
+                    activeOpacity={0.7}
+                    accessibilityRole="button">
+                    <Text style={styles.noticeButtonText}>Edit Item</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : null}
 
             <View style={styles.divider} />
 
@@ -129,7 +181,7 @@ export function ItemShareSheet({
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.cancelButton} onPress={onClose} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.cancelButton} onPress={close} activeOpacity={0.7}>
             <Text style={styles.cancelText}>Cancel</Text>
           </TouchableOpacity>
 
@@ -221,6 +273,45 @@ const styles = StyleSheet.create({
   },
   iconWrapDM: {
     backgroundColor: '#3B7CE8',
+  },
+  iconWrapMuted: {
+    opacity: 0.45,
+  },
+  rowTitleMuted: {
+    color: PV2.textSecondary,
+  },
+  notice: {
+    backgroundColor: PV2.collectorPanelBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    padding: 14,
+    marginBottom: 12,
+    gap: 4,
+  },
+  noticeTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  noticeText: {
+    fontSize: 13,
+    color: PV2.textSecondary,
+  },
+  noticeButton: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: PV2.panel,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  noticeButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PV2.textPrimary,
   },
   iconWrapExternal: {
     backgroundColor: '#3CA36B',
