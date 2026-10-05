@@ -81,8 +81,8 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
-        <Link href="/(auth)/sign-up" style={styles.link}>
-          Don&apos;t have an account? Sign up
+        <Link href="/(auth)/invite" style={styles.link}>
+          Have an invite? Create account
         </Link>
       </View>
     </KeyboardAvoidingView>
