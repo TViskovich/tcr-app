@@ -1,20 +1,17 @@
 // CacheCase invite-only access — Phase 2A. Grants an existing WAITLISTED
 // signup access, issues an invite code, and emails it. Admin-only, invoked
-// manually from trusted tooling (curl/Postman) — never from the app.
-// Redemption / signup gating is Phase 2B and does not exist yet.
+// from the in-app admin screen (app/admin/waitlist.tsx).
 //
-// SECURITY — no admin-role concept exists in this codebase (see
-// backfill-share-snapshots), so access is two layers, both required:
+// SECURITY — the caller must be an authenticated admin:
 //   1. Deployed WITH gateway JWT verification (the default; do NOT pass
 //      --no-verify-jwt). Rejects requests without a valid Supabase JWT.
-//   2. `x-waitlist-admin-secret` must match the WAITLIST_ADMIN_SECRET Edge
-//      Function secret (constant-time comparison). Layer 1 alone is not
-//      enough — every signed-in app user has a JWT. If the secret is unset,
-//      every call is refused. The secret never ships in the app.
+//   2. requireAdmin (../_shared/admin-auth.ts) resolves the JWT to a user and
+//      requires a row in public.admin_users. Layer 1 alone is not enough —
+//      every signed-in app user has a JWT. No shared secret is involved;
+//      the service-role key stays in this function's environment.
 //
 //   curl -X POST https://<project-ref>.supabase.co/functions/v1/grant-waitlist-access \
-//     -H "Authorization: Bearer <a valid Supabase JWT, e.g. the anon key>" \
-//     -H "x-waitlist-admin-secret: <WAITLIST_ADMIN_SECRET>" \
+//     -H "Authorization: Bearer <an admin user's access token>" \
 //     -H "Content-Type: application/json" \
 //     -d '{"waitlist_signup_id":"<uuid>"}'          # or add "regenerate": true
 //
@@ -42,10 +39,11 @@
 //   404 { status: 'failed', reason: 'not_found' }
 //   409 { status: 'failed', reason: 'already_granted' | 'onboarded' | 'not_granted', ...signup }
 //   400 invalid_body | invalid_waitlist_signup_id | invalid_regenerate
-//   403 forbidden · 405 method_not_allowed · 500 grant_failed
+//   401 unauthorized · 403 forbidden (not an admin) · 405 method_not_allowed · 500 grant_failed
 
 import { generateInviteCode, hashInviteCode, normalizeInviteCode } from '../_shared/invite-code.ts';
-import { jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
+import { requireAdmin } from '../_shared/admin-auth.ts';
+import { handleCorsPreflight, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
 import { sendResendEmail, type EmailResult } from '../_shared/resend.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,21 +57,6 @@ type RpcRow = {
   access_granted_at: string | null;
   access_code_expires_at: string | null;
 };
-
-// Compares SHA-256 digests (fixed length) with a full-length XOR loop, so
-// timing reveals neither the secret's content nor its length.
-async function secretsMatch(provided: string, required: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest('SHA-256', enc.encode(provided)),
-    crypto.subtle.digest('SHA-256', enc.encode(required)),
-  ]);
-  const x = new Uint8Array(a);
-  const y = new Uint8Array(b);
-  let diff = 0;
-  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
-  return diff === 0;
-}
 
 function escapeHtml(value: string): string {
   return value
@@ -126,23 +109,21 @@ function deliveryFields(result: EmailResult) {
       };
 }
 
-// Safe-to-log fields only: never the code, its hash, keys, JWTs or the
-// admin secret. Email addresses aren't logged (join-waitlist doesn't either).
+// Safe-to-log fields only: never the code, its hash, keys or JWTs. Email addresses aren't logged (join-waitlist doesn't either).
 function logOutcome(fields: Record<string, unknown>) {
   console.log(JSON.stringify({ fn: 'grant-waitlist-access', ...fields }));
 }
 
 Deno.serve(async (req: Request) => {
+  const preflight = handleCorsPreflight(req);
+  if (preflight) return preflight;
   if (req.method !== 'POST') {
     return jsonResponse({ status: 'failed', reason: 'method_not_allowed' }, 405);
   }
 
-  const requiredSecret = Deno.env.get('WAITLIST_ADMIN_SECRET');
-  const providedSecret = req.headers.get('x-waitlist-admin-secret');
-  if (!requiredSecret || !providedSecret || !(await secretsMatch(providedSecret, requiredSecret))) {
-    logOutcome({ outcome: 'forbidden' });
-    return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
-  }
+  const client = serviceRoleClient();
+  const admin = await requireAdmin(client, req, 'grant-waitlist-access');
+  if (!admin.ok) return admin.response;
 
   let body: { waitlist_signup_id?: unknown; regenerate?: unknown };
   try {
@@ -173,7 +154,6 @@ Deno.serve(async (req: Request) => {
   }
   const codeHash = await hashInviteCode(normalized);
 
-  const client = serviceRoleClient();
   const { data, error } = await client.rpc('grant_waitlist_access', {
     p_signup_id: signupId,
     p_code_hash: codeHash,
@@ -215,6 +195,7 @@ Deno.serve(async (req: Request) => {
 
   logOutcome({
     waitlist_signup_id: signupId,
+    admin_user_id: admin.userId,
     outcome: row.outcome,
     access_code_expires_at: row.access_code_expires_at,
     email_sent: delivery.sent,
