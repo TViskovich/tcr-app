@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { type Session } from '@supabase/supabase-js';
 
 import {
+  DM_ATTACHMENTS_CACHE_DOMAIN,
   FOLDER_COVERS_CACHE_DOMAIN,
   ITEM_IMAGES_CACHE_DOMAIN,
   purgePersistedSignedUrlCache,
@@ -76,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (previousIdentity === undefined || previousIdentity === nextIdentity) return;
       purgePersistedSignedUrlCache(ITEM_IMAGES_CACHE_DOMAIN, previousIdentity).catch(() => {});
       purgePersistedSignedUrlCache(FOLDER_COVERS_CACHE_DOMAIN, previousIdentity).catch(() => {});
+      purgePersistedSignedUrlCache(DM_ATTACHMENTS_CACHE_DOMAIN, previousIdentity).catch(() => {});
       // Own-profile cache (lib/own-profile-cache.ts, Profile V2 startup
       // caching) is keyed by real user id only — 'anon' never has one.
       if (previousIdentity !== 'anon') purgeOwnProfileCache(previousIdentity).catch(() => {});

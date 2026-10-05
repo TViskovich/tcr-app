@@ -2000,6 +2000,7 @@ export function ProfileV2Screen({ userId }: Props) {
                   onSharePress={handleShareProfile}
                   onFollowersPress={() => router.push({ pathname: '/followers/[userId]', params: { userId } })}
                   onFollowingPress={() => router.push({ pathname: '/following/[userId]', params: { userId } })}
+                  onOpenInboxPress={isOwnProfile ? () => router.navigate('/(tabs)/messages') : undefined}
                 />
               </Animated.View>
             )}

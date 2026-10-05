@@ -1,223 +1,57 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   AppState,
   FlatList,
+  Pressable,
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 
-import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Defs, Ellipse, LinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 
-import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { ChatAvatar } from '@/components/conversation/chat-avatar';
+import { CHAT } from '@/components/conversation/conversation-theme';
+import { NewMessageSheet } from '@/components/conversation/new-message-sheet';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { type ConversationItem, loadInbox } from '@/lib/dm-inbox';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
-type ConversationItem = {
-  id: string;
-  otherUserId: string;
-  otherUsername: string;
-  otherDisplayName: string | null;
-  otherAvatarUrl: string | null;
-  lastMessageBody: string | null;
-  lastMessageAt: string;
-};
+const SKELETON_ROWS = 7;
 
+// Compact inbox timestamp: "now", "5m", "3h", "Yesterday", "Sep 30", and
+// "Sep 30, 2025" outside the current year.
 function formatTime(iso: string) {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const date = new Date(iso);
+  const now = new Date();
+  const diff = (now.getTime() - date.getTime()) / 1000;
+  if (diff < 60) return 'now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400 && date.getDate() === now.getDate()) return `${Math.floor(diff / 3600)}h`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : null),
+  });
 }
 
-// 3 sequential round-trips:
-//   1. my participation rows → convIds
-//   2. parallel: all participants + conversations + recent messages
-//   3. profiles for the other users
-// `signal` required — always called from load/onRefresh below, each of
-// which owns an AbortController tied to this screen's focus lifecycle (see
-// the useFocusEffect cleanup further down for why an uncancelled request
-// left running past a tab switch can crash with whatwg-fetch's status-0
-// RangeError — same mechanism as hooks/use-profile.ts).
-async function loadInbox(currentUserId: string, signal: AbortSignal): Promise<ConversationItem[]> {
-  const { data: myRows } = await supabase
-    .from('conversation_participants')
-    .select('conversation_id')
-    .eq('user_id', currentUserId)
-    // Conversations this user swipe-deleted from their own inbox — hidden
-    // here only; the other participant's own row/inbox is untouched, and a
-    // DB trigger clears this back to NULL the moment a new message lands.
-    .is('hidden_at', null)
-    .abortSignal(signal);
-
-  // Checked after every awaited phase below (not just the final one) so an
-  // aborted lifecycle (blur/unmount/foreground-superseded) stops issuing
-  // further queries instead of paying for phases whose result can never be
-  // applied — the caller (load/onRefresh/refreshInbox) independently checks
-  // signal.aborted again before touching state either way.
-  if (signal.aborted) return [];
-  if (!myRows?.length) return [];
-
-  const convIds = (myRows as any[]).map((r) => r.conversation_id as string);
-
-  const [allParticipantsRes, conversationsRes, messagesRes] = await Promise.all([
-    supabase
-      .from('conversation_participants')
-      .select('conversation_id, user_id')
-      .in('conversation_id', convIds)
-      .abortSignal(signal),
-    supabase
-      .from('conversations')
-      .select('id, last_message_at')
-      .in('id', convIds)
-      .abortSignal(signal),
-    supabase
-      .from('messages')
-      .select('conversation_id, body, created_at')
-      .in('conversation_id', convIds)
-      .order('created_at', { ascending: false })
-      .limit(200)
-      .abortSignal(signal),
-  ]);
-
-  if (signal.aborted) return [];
-
-  // Map: conversation_id → other user_id
-  const convOtherUserMap = new Map<string, string>();
-  for (const row of (allParticipantsRes.data ?? []) as any[]) {
-    if (row.user_id !== currentUserId) {
-      convOtherUserMap.set(row.conversation_id, row.user_id);
-    }
-  }
-
-  const otherUserIds = [...new Set([...convOtherUserMap.values()])];
-  const { data: profilesData } = await supabase
-    .from('profiles')
-    .select('id, username, display_name, avatar_url')
-    .in('id', otherUserIds)
-    .abortSignal(signal);
-
-  if (signal.aborted) return [];
-
-  const profileMap = new Map((profilesData ?? []).map((p: any) => [p.id, p]));
-
-  // Messages are DESC — first seen per conversation_id is the latest
-  const latestMsgMap = new Map<string, any>();
-  for (const msg of (messagesRes.data ?? []) as any[]) {
-    if (!latestMsgMap.has(msg.conversation_id)) {
-      latestMsgMap.set(msg.conversation_id, msg);
-    }
-  }
-
-  const convLastAtMap = new Map<string, string>(
-    (conversationsRes.data ?? []).map((c: any) => [c.id, c.last_message_at]),
-  );
-
-  return convIds
-    .map((convId) => {
-      const otherUserId = convOtherUserMap.get(convId) ?? '';
-      const p = profileMap.get(otherUserId) ?? {};
-      const lastMsg = latestMsgMap.get(convId);
-      return {
-        id: convId,
-        otherUserId,
-        otherUsername: p.username ?? 'user',
-        otherDisplayName: p.display_name ?? null,
-        otherAvatarUrl: p.avatar_url ?? null,
-        lastMessageBody: lastMsg?.body ?? null,
-        lastMessageAt: lastMsg?.created_at ?? convLastAtMap.get(convId) ?? new Date().toISOString(),
-      };
-    })
-    .sort(
-      (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
-    );
-}
-
-// Two overlapping chat bubbles, each holding a faint card silhouette, with a
-// few small iridescent tiles drifting between them and a soft ground shadow
-// beneath — metallic white-silver surfaces with restrained cyan/lavender/pink
-// accents, no gold, no glow.
-function EmptyMessagesArtwork() {
-  return (
-    <Svg width={320} height={230} viewBox="0 0 320 230">
-      <Defs>
-        <LinearGradient id="bubbleRear" x1="0%" y1="0%" x2="100%" y2="100%">
-          <Stop offset="0%" stopColor="#FFFFFF" />
-          <Stop offset="100%" stopColor="#E4EEF0" />
-        </LinearGradient>
-        <LinearGradient id="bubbleFront" x1="0%" y1="0%" x2="100%" y2="100%">
-          <Stop offset="0%" stopColor="#FFFFFF" />
-          <Stop offset="100%" stopColor="#EEEAF6" />
-        </LinearGradient>
-        <RadialGradient id="groundShadow" cx="50%" cy="50%" r="50%">
-          <Stop offset="0%" stopColor="#1B2733" stopOpacity={0.16} />
-          <Stop offset="100%" stopColor="#1B2733" stopOpacity={0} />
-        </RadialGradient>
-      </Defs>
-
-      {/* Ground shadow */}
-      <Ellipse cx={170} cy={207} rx={95} ry={11} fill="url(#groundShadow)" />
-
-      {/* Rear-left bubble — tail drawn first so the body's rounded edge covers the seam */}
-      <Path d="M62,151 L82,151 L54,175 Z" fill="url(#bubbleRear)" />
-      <Rect
-        x={35}
-        y={48}
-        width={155}
-        height={105}
-        rx={24}
-        fill="url(#bubbleRear)"
-        stroke="#C9D3D6"
-        strokeWidth={1}
-      />
-      <Path
-        d="M55,60 Q47,68 47,80"
-        stroke="#FFFFFF"
-        strokeWidth={3}
-        strokeLinecap="round"
-        opacity={0.6}
-        fill="none"
-      />
-      {/* Card silhouette — no image or text, just faint frame */}
-      <Rect x={90} y={68} width={46} height={66} rx={8} fill="#EDF2F3" stroke="#D3DBDD" strokeWidth={1} />
-      <Rect x={95} y={73} width={36} height={56} rx={5} fill="none" stroke="#C7D0D2" strokeWidth={0.75} opacity={0.7} />
-
-      {/* Front-right bubble */}
-      <Path d="M243,181 L263,181 L271,203 Z" fill="url(#bubbleFront)" />
-      <Rect
-        x={130}
-        y={78}
-        width={155}
-        height={105}
-        rx={24}
-        fill="url(#bubbleFront)"
-        stroke="#D2CDE0"
-        strokeWidth={1}
-      />
-      <Path
-        d="M150,90 Q142,98 142,110"
-        stroke="#FFFFFF"
-        strokeWidth={3}
-        strokeLinecap="round"
-        opacity={0.6}
-        fill="none"
-      />
-      <Rect x={185} y={98} width={46} height={66} rx={8} fill="#F1EEF7" stroke="#DAD4E8" strokeWidth={1} />
-      <Rect x={190} y={103} width={36} height={56} rx={5} fill="none" stroke="#CFC8E0" strokeWidth={0.75} opacity={0.7} />
-    </Svg>
-  );
+function previewText(item: ConversationItem) {
+  if (!item.lastMessageBody) return 'New conversation';
+  return item.lastMessageFromMe ? `You: ${item.lastMessageBody}` : item.lastMessageBody;
 }
 
 export default function MessagesScreen() {
@@ -231,6 +65,11 @@ export default function MessagesScreen() {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Last authoritative refresh failed. Only surfaced while there's nothing
+  // to show — a failed background poll never replaces a loaded inbox.
+  const [loadError, setLoadError] = useState(false);
+  const [query, setQuery] = useState('');
+  const [newMessageOpen, setNewMessageOpen] = useState(false);
 
   // Mirrors `conversations` synchronously for refreshInbox's authoritative-
   // compare logic below, which can be re-entered (via the coalesced-pending
@@ -299,6 +138,7 @@ export default function MessagesScreen() {
     try {
       const data = await loadInbox(currentUserId, signal);
       if (signal.aborted) return;
+      setLoadError(false);
 
       const prev = conversationsRef.current;
       // Compare only the fields that actually determine what's rendered
@@ -312,7 +152,9 @@ export default function MessagesScreen() {
           (c, i) =>
             c.id === prev[i].id &&
             c.lastMessageAt === prev[i].lastMessageAt &&
-            c.lastMessageBody === prev[i].lastMessageBody,
+            c.lastMessageBody === prev[i].lastMessageBody &&
+            c.lastMessageFromMe === prev[i].lastMessageFromMe &&
+            c.unread === prev[i].unread,
         );
       if (unchanged) return;
 
@@ -320,7 +162,10 @@ export default function MessagesScreen() {
       // Synchronous mirror — see conversationsRef's own comment.
       conversationsRef.current = data;
     } catch (e) {
-      if (!signal.aborted && __DEV__) console.error('[Messages] inbox refresh failed:', e);
+      if (!signal.aborted) {
+        setLoadError(true);
+        if (__DEV__) console.error('[Messages] inbox refresh failed:', e);
+      }
     } finally {
       fetchInFlightRef.current = false;
 
@@ -494,9 +339,23 @@ export default function MessagesScreen() {
     }, [currentUserId, refreshInbox]),
   );
 
-  function handleFindCollectors() {
-    router.push('/(tabs)/search');
+  function openConversation(conversationId: string, otherUsername: string, otherDisplayName: string | null) {
+    router.push({
+      pathname: '/conversation/[id]',
+      params: { id: conversationId, otherUsername, otherDisplayName: otherDisplayName ?? '' },
+    });
   }
+
+  // Local filter over the loaded inbox — name, handle, or last message.
+  const filteredConversations = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) =>
+      [c.otherUsername, c.otherDisplayName, c.lastMessageBody]
+        .filter(Boolean)
+        .some((v) => (v as string).toLowerCase().includes(q)),
+    );
+  }, [conversations, query]);
 
   // Hides the conversation from this user's inbox only — never a real
   // delete (see the hidden_at migration's comment). Row is only removed
@@ -537,71 +396,118 @@ export default function MessagesScreen() {
     );
   }
 
+  const listBottomPadding = TAB_BAR_HEIGHT + insets.bottom + 24;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Messages</Text>
+        <View style={styles.headerText}>
+          <Text style={styles.headerTitle}>Messages</Text>
+        </View>
+        <Pressable
+          onPress={() => setNewMessageOpen(true)}
+          style={({ pressed }) => [styles.composeBtn, pressed && styles.pressed]}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="New message">
+          <IconSymbol name="square.and.pencil" size={19} color={PV2.textPrimary} />
+        </Pressable>
       </View>
 
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={PV2.link} />
+      <View style={styles.searchWrap}>
+        <IconSymbol name="magnifyingglass" size={16} color={PV2.textTertiary} />
+        <TextInput
+          style={styles.searchInput}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search messages"
+          placeholderTextColor={PV2.textTertiary}
+          selectionColor={CHAT.accent}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+        />
+      </View>
+
+      {loading && conversations.length === 0 ? (
+        <View style={styles.skeletonList} accessibilityLabel="Loading conversations">
+          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+            <View key={i} style={styles.row}>
+              <View style={styles.skeletonAvatar} />
+              <View style={styles.rowBody}>
+                <View style={[styles.skeletonLine, { width: '45%' }]} />
+                <View style={[styles.skeletonLine, { width: '70%' }]} />
+              </View>
+              <View style={[styles.skeletonLine, styles.skeletonTime]} />
+            </View>
+          ))}
+        </View>
+      ) : loadError && conversations.length === 0 ? (
+        <View style={styles.stateWrap}>
+          <Text style={styles.stateTitle}>Couldn’t load messages</Text>
+          <Text style={styles.stateBody}>Check your connection and try again.</Text>
+          <Pressable
+            onPress={onRefresh}
+            style={({ pressed }) => [styles.stateBtn, pressed && styles.pressed]}
+            accessibilityRole="button">
+            <Text style={styles.stateBtnText}>Try Again</Text>
+          </Pressable>
         </View>
       ) : conversations.length === 0 ? (
-        <View style={styles.messagesEmptyState}>
-          <CacheCaseLogo
-            variant="light"
-            size="lg"
-            placement="emptyState"
-            style={styles.messagesEmptyLogo}
-          />
-          <EmptyMessagesArtwork />
-
-          <Text style={styles.messagesEmptyTitle}>No conversations yet</Text>
-
-          <Text style={styles.messagesEmptyBody}>
-            Connect with collectors and start talking cards.
-          </Text>
-
-          <TouchableOpacity
-            style={styles.messagesEmptyButton}
-            onPress={handleFindCollectors}
-            activeOpacity={0.82}>
-            <Text style={styles.messagesEmptyButtonText}>Find Collectors</Text>
-          </TouchableOpacity>
+        <View style={styles.stateWrap}>
+          <View style={styles.stateIcon}>
+            <IconSymbol name="message" size={24} color={PV2.textSecondary} />
+          </View>
+          <Text style={styles.stateTitle}>No messages yet</Text>
+          <Text style={styles.stateBody}>Start a conversation with another collector.</Text>
+          <Pressable
+            onPress={() => setNewMessageOpen(true)}
+            style={({ pressed }) => [styles.stateBtn, styles.stateBtnPrimary, pressed && styles.pressed]}
+            accessibilityRole="button">
+            <Text style={[styles.stateBtnText, styles.stateBtnTextPrimary]}>New Message</Text>
+          </Pressable>
         </View>
       ) : (
         <FlatList
-          data={conversations}
+          data={filteredConversations}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={[styles.listContent, { paddingBottom: listBottomPadding }]}
           onScroll={navbarOnScroll}
           scrollEventThrottle={scrollEventThrottle}
+          ListHeaderComponent={<Text style={styles.sectionLabel}>Recent</Text>}
+          ListEmptyComponent={
+            <Text style={styles.noMatches}>No conversations match “{query.trim()}”.</Text>
+          }
           renderItem={({ item }) => (
             <ConversationRow
               item={item}
-              onPress={() =>
-                router.push({
-                  pathname: '/conversation/[id]',
-                  params: {
-                    id: item.id,
-                    otherUsername: item.otherUsername,
-                    otherDisplayName: item.otherDisplayName ?? '',
-                  },
-                })
-              }
+              onPress={() => openConversation(item.id, item.otherUsername, item.otherDisplayName)}
               onDeletePress={() => handleDeletePress(item)}
             />
           )}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.textSecondary} />
           }
         />
       )}
+
+      <NewMessageSheet
+        visible={newMessageOpen}
+        onClose={() => setNewMessageOpen(false)}
+        onOpenConversation={(conversationId, recipient) => {
+          setNewMessageOpen(false);
+          // Let the page sheet start dismissing before the push.
+          setTimeout(() => openConversation(conversationId, recipient.username, recipient.displayName), 300);
+        }}
+      />
     </SafeAreaView>
   );
 }
 
+// Existing swipe-to-delete (hide from my inbox only) is preserved as-is.
 function ConversationRow({
   item,
   onPress,
@@ -625,40 +531,36 @@ function ConversationRow({
     <Swipeable
       ref={swipeableRef}
       renderRightActions={() => (
-        <TouchableOpacity
-          style={styles.deleteAction}
-          onPress={handleDeleteTap}
-          activeOpacity={0.85}>
+        <TouchableOpacity style={styles.deleteAction} onPress={handleDeleteTap} activeOpacity={0.85}>
           <Text style={styles.deleteActionText}>Delete</Text>
         </TouchableOpacity>
       )}
       overshootRight={false}
       rightThreshold={40}>
-      <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
-        <View style={styles.avatar}>
-          {item.otherAvatarUrl ? (
-            <Image
-              source={{ uri: item.otherAvatarUrl }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-              transition={200}
-            />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.avatarPlaceholder]}>
-              <Text style={styles.avatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
-            </View>
-          )}
-        </View>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+        accessibilityRole="button"
+        accessibilityLabel={`${displayName}${item.unread ? ', unread' : ''}. ${previewText(item)}`}>
+        <ChatAvatar uri={item.otherAvatarUrl} name={displayName} size={48} />
 
         <View style={styles.rowBody}>
-          <Text style={styles.rowName} numberOfLines={1}>{displayName}</Text>
-          <Text style={styles.rowPreview} numberOfLines={1}>
-            {item.lastMessageBody ?? 'New conversation'}
-          </Text>
+          <View style={styles.rowTop}>
+            <Text style={[styles.rowName, item.unread && styles.rowNameUnread]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            <Text style={[styles.rowTime, item.unread && styles.rowTimeUnread]}>
+              {formatTime(item.lastMessageAt)}
+            </Text>
+          </View>
+          <View style={styles.rowBottom}>
+            <Text style={[styles.rowPreview, item.unread && styles.rowPreviewUnread]} numberOfLines={1}>
+              {previewText(item)}
+            </Text>
+            {item.unread ? <View style={styles.unreadDot} /> : null}
+          </View>
         </View>
-
-        <Text style={styles.rowTime}>{formatTime(item.lastMessageAt)}</Text>
-      </TouchableOpacity>
+      </Pressable>
     </Swipeable>
   );
 }
@@ -669,77 +571,123 @@ const styles = StyleSheet.create({
     backgroundColor: PV2.bg,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: PV2.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: PV2.dividerColor,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 12,
+  },
+  headerText: {
+    flex: 1,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: PV2.textPrimary,
-  },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  messagesEmptyState: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    transform: [{ translateY: -24 }],
-  },
-  messagesEmptyArtwork: {
-    width: 320,
-    height: 230,
-    alignSelf: 'center',
-  },
-  messagesEmptyLogo: {
-    transform: [{ translateY: -50 }],
-  },
-  messagesEmptyTitle: {
-    marginTop: 18,
     fontSize: 26,
-    lineHeight: 32,
     fontWeight: '700',
     color: PV2.textPrimary,
-    textAlign: 'center',
   },
-  messagesEmptyBody: {
-    marginTop: 10,
-    maxWidth: 330,
-    fontSize: 17,
-    lineHeight: 24,
-    fontWeight: '400',
+  // Same circular control language as the DM conversation screen.
+  composeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+  },
+  pressed: {
+    opacity: 0.75,
+  },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    backgroundColor: PV2.collectorPanelBg,
+    borderRadius: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: PV2.textPrimary,
+    paddingVertical: 10,
+  },
+  listContent: {
+    paddingTop: 10,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: PV2.textSecondary,
+    paddingHorizontal: 20,
+    marginBottom: 4,
+  },
+  noMatches: {
+    fontSize: 14,
     color: PV2.textSecondary,
     textAlign: 'center',
-  },
-  messagesEmptyButton: {
-    marginTop: 24,
-    width: 230,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: PV2.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  messagesEmptyButtonText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    paddingTop: 32,
+    paddingHorizontal: 24,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: PV2.dividerColor,
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 11,
     backgroundColor: PV2.bg,
+  },
+  rowPressed: {
+    backgroundColor: PV2.panel,
+  },
+  rowBody: {
+    flex: 1,
+    gap: 3,
+  },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  rowBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  rowName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  rowNameUnread: {
+    fontWeight: '800',
+  },
+  rowTime: {
+    fontSize: 12,
+    color: PV2.textTertiary,
+  },
+  rowTimeUnread: {
+    color: PV2.textSecondary,
+  },
+  rowPreview: {
+    flex: 1,
+    fontSize: 14,
+    color: PV2.textTertiary,
+  },
+  rowPreviewUnread: {
+    color: PV2.textPrimary,
+  },
+  unreadDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: CHAT.accent,
   },
   deleteAction: {
     width: 88,
@@ -752,41 +700,70 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
   },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: 'hidden',
-    backgroundColor: PV2.collectorPanelBg,
-    flexShrink: 0,
+  skeletonList: {
+    paddingTop: 10,
   },
-  avatarPlaceholder: {
+  skeletonAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  skeletonLine: {
+    height: 11,
+    borderRadius: 5.5,
+    backgroundColor: PV2.collectorPanelBg,
+    marginVertical: 3,
+  },
+  skeletonTime: {
+    width: 28,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  stateWrap: {
+    alignItems: 'center',
+    paddingTop: 72,
+    paddingHorizontal: 32,
+    gap: 6,
+  },
+  stateIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: PV2.collectorPanelBg,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    marginBottom: 8,
   },
-  avatarInitial: {
-    fontSize: 20,
+  stateTitle: {
+    fontSize: 18,
     fontWeight: '700',
     color: PV2.textPrimary,
   },
-  rowBody: {
-    flex: 1,
-    marginLeft: 12,
-    gap: 3,
+  stateBody: {
+    fontSize: 14,
+    color: PV2.textSecondary,
+    textAlign: 'center',
   },
-  rowName: {
+  stateBtn: {
+    marginTop: 14,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  stateBtnPrimary: {
+    backgroundColor: CHAT.accent,
+  },
+  stateBtnText: {
     fontSize: 15,
     fontWeight: '600',
     color: PV2.textPrimary,
   },
-  rowPreview: {
-    fontSize: 14,
-    color: PV2.textSecondary,
-  },
-  rowTime: {
-    fontSize: 12,
-    color: PV2.textTertiary,
-    marginLeft: 8,
-    flexShrink: 0,
+  stateBtnTextPrimary: {
+    color: CHAT.onAccent,
+    fontWeight: '700',
   },
 });

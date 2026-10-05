@@ -45,6 +45,9 @@ type PersistedMap = Record<string, PersistedSignedUrlEntry>;
 // pairing needs to know these strings exist.
 export const ITEM_IMAGES_CACHE_DOMAIN = 'item-images';
 export const FOLDER_COVERS_CACHE_DOMAIN = 'folder-covers';
+// DM photo attachments (hooks/use-dm-image-url.ts) — keyed by dm-attachments
+// storage path, never mixed with item-image ids.
+export const DM_ATTACHMENTS_CACHE_DOMAIN = 'dm-attachments';
 
 const STORAGE_KEY_PREFIX = 'cachecase:signed-url-cache:v1';
 

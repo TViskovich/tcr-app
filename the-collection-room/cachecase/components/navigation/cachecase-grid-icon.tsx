@@ -38,7 +38,9 @@ const INACTIVE_STROKE = '#555762';
 // (profile-v2-identity-card.tsx) or IRIDESCENT_BORDER (profile-v2-
 // selector.tsx, which still carries a green stop): this reads as premium
 // holographic light rather than rainbow neon/candy.
-const IRIDESCENT_STROKE = ['#7FD8FF', '#9A8CFF', '#B8A7FF', '#F3A6D8'] as const;
+// Exported as the CacheCase brand foil palette — the DM screen's accents
+// (components/conversation/conversation-theme.ts) are built from it.
+export const IRIDESCENT_STROKE = ['#7FD8FF', '#9A8CFF', '#B8A7FF', '#F3A6D8'] as const;
 
 type Props = {
   active: boolean;

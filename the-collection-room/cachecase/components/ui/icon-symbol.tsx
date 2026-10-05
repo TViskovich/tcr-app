@@ -59,6 +59,14 @@ const MAPPING = {
   // Repost strip's own icon (components/feed/repost-header.tsx) — the
   // standard "repost" glyph.
   'arrow.2.squarepath': 'repeat',
+  // DM composer attachment placeholder (components/conversation/conversation-composer.tsx).
+  'paperclip': 'attach-file',
+  // DM attachment sheet rows (components/conversation/attachment-sheet.tsx).
+  'shippingbox': 'inventory-2',
+  'camera': 'photo-camera',
+  'photo': 'image',
+  // DM Share Item picker's selected-tile badge (share-item-picker.tsx).
+  'checkmark': 'check',
 } as IconMapping;
 
 /**

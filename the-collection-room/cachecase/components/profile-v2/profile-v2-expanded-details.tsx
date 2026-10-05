@@ -1,4 +1,4 @@
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -29,6 +29,10 @@ type Props = {
   // profile being VIEWED, never automatically the signed-in viewer.
   onFollowersPress?: () => void;
   onFollowingPress?: () => void;
+  // Owner only: opens the signed-in user's own Messages inbox. (Visitors
+  // already get the Follow + Message pair below the stats, which opens the
+  // 1:1 conversation via the screen's handleMessage.)
+  onOpenInboxPress?: () => void;
 };
 
 // The panel that opens beneath ProfileV2IdentityCard when it's tapped (see
@@ -60,6 +64,7 @@ export function ProfileV2ExpandedDetails({
   onSharePress,
   onFollowersPress,
   onFollowingPress,
+  onOpenInboxPress,
 }: Props) {
   const safeWebsiteUrl = website ? getSafeWebsiteUrl(website) : null;
 
@@ -123,6 +128,17 @@ export function ProfileV2ExpandedDetails({
         onFollowersPress={onFollowersPress}
         onFollowingPress={onFollowingPress}
       />
+
+      {mode === 'owner' && onOpenInboxPress && (
+        <Pressable
+          onPress={onOpenInboxPress}
+          style={({ pressed }) => [styles.inboxBtn, pressed && styles.inboxBtnPressed]}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel="Open messages">
+          <Text style={styles.inboxBtnLabel}>Messages</Text>
+        </Pressable>
+      )}
 
       {mode === 'public' && (
         <View style={styles.actionsRow}>
@@ -225,6 +241,30 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.06)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Compact centered pill (not a full-width CTA) — same border/fill tokens
+  // as messageBtn above so the owner and visitor variants read as the same
+  // control family. 40px tall for a comfortable touch target.
+  inboxBtn: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 40,
+    paddingHorizontal: 18,
+    marginTop: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  inboxBtnPressed: {
+    borderColor: PV2.borderStrong,
+    backgroundColor: PV2.accentSoft,
+  },
+  inboxBtnLabel: {
+    color: PV2.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
   },
   messageBtnLabel: {
     color: PV2.textPrimary,

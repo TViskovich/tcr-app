@@ -40,8 +40,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow CacheCase to access your photos so you can add images to your collection.",
-          "cameraPermission": "Allow CacheCase to use your camera so you can take photos for your collection."
+          "photosPermission": "Allow CacheCase to access your photos so you can add images to your collection and send them in messages.",
+          "cameraPermission": "Allow CacheCase to use your camera so you can take photos for your collection and your messages."
         }
       ],
       [

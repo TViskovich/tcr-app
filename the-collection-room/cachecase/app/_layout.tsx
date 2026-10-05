@@ -105,6 +105,10 @@ function RootLayoutNav() {
                 visibility in modals..." warning, confirmed reproduced
                 before this fix). */}
             <Stack.Screen name="post-reply/[id]" options={{ presentation: 'modal', headerShown: false }} />
+            {/* DM thread renders its own glass ConversationHeader — set
+                statically (not via an inline Stack.Screen) so the native
+                header never paints for a frame before being hidden. */}
+            <Stack.Screen name="conversation/[id]" options={{ headerShown: false }} />
           </Stack>
           {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
         </MessageBadgeContext.Provider>

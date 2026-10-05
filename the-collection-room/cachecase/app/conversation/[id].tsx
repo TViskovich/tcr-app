@@ -8,24 +8,51 @@ import {
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
+  Pressable,
   RefreshControl,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 
 import * as Crypto from 'expo-crypto';
-import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { AttachmentSheet } from '@/components/conversation/attachment-sheet';
+import { ConversationComposer } from '@/components/conversation/conversation-composer';
+import { ConversationHeader } from '@/components/conversation/conversation-header';
+import { DmImageAttachment } from '@/components/conversation/dm-image-attachment';
+import { DmItemAttachmentCard } from '@/components/conversation/dm-item-attachment-card';
+import { CHAT } from '@/components/conversation/conversation-theme';
+import { MessageBubble } from '@/components/conversation/message-bubble';
+import { type PhotoFlowState, type PhotoSource, PhotoConfirmSheet } from '@/components/conversation/photo-confirm-sheet';
+import { ShareItemPicker } from '@/components/conversation/share-item-picker';
+import { TypingIndicator } from '@/components/conversation/typing-indicator';
+import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
-import { BackButton } from '@/components/ui/back-button';
+import { useConversationTyping } from '@/hooks/use-conversation-typing';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import {
+  type DmItemPreviewState,
+  fetchDmItemPreviews,
+  MESSAGE_COLUMNS,
+} from '@/lib/dm-attachments';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
+import { dmImagePath, prepareDmImage, type PreparedDmImage, removeDmImage, uploadDmImage } from '@/lib/dm-images';
+import {
+  attachmentColumns,
+  type DmAttachmentInput,
+  type DmMessage,
+  stampSenderReadCursor,
+  writeDmMessage,
+} from '@/lib/dm-send';
+import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -47,36 +74,53 @@ const TAB_BAR_CLEARANCE = TAB_BAR_HEIGHT + 16;
 // the user is treated as reading older history and left undisturbed.
 const NEAR_BOTTOM_THRESHOLD = 90;
 
-type Message = {
-  id: string;
-  sender_id: string;
-  body: string;
-  created_at: string;
-};
+type Message = DmMessage;
+
+// 'not_shareable' = the server's item_not_shareable rejection (definitive,
+// nothing committed) — reported separately so the picker can say so.
+type SendOutcome = 'sent' | 'failed' | 'not_shareable' | 'pending' | 'skipped';
 
 type OtherUser = {
   id: string;
   username: string;
   display_name: string | null;
+  avatar_url: string | null;
 };
 
+// Bubble timestamps are time-only — the calendar day is carried by the
+// centered day separator rendered above the first message of each day.
 function formatBubbleTime(iso: string) {
-  const d = new Date(iso);
-  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  const isToday = (Date.now() - d.getTime()) / 1000 < 86400;
-  if (isToday) return time;
-  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${time}`;
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
-function MessageBubble({ message, isOwn }: { message: Message; isOwn: boolean }) {
-  return (
-    <View style={[styles.bubbleWrap, isOwn && styles.bubbleWrapOwn]}>
-      <View style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
-        <Text style={[styles.bubbleText, isOwn && styles.bubbleTextOwn]}>{message.body}</Text>
-      </View>
-      <Text style={styles.bubbleTime}>{formatBubbleTime(message.created_at)}</Text>
-    </View>
-  );
+function isSameDay(a: string, b: string) {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+// Value written to the viewer's own conversation_participants.last_read_at:
+// the server-assigned created_at of the newest message actually loaded on
+// screen, not the device clock. The peer's "Read" status compares this
+// cursor against messages.created_at (also server time), so a skewed phone
+// clock can neither hide a real read nor fake one for a message not yet
+// seen. The unread badge (hooks/use-unread-messages.ts) compares
+// conversations.last_message_at (server time) with a strict >, so an equal
+// cursor still clears it.
+function readCursorFor(list: Message[]) {
+  return list.length ? list[list.length - 1].created_at : new Date().toISOString();
+}
+
+function formatDayLabel(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return 'Today';
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : null),
+  });
 }
 
 export default function ConversationScreen() {
@@ -96,6 +140,35 @@ export default function ConversationScreen() {
   useScrollResponsiveNavbar({ enabled: false });
 
   const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
+  // The other participant's read cursor (their conversation_participants.
+  // last_read_at) — drives the Sent/Read status on my newest outgoing
+  // message. Refreshed by the initial load and every loadMessages call
+  // (focus, 5s poll, foreground, pull-to-refresh). Readable only because
+  // the existing participant-gated RLS already exposes the other
+  // participant's row (the load below already selects its user_id).
+  const [peerReadAt, setPeerReadAt] = useState<string | null>(null);
+  // Display-only placeholder for the send currently in flight, so the
+  // bubble can show "Sending…" before the INSERT returns. Never written to
+  // `messages`/messagesRef — finalizeSentMessage still appends the durable
+  // row exactly as before; this is cleared in performSend's finally.
+  const [inFlight, setInFlight] = useState<Message | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [itemPickerOpen, setItemPickerOpen] = useState(false);
+  // Camera/Photos → shared PhotoConfirmSheet. Null = sheet closed.
+  const [photoFlow, setPhotoFlow] = useState<PhotoFlowState | null>(null);
+  // Full-screen viewer for a tapped DM photo (already-signed URL).
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  // Live-resolved item attachment previews, keyed by item id. Resolved under
+  // this viewer's own RLS (see lib/dm-attachments.ts) — an item they can't
+  // see comes back 'unavailable'. Screen-local: a fresh open re-resolves, so
+  // a privacy change or deletion shows up on the next visit.
+  const [itemPreviews, setItemPreviews] = useState<Map<string, DmItemPreviewState>>(() => new Map());
+  const requestedItemIdsRef = useRef<Set<string>>(new Set());
+  // Aborted only on unmount — not per `messages` change, so a lookup started
+  // by one change is never cancelled by the next (which would strand its
+  // cards on "loading").
+  const previewsControllerRef = useRef<AbortController | null>(null);
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -112,7 +185,11 @@ export default function ConversationScreen() {
   // new logical send — see performSend/resolveAmbiguousSend. Session-local
   // only: held in React state, not persisted, so an app kill while a send is
   // in this state loses the token (known beta gap, not solved here).
-  const [pendingSend, setPendingSend] = useState<{ id: string; body: string } | null>(null);
+  const [pendingSend, setPendingSend] = useState<{
+    id: string;
+    body: string | null;
+    attachment: DmAttachmentInput | null;
+  } | null>(null);
   // Synchronous, same-runtime exactly-once guard for finalizeSentMessage,
   // keyed by durable messages.id. Needed because setPendingSend(null) is an
   // async state update — a second Retry tap can still read the pre-commit
@@ -142,6 +219,57 @@ export default function ConversationScreen() {
   // reading older history) undisturbed. Starts true: the initial load and
   // every send scroll to bottom.
   const isNearBottomRef = useRef(true);
+
+  // Ephemeral typing state over Realtime Broadcast (see the hook) —
+  // independent of the polling/read-state logic in this file.
+  const { peerTyping, notifyLocalInput, stopLocalTyping } = useConversationTyping({
+    convId,
+    currentUserId,
+    otherUserId: otherUser?.id,
+  });
+
+  // The indicator renders as the list footer, i.e. below the newest message.
+  // Only follow it into view when the reader is already at the bottom —
+  // never yank someone reading older history back down.
+  useEffect(() => {
+    if (peerTyping && isNearBottomRef.current) {
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+    }
+  }, [peerTyping]);
+
+  // Resolve any attachment item ids not yet requested — one batched lookup
+  // per new set of ids, covering initial load, polled arrivals and own sends
+  // alike (they all land in `messages`). Ids whose lookup failed are
+  // released so the next change retries them instead of staying "loading".
+  useEffect(() => {
+    const pending = Array.from(
+      new Set(
+        messages
+          .map((m) => m.attachment_item_id)
+          .filter((id): id is string => !!id && !requestedItemIdsRef.current.has(id)),
+      ),
+    );
+    if (!pending.length) return;
+    for (const id of pending) requestedItemIdsRef.current.add(id);
+    previewsControllerRef.current ??= new AbortController();
+    const signal = previewsControllerRef.current.signal;
+    fetchDmItemPreviews(pending, signal)
+      .catch(() => null)
+      .then((result) => {
+        if (signal.aborted) return;
+        if (!result) {
+          for (const id of pending) requestedItemIdsRef.current.delete(id);
+          return;
+        }
+        setItemPreviews((prev) => {
+          const next = new Map(prev);
+          result.forEach((state, id) => next.set(id, state));
+          return next;
+        });
+      });
+  }, [messages]);
+
+  useEffect(() => () => previewsControllerRef.current?.abort(), []);
 
   // Synchronous overlap guard shared by every authoritative messages fetch
   // (initial mount load, focus-triggered refresh, each 5s poll tick, and
@@ -186,11 +314,6 @@ export default function ConversationScreen() {
     };
   }, []);
 
-  // Fallback pattern: canGoBack() is false when this screen was reached via
-  // a deep link or otherwise has no real navigation history to pop —
-  // replacing onto the inbox keeps the back action reliable either way.
-  const headerBackLeft = () => <BackButton fallbackHref="/(tabs)/messages" />;
-
   // Shared authoritative messages fetch — called from onRefresh (manual
   // pull-to-refresh), the focus/poll effect below (initial focus, every 5s
   // tick, and app-foreground), each supplying its own controller's signal.
@@ -203,7 +326,7 @@ export default function ConversationScreen() {
     signal: AbortSignal,
     options?: { coalesceIfBusy?: boolean },
   ) => {
-    if (!convId) return;
+    if (!convId || !currentUserId) return;
     if (fetchInFlightRef.current) {
       // Only a foreground-transition refresh opts into coalescing (see the
       // AppState listener below) — a busy poll tick or manual refresh is
@@ -215,19 +338,38 @@ export default function ConversationScreen() {
     }
     fetchInFlightRef.current = true;
     try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('id, sender_id, body, created_at')
-        .eq('conversation_id', convId)
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true })
-        .abortSignal(signal);
+      const [{ data, error }, peerRes] = await Promise.all([
+        supabase
+          .from('messages')
+          .select(MESSAGE_COLUMNS)
+          .eq('conversation_id', convId)
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .abortSignal(signal),
+        // Peer read cursor rides the same poll — no Realtime (see the
+        // polling effect below). Checked before the messages "unchanged"
+        // early-return, since a read update arrives without any new rows.
+        supabase
+          .from('conversation_participants')
+          .select('last_read_at')
+          .eq('conversation_id', convId)
+          .neq('user_id', currentUserId)
+          .abortSignal(signal)
+          .maybeSingle(),
+      ]);
 
       // Single caller/single controller here, so checking the signal
       // directly (rather than comparing controller identity, as the
       // multi-controller screens in this codebase do) is sufficient to
       // discard a stale result.
       if (signal.aborted) return;
+
+      if (peerRes.error) {
+        if (__DEV__) console.error('[Conversation] peer read refresh failed:', peerRes.error.message);
+      } else {
+        const nextPeerReadAt = (peerRes.data as { last_read_at: string | null } | null)?.last_read_at ?? null;
+        setPeerReadAt((prev) => (prev === nextPeerReadAt ? prev : nextPeerReadAt));
+      }
 
       if (error) {
         // Leave currently-rendered messages untouched on failure — never
@@ -270,7 +412,7 @@ export default function ConversationScreen() {
       if (hasNewIncoming && currentUserId) {
         const { error: readError } = await supabase
           .from('conversation_participants')
-          .update({ last_read_at: new Date().toISOString() })
+          .update({ last_read_at: readCursorFor(fetched) })
           .eq('conversation_id', convId)
           .eq('user_id', currentUserId);
 
@@ -324,14 +466,14 @@ export default function ConversationScreen() {
         const [participantRes, messagesRes] = await Promise.all([
           supabase
             .from('conversation_participants')
-            .select('user_id')
+            .select('user_id, last_read_at')
             .eq('conversation_id', convId)
             .neq('user_id', currentUserId)
             .abortSignal(controller.signal)
             .single(),
           supabase
             .from('messages')
-            .select('id, sender_id, body, created_at')
+            .select(MESSAGE_COLUMNS)
             .eq('conversation_id', convId)
             .order('created_at', { ascending: true })
             .order('id', { ascending: true })
@@ -341,10 +483,11 @@ export default function ConversationScreen() {
         if (loadControllerRef.current !== controller || controller.signal.aborted) return;
 
         const otherUserId = (participantRes.data as any)?.user_id;
+        setPeerReadAt((participantRes.data as any)?.last_read_at ?? null);
         if (otherUserId) {
           const { data: profileData } = await supabase
             .from('profiles')
-            .select('id, username, display_name')
+            .select('id, username, display_name, avatar_url')
             .eq('id', otherUserId)
             .abortSignal(controller.signal)
             .single();
@@ -364,7 +507,7 @@ export default function ConversationScreen() {
         // this effect.
         supabase
           .from('conversation_participants')
-          .update({ last_read_at: new Date().toISOString() })
+          .update({ last_read_at: readCursorFor(loadedMessages) })
           .eq('conversation_id', convId)
           .eq('user_id', currentUserId)
           .abortSignal(controller.signal)
@@ -488,8 +631,6 @@ export default function ConversationScreen() {
     if (finalizedSendIdsRef.current.has(message.id)) return;
     finalizedSendIdsRef.current.add(message.id);
 
-    const now = new Date().toISOString();
-
     // conversations.last_message_at is maintained server-side by the
     // messages_bump_conversation_last_message_at trigger (AFTER INSERT ON
     // public.messages) — this used to also be set here client-side, but a
@@ -497,15 +638,9 @@ export default function ConversationScreen() {
     // GREATEST(last_message_at, NEW.created_at) value, so a second client
     // write here could regress it. Removed; the trigger is the sole writer.
 
-    // Keep sender's last_read_at current so their own send doesn't show as unread
-    supabase
-      .from('conversation_participants')
-      .update({ last_read_at: now })
-      .eq('conversation_id', convId)
-      .eq('user_id', currentUserId)
-      .then(({ error: e }) => {
-        if (e) console.error('last_read_at send-stamp failed:', e.message);
-      });
+    // Keep sender's last_read_at current so their own send doesn't show as
+    // unread (shared with Item Detail → Send in DM — see lib/dm-send.ts).
+    if (convId && currentUserId) stampSenderReadCursor(convId, currentUserId, message.created_at);
 
     // Local-render dedupe only — the DB primary key is what actually
     // prevents a duplicate row; this just guards against appending the same
@@ -522,52 +657,6 @@ export default function ConversationScreen() {
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }
 
-  type ReconcileResult =
-    | { status: 'found'; message: Message }
-    | { status: 'absent' }
-    | { status: 'unknown' };
-
-  // Authoritative check for one logical send: did sendId actually commit?
-  // The live messages_select policy is participant-gated, so this read is
-  // trustworthy for the sender's own row. A read error or thrown exception
-  // leaves the true outcome unknown — must not be reported as ABSENT, which
-  // would wrongly tell the caller it's safe to let the user resend under a
-  // fresh id.
-  async function reconcileSendById(sendId: string): Promise<ReconcileResult> {
-    try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('id, sender_id, body, created_at')
-        .eq('id', sendId)
-        .eq('conversation_id', convId)
-        .eq('sender_id', currentUserId)
-        .maybeSingle();
-
-      if (error) return { status: 'unknown' };
-      return data ? { status: 'found', message: data as Message } : { status: 'absent' };
-    } catch {
-      return { status: 'unknown' };
-    }
-  }
-
-  // Resolves an ambiguous write outcome (23505 conflict, status 0, 5xx, or a
-  // thrown exception) for one logical send by reading back its sendId.
-  // FOUND/ABSENT are authoritative and end the pending send. UNKNOWN is not
-  // — the same sendId/body must survive in pendingSend for an explicit
-  // retry rather than being discarded or guessed at.
-  async function resolveAmbiguousSend(sendId: string, body: string) {
-    const outcome = await reconcileSendById(sendId);
-    if (outcome.status === 'found') {
-      finalizeSentMessage(outcome.message);
-      setPendingSend(null);
-    } else if (outcome.status === 'absent') {
-      setNewMessage(body);
-      setPendingSend(null);
-    } else {
-      setPendingSend({ id: sendId, body });
-    }
-  }
-
   // The actual durable-write attempt for one logical send — callable both
   // for a fresh Send tap (handleSend) and an explicit retry of a still-
   // pending sendId (handleRetryPendingSend). Both callers pass the
@@ -576,59 +665,64 @@ export default function ConversationScreen() {
   // not a coincidence. sendingRef/sending always release in `finally`,
   // independent of whether the logical send itself resolved — an
   // unresolved send lives on in pendingSend after this returns.
-  async function performSend(sendId: string, body: string) {
-    if (!currentUserId || !convId || sendingRef.current) return;
+  //
+  // attachment (optional): a live item reference — the server's
+  // enforce_message_attachment_visibility trigger rejects it with
+  // item_not_shareable if the sender or recipient can't view that item — or
+  // an image ALREADY uploaded to this message's deterministic path (see
+  // handleSendImage).
+  //
+  // Resolves to the logical send's outcome — ignored by the text path, used
+  // by the Share Item picker to decide whether to close. Ambiguous writes
+  // (23505 / status 0 / 5xx / thrown) are reconciled by id inside
+  // writeDmMessage.
+  async function performSend(
+    sendId: string,
+    body: string | null,
+    attachment: DmAttachmentInput | null = null,
+  ): Promise<SendOutcome> {
+    if (!currentUserId || !convId || sendingRef.current) return 'skipped';
     sendingRef.current = true;
     setSending(true);
+    setInFlight({
+      id: sendId,
+      sender_id: currentUserId,
+      body,
+      created_at: new Date().toISOString(),
+      ...attachmentColumns(attachment),
+    });
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
 
     try {
-      const { data: msgData, error, status } = await supabase
-        .from('messages')
-        .insert({ id: sendId, conversation_id: convId, sender_id: currentUserId, body })
-        .select('id, sender_id, body, created_at')
-        .single();
-
-      if (!error) {
-        // A. Clean success.
-        finalizeSentMessage(msgData as Message);
-        setPendingSend(null);
-        return;
+      // Insert + ambiguous-outcome reconciliation + error classification
+      // live in lib/dm-send.ts (shared with Item Detail → Send in DM).
+      const result = await writeDmMessage({
+        id: sendId,
+        conversationId: convId,
+        senderId: currentUserId,
+        body,
+        attachment,
+      });
+      switch (result.kind) {
+        case 'committed':
+          finalizeSentMessage(result.message);
+          setPendingSend(null);
+          return 'sent';
+        case 'unknown':
+          // The same sendId/body must survive in pendingSend for an explicit
+          // retry rather than being discarded or guessed at.
+          setPendingSend({ id: sendId, body, attachment });
+          return 'pending';
+        default:
+          // absent / not_shareable / rejected — definitively not committed.
+          setNewMessage(body ?? '');
+          setPendingSend(null);
+          return result.kind === 'not_shareable' ? 'not_shareable' : 'failed';
       }
-
-      if (error.code === '23505') {
-        // B. Duplicate-key conflict on messages_pkey — a prior attempt
-        // under this exact sendId may have already committed.
-        await resolveAmbiguousSend(sendId, body);
-        return;
-      }
-
-      if (status === 0) {
-        // C. Lost/network-origin response — the INSERT may have committed
-        // before the response leg failed.
-        await resolveAmbiguousSend(sendId, body);
-        return;
-      }
-
-      if (status >= 500) {
-        // D. Server error — same ambiguity as status 0.
-        await resolveAmbiguousSend(sendId, body);
-        return;
-      }
-
-      // E. A definitive 4xx that isn't a duplicate-key conflict (e.g. RLS
-      // rejection, malformed payload) — the INSERT did not commit.
-      console.error('Send failed:', error.message, { code: error.code, status });
-      setNewMessage(body);
-      setPendingSend(null);
-    } catch (e) {
-      // F. Thrown after the request may have already left the device — the
-      // INSERT may still have committed. Never treat a throw as proof of
-      // non-commit; reconcile the same as the ambiguous-status cases above.
-      console.error('Send threw (outcome unknown), reconciling:', e);
-      await resolveAmbiguousSend(sendId, body);
     } finally {
       sendingRef.current = false;
       setSending(false);
+      setInFlight(null);
     }
   }
 
@@ -649,7 +743,115 @@ export default function ConversationScreen() {
   // conflict (reconciled, not duplicated) rather than a second row.
   function handleRetryPendingSend() {
     if (!pendingSend || sendingRef.current) return;
-    performSend(pendingSend.id, pendingSend.body);
+    performSend(pendingSend.id, pendingSend.body, pendingSend.attachment);
+  }
+
+  // Item attachment send from the Share Item picker. The composer draft (if
+  // any) rides along as the message text. Unlike the text path, the draft
+  // is left in the composer until the outcome is known: cleared on success
+  // (or when the send is held as pending — it lives in pendingSend then, and
+  // leaving it in the composer would invite a duplicate), kept on failure.
+  async function handleSendItem(itemId: string): Promise<SendOutcome> {
+    if (!currentUserId || !convId || sendingRef.current || pendingSend) return 'skipped';
+    const body = newMessage.trim() || null;
+    const outcome = await performSend(Crypto.randomUUID(), body, { type: 'item', itemId });
+    if (outcome === 'sent' || outcome === 'pending') setNewMessage('');
+    return outcome;
+  }
+
+  // Photo send (Camera/Photos → PhotoConfirmSheet). `messageId` is owned by
+  // the confirm sheet and REUSED across its retries, so every attempt of one
+  // logical send targets the same deterministic object
+  // (<conversation>/<message>/image.jpg) and the same message row:
+  //   1. upload (idempotent — "already exists" from an earlier attempt is OK)
+  //   2. insert via performSend → writeDmMessage (reconciles ambiguity by id)
+  //   3. definitive failure → best-effort object cleanup
+  //      ambiguous ('pending') → never delete; the row may have committed
+  // Draft handling matches handleSendItem: cleared only on sent/pending.
+  async function handleSendImage(image: PreparedDmImage, messageId: string): Promise<SendOutcome> {
+    if (!currentUserId || !convId || sendingRef.current || pendingSend) return 'skipped';
+    const storagePath = dmImagePath(convId, messageId);
+    try {
+      await uploadDmImage(storagePath, image.uri);
+    } catch (e) {
+      if (__DEV__) console.error('[Conversation] photo upload failed:', e);
+      return 'failed';
+    }
+    const body = newMessage.trim() || null;
+    const outcome = await performSend(messageId, body, {
+      type: 'image',
+      storagePath,
+      width: image.width,
+      height: image.height,
+    });
+    if (outcome === 'failed') removeDmImage(storagePath);
+    if (outcome === 'sent' || outcome === 'pending') setNewMessage('');
+    return outcome;
+  }
+
+  function openItemPicker() {
+    setAttachOpen(false);
+    setItemPickerOpen(true);
+  }
+
+  // Launches the native camera or library picker (one still image), then
+  // prepares it (JPEG, ≤2048px long edge) for the shared confirm sheet.
+  // Cancelling the picker just returns to the conversation — the composer
+  // draft is never touched on any of these paths.
+  async function launchPhotoSource(source: PhotoSource) {
+    setAttachOpen(false);
+    let result: ImagePicker.ImagePickerResult;
+    try {
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          setPhotoFlow({ status: 'camera_denied' });
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1, exif: false });
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsMultipleSelection: false,
+          quality: 1,
+          exif: false,
+        });
+      }
+    } catch (e) {
+      if (__DEV__) console.error('[Conversation] photo picker failed:', e);
+      setPhotoFlow({ status: 'prepare_failed', source });
+      return;
+    }
+    if (result.canceled || !result.assets.length) return;
+
+    const asset = result.assets[0];
+    setPhotoFlow({ status: 'preparing', source });
+    try {
+      const image = await prepareDmImage(asset.uri, asset.width, asset.height);
+      setPhotoFlow({ status: 'ready', source, image });
+    } catch (e) {
+      if (__DEV__) console.error('[Conversation] photo prepare failed:', e);
+      setPhotoFlow({ status: 'prepare_failed', source });
+    }
+  }
+
+  // Close the confirm sheet first, then relaunch the same source once its
+  // dismiss has started (a native picker can't present over a closing sheet).
+  function chooseAnotherPhoto(source: PhotoSource) {
+    setPhotoFlow(null);
+    setTimeout(() => launchPhotoSource(source), 400);
+  }
+
+  // Opening the sheet dismisses the keyboard (the composer — and the sheet
+  // anchored to it — settles above the nav); the draft in newMessage is
+  // never touched by opening or closing it.
+  function toggleAttachSheet() {
+    if (attachOpen) {
+      setAttachOpen(false);
+      return;
+    }
+    Keyboard.dismiss();
+    setAttachOpen(true);
   }
 
   // Updates isNearBottomRef only — a ref write, not state, so this never
@@ -669,41 +871,151 @@ export default function ConversationScreen() {
     (paramUsername ? String(paramUsername) : null) ||
     'Conversation';
 
+  // Truthful static subtitle — no presence data exists, so never "Active
+  // recently". @handle when the title is a distinct display name; otherwise
+  // a plain context label.
+  const knownUsername = otherUser?.username ?? (paramUsername ? String(paramUsername) : null);
+  const headerSubtitle =
+    knownUsername && displayTitle !== knownUsername ? `@${knownUsername}` : 'CacheCase collector';
+
+  // In-flight placeholder appended for display only, and dropped as soon as
+  // the durable row with the same id is in `messages`.
+  const sendingId = inFlight && !messages.some((m) => m.id === inFlight.id) ? inFlight.id : null;
+  const displayMessages = sendingId && inFlight ? [...messages, inFlight] : messages;
+  // Status shows on my newest outgoing message only — earlier ones are
+  // implied by it (a read cursor covers everything before it).
+  let lastOwnId: string | null = null;
+  for (let i = displayMessages.length - 1; i >= 0; i--) {
+    if (displayMessages[i].sender_id === currentUserId) {
+      lastOwnId = displayMessages[i].id;
+      break;
+    }
+  }
+  const peerReadMs = peerReadAt ? Date.parse(peerReadAt) : null;
+
+  const header = (
+    <ConversationHeader
+      title={displayTitle}
+      subtitle={headerSubtitle}
+      avatarUrl={otherUser?.avatar_url}
+      topInset={insets.top}
+    />
+  );
+
+  // Static, non-animated ambient layer — a single gradient, so it costs
+  // nothing during scroll and sits well below text contrast.
+  const ambient = (
+    <LinearGradient
+      pointerEvents="none"
+      colors={['rgba(154,140,255,0)', 'rgba(154,140,255,0)', 'rgba(154,140,255,0.12)']}
+      locations={[0, 0.45, 1]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0.8, y: 1 }}
+      style={StyleSheet.absoluteFill}
+    />
+  );
+
   if (loading) {
     return (
-      <>
-        <Stack.Screen
-          options={{
-            title: (paramDisplayName || paramUsername) ? String(paramDisplayName || paramUsername) : 'Conversation',
-            headerBackTitle: '',
-            headerLeft: headerBackLeft,
-          }}
-        />
+      <View style={styles.container}>
+        {ambient}
+        {header}
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.link} />
         </View>
-      </>
+      </View>
     );
   }
 
   return (
-    <>
-      <Stack.Screen options={{ title: displayTitle, headerBackTitle: '', headerLeft: headerBackLeft }} />
+    <View style={styles.container}>
+      {ambient}
+      {/* Header lives inside the KeyboardAvoidingView, which now starts at
+          the very top of the screen (native header hidden) — so no
+          keyboardVerticalOffset is needed; the list shrinks, the header
+          stays put. */}
       <KeyboardAvoidingView
-        style={styles.container}
+        style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}>
+        keyboardVerticalOffset={0}>
+        {header}
         <FlatList
           ref={flatListRef}
-          style={styles.list}
-          data={messages}
+          style={styles.flex}
+          data={displayMessages}
+          extraData={`${peerReadAt ?? ''}|${sendingId ?? ''}|${itemPreviews.size}`}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-          renderItem={({ item }) => (
-            <MessageBubble message={item} isOwn={item.sender_id === currentUserId} />
-          )}
+          renderItem={({ item, index }) => {
+            // Presentation-only neighbour checks over the already-ordered
+            // list — no data/grouping model changes.
+            const prev = index > 0 ? displayMessages[index - 1] : undefined;
+            const next = index < displayMessages.length - 1 ? displayMessages[index + 1] : undefined;
+            const startsDay = !prev || !isSameDay(prev.created_at, item.created_at);
+            const continuesRun = !startsDay && prev?.sender_id === item.sender_id;
+            const endsRun =
+              !next || next.sender_id !== item.sender_id || !isSameDay(next.created_at, item.created_at);
+            const isOwn = item.sender_id === currentUserId;
+            // Only states the backend can back: no delivery tracking exists,
+            // so there is no "Delivered".
+            let status: string | undefined;
+            let statusRead = false;
+            if (isOwn && item.id === lastOwnId) {
+              if (item.id === sendingId) {
+                status = 'Sending…';
+              } else if (peerReadMs !== null && peerReadMs >= Date.parse(item.created_at)) {
+                status = 'Read';
+                statusRead = true;
+              } else {
+                status = 'Sent';
+              }
+            }
+            return (
+              <>
+                {startsDay ? (
+                  <Text style={styles.daySeparator}>{formatDayLabel(item.created_at)}</Text>
+                ) : null}
+                <MessageBubble
+                  body={item.body}
+                  attachment={
+                    item.attachment_type === 'image' ? (
+                      <DmImageAttachment
+                        storagePath={item.attachment_storage_path}
+                        width={item.attachment_width}
+                        height={item.attachment_height}
+                        onOpen={setViewerUri}
+                      />
+                    ) : item.attachment_type === 'item' ? (
+                      <DmItemAttachmentCard
+                        state={
+                          item.attachment_item_id
+                            ? (itemPreviews.get(item.attachment_item_id) ?? { status: 'loading' })
+                            : { status: 'unavailable' }
+                        }
+                        onOpenItem={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
+                        onOpenOwner={(ownerId, username) =>
+                          navigateToProfile(router, currentUserId, ownerId, username)
+                        }
+                      />
+                    ) : null
+                  }
+                  time={formatBubbleTime(item.created_at)}
+                  isOwn={isOwn}
+                  status={status}
+                  statusRead={statusRead}
+                  showAvatar={!isOwn && endsRun}
+                  continuesRun={continuesRun}
+                  avatarUrl={otherUser?.avatar_url}
+                  avatarName={displayTitle}
+                />
+              </>
+            );
+          }}
           contentContainerStyle={styles.messageList}
+          ListFooterComponent={
+            peerTyping ? <TypingIndicator avatarUrl={otherUser?.avatar_url} name={displayTitle} /> : null
+          }
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
               <CacheCaseLogo variant="icon" size="lg" placement="emptyState" />
@@ -740,66 +1052,89 @@ export default function ConversationScreen() {
           </View>
         )}
 
+        {/* Tap-outside-to-dismiss for the attachment sheet. Rendered before
+            the composer wrapper so the composer and sheet stay above it. */}
+        {attachOpen ? (
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setAttachOpen(false)}
+            accessibilityLabel="Close attachment menu"
+          />
+        ) : null}
+
         {/* Composer — extra bottom clearance (TAB_BAR_CLEARANCE) only while
             the keyboard is closed, so it sits above the floating tab bar
             instead of underneath its touch-absorbing surface. See
-            TAB_BAR_CLEARANCE's comment. */}
-        <View
-          style={[
-            styles.inputBar,
-            {
-              paddingBottom: keyboardVisible
-                ? Math.max(insets.bottom, 8)
-                : Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE,
-            },
-          ]}>
-          <TextInput
-            style={styles.input}
-            value={newMessage}
-            onChangeText={setNewMessage}
-            placeholder="Message..."
-            placeholderTextColor={PV2.textTertiary}
-            returnKeyType="send"
-            onSubmitEditing={handleSend}
-            blurOnSubmit={false}
-            editable={!sending && !pendingSend}
-            maxLength={1000}
-          />
-          <TouchableOpacity
-            onPress={handleSend}
-            disabled={!newMessage.trim() || sending || !!pendingSend}
-            style={styles.sendBtn}>
-            {sending ? (
-              <ActivityIndicator size="small" color={PV2.link} />
-            ) : (
-              <Text style={[styles.sendText, !newMessage.trim() && styles.sendTextDisabled]}>
-                Send
-              </Text>
-            )}
-          </TouchableOpacity>
+            TAB_BAR_CLEARANCE's comment. With the keyboard open the home
+            indicator is covered, so only a small gap is kept. */}
+        <View>
+          {attachOpen ? (
+            <AttachmentSheet
+              onClose={() => setAttachOpen(false)}
+              onShareItem={openItemPicker}
+              onCamera={() => launchPhotoSource('camera')}
+              onPhotos={() => launchPhotoSource('library')}
+            />
+          ) : null}
+          <ConversationComposer
+          value={newMessage}
+          onChangeText={(text) => {
+            setNewMessage(text);
+            notifyLocalInput(text);
+          }}
+          onSend={() => {
+            stopLocalTyping();
+            handleSend();
+          }}
+          sending={sending}
+          locked={sending || !!pendingSend}
+          bottomPadding={keyboardVisible ? 8 : Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE}
+          onAttachPress={toggleAttachSheet}
+          attachActive={attachOpen}
+          onInputFocus={() => setAttachOpen(false)}
+        />
         </View>
       </KeyboardAvoidingView>
-    </>
+
+      <PhotoConfirmSheet
+        state={photoFlow}
+        onClose={() => setPhotoFlow(null)}
+        onChooseAnother={chooseAnotherPhoto}
+        recipientUsername={otherUser?.username ?? (paramUsername ? String(paramUsername) : null)}
+        draft={newMessage}
+        onSend={handleSendImage}
+      />
+
+      <ItemPhotoViewerModal visible={!!viewerUri} uri={viewerUri ?? undefined} onClose={() => setViewerUri(null)} />
+
+      <ShareItemPicker
+        visible={itemPickerOpen}
+        onClose={() => setItemPickerOpen(false)}
+        recipientUsername={otherUser?.username ?? (paramUsername ? String(paramUsername) : null)}
+        draft={newMessage}
+        onSend={handleSendItem}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: PV2.bg,
+    backgroundColor: CHAT.bg,
+  },
+  flex: {
+    flex: 1,
   },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: PV2.bg,
-  },
-  list: {
-    flex: 1,
   },
   messageList: {
     flexGrow: 1,
-    paddingVertical: 12,
+    paddingTop: 4,
+    paddingBottom: 12,
   },
   emptyWrap: {
     flex: 1,
@@ -811,46 +1146,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: PV2.textSecondary,
   },
-  // Bubbles
-  bubbleWrap: {
-    alignItems: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 3,
-  },
-  bubbleWrapOwn: {
-    alignItems: 'flex-end',
-  },
-  bubble: {
-    maxWidth: '75%',
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-  },
-  bubbleOther: {
-    backgroundColor: PV2.collectorPanelBg,
-    borderBottomLeftRadius: 4,
-  },
-  // Was the same #0a7ea4 teal-blue used ad hoc elsewhere in this file —
-  // mapped onto PV2.accent (the app's one actual defined accent, used for
-  // likes/primary actions throughout) rather than a color with no other
-  // meaning in the rest of the app.
-  bubbleOwn: {
-    backgroundColor: PV2.accent,
-    borderBottomRightRadius: 4,
-  },
-  bubbleText: {
-    fontSize: 15,
-    color: PV2.textPrimary,
-    lineHeight: 20,
-  },
-  bubbleTextOwn: {
-    color: '#fff',
-  },
-  bubbleTime: {
-    fontSize: 10,
-    color: PV2.textTertiary,
-    marginTop: 2,
-    marginHorizontal: 4,
+  daySeparator: {
+    alignSelf: 'center',
+    marginTop: 18,
+    marginBottom: 2,
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    color: CHAT.separator,
   },
   // Pending-send banner — amber/warning, deliberately distinct from the
   // app's red accent/error color (this isn't a failure, just an
@@ -883,42 +1186,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#FFB703',
-  },
-  // Input bar
-  inputBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: PV2.dividerColor,
-    backgroundColor: PV2.bg,
-    gap: 8,
-  },
-  input: {
-    flex: 1,
-    fontSize: 15,
-    color: PV2.textPrimary,
-    backgroundColor: PV2.collectorPanelBg,
-    borderWidth: 1,
-    borderColor: PV2.border,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    maxHeight: 100,
-  },
-  sendBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    minWidth: 48,
-    alignItems: 'center',
-  },
-  sendText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: PV2.link,
-  },
-  sendTextDisabled: {
-    color: PV2.textTertiary,
   },
 });
