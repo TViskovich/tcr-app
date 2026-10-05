@@ -60,6 +60,10 @@ const BORDER_WIDTH_LEFT = GRID_HORIZONTAL_MARGIN;
 // gap between the logo/ACCT# and the border.
 const CARD_PADDING_RIGHT = 10;
 const CACHECASE_LOGO_HEIGHT = 33;
+// Floor for the username's fit-to-width shrink (14pt -> 7pt at most). Only
+// reached by pathological all-wide-letter 15-char handles on the narrowest
+// supported width (375pt); see the username <Text> below.
+const USERNAME_MIN_FONT_SCALE = 0.5;
 
 // Permanent sequential member number (profiles.account_number, assigned by
 // the database), shown as CC + 6 zero-padded digits, e.g. 42 -> CC000042.
@@ -139,7 +143,19 @@ export function ProfileV2IdentityCard({
 
         <View style={styles.middleCol}>
           <View style={styles.nameGroup}>
-            <Text style={styles.username} numberOfLines={1}>@{username}</Text>
+            {/* Usernames are up to 15 chars (16 with "@"). Handles that fit
+                stay at 14pt; longer ones shrink only as far as needed to
+                stay whole on one line. Realistic 15-char handles land at
+                ~10.5pt on a 375pt-wide screen; the 0.5 floor exists so even
+                an all-"W" handle fits there (needs ~0.52) instead of being
+                ellipsized. */}
+            <Text
+              style={styles.username}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={USERNAME_MIN_FONT_SCALE}>
+              @{username}
+            </Text>
             {title ? (
               <Text style={styles.title} numberOfLines={1}>{title}</Text>
             ) : null}

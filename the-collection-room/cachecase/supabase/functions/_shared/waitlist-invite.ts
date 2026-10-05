@@ -10,7 +10,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_EMAIL_LENGTH = 254; // RFC 5321
 const USERNAME_RE = /^[a-z0-9_]+$/;
 const MIN_USERNAME_LENGTH = 3;
-const MAX_USERNAME_LENGTH = 30;
+const MAX_USERNAME_LENGTH = 15;
 const MIN_PASSWORD_LENGTH = 6; // current sign-up rule
 const MAX_PASSWORD_LENGTH = 72; // bcrypt input limit enforced by Supabase Auth
 

@@ -31,7 +31,7 @@ const REDEEM_ERROR_COPY: Record<FailReason, string> = {
   username_mismatch: 'This invite reserves a different username.',
   account_exists: 'An account already exists for this email. Sign in instead.',
   invalid_email: 'Enter a valid email address.',
-  invalid_username: 'Usernames are 3–30 letters, numbers, or underscores.',
+  invalid_username: 'Usernames are 3–15 letters, numbers, or underscores.',
   invalid_password: 'Password must be 6–72 characters.',
   retry: 'We couldn’t create your account. Try again.',
   signup_failed: 'Something went wrong creating your account. Try again.',
@@ -69,7 +69,7 @@ export default function SignUpScreen() {
       setError('Please fill in all fields.');
       return;
     }
-    if (!/^[A-Za-z0-9_]{3,30}$/.test(trimmedUsername)) {
+    if (!/^[A-Za-z0-9_]{3,15}$/.test(trimmedUsername)) {
       setError(REDEEM_ERROR_COPY.invalid_username);
       return;
     }
@@ -148,6 +148,7 @@ export default function SignUpScreen() {
           value={username}
           onChangeText={setUsername}
           editable={!reserved}
+          maxLength={15}
           autoCapitalize="none"
           autoCorrect={false}
           textContentType="username"
