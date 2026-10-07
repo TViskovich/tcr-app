@@ -143,7 +143,12 @@ export function HorizontalCardPreview({
     ],
     COMPACT_IMAGE_TIER,
   );
-  const { urls: coverUrls } = useSignedFolderCovers(folderEntries.map((e) => e.folder.id));
+  // Small preview tier, same as the item tiles beside them (and the same
+  // tier profile-v2-screen.tsx prewarms, so its batch is reused here).
+  const { urls: coverUrls, servedTiers: coverServedTiers, tokens: coverTokens } = useSignedFolderCovers(
+    folderEntries.map((e) => e.folder.id),
+    COMPACT_IMAGE_TIER,
+  );
 
   // Overflow math — see the PR description's formula. hasOverflow only
   // considers itemCount (the folder's real, uncapped total), never
@@ -194,7 +199,7 @@ export function HorizontalCardPreview({
                 entry.folder,
                 identity,
                 { urls: signedUrls, statuses: signedStatuses, servedTiers },
-                coverUrls,
+                { urls: coverUrls, servedTiers: coverServedTiers, tokens: coverTokens },
               )
             : null;
         return entry.kind === 'folder' ? (

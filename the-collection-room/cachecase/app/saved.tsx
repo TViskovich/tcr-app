@@ -17,7 +17,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
-import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
@@ -36,7 +36,9 @@ export default function SavedScreen() {
   // (hooks/use-saved.ts: .eq('is_public', true)), so every id requested
   // here is expected to resolve, but the request still goes through the
   // same authorized signed-delivery path as an owner's own folders.
-  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
+  // Thumbnail-sized covers: the same small preview tier as item tiles.
+  // coverSource: URL + stable cacheKey (token-backed for first_card covers).
+  const { coverSource: folderCoverSource } = useSignedFolderCovers(folders.map((f) => f.id), COMPACT_IMAGE_TIER);
   const [refreshing, setRefreshing] = useState(false);
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
@@ -82,13 +84,14 @@ export default function SavedScreen() {
                 <FolderRow
                   key={folder.id}
                   folder={folder}
-                  coverUrl={signedFolderCoverUrls.get(folder.id)}
-                  onPress={() =>
+                  cover={folderCoverSource(folder)}
+                  onPress={() => {
+                    prefetchFolderHeaderCover(folder.id);
                     router.push({
                       pathname: '/collection/[folderId]',
                       params: { folderId: folder.id, title: folder.name },
-                    })
-                  }
+                    });
+                  }}
                 />
               ))}
             </Section>
@@ -147,19 +150,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function FolderRow({
   folder,
-  coverUrl,
+  cover,
   onPress,
 }: {
   folder: SavedFolderEntry;
-  coverUrl: string | undefined;
+  cover: { uri: string; cacheKey?: string } | null;
   onPress: () => void;
 }) {
   const ownerName = folder.ownerDisplayName || folder.ownerUsername;
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.thumb}>
-        {coverUrl ? (
-          <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+        {cover ? (
+          <Image source={cover} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.thumbPlaceholder]}>
             <Text style={styles.thumbInitial}>{folder.name.charAt(0).toUpperCase()}</Text>

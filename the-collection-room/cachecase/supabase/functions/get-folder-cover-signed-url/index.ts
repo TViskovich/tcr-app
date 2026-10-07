@@ -27,9 +27,11 @@
 // A present-but-invalid/expired JWT is rejected outright for the whole
 // request (401) — never silently downgraded to an anonymous request.
 //
-// Request:  POST { folder_ids: string[] }   (1-50 folders.id values; never
-//                                             a raw storage_path, item id,
-//                                             or owner id)
+// Request:  POST { folder_ids: string[]; tier?: 'preview' | 'detail' | 'original' }
+//           folder_ids: 1-50 folders.id values (never a raw storage_path,
+//                       item id, or owner id). tier: optional server-approved
+//                       transform name (../_shared/image-tiers.ts); omitted =
+//                       'original', identical to the pre-tier behavior.
 //           Authorization: Bearer <user JWT>  (optional — sent only when
 //                                               the caller has a real
 //                                               session; see
@@ -38,7 +40,8 @@
 //                                               already validated for
 //                                               get-collection-item-image-signed-url)
 // Response: { results: Array<
-//               { id: string; status: 'ok'; signed_url: string; expires_in: number }
+//               { id: string; status: 'ok'; signed_url: string; expires_in: number; tier: ImageTier;
+//                 image_token?: string }
 //             | { id: string; status: 'unavailable' }
 //           > }
 //
@@ -94,8 +97,48 @@ import {
   serviceRoleClient,
   validateItemImagesStoragePath,
 } from '../_shared/registry-image.ts';
+import { IMAGE_TIER_TRANSFORMS, parseImageTier, type ImageTier } from '../_shared/image-tiers.ts';
 
 const SIGNED_URL_TTL_SECONDS = 300;
+
+// image_token — an opaque, stable identity for the image a cover resolves
+// to, so the client can key its byte cache on it (lib/private-image-cache-
+// key.ts's folderCoverCacheKey) instead of on the signed URL, which rotates
+// every SIGNED_URL_TTL_SECONDS. Matters most for 'first_card' covers, whose
+// folders row carries no client-visible signal of WHICH image is resolved.
+//
+// HMAC-SHA256 of the resolved storage path, keyed with a server-only secret
+// (derived from the service-role key, never sent anywhere) and truncated to
+// 128 bits. Same image -> same token across every re-sign; a different
+// resolved image (new first card, new primary image, new upload — each
+// always a distinct storage path) -> a different token. It reveals nothing
+// about the path, item, or owner and can't be reversed or precomputed
+// without the key; at most it tells a caller that two covers THEY are
+// already authorized to see are the same image. Only ever computed for an
+// authorized, resolved cover — never for an 'unavailable' one. Omitted if
+// the key material is somehow unavailable (clients then fall back to
+// URL-keyed caching, exactly as before).
+const IMAGE_TOKEN_SECRET = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+let imageTokenKey: Promise<CryptoKey> | null = null;
+
+async function imageTokenFor(storagePath: string): Promise<string | undefined> {
+  if (!IMAGE_TOKEN_SECRET) return undefined;
+  try {
+    imageTokenKey ??= crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(`folder-cover-image-token:v1:${IMAGE_TOKEN_SECRET}`),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const mac = new Uint8Array(
+      await crypto.subtle.sign('HMAC', await imageTokenKey, new TextEncoder().encode(storagePath)),
+    );
+    return Array.from(mac.subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return undefined;
+  }
+}
 const MAX_BATCH_SIZE = 50;
 const UNAVAILABLE = { status: 'unavailable' as const };
 
@@ -108,7 +151,35 @@ type ResolvedFolder = {
   cover_source: string;
   cover_storage_path: string | null;
   cover_item_id: string | null;
+  // Embedded picked cover item (folders_cover_item_id_fkey) with its primary
+  // image's path (primary filtered to is_primary) — null when unset/deleted.
+  cover_item: { id: string; is_public: boolean; primary: { storage_path: string | null }[] | null } | null;
 };
+
+type FirstCardRow = {
+  id: string;
+  folder_id: string;
+  is_public: boolean;
+  primary: { storage_path: string | null }[] | null;
+};
+
+// The user id a bearer token CLAIMS (its JWT `sub`), decoded without
+// verification — used only to start the visibility RPC before verification
+// finishes, and only ever trusted if resolveCaller then verifies that exact
+// id (see the handler). null for no/malformed token, which is also correct
+// speculation for an anonymous caller.
+function unverifiedTokenSubject(req: Request): string | null {
+  const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim();
+  const payload = token?.split('.')[1];
+  if (!payload) return null;
+  try {
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '='));
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && UUID_RE.test(sub) ? sub : null;
+  } catch {
+    return null;
+  }
+}
 
 // Ancestor-aware folder visibility — delegates to the recursive
 // folder_effective_visibility_batch() RPC (supabase/migrations/
@@ -152,7 +223,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'method_not_allowed' }, 405);
   }
 
-  let body: { folder_ids?: unknown };
+  let body: { folder_ids?: unknown; tier?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -173,21 +244,66 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'invalid_folder_ids' }, 400);
   }
 
+  // Optional tier NAME (never a raw width/quality) — same parsing and
+  // server-approved transforms as get-collection-item-image-signed-url.
+  // Omitted = 'original', identical to the pre-tier behavior.
+  const tier: ImageTier | null = parseImageTier(body.tier);
+  if (tier === null) {
+    return jsonResponse({ error: 'invalid_tier' }, 400);
+  }
+
   const client = serviceRoleClient();
 
-  const { userId, invalid } = await resolveCaller(client, req);
+  // Request latency is dominated by sequential round trips from this
+  // function (each ~150-250ms measured: auth verification, PostgREST,
+  // Storage), so everything that doesn't truly depend on an earlier result
+  // runs in ONE first stage:
+  //   - caller verification (auth.getUser — a network call for a signed-in
+  //     caller);
+  //   - the folders read, with each folder's picked cover item AND that
+  //     item's primary-image path embedded (no separate picked-item or
+  //     image lookups for 'item' covers);
+  //   - the ancestor-aware visibility RPC, started SPECULATIVELY for the
+  //     caller id the bearer token claims (decoded, not yet verified). Its
+  //     result is used only if verification confirms that exact id;
+  //     otherwise it is re-run for the verified id below. So authorization
+  //     is always decided for the VERIFIED caller — the speculation only
+  //     saves waiting for verification first;
+  //   - the Grail-slot exception rows (depend only on the requested ids).
+  // Every read here is service-role and feeds server-side resolution only;
+  // nothing about any row is returned unless the authorization checks after
+  // this stage pass.
+  const speculativeCallerId = unverifiedTokenSubject(req);
+  const [caller, { data: folders, error: foldersError }, speculativeVisibleIds, grailRows] = await Promise.all([
+    resolveCaller(client, req),
+    client
+      .from('folders')
+      .select(
+        'id, is_public, user_id, cover_source, cover_storage_path, cover_item_id, ' +
+          'cover_item:collection_items!folders_cover_item_id_fkey(id, is_public, primary:collection_item_images(storage_path))',
+      )
+      .in('id', folderIds)
+      .eq('cover_item.primary.is_primary', true),
+    resolveVisibleFolderIds(client, folderIds, speculativeCallerId),
+    // Grail-slot visibility exception ("Grail placement = implicit
+    // publish" — supabase/migrations/20260910120000_grail_slot_visibility_
+    // exception.sql): a folder referenced by its own owner's
+    // entry_type='collection' profile_grail_slots row authorizes resolving
+    // THAT folder's cover, independent of folder_effective_visibility_batch's
+    // normal ancestor-chain result. Scoped to the exact folder id only, and
+    // cross-checked against the folder's own owner below.
+    client
+      .from('profile_grail_slots')
+      .select('collection_id, user_id')
+      .eq('entry_type', 'collection')
+      .in('collection_id', folderIds)
+      .then(({ data }) => (data ?? []) as { collection_id: string | null; user_id: string }[]),
+  ]);
+
+  const { userId, invalid } = caller;
   if (invalid) {
     return jsonResponse({ error: 'invalid_token' }, 401);
   }
-
-  // Uses the service-role client (bypasses RLS entirely), so
-  // resolveVisibleFolderIds below is the ONLY authorization boundary here —
-  // nothing about this query's success implies the caller may view any of
-  // these rows.
-  const { data: folders, error: foldersError } = await client
-    .from('folders')
-    .select('id, is_public, user_id, cover_source, cover_storage_path, cover_item_id')
-    .in('id', folderIds);
 
   if (foldersError) {
     // A query-level failure must not be reported per-row (that would imply
@@ -199,38 +315,23 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // Speculation check: only a result computed for the verified caller id is
+  // ever used.
+  const visibleFolderIds =
+    speculativeCallerId === userId
+      ? speculativeVisibleIds
+      : await resolveVisibleFolderIds(client, folderIds, userId);
+
   const folderMap = new Map<string, ResolvedFolder>();
   for (const f of (folders ?? []) as ResolvedFolder[]) {
     folderMap.set(f.id, f);
   }
 
-  const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
-
-  // Grail-slot visibility exception ("Grail placement = implicit publish" —
-  // supabase/migrations/20260910120000_grail_slot_visibility_exception.sql):
-  // a folder referenced by its own owner's entry_type='collection'
-  // profile_grail_slots row authorizes resolving THAT folder's cover,
-  // independent of folder_effective_visibility_batch's normal ancestor-chain
-  // result. Scoped to the exact folder id only — this never widens to that
-  // folder's children, ancestors, or contents, and the cover-source
-  // resolution below (uploadIds/itemIds/firstCardIds) still independently
-  // requires a non-owner's resolved item to be public, same as for a
-  // normally-visible folder. Cross-checked against the folder's own owner
-  // (gs.user_id vs. folder.user_id) as defense-in-depth, mirroring the same
-  // check in that migration's RLS policies and in
-  // get-collection-item-image-signed-url.
   const grailShowcasedFolderIds = new Set<string>();
-  {
-    const { data: grailRows } = await client
-      .from('profile_grail_slots')
-      .select('collection_id, user_id')
-      .eq('entry_type', 'collection')
-      .in('collection_id', folderIds);
-    for (const row of (grailRows ?? []) as { collection_id: string | null; user_id: string }[]) {
-      if (!row.collection_id) continue;
-      const folder = folderMap.get(row.collection_id);
-      if (folder && folder.user_id === row.user_id) grailShowcasedFolderIds.add(row.collection_id);
-    }
+  for (const row of grailRows) {
+    if (!row.collection_id) continue;
+    const folder = folderMap.get(row.collection_id);
+    if (folder && folder.user_id === row.user_id) grailShowcasedFolderIds.add(row.collection_id);
   }
 
   const authorizedIds = folderIds.filter(
@@ -244,23 +345,18 @@ Deno.serve(async (req: Request) => {
   // reachable — folders.cover_source is `NOT NULL DEFAULT 'upload'` at the
   // DB level, and until create-folder-modal.tsx started setting it
   // explicitly, every newly-created folder silently inherited that default
-  // with no real upload behind it — but stayed invisible because an
-  // 'unavailable' cover renders as no hero at all elsewhere, never a
-  // visibly blank tile. uploadIds/itemIds below now require the backing
-  // reference to actually be present; anything claiming 'upload' or 'item'
-  // without it falls through to firstCardIds instead of resolving to
-  // 'unavailable' — the exact same newest-active-item resolution every
-  // genuine 'first_card' folder already uses below, not a new fallback
-  // path. This treats a stale/inconsistent explicit-cover folder exactly
-  // like one that never had an explicit cover set, which is what it
-  // actually is.
-  const uploadIds = authorizedIds.filter(
-    (id) => folderMap.get(id)!.cover_source === 'upload' && !!folderMap.get(id)!.cover_storage_path,
-  );
-  const itemIds = authorizedIds.filter(
-    (id) => folderMap.get(id)!.cover_source === 'item' && !!folderMap.get(id)!.cover_item_id,
-  );
-  const firstCardIds = authorizedIds.filter((id) => !uploadIds.includes(id) && !itemIds.includes(id));
+  // with no real upload behind it. Anything claiming 'upload' or 'item'
+  // without its backing reference falls through to first-card resolution
+  // instead of resolving to 'unavailable' — the exact same newest-active-
+  // item resolution every genuine 'first_card' folder uses, not a new
+  // fallback path.
+  const isUpload = (id: string) =>
+    folderMap.get(id)!.cover_source === 'upload' && !!folderMap.get(id)!.cover_storage_path;
+  const isPickedItem = (id: string) =>
+    folderMap.get(id)!.cover_source === 'item' && !!folderMap.get(id)!.cover_item_id;
+  const uploadIds = authorizedIds.filter(isUpload);
+  const itemIds = authorizedIds.filter(isPickedItem);
+  const firstCardIds = authorizedIds.filter((id) => !isUpload(id) && !isPickedItem(id));
 
   const folderToStoragePath = new Map<string, string>();
 
@@ -269,89 +365,53 @@ Deno.serve(async (req: Request) => {
     if (path) folderToStoragePath.set(id, path);
   }
 
-  // The folder -> candidate item id map this cover ultimately resolves
-  // through, for BOTH item and first_card folders combined — populated
-  // below, then resolved to a primary gallery image via one shared
-  // collection_item_images lookup (never two separate ones for the two
-  // sources).
-  const candidateItemByFolder = new Map<string, string>();
-
   // 'item' — the owner-picked item (folders.cover_item_id), not
-  // necessarily the newest. Requires the item's own is_public for any
-  // non-owner caller (most-restrictive-wins — see this function's own
-  // module comment above); the folder owner sees their own picked item
-  // regardless of its privacy flag, same override pattern as
-  // isOwnerCaller/resolveVisibleFolderIds.
-  if (itemIds.length) {
-    const pickedItemIds = itemIds.map((id) => folderMap.get(id)!.cover_item_id!);
-    const { data: pickedItems } = await client
-      .from('collection_items')
-      .select('id, is_public')
-      .in('id', pickedItemIds);
-
-    const pickedItemById = new Map<string, { is_public: boolean }>();
-    for (const item of (pickedItems ?? []) as { id: string; is_public: boolean }[]) {
-      pickedItemById.set(item.id, item);
-    }
-
-    for (const folderId of itemIds) {
-      const folder = folderMap.get(folderId)!;
-      const item = pickedItemById.get(folder.cover_item_id!);
-      if (!item) continue; // referenced item no longer exists/resolvable
-      if (!item.is_public && !isOwnerCaller(folder, userId)) continue; // most-restrictive-wins
-      candidateItemByFolder.set(folderId, folder.cover_item_id!);
-    }
+  // necessarily the newest, already embedded with its primary-image path.
+  // Requires the item's own is_public for any non-owner caller
+  // (most-restrictive-wins); the folder owner sees their own picked item
+  // regardless of its privacy flag. A missing embed (item deleted) or no
+  // primary image resolves to no cover, as before.
+  for (const folderId of itemIds) {
+    const folder = folderMap.get(folderId)!;
+    const item = folder.cover_item;
+    if (!item) continue; // referenced item no longer exists/resolvable
+    if (!item.is_public && !isOwnerCaller(folder, userId)) continue; // most-restrictive-wins
+    const path = item.primary?.[0]?.storage_path;
+    if (path) folderToStoragePath.set(folderId, path);
   }
 
   // 'first_card' — the folder's own newest active item the caller is
-  // authorized to view. The owner gets the true newest item, full stop
-  // (same override as everywhere else in this function). A non-owner gets
-  // the newest item that is ALSO public — never simply the newest
-  // regardless of its own privacy, which was this path's pre-existing gap
-  // (item privacy added after first_card resolution originally shipped,
-  // and this path was never updated to check it). Deterministic and
-  // requires no extra query: items already come back ordered newest-first,
-  // so "skip private ones for a non-owner" is just a linear scan of that
-  // same list, taking the first (owner) or first-public (non-owner) match
-  // per folder — never a second, differently-ordered query.
+  // authorized to view: the owner gets the true newest item; a non-owner
+  // gets the newest item that is ALSO public. One query, only for AUTHORIZED
+  // first-card folders, with each item's primary-image path embedded (no
+  // separate image lookup). Items arrive newest-first, so this is a linear
+  // scan taking the first (owner) or first-public (non-owner) match per
+  // folder — semantics unchanged.
   if (firstCardIds.length) {
     const { data: items } = await client
       .from('collection_items')
-      .select('id, folder_id, is_public')
+      .select('id, folder_id, is_public, primary:collection_item_images(storage_path)')
       .eq('collection_status', 'active')
       .in('folder_id', firstCardIds)
+      .eq('primary.is_primary', true)
       .order('created_at', { ascending: false });
 
-    for (const item of (items ?? []) as { id: string; folder_id: string; is_public: boolean }[]) {
-      if (candidateItemByFolder.has(item.folder_id)) continue; // already resolved this folder
+    const resolvedFirstCard = new Set<string>();
+    for (const item of (items ?? []) as FirstCardRow[]) {
+      if (resolvedFirstCard.has(item.folder_id)) continue; // already resolved this folder
       const folder = folderMap.get(item.folder_id)!;
       if (!item.is_public && !isOwnerCaller(folder, userId)) continue; // most-restrictive-wins
-      candidateItemByFolder.set(item.folder_id, item.id);
+      resolvedFirstCard.add(item.folder_id);
+      const path = item.primary?.[0]?.storage_path;
+      if (path) folderToStoragePath.set(item.folder_id, path);
     }
   }
 
-  // One shared batched lookup for every candidate item's primary gallery
-  // image, covering both 'item' and 'first_card' folders together — never
-  // one query per source type, never one per folder.
-  if (candidateItemByFolder.size) {
-    const candidateItemIds = [...new Set(candidateItemByFolder.values())];
-    const { data: images } = await client
-      .from('collection_item_images')
-      .select('item_id, storage_path')
-      .eq('is_primary', true)
-      .in('item_id', candidateItemIds);
-
-    const storagePathByItem = new Map<string, string>();
-    for (const img of (images ?? []) as { item_id: string; storage_path: string | null }[]) {
-      if (img.storage_path) storagePathByItem.set(img.item_id, img.storage_path);
-    }
-
-    for (const [folderId, itemId] of candidateItemByFolder) {
-      const path = storagePathByItem.get(itemId);
-      if (path) folderToStoragePath.set(folderId, path);
-    }
-  }
-
+  // Signing — only for authorized, resolved paths. A non-original tier is
+  // applied purely at this final step (same transform, same fallback as
+  // get-collection-item-image-signed-url): if transformed signing fails,
+  // fall back once to the untransformed URL and report what was actually
+  // served in `tier`.
   const results = await Promise.all(
     folderIds.map(async (id) => {
       const storagePath = folderToStoragePath.get(id);
@@ -360,13 +420,42 @@ Deno.serve(async (req: Request) => {
       const validPath = validateItemImagesStoragePath(storagePath);
       if (!validPath) return { id, ...UNAVAILABLE };
 
+      // Same token for every tier of the same image — the client adds the
+      // tier to its cache key itself.
+      const imageToken = await imageTokenFor(validPath);
+
+      if (tier !== 'original') {
+        const { data: transformed, error: transformError } = await client.storage
+          .from('item-images')
+          .createSignedUrl(validPath, SIGNED_URL_TTL_SECONDS, {
+            transform: IMAGE_TIER_TRANSFORMS[tier],
+          });
+        if (!transformError && transformed?.signedUrl) {
+          return {
+            id,
+            status: 'ok' as const,
+            signed_url: transformed.signedUrl,
+            expires_in: SIGNED_URL_TTL_SECONDS,
+            tier,
+            ...(imageToken ? { image_token: imageToken } : {}),
+          };
+        }
+      }
+
       const { data: signed, error: signError } = await client.storage
         .from('item-images')
         .createSignedUrl(validPath, SIGNED_URL_TTL_SECONDS);
 
       if (signError || !signed?.signedUrl) return { id, ...UNAVAILABLE };
 
-      return { id, status: 'ok' as const, signed_url: signed.signedUrl, expires_in: SIGNED_URL_TTL_SECONDS };
+      return {
+        id,
+        status: 'ok' as const,
+        signed_url: signed.signedUrl,
+        expires_in: SIGNED_URL_TTL_SECONDS,
+        tier: 'original' as const,
+        ...(imageToken ? { image_token: imageToken } : {}),
+      };
     }),
   );
 

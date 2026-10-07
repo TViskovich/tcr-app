@@ -25,6 +25,12 @@ type Props = {
   // identity available — see that helper's own comment), in which case
   // expo-image falls back to keying on `uri`, same as before Phase 2.
   cacheKey?: string;
+  // A lower-tier version of this same cover already in cache (the header
+  // passes the small 'preview' one some other surface signed), shown until
+  // `uri` itself has loaded — a progressive preview -> detail upgrade
+  // instead of blank -> detail. Same image and aspect ratio, so it is laid
+  // out (and, cropped, framed) exactly like the main image.
+  placeholder?: { uri: string; cacheKey?: string };
 };
 
 // Renders the folder-hero cover image, filling its parent (the coverHero
@@ -38,13 +44,15 @@ type Props = {
 // unrelated to this component's own props): with a stable `uri`/`crop`,
 // this now skips re-rendering entirely on an unrelated parent re-render,
 // on top of that screen no longer remounting it in the first place.
-export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop, cacheKey }: Props) {
+export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop, cacheKey, placeholder }: Props) {
   const { width: windowWidth } = useWindowDimensions();
 
   if (!crop) {
     return (
       <Image
         source={{ uri, cacheKey }}
+        placeholder={placeholder}
+        placeholderContentFit="cover"
         style={StyleSheet.absoluteFill}
         contentFit="cover"
         transition={200}
@@ -58,6 +66,7 @@ export const FolderCoverImage = memo(function FolderCoverImage({ uri, crop, cach
       uri={uri}
       crop={crop}
       cacheKey={cacheKey}
+      placeholder={placeholder}
       containerW={windowWidth}
       containerH={windowWidth / FOLDER_COVER_ASPECT_RATIO}
     />
@@ -68,12 +77,14 @@ function CroppedFolderCoverImage({
   uri,
   crop,
   cacheKey,
+  placeholder,
   containerW,
   containerH,
 }: {
   uri: string;
   crop: FolderCoverCrop;
   cacheKey?: string;
+  placeholder?: { uri: string; cacheKey?: string };
   containerW: number;
   containerH: number;
 }) {
@@ -93,6 +104,8 @@ function CroppedFolderCoverImage({
       ]}>
       <Image
         source={{ uri, cacheKey }}
+        placeholder={placeholder}
+        placeholderContentFit="contain"
         style={StyleSheet.absoluteFill}
         contentFit="contain"
         transition={200}

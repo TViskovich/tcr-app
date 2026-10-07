@@ -33,6 +33,7 @@ import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { prefetchFolderHeaderCover } from '@/hooks/use-signed-folder-covers';
 import { useAuth } from '@/lib/auth';
 import { fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
@@ -1291,9 +1292,10 @@ export default function PostDetailScreen() {
               activeMediaIndex={activeMediaIndex}
               onActiveMediaIndexChange={setActiveMediaIndex}
               onOpenMediaViewer={setViewerUri}
-              onOpenFolder={(folderId, name) =>
-                router.push({ pathname: '/collection/[folderId]', params: { folderId, title: name } })
-              }
+              onOpenFolder={(folderId, name) => {
+                prefetchFolderHeaderCover(folderId);
+                router.push({ pathname: '/collection/[folderId]', params: { folderId, title: name } });
+              }}
               commentTappable={usesInlineCommentTap}
               onCommentTap={handleOpenReply}
               onOpenSourceOwnerProfile={handleOpenSourceOwnerProfile}

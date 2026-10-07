@@ -7,6 +7,7 @@ import {
   FOLDER_COVERS_CACHE_DOMAIN,
   ITEM_IMAGES_CACHE_DOMAIN,
   purgePersistedSignedUrlCache,
+  setActiveSignedUrlIdentity,
 } from './persisted-signed-url-cache';
 import { purgeOwnProfileCache, readOwnProfileCache } from './own-profile-cache';
 import { supabase } from './supabase';
@@ -62,6 +63,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const nextIdentity = newSession?.user?.id ?? 'anon';
       const previousIdentity = identityRef.current;
       identityRef.current = nextIdentity;
+      // Before any purge below, so a signing request still in flight for the
+      // previous identity can't write its result back afterwards.
+      setActiveSignedUrlIdentity(nextIdentity);
 
       // Best-effort warm of the (possibly new) identity's own-profile cache
       // into memory, the moment a real session is known — including the

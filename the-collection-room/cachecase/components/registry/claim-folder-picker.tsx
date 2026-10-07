@@ -6,6 +6,7 @@ import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
 
@@ -134,7 +135,9 @@ export function ClaimFolderPicker({ userId, onSelect }: Props) {
   // tile (item-images beta privacy hardening, Phase 3D). Owner-only picker
   // (useOwnFoldersForClaimPicker scopes to userId), so every id here is an
   // owner+public or owner+private folder, always authorized.
-  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
+  // Thumbnail-sized covers: the same small preview tier as item tiles.
+  // coverSource: URL + stable cacheKey (token-backed for first_card covers).
+  const { coverSource: folderCoverSource } = useSignedFolderCovers(folders.map((f) => f.id), COMPACT_IMAGE_TIER);
   const { width: windowWidth } = useWindowDimensions();
   const tileWidth = (windowWidth - HORIZONTAL_PADDING * 2 - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
   const [isCreateFolderVisible, setIsCreateFolderVisible] = useState(false);
@@ -194,7 +197,8 @@ export function ClaimFolderPicker({ userId, onSelect }: Props) {
             // component's generic "Collection item" fallback.
             <CollectionPreviewCard
               key={folder.id}
-              imageUrl={signedFolderCoverUrls.get(folder.id) ?? null}
+              imageUrl={folderCoverSource(folder)?.uri ?? null}
+              cacheKey={folderCoverSource(folder)?.cacheKey}
               title={folder.name}
               subtitle={`${itemCounts[folder.id] ?? 0} items`}
               tileWidth={tileWidth}

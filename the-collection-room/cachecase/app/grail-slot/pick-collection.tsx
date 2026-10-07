@@ -19,6 +19,7 @@ import { BackButton } from '@/components/ui/back-button';
 import { resolveCovers } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
@@ -165,7 +166,9 @@ export default function PickGrailCollectionScreen() {
   // tile (item-images beta privacy hardening, Phase 3D). Owner-only picker
   // (useOwnFoldersForPicker scopes to currentUserId), so every id here is
   // an owner+public or owner+private folder, always authorized.
-  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
+  // Thumbnail-sized covers: the same small preview tier as item tiles.
+  // coverSource: URL + stable cacheKey (token-backed for first_card covers).
+  const { coverSource: folderCoverSource } = useSignedFolderCovers(folders.map((f) => f.id), COMPACT_IMAGE_TIER);
 
   const dataLoading = foldersLoading || slotsLoading;
   const dataError = foldersError ?? slotsError;
@@ -333,7 +336,8 @@ export default function PickGrailCollectionScreen() {
                 <View key={folder.id} style={{ width: tileWidth }}>
                   <View style={disabled ? styles.tileDisabled : undefined} pointerEvents={disabled ? 'none' : 'auto'}>
                     <CollectionPreviewCard
-                      imageUrl={signedFolderCoverUrls.get(folder.id) ?? null}
+                      imageUrl={folderCoverSource(folder)?.uri ?? null}
+                      cacheKey={folderCoverSource(folder)?.cacheKey}
                       title={folder.name}
                       subtitle={disabled ? 'In Grails' : `${count} ${count === 1 ? 'item' : 'items'}`}
                       tileWidth={tileWidth}

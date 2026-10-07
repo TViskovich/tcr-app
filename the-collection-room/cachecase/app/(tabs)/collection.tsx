@@ -22,12 +22,14 @@ import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { CollectionPreviewSection } from '@/components/collection/collection-preview-section';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
+import { FolderCoverWarmup } from '@/components/collection/folder-cover-warmup';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useAuth } from '@/lib/auth';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { itemMatchesSearch, useFolders } from '@/hooks/use-collection';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { prefetchFolderHeaderCover } from '@/hooks/use-signed-folder-covers';
 import type { CollectionItem, Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
@@ -237,11 +239,14 @@ export default function CollectionScreen() {
     });
   }, [folders, previewItems, search]);
 
-  const openFolder = (folder: Folder) =>
+  const openFolder = (folder: Folder) => {
+    // Start signing its header cover now, not after the folder screen mounts.
+    prefetchFolderHeaderCover(folder.id);
     router.push({
       pathname: '/collection/[folderId]',
       params: { folderId: folder.id, title: folder.name },
     });
+  };
 
   // Same route shape app/collection/[folderId].tsx's own openItem uses —
   // tapping a preview-row card thumbnail should land on that specific
@@ -253,11 +258,13 @@ export default function CollectionScreen() {
   // folder — the same recursive /collection/[folderId] route openFolder
   // above uses, just for a folder nested one level under this row's own
   // top-level folder rather than the row's own folder itself.
-  const openChildFolder = (folder: Folder) =>
+  const openChildFolder = (folder: Folder) => {
+    prefetchFolderHeaderCover(folder.id);
     router.push({
       pathname: '/collection/[folderId]',
       params: { folderId: folder.id, title: folder.name },
     });
+  };
 
   const addItem = (folder: Folder) =>
     router.push({ pathname: '/item/new', params: { folderId: folder.id, folderName: folder.name } });
@@ -428,6 +435,13 @@ export default function CollectionScreen() {
               />
             )}
           />
+          {/* Background cover warmup for the first few folders (signing +
+              bytes), so opening one finds its header cover cached. This
+              tab screen mounts on first selection, so this starts when the
+              Collection tab is first opened; afterwards it only fills gaps.
+              Unfiltered `folders`, so typing a search never kicks off new
+              warmup batches. See FolderCoverWarmup. */}
+          <FolderCoverWarmup folders={folders} />
         </>
       )}
 

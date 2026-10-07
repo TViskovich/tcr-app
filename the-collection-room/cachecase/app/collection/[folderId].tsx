@@ -53,7 +53,13 @@ import {
   useItems,
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
-import { invalidateSignedFolderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import {
+  invalidateSignedFolderCover,
+  FOLDER_HEADER_COVER_TIER,
+  peekCachedSignedFolderCover,
+  prefetchFolderHeaderCover,
+  useSignedFolderCovers,
+} from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -638,15 +644,35 @@ export default function CollectionFolderScreen() {
   // The folder-level cover/hero banner (below, default view only) — same
   // privacy-enforced signed-delivery hook already used by app/saved.tsx,
   // claim-folder-picker.tsx, and pick-collection.tsx, not a new resolution
-  // path. Batched together with every child folder's own cover below (one
-  // request, not one per tile) since this hook already dedupes/batches by
-  // design — reusing it rather than resolving child covers a second way.
-  const { urls: coverUrls, statuses: coverStatuses } = useSignedFolderCovers([
-    folderId,
-    ...childFolders.map((f) => f.id),
-  ]);
-  const coverUrl = folderId ? coverUrls.get(folderId) : undefined;
+  // path. The hero is its own call, keyed on the route's folderId alone, so
+  // its request goes out at mount and is never tied to (or re-keyed by) the
+  // child-folder load. It signs the existing 1400px 'detail' tier (not the
+  // full original) — ample for a full-width banner.
+  // Child folders' tile covers (the empty-gallery fallback in
+  // getNestedFolderTileImage) are one separate batched call at the small
+  // preview tier, like every other tile on this grid.
+  const {
+    urls: heroCoverUrls,
+    statuses: coverStatuses,
+    servedTiers: coverHeroServedTiers,
+    tokens: coverHeroTokens,
+  } = useSignedFolderCovers([folderId], FOLDER_HEADER_COVER_TIER);
+  const {
+    urls: childCoverUrls,
+    servedTiers: childCoverServedTiers,
+    tokens: childCoverTokens,
+  } = useSignedFolderCovers(
+    childFolders.map((f) => f.id),
+    COMPACT_IMAGE_TIER,
+  );
+  const coverUrl = folderId ? heroCoverUrls.get(folderId) : undefined;
   const coverStatus = folderId ? coverStatuses.get(folderId) : undefined;
+  // This folder's cover at the small preview tier, if another surface
+  // (Saved, Tagged, a picker, a parent's empty-gallery tile, the Profile
+  // prewarm) already signed it this session — memory-only peek, no
+  // request. Shown first and then upgraded to the detail URL (see the
+  // hero's FolderCoverImage), so a warm preview never means a blank banner.
+  const coverPreviewPeek = folderId ? peekCachedSignedFolderCover(identity, folderId, COMPACT_IMAGE_TIER) : null;
   // Only takes up layout space once there's an actual cover to show (or one
   // is still resolving) — a folder that has never had a cover set renders
   // exactly as it did before this feature existed, no empty placeholder
@@ -1339,10 +1365,48 @@ export default function CollectionFolderScreen() {
             until its owner opts in. */}
         {showCoverHero && (
           <View style={styles.coverHero}>
-            {coverUrl && (
+            {/* Waits for the folder row (a fast plain read, started at mount
+                alongside the cover request) so the image's FIRST load already
+                uses its final stable cacheKey — otherwise a cover URL that
+                arrived first would download under its URL, then download
+                again once the key could be built. The id check keeps a
+                previous folder's row (same screen instance, new route id)
+                from ever keying this folder's cover. */}
+            {folder?.id === folderId && (coverUrl || coverPreviewPeek) && (
               <FolderCoverImage
-                uri={coverUrl}
-                cacheKey={folder ? folderCoverCacheKey(identity, folder) : undefined}
+                // Detail URL once signed; until then the cached preview.
+                uri={coverUrl ?? coverPreviewPeek!.url}
+                cacheKey={
+                  !folder
+                    ? undefined
+                    : coverUrl
+                      ? folderCoverCacheKey(
+                          identity,
+                          folder,
+                          coverHeroServedTiers.get(folder.id) ?? FOLDER_HEADER_COVER_TIER,
+                          coverHeroTokens.get(folder.id),
+                        )
+                      : folderCoverCacheKey(
+                          identity,
+                          folder,
+                          coverPreviewPeek!.servedTier ?? COMPACT_IMAGE_TIER,
+                          coverPreviewPeek!.token,
+                        )
+                }
+                // While the detail bytes download, keep showing the preview.
+                placeholder={
+                  coverUrl && coverPreviewPeek && folder
+                    ? {
+                        uri: coverPreviewPeek.url,
+                        cacheKey: folderCoverCacheKey(
+                          identity,
+                          folder,
+                          coverPreviewPeek.servedTier ?? COMPACT_IMAGE_TIER,
+                          coverPreviewPeek.token,
+                        ),
+                      }
+                    : undefined
+                }
                 crop={
                   folder?.cover_source === 'item' || folder?.cover_source === 'upload'
                     ? (folder.cover_crop ?? null)
@@ -1480,7 +1544,7 @@ export default function CollectionFolderScreen() {
         entry.folder,
         identity,
         { urls: signedUrls, statuses: gridStatuses, servedTiers: gridServedTiers },
-        coverUrls,
+        { urls: childCoverUrls, servedTiers: childCoverServedTiers, tokens: childCoverTokens },
       );
       return (
         <Pressable
@@ -1493,12 +1557,13 @@ export default function CollectionFolderScreen() {
           // current-folder row in MoveItemModal stays visible-but-disabled
           // rather than vanishing.
           disabled={selectMode || reorderMode}
-          onPress={() =>
+          onPress={() => {
+            prefetchFolderHeaderCover(entry.folder.id);
             router.push({
               pathname: '/collection/[folderId]',
               params: { folderId: entry.folder.id, title: entry.folder.name },
-            })
-          }>
+            });
+          }}>
           {tileImage ? (
             <Image
               source={tileImage}

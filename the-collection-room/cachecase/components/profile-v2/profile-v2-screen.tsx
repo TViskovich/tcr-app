@@ -24,6 +24,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import type { PostgrestError } from '@supabase/supabase-js';
 
+import { FolderCoverWarmup } from '@/components/collection/folder-cover-warmup';
 import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { TransactionsList } from '@/components/transactions/transactions-list';
@@ -45,7 +46,7 @@ import {
 import { useProfile } from '@/hooks/use-profile';
 import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
-import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
@@ -513,10 +514,13 @@ export function ProfileV2Screen({ userId }: Props) {
     previewGridEntries.map((e) => (e.kind === 'item' ? e.item.primary_image_id : e.folder.first_item_image_id)),
     COMPACT_IMAGE_TIER,
   );
+  // Same COMPACT tier HorizontalCardPreview requests, so this warms the exact
+  // cache entries it will read.
   useSignedFolderCovers(
     previewGridEntries
       .filter((e): e is Extract<CollectionGridEntry, { kind: 'folder' }> => e.kind === 'folder')
       .map((e) => e.folder.id),
+    COMPACT_IMAGE_TIER,
   );
 
   // Bounded warmup of the actual image bytes for whatever's likely to be
@@ -647,6 +651,36 @@ export function ProfileV2Screen({ userId }: Props) {
   ]);
 
   const [section, setSection] = useState<ProfileV2Section>('posts');
+  // Tab bodies that stay mounted (hidden) once visited, so switching back is
+  // instant: no remount means no re-resolving signed URLs (which, past their
+  // 5-minute lifetime, used to drop every tile back to a blank placeholder
+  // until re-signed) and no image re-decode/fade-in. Only for tabs that
+  // render this screen's own resident data (posts/folders/allItems, loaded
+  // and refreshed by the hooks above regardless of tab) — 'tagged' keeps
+  // remounting, since its own useSavedAll refetches on mount and that is
+  // its only refresh path. Scoped to the userId it was recorded for: a
+  // different profile starts over with just its current tab mounted, so no
+  // hidden tab from the previous profile survives.
+  const [visitedSections, setVisitedSections] = useState<{
+    userId: string;
+    sections: ReadonlySet<ProfileV2Section>;
+  }>(() => ({ userId, sections: new Set<ProfileV2Section>(['posts']) }));
+
+  function handleSectionChange(next: ProfileV2Section) {
+    setSection(next);
+    setVisitedSections((prev) => {
+      if (prev.userId === userId && prev.sections.has(next)) return prev;
+      const sections = new Set<ProfileV2Section>(prev.userId === userId ? prev.sections : []);
+      sections.add(next);
+      return { userId, sections };
+    });
+  }
+
+  // Render a resident tab's body at all: it's active, or it was visited on
+  // this same profile. isSectionHidden then hides (display: 'none') the
+  // mounted-but-inactive ones.
+  const isSectionMounted = (s: ProfileV2Section) =>
+    s === section || (visitedSections.userId === userId && visitedSections.sections.has(s));
   // Measured once off the posts section's real rendered height (see
   // ProfileV2SectionPage below) — posts is now both the default tab and the
   // tallest reachable one, so this captures a real dimension rather than a
@@ -1012,6 +1046,8 @@ export function ProfileV2Screen({ userId }: Props) {
   // Folder navigation always works, own profile or public; addFolderItem
   // (below) is owner-only.
   function openFolder(folder: Folder) {
+    // Start signing its header cover now, not after the folder screen mounts.
+    prefetchFolderHeaderCover(folder.id);
     router.push({ pathname: '/collection/[folderId]', params: { folderId: folder.id, title: folder.name } });
   }
 
@@ -1146,6 +1182,7 @@ export function ProfileV2Screen({ userId }: Props) {
   }
 
   function handleGrailCollectionPress(collection: Folder) {
+    prefetchFolderHeaderCover(collection.id);
     router.push({ pathname: '/collection/[folderId]', params: { folderId: collection.id, title: collection.name } });
   }
 
@@ -2164,7 +2201,7 @@ export function ProfileV2Screen({ userId }: Props) {
             {profile && !editMode && (
               <ProfileV2TabRow
                 active={section}
-                onChange={setSection}
+                onChange={handleSectionChange}
                 bannerVariant={resolveProfileBannerVariant(profile.banner_variant)}
               />
             )}
@@ -2411,46 +2448,62 @@ export function ProfileV2Screen({ userId }: Props) {
                   </>
                 )}
 
-                {section === 'posts' && (
-                  <ProfileV2Posts
-                    posts={profilePosts}
-                    currentUserId={currentUserId}
-                    onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
-                    onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
-                    onSourceOwnerPress={(ownerId, username) => navigateToProfile(router, currentUserId, ownerId, username)}
-                    onSourceItemPress={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
-                    onCommentPress={(postId) => router.push({ pathname: '/post-reply/[id]', params: { id: postId } })}
-                    onLike={handleLike}
-                    onDelete={handleDeletePost}
-                    error={profilePostsError}
-                    onRetry={refreshPosts}
-                  />
+                {/* posts/collections/items stay mounted once visited and are
+                    only hidden when inactive — see visitedSections. */}
+                {isSectionMounted('posts') && (
+                  <View style={section !== 'posts' && styles.hiddenSection}>
+                    <ProfileV2Posts
+                      posts={profilePosts}
+                      currentUserId={currentUserId}
+                      onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
+                      onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
+                      onSourceOwnerPress={(ownerId, username) => navigateToProfile(router, currentUserId, ownerId, username)}
+                      onSourceItemPress={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
+                      onCommentPress={(postId) => router.push({ pathname: '/post-reply/[id]', params: { id: postId } })}
+                      onLike={handleLike}
+                      onDelete={handleDeletePost}
+                      error={profilePostsError}
+                      onRetry={refreshPosts}
+                    />
+                  </View>
                 )}
 
-                {section === 'collections' && (
-                  <ProfileV2Collections
-                    folders={folders}
-                    previewEntries={previewEntries}
-                    itemCounts={itemCounts}
-                    onOpenFolder={openFolder}
-                    onOpenItem={handleGrailItemPress}
-                    onOpenChildFolder={openFolder}
-                    onAddItem={isOwnProfile ? addFolderItem : undefined}
-                    onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
-                    onCreateFolderPress={isOwnProfile ? () => setShowCreateFolderModal(true) : undefined}
-                  />
+                {isSectionMounted('collections') && (
+                  <View style={section !== 'collections' && styles.hiddenSection}>
+                    <ProfileV2Collections
+                      folders={folders}
+                      previewEntries={previewEntries}
+                      itemCounts={itemCounts}
+                      onOpenFolder={openFolder}
+                      onOpenItem={handleGrailItemPress}
+                      onOpenChildFolder={openFolder}
+                      onAddItem={isOwnProfile ? addFolderItem : undefined}
+                      onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
+                      onCreateFolderPress={isOwnProfile ? () => setShowCreateFolderModal(true) : undefined}
+                    />
+                  </View>
                 )}
+                {/* Background cover warmup for this profile's first few
+                    folders (signing + bytes) — mounts the first time the
+                    Collection tab is selected on this profile (the same
+                    visitedSections latch as the tab body), identical for the
+                    owner and a visitor (`folders` is already public-only for
+                    a visitor). Outside the hidden tab wrapper so switching
+                    tabs mid-warmup doesn't stall it. See FolderCoverWarmup. */}
+                {isSectionMounted('collections') && <FolderCoverWarmup folders={folders} />}
 
                 {section === 'transfer' && isOwnProfile && (
                   <TransactionsList currentUserId={currentUserId} onViewAll={handleOpenTransfers} />
                 )}
 
-                {section === 'items' && (
-                  <ProfileV2ItemsGrid
-                    items={allItems}
-                    loading={allItemsLoading}
-                    onPressItem={handleGrailItemPress}
-                  />
+                {isSectionMounted('items') && (
+                  <View style={section !== 'items' && styles.hiddenSection}>
+                    <ProfileV2ItemsGrid
+                      items={allItems}
+                      loading={allItemsLoading}
+                      onPressItem={handleGrailItemPress}
+                    />
+                  </View>
                 )}
 
                 {/* "Tagged" tab label unchanged — its content is now the
@@ -2493,6 +2546,11 @@ export function ProfileV2Screen({ userId }: Props) {
 }
 
 const styles = StyleSheet.create({
+  // Mounted-but-inactive tab body (see visitedSections): out of layout and
+  // the accessibility tree, but its components and images stay alive.
+  hiddenSection: {
+    display: 'none',
+  },
   // Grail reorder controls — a slim row directly above the Grails grid.
   grailReorderBar: {
     flexDirection: 'row',

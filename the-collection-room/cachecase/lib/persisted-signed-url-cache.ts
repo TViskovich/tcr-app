@@ -28,9 +28,31 @@ export type PersistedSignedUrlEntry = {
   // CacheEntry.expiresAt, so a value read back from here can be dropped
   // straight into the in-memory cache with no conversion.
   expiresAt: number;
+  // Optional opaque image-identity token (folder covers only — see
+  // get-folder-cover-signed-url's image_token). Absent on every older entry.
+  token?: string;
 };
 
 type PersistedMap = Record<string, PersistedSignedUrlEntry>;
+
+// The identity the app is currently acting as, as last reported by
+// lib/auth.tsx's identity-change handler (undefined until the first
+// observation). Lets a signing request that completes AFTER an account
+// switch/sign-out be recognized as belonging to a departed identity, so its
+// result is neither written back to memory by the hooks nor re-persisted
+// here after that identity's caches were already purged. Defense-in-depth
+// only: every entry is identity-keyed, so a departed identity's entries are
+// never readable by another identity either way.
+let activeSignedUrlIdentity: string | undefined;
+
+export function setActiveSignedUrlIdentity(identity: string): void {
+  activeSignedUrlIdentity = identity;
+}
+
+// True until the first identity is observed, then only for that identity.
+export function isActiveSignedUrlIdentity(identity: string): boolean {
+  return activeSignedUrlIdentity === undefined || activeSignedUrlIdentity === identity;
+}
 
 // The two domains currently backed by this cache — exported (rather than
 // left as private string literals inside each hook) specifically so
@@ -57,8 +79,12 @@ function storageKey(domain: string, identity: string): string {
 
 function isValidEntry(value: unknown): value is PersistedSignedUrlEntry {
   if (!value || typeof value !== 'object') return false;
-  const v = value as { url?: unknown; expiresAt?: unknown };
-  return (v.url === null || typeof v.url === 'string') && typeof v.expiresAt === 'number';
+  const v = value as { url?: unknown; expiresAt?: unknown; token?: unknown };
+  return (
+    (v.url === null || typeof v.url === 'string') &&
+    typeof v.expiresAt === 'number' &&
+    (v.token === undefined || typeof v.token === 'string')
+  );
 }
 
 // Best-effort — a read failure (corrupt JSON, storage unavailable) simply
@@ -95,6 +121,8 @@ export async function mergePersistedSignedUrlEntries(
   patch: PersistedMap,
 ): Promise<void> {
   if (!Object.keys(patch).length) return;
+  // Never re-persist a departed identity's entries after its purge.
+  if (!isActiveSignedUrlIdentity(identity)) return;
   try {
     const key = storageKey(domain, identity);
     const existing = await readPersistedSignedUrlMap(domain, identity);

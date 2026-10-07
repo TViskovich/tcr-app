@@ -22,8 +22,8 @@ import type { Folder } from '@/types';
 //
 // The caller passes in maps from its own existing batched hooks
 // (useSignedItemImages at COMPACT_IMAGE_TIER, with these folders'
-// first_item_image_ids added to that same batch, and useSignedFolderCovers)
-// — no separate signing path.
+// first_item_image_ids added to that same batch, and useSignedFolderCovers
+// at COMPACT_IMAGE_TIER too) — no separate signing path.
 export function getNestedFolderTileImage(
   folder: Folder,
   identity: string,
@@ -32,7 +32,11 @@ export function getNestedFolderTileImage(
     statuses: Map<string, SignedImageStatus>;
     servedTiers: Map<string, ImageTier>;
   },
-  coverUrls: Map<string, string>,
+  cover: {
+    urls: Map<string, string>;
+    servedTiers: Map<string, ImageTier>;
+    tokens: Map<string, string>;
+  },
 ): { uri: string; cacheKey: string | undefined } | null {
   const imageId = folder.first_item_image_id;
   if (imageId) {
@@ -42,6 +46,16 @@ export function getNestedFolderTileImage(
     }
     if (item.statuses.get(imageId) !== 'unavailable') return null;
   }
-  const coverUri = coverUrls.get(folder.id);
-  return coverUri ? { uri: coverUri, cacheKey: folderCoverCacheKey(identity, folder) } : null;
+  const coverUri = cover.urls.get(folder.id);
+  return coverUri
+    ? {
+        uri: coverUri,
+        cacheKey: folderCoverCacheKey(
+          identity,
+          folder,
+          cover.servedTiers.get(folder.id) ?? COMPACT_IMAGE_TIER,
+          cover.tokens.get(folder.id),
+        ),
+      }
+    : null;
 }

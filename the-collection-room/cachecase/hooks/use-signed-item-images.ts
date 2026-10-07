@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { DEFAULT_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 import {
+  isActiveSignedUrlIdentity,
   ITEM_IMAGES_CACHE_DOMAIN,
   mergePersistedSignedUrlEntries,
   readPersistedSignedUrlMap,
@@ -329,8 +330,11 @@ async function fetchSignedImageBatchWithRetry(
 
   for (;;) {
     const result = await fetchSignedImageBatchAttempt(imageIds, accessToken, tier);
-    if (isCancelled()) return { ok: false, status: null };
+    // A successful answer is returned even if the requesting effect was
+    // superseded meanwhile — it's still a valid, identity-scoped result
+    // that another pass may be awaiting (see the batch write in the hook).
     if (result.ok) return result;
+    if (isCancelled()) return { ok: false, status: null };
 
     const authFailure = isAuthStatus(result.status);
     const retryable = authFailure || isRetryableStatus(result.status);
@@ -447,10 +451,21 @@ export function useSignedItemImages(
         const batchPromise: Promise<void> = (async () => {
           try {
             const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled, tier);
-            if (cancelled) return;
 
+            // A successful batch is cached even if this effect run was
+            // superseded while it was in flight (the screen's id list or
+            // tier changed, or it unmounted). It used to be discarded here,
+            // while any superseding pass that saw these ids in `inFlight`
+            // awaited this very promise instead of refetching — leaving
+            // those images 'loading' until the 4s follow-up pass, or a later
+            // screen re-signing them from scratch. Not cached: a
+            // cancellation-induced failure (never a real answer), or any
+            // result for an identity the app is no longer acting as
+            // (account switch/sign-out mid-request — see
+            // isActiveSignedUrlIdentity).
             const now = Date.now();
             if (outcome.ok) {
+              if (!isActiveSignedUrlIdentity(identity)) return;
               const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
               for (const r of outcome.results) {
                 // Fallback = a non-original tier was requested but the
@@ -471,7 +486,7 @@ export function useSignedItemImages(
               // here only costs a future cold-launch network round trip,
               // never a correctness issue (see the helper's own comment).
               mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
-            } else {
+            } else if (!cancelled) {
               // Every retry for this batch was exhausted (or the failure
               // wasn't retryable at all) — cache every id in it as
               // unavailable so status doesn't stay stuck at 'loading'

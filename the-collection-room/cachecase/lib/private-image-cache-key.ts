@@ -64,31 +64,39 @@ export function itemImageCacheKey(
 //     same reasoning as item images above.
 //   - 'item': cover_item_id changes the instant the owner repoints the
 //     cover to a different existing item, even with no new upload.
-//   - 'first_card': no client-visible signal exists at all. The resolved
-//     image is "whichever active item is currently newest," which the
-//     Edge Function can silently re-resolve to a DIFFERENT item (a new
-//     item added) with zero change to the folders row — there is no field
-//     here that would ever reflect that. Returns undefined for this case
-//     ON PURPOSE: a stable-looking key built from nothing but folderId
-//     would risk freezing stale cover bytes on screen even after the
-//     resolved image has genuinely moved on, which is worse than today's
-//     "always redownloads because the URL always rotates" behavior. The
-//     caller omits `cacheKey` entirely when this returns undefined, so
-//     expo-image falls back to its own default (keying on the signed URL
-//     itself) — safe, just not byte-cache-stable across a URL rotation,
-//     exactly like every private image before Phase 2. See the Phase 2
-//     report for the full first_card discussion; closing this gap for
-//     real would need a backend change (an Edge Function response field
-//     identifying the resolved item), out of scope here.
+//   - 'first_card' (and an 'upload'/'item' folder missing its backing
+//     reference, which the Edge Function resolves the same way): nothing on
+//     the folders row reflects WHICH item is currently resolved — it can
+//     silently move to a different item with zero change to the row. So
+//     this needs the Edge Function's image_token (useSignedFolderCovers'
+//     tokens map): an opaque, keyed hash of the resolved image's identity,
+//     identical across signed-URL rotations of the same image and different
+//     the moment the resolved image changes (new first card, new primary
+//     image). Without a token (an older Edge Function, or an entry cached
+//     before it existed) this still returns undefined ON PURPOSE — a key
+//     built from folderId alone could freeze stale bytes once the resolved
+//     image moves on — and the caller omits `cacheKey`, so expo-image keys
+//     on the signed URL itself (safe, just not stable across rotation).
+//
+// tier: the tier whose bytes the URL actually serves (the caller passes
+// useSignedFolderCovers' servedTiers.get(id) ?? the tier it requested) —
+// same suffix scheme as itemImageCacheKey, so preview/detail cover bytes
+// never share a key with original-tier ones. 'original' (the default) adds
+// no suffix, leaving every existing 'upload'/'item' key unchanged.
 export function folderCoverCacheKey(
   identity: string,
   folder: { id: string; cover_source: string; cover_storage_path: string | null; cover_item_id: string | null },
+  tier: ImageTier = 'original',
+  token?: string,
 ): string | undefined {
   if (folder.cover_source === 'upload' && folder.cover_storage_path) {
-    return `${identity}:folder-cover:${folder.id}:upload:${folder.cover_storage_path}`;
+    return `${identity}:folder-cover:${folder.id}:upload:${folder.cover_storage_path}${imageTierCacheSuffix(tier)}`;
   }
   if (folder.cover_source === 'item' && folder.cover_item_id) {
-    return `${identity}:folder-cover:${folder.id}:item:${folder.cover_item_id}`;
+    return `${identity}:folder-cover:${folder.id}:item:${folder.cover_item_id}${imageTierCacheSuffix(tier)}`;
+  }
+  if (token) {
+    return `${identity}:folder-cover:${folder.id}:first_card:${token}${imageTierCacheSuffix(tier)}`;
   }
   return undefined;
 }

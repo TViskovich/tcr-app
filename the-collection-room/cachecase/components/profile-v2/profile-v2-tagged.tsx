@@ -57,7 +57,9 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
   // Same batched-signing convention as every other grid in this codebase —
   // one call for the whole tab, never one request per tile.
   const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id), COMPACT_IMAGE_TIER);
-  const { urls: signedFolderCoverUrls } = useSignedFolderCovers(folders.map((f) => f.id));
+  // Thumbnail-sized covers: the same small preview tier as item tiles.
+  // coverSource: URL + stable cacheKey (token-backed for first_card covers).
+  const { coverSource: folderCoverSource } = useSignedFolderCovers(folders.map((f) => f.id), COMPACT_IMAGE_TIER);
 
   const isEmpty = folders.length === 0 && cards.length === 0;
 
@@ -98,7 +100,7 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
           <FolderTile
             key={`folder-${entry.folder.id}`}
             folder={entry.folder}
-            coverUrl={signedFolderCoverUrls.get(entry.folder.id)}
+            cover={folderCoverSource(entry.folder)}
             onPress={() => onPressFolder(entry.folder)}
           />
         ) : (
@@ -116,17 +118,17 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
 
 function FolderTile({
   folder,
-  coverUrl,
+  cover,
   onPress,
 }: {
   folder: SavedFolderEntry;
-  coverUrl: string | undefined;
+  cover: { uri: string; cacheKey?: string } | null;
   onPress: () => void;
 }) {
   return (
     <TouchableOpacity style={styles.cell} activeOpacity={0.85} onPress={onPress}>
-      {coverUrl ? (
-        <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
+      {cover ? (
+        <Image source={cover} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
       ) : null}
       {/* Same bottom-scrim label treatment as grail-slot-preview.tsx's own
           collection slots — the one other place this app already

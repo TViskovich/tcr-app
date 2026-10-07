@@ -17,6 +17,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { resolveCovers } from '@/hooks/use-collection';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
+import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { supabase } from '@/lib/supabase';
 import type { CollectionItem, Folder } from '@/types';
 
@@ -156,7 +157,12 @@ export function MoveItemModal(props: Props) {
   const { folders, itemCounts, loading, error, refresh } = useOwnFoldersForMove(
     visible ? currentUserId : undefined,
   );
-  const { urls: signedCoverUrls } = useSignedFolderCovers(visible ? folders.map((f) => f.id) : []);
+  // Thumbnail-sized covers: the same small preview tier as item tiles.
+  // coverSource: URL + stable cacheKey (token-backed for first_card covers).
+  const { coverSource: folderCoverSource } = useSignedFolderCovers(
+    visible ? folders.map((f) => f.id) : [],
+    COMPACT_IMAGE_TIER,
+  );
 
   // Re-entrancy lock for the move mutation itself — separate from `loading`
   // (folder list fetch) so a slow initial folder load can never be
@@ -249,7 +255,7 @@ export function MoveItemModal(props: Props) {
               const isMovingThis = movingFolderId === folder.id;
               const rowDisabled = isCurrent || movingFolderId !== null;
               const count = itemCounts[folder.id] ?? 0;
-              const coverUrl = signedCoverUrls.get(folder.id);
+              const cover = folderCoverSource(folder);
               return (
                 <TouchableOpacity
                   key={folder.id}
@@ -261,8 +267,8 @@ export function MoveItemModal(props: Props) {
                   accessibilityState={{ disabled: rowDisabled, selected: isCurrent }}
                   accessibilityLabel={isCurrent ? `${folder.name}, current folder` : folder.name}>
                   <View style={styles.cover}>
-                    {coverUrl ? (
-                      <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
+                    {cover ? (
+                      <Image source={cover} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
                     ) : null}
                   </View>
                   <View style={styles.rowText}>
