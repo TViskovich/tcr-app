@@ -2160,7 +2160,13 @@ export function ProfileV2Screen({ userId }: Props) {
               an empty tabRowSticky (edit mode, or before `profile` loads)
               still collapses to true zero height. */}
           <View style={[styles.tabRowSticky, profile && !editMode && styles.tabRowStickyFilled]}>
-            {profile && !editMode && <ProfileV2TabRow active={section} onChange={setSection} />}
+            {profile && !editMode && (
+              <ProfileV2TabRow
+                active={section}
+                onChange={setSection}
+                bannerVariant={resolveProfileBannerVariant(profile.banner_variant)}
+              />
+            )}
           </View>
 
           {/* index 2 — selected tab body (or the edit form), scrolling

@@ -37,7 +37,15 @@ export type ProfileBannerDefinition = {
   locations?: readonly [number, number, ...number[]];
   start: { x: number; y: number };
   end: { x: number; y: number };
+  // Optional replacement stops for the profile's thin accent strokes (see
+  // getProfileBannerAccent) — only for a banner whose own colors would
+  // vanish against the dark profile background at hairline width.
+  accent?: Pick<ProfileBannerDefinition, 'colors' | 'locations'>;
 };
+
+// The banner's theme as used by the profile's secondary surfaces (Profile V2
+// tab pill outlines) — same gradient geometry as the banner itself.
+export type ProfileBannerAccent = Pick<ProfileBannerDefinition, 'colors' | 'locations' | 'start' | 'end'>;
 
 const HORIZONTAL = { start: { x: 0, y: 0 }, end: { x: 1, y: 0 } } as const;
 
@@ -62,6 +70,12 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
     label: 'Black',
     colors: ['#000000', '#000000'],
     ...HORIZONTAL,
+    // Pure black disappears on the near-black profile background, so its
+    // accent is a charcoal sheen instead — still neutral, still "black".
+    accent: {
+      colors: ['#45464C', '#6A6C73', '#45464C'],
+      locations: [0, 0.5, 1],
+    },
   },
   blue_gradient: {
     label: 'Blue Gradient',
@@ -114,10 +128,10 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
 // Picker order (when nothing is selected, or for the rows after the
 // selected one — see getProfileBannerPickerOrder).
 export const PROFILE_BANNER_VARIANT_IDS: readonly ProfileBannerVariant[] = [
+  'brand_gradient',
   'black',
   'white_gradient',
   'blue_gradient',
-  'brand_gradient',
   'gold',
   'gold_silver',
   'red_gradient',
@@ -150,4 +164,13 @@ export function resolveProfileBannerVariant(value: unknown): ProfileBannerVarian
 export function getProfileBannerDefinition(value: unknown): ProfileBannerDefinition {
   const variant = resolveProfileBannerVariant(value);
   return variant ? PROFILE_BANNER_VARIANTS[variant] : LEGACY_PROFILE_BANNER;
+}
+
+// The same banner's colors for thin accent strokes elsewhere on the
+// profile: the banner's own gradient (NULL/unknown -> the legacy neon, like
+// the card), with a definition's `accent` stops swapped in where it has
+// them. Callers control intensity (stroke width/opacity) themselves.
+export function getProfileBannerAccent(value: unknown): ProfileBannerAccent {
+  const { colors, locations, start, end, accent } = getProfileBannerDefinition(value);
+  return accent ? { ...accent, start, end } : { colors, locations, start, end };
 }
