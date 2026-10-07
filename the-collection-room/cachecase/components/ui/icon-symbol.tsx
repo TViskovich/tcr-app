@@ -24,6 +24,8 @@ const MAPPING = {
   'chevron.left': 'chevron-left',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'chevron.up': 'keyboard-arrow-up',
+  'chevron.down': 'keyboard-arrow-down',
   'folder.fill': 'folder',
   'bell.fill': 'notifications',
   'message.fill': 'chat',

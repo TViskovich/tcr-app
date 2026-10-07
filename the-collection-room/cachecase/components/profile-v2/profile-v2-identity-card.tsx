@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { getProfileBannerDefinition, type ProfileBannerVariant } from './profile-banner-variants';
+import { getProfileLogoDefinition, type ProfileLogoVariant } from './profile-logo-variants';
 import { GRID_CELL_WIDTH, GRID_HORIZONTAL_MARGIN } from './profile-v2-grid';
 import { PV2 } from './profile-v2-theme';
 
@@ -53,6 +54,14 @@ const BORDER_WIDTH_LEFT = GRID_HORIZONTAL_MARGIN;
 // gap between the logo/ACCT# and the border.
 const CARD_PADDING_RIGHT = 10;
 const CACHECASE_LOGO_HEIGHT = 33;
+// The legacy wordmark's rendered box (cachecase-primary.png is 1627x684 —
+// see CacheCaseLogo's ASPECT_RATIO). A selected profile logo (the
+// near-square CC monogram) is drawn inside a box of exactly this size, so
+// rightCol — and therefore middleCol's width and the username's shrink —
+// never changes with the logo choice. The monogram fills the box's height
+// (same visual height as the wordmark) and is centered in it, so it sits
+// on the same center line as ACCT# beneath it (see rightCol).
+const LOGO_BOX = { width: CACHECASE_LOGO_HEIGHT * (1627 / 684), height: CACHECASE_LOGO_HEIGHT };
 // Floor for the username's fit-to-width shrink (14pt -> 7pt at most). Only
 // reached by pathological all-wide-letter 15-char handles on the narrowest
 // supported width (375pt); see the username <Text> below.
@@ -86,9 +95,14 @@ type Props = {
   onPress?: () => void;
   expanded?: boolean;
   // Outer frame treatment (profiles.banner_variant). Only the frame
-  // changes — interior, logo and layout are identical for every variant.
+  // changes — interior and layout are identical for every variant; the logo
+  // is its own prop below.
   // null/omitted renders the original neon frame (legacy profiles).
   bannerVariant?: ProfileBannerVariant | null;
+  // CacheCase logo style (profiles.profile_logo_variant), resolved
+  // independently of bannerVariant. null/omitted renders the original
+  // production wordmark (legacy profiles).
+  logoVariant?: ProfileLogoVariant | null;
 };
 
 // Compact horizontal identity header — Profile V3's shared top shell. A
@@ -108,9 +122,11 @@ export function ProfileV2IdentityCard({
   onPress,
   expanded,
   bannerVariant,
+  logoVariant,
 }: Props) {
   const acctCode = formatAccountNumber(accountNumber);
   const banner = getProfileBannerDefinition(bannerVariant);
+  const logo = getProfileLogoDefinition(logoVariant);
 
   return (
     <LinearGradient
@@ -170,8 +186,14 @@ export function ProfileV2IdentityCard({
             — rather than the logo alone with ACCT# detached elsewhere in
             the card, so the two visually belong together. */}
         <View style={styles.rightCol}>
-          <CacheCaseLogo variant="light" size={CACHECASE_LOGO_HEIGHT} placement="header" />
-          <Text style={styles.acctText}>ACCT# {acctCode}</Text>
+          {logo ? (
+            <View style={LOGO_BOX} pointerEvents="none">
+              <Image source={logo.source} style={StyleSheet.absoluteFill} contentFit="contain" contentPosition="center" />
+            </View>
+          ) : (
+            <CacheCaseLogo variant="light" size={CACHECASE_LOGO_HEIGHT} placement="header" />
+          )}
+          <Text style={styles.acctText} numberOfLines={1}>ACCT# {acctCode}</Text>
         </View>
       </Pressable>
     </LinearGradient>
@@ -285,12 +307,12 @@ const styles = StyleSheet.create({
   // reference's rhythm, where the logo sits near the card's top edge and
   // ACCT# sits near the bottom, roughly level with ITEMS on the left,
   // rather than the two floating together as a centered pair.
-  // flex-start (not flex-end) is deliberate: the cropped
-  // cachecase-wordmark-nav.png asset's own left edge already lines up with
-  // the "case" line's left edge (the "cache" line above it is the one
-  // that's indented), so left-aligning ACCT# to the logo's shrink-wrapped
-  // box lines its own left edge up with "Case" — an intentional visual
-  // match, not a numeric one (ACCT# is shorter than the logo either way).
+  // alignItems: 'center' stacks the logo and ACCT# on one shared horizontal
+  // center line. The column's width is the wider child — the fixed-size logo
+  // box (LOGO_BOX, or the legacy wordmark at the same size), never ACCT#,
+  // which is always CC + 6 digits and narrower — so centering never changes
+  // rightCol's width, middleCol's available width, or the username's shrink,
+  // and a different account number can't shift the logo.
   // paddingLeft only (was paddingHorizontal 14) — a right-side value here
   // used to stack on top of `card`'s own paddingRight, pushing the logo/
   // ACCT# further from the border than intended. `card`'s paddingRight
@@ -298,7 +320,7 @@ const styles = StyleSheet.create({
   // paddingLeft is purely the separation from `middleCol`'s text, unrelated
   // to the border.
   rightCol: {
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingLeft: 14,
     paddingTop: 12,

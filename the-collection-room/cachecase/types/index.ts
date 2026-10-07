@@ -237,6 +237,13 @@ export type Profile = {
   // the column existed won't have it. Always read through
   // resolveProfileBannerVariant.
   banner_variant?: string | null;
+  // Identity-card CacheCase logo style (profiles.profile_logo_variant — see
+  // components/profile-v2/profile-logo-variants.ts), independent of
+  // banner_variant. NULL = the original production wordmark (profiles that
+  // predate the column); new profiles default to 'color'. Optional for the
+  // same cache reason as banner_variant. Always read through
+  // resolveProfileLogoVariant.
+  profile_logo_variant?: string | null;
 };
 
 export type Post = {

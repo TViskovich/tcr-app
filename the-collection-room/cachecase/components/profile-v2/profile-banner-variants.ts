@@ -4,16 +4,16 @@
 // definition says.
 //
 // Banner color ONLY. The CacheCase logo on the card is independent of this
-// and stays the current production logo for every banner. A future logo
-// preference (e.g. profiles.profile_logo_variant + its own
-// PROFILE_LOGO_VARIANTS registry next to this one) should be resolved
-// separately and passed to the card on its own, so any banner can pair with
-// any logo — never add combined "banner + logo" entries here.
+// — profiles.profile_logo_variant, resolved through its own registry
+// (profile-logo-variants.ts) and passed to the card separately, so any
+// banner can pair with any logo. Never add combined "banner + logo" entries
+// here.
 //
 // Keep the ids in sync with profiles_banner_variant_check
-// (supabase/migrations/20261010120000_add_profile_banner_variant.sql).
+// (supabase/migrations/20261010120000_add_profile_banner_variant.sql,
+// widened by 20261013120000_add_white_gradient_banner_variant.sql).
 //
-// A stored NULL is NOT one of these seven — it means "the original
+// A stored NULL is NOT one of these eight — it means "the original
 // production neon frame" (NEON_BORDER below). Every profile that existed
 // before banner_variant did is NULL, and keeps that frame until its owner
 // picks a banner; new profiles default to 'black' in the database.
@@ -27,7 +27,8 @@ export type ProfileBannerVariant =
   | 'gold'
   | 'gold_silver'
   | 'red_gradient'
-  | 'silver';
+  | 'silver'
+  | 'white_gradient';
 
 export type ProfileBannerDefinition = {
   label: string;
@@ -100,11 +101,21 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
     locations: [0, 0.3, 0.55, 0.8, 1],
     ...HORIZONTAL,
   },
+  // Pearl-white sheen — same 5-stop rhythm as Silver but kept in the
+  // near-white range (no mid-grey dips), so it reads as white, not metal.
+  white_gradient: {
+    label: 'White Gradient',
+    colors: ['#FFFFFF', '#E6E8EC', '#FFFFFF', '#D9DCE1', '#F7F8FA'],
+    locations: [0, 0.3, 0.55, 0.8, 1],
+    ...HORIZONTAL,
+  },
 };
 
-// Picker order.
+// Picker order (when nothing is selected, or for the rows after the
+// selected one — see getProfileBannerPickerOrder).
 export const PROFILE_BANNER_VARIANT_IDS: readonly ProfileBannerVariant[] = [
   'black',
+  'white_gradient',
   'blue_gradient',
   'brand_gradient',
   'gold',
@@ -112,6 +123,18 @@ export const PROFILE_BANNER_VARIANT_IDS: readonly ProfileBannerVariant[] = [
   'red_gradient',
   'silver',
 ];
+
+// Picker display order for a given current selection: that banner first,
+// then every other banner in PROFILE_BANNER_VARIANT_IDS order. Derived — the
+// registry order itself never changes. null (legacy neon frame, which isn't
+// selectable) keeps the normal order.
+export function getProfileBannerPickerOrder(
+  selected: ProfileBannerVariant | null
+): readonly ProfileBannerVariant[] {
+  return selected
+    ? [selected, ...PROFILE_BANNER_VARIANT_IDS.filter((id) => id !== selected)]
+    : PROFILE_BANNER_VARIANT_IDS;
+}
 
 // Stored value -> selectable variant, or null for the legacy neon frame.
 // null/undefined (pre-banner profiles, or own-profile cache entries written
