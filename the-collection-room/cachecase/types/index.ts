@@ -230,6 +230,13 @@ export type Profile = {
   favorite_teams: string[];
   collecting_categories: string[];
   collector_tags: string[];
+  // Identity-card banner color (profiles.banner_variant — see
+  // components/profile-v2/profile-banner-variants.ts). NULL = the original
+  // neon frame (profiles that predate the column); new profiles default to
+  // 'black'. Optional here because own-profile cache entries written before
+  // the column existed won't have it. Always read through
+  // resolveProfileBannerVariant.
+  banner_variant?: string | null;
 };
 
 export type Post = {

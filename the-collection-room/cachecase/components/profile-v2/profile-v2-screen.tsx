@@ -70,6 +70,8 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
+import { resolveProfileBannerVariant, type ProfileBannerVariant } from './profile-banner-variants';
+import { ProfileV2BannerPicker } from './profile-v2-banner-picker';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2ExpandedDetails } from './profile-v2-expanded-details';
 import { ProfileV2Grid } from './profile-v2-grid';
@@ -283,6 +285,7 @@ type IntendedProfileFields = Pick<
   | 'avatar_url'
   | 'hero_image_url'
   | 'hero_theme'
+  | 'banner_variant'
 >;
 
 // True only if the row currently holds EXACTLY the state this save attempt
@@ -302,6 +305,7 @@ function intendedProfileMatchesRow(intended: IntendedProfileFields, row: Intende
     intended.avatar_url === row.avatar_url &&
     intended.hero_image_url === row.hero_image_url &&
     intended.hero_theme === row.hero_theme &&
+    intended.banner_variant === row.banner_variant &&
     arraysEqualOrdered(intended.favorite_sports, row.favorite_sports) &&
     arraysEqualOrdered(intended.favorite_teams, row.favorite_teams) &&
     arraysEqualOrdered(intended.collecting_categories, row.collecting_categories) &&
@@ -731,6 +735,9 @@ export function ProfileV2Screen({ userId }: Props) {
   // user. Kept in sync with DEFAULT_HERO_CANVAS_THEME for consistency,
   // not because it's functionally reachable.
   const [selectedTheme, setSelectedTheme] = useState<HeroCanvasThemeId>('base');
+  // Same placeholder-then-enterEdit pattern as selectedTheme above. null =
+  // the original neon frame (a pre-banner profile that hasn't chosen yet).
+  const [selectedBanner, setSelectedBanner] = useState<ProfileBannerVariant | null>(null);
   const [saving, setSaving] = useState(false);
   // Synchronous re-entry lock for handleSave — `saving` (React state) only
   // reflects the UI's loading indicator and updates asynchronously, so two
@@ -1219,6 +1226,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setNewHeroUri(null);
     setRemoveHero(false);
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
+    setSelectedBanner(resolveProfileBannerVariant(profile?.banner_variant));
     setDetailsExpanded(false);
     setEditMode(true);
   }
@@ -1254,6 +1262,7 @@ export function ProfileV2Screen({ userId }: Props) {
       !arraysEqualOrdered(collectingCategories, profile?.collecting_categories ?? []) ||
       !arraysEqualOrdered(collectorTags, profile?.collector_tags ?? []) ||
       selectedTheme !== resolveHeroCanvasTheme(profile?.hero_theme) ||
+      selectedBanner !== resolveProfileBannerVariant(profile?.banner_variant) ||
       newAvatarUri !== null ||
       removeAvatar ||
       newHeroUri !== null ||
@@ -1645,6 +1654,7 @@ export function ProfileV2Screen({ userId }: Props) {
             avatar_url: avatarUrl,
             hero_image_url: heroUrl,
             hero_theme: resolveHeroCanvasTheme(profile?.hero_theme),
+            banner_variant: resolveProfileBannerVariant(profile?.banner_variant),
           }
         : {
             hero_display_name: editForm.heroName.trim() || null,
@@ -1660,6 +1670,7 @@ export function ProfileV2Screen({ userId }: Props) {
             avatar_url: avatarUrl,
             hero_image_url: heroUrl,
             hero_theme: selectedTheme,
+            banner_variant: selectedBanner,
           };
 
       // Shared by every branch below that has proven (either directly or
@@ -1722,7 +1733,7 @@ export function ProfileV2Screen({ userId }: Props) {
           const { data: reconData, error: reconError } = await supabase
             .from('profiles')
             .select(
-              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme'
+              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, banner_variant'
             )
             .eq('id', userId)
             .maybeSingle();
@@ -1965,6 +1976,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 itemCount={stats.itemCount}
                 avatarUri={avatarUri}
                 accountNumber={profile.account_number}
+                bannerVariant={editMode ? selectedBanner : resolveProfileBannerVariant(profile.banner_variant)}
                 onAvatarPress={isOwnProfile && !saving ? handleAvatarPress : undefined}
                 onPress={!editMode ? () => setDetailsExpanded((v) => !v) : undefined}
                 expanded={detailsExpanded}
@@ -2225,6 +2237,21 @@ export function ProfileV2Screen({ userId }: Props) {
                 keyboardType="url"
                 accessibilityLabel="Website"
               />
+
+              <Text style={styles.sectionHeader}>Profile Banner</Text>
+              {profile && (
+                <ProfileV2BannerPicker
+                  value={selectedBanner}
+                  onChange={setSelectedBanner}
+                  preview={{
+                    username: profile.username,
+                    title: displayName,
+                    itemCount: stats.itemCount,
+                    avatarUri,
+                    accountNumber: profile.account_number,
+                  }}
+                />
+              )}
 
               {SHOW_HERO_THEME_PICKER && (
                 <>

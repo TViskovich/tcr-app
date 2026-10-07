@@ -4,16 +4,9 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
+import { getProfileBannerDefinition, type ProfileBannerVariant } from './profile-banner-variants';
 import { GRID_CELL_WIDTH, GRID_HORIZONTAL_MARGIN } from './profile-v2-grid';
 import { PV2 } from './profile-v2-theme';
-
-// Left-to-right neon signature — cyan/blue into purple into pink. A
-// horizontal (not diagonal) 3-stop gradient, distinct from
-// ProfileV2Selector's diagonal IRIDESCENT_BORDER: this card's border reads
-// left-to-right on purpose, matching the reference design. Pink stop
-// pushed more saturated/magenta (was #FF5FA2, a softer rose) to match a
-// later reference screenshot more closely — cyan/purple were already close.
-const NEON_BORDER = ['#2DD4FF', '#8B5CF6', '#FF3CAC'] as const;
 
 const BORDER_WIDTH = 4;
 // Square, 90°-corner frame — no rounding anywhere in this card, outer
@@ -92,6 +85,10 @@ type Props = {
   // one), so avatar-editing and expand/collapse never conflict.
   onPress?: () => void;
   expanded?: boolean;
+  // Outer frame treatment (profiles.banner_variant). Only the frame
+  // changes — interior, logo and layout are identical for every variant.
+  // null/omitted renders the original neon frame (legacy profiles).
+  bannerVariant?: ProfileBannerVariant | null;
 };
 
 // Compact horizontal identity header — Profile V3's shared top shell. A
@@ -110,14 +107,17 @@ export function ProfileV2IdentityCard({
   onAvatarPress,
   onPress,
   expanded,
+  bannerVariant,
 }: Props) {
   const acctCode = formatAccountNumber(accountNumber);
+  const banner = getProfileBannerDefinition(bannerVariant);
 
   return (
     <LinearGradient
-      colors={NEON_BORDER}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 0 }}
+      colors={banner.colors}
+      locations={banner.locations}
+      start={banner.start}
+      end={banner.end}
       style={styles.borderWrap}>
       <Pressable
         style={styles.card}
