@@ -43,6 +43,16 @@ export type Folder = {
   // Privacy is inherited recursively up the chain — also enforced entirely
   // server-side (folder_is_effectively_visible), never duplicated here.
   parent_folder_id: string | null;
+  // Client-derived, NOT a folders column — only set on child-folder rows
+  // loaded for display inside a parent collection (hooks/use-collection.ts's
+  // child-folder loaders). The collection_item_images.id of this folder's
+  // FIRST active item (same sort_order rule its own page uses, RLS-filtered
+  // to what the viewer can see), so its nested tile matches the card tiles
+  // around it. null = no visible item, or the first item has no primary
+  // image; undefined = not loaded (any other folder query, or an older
+  // cache entry). Both fall back to the folder's own cover — see
+  // components/collection/nested-folder-tile-image.ts.
+  first_item_image_id?: string | null;
 };
 
 // Collectible type discriminator (supabase/migrations/

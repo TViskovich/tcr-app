@@ -108,6 +108,61 @@ export function compareGridEntriesByRecency(a: CollectionGridEntry, b: Collectio
   return bTime - aTime;
 }
 
+// Child folders shown INSIDE a parent collection render their tile from
+// their own first card, not their banner (see Folder.first_item_image_id).
+// That first card is embedded into the SAME child-folder query (PostgREST
+// resource embedding: one LIMIT 1 lateral lookup per returned folder,
+// server-side) — never a follow-up request per folder. The embedded item
+// uses exactly useItems' rule (active only, sort_order ascending), and RLS
+// applies to the embedded collection_items/collection_item_images rows just
+// as it does to useItems' own query, so a viewer only ever gets the first
+// card they could see by opening that folder. The !fkey hint is required:
+// folders.cover_item_id is a second relationship between the two tables.
+const CHILD_FOLDER_SELECT = '*, collection_items!collection_items_folder_id_fkey(id, collection_item_images(id))';
+
+type ChildFolderRow = Folder & {
+  collection_items?: { id: string; collection_item_images?: { id: string }[] | null }[] | null;
+};
+
+// Strips the embed back off so callers get a plain Folder, plus the derived
+// first_item_image_id (null when the folder has no visible active item, or
+// its first item has no primary image — the tile then uses the cover).
+function toFolderWithFirstItem({ collection_items: firstItems, ...folder }: ChildFolderRow): Folder {
+  const firstItem = firstItems?.[0];
+  return { ...folder, first_item_image_id: firstItem?.collection_item_images?.[0]?.id ?? null };
+}
+
+// Direct child folders of one parent, with each one's first-item preview
+// embedded. If the embedded query itself is ever rejected, retries once as
+// the exact plain query used before (no first_item_image_id — tiles fall
+// back to their covers, as they always did) rather than letting a preview
+// enhancement make nested folders disappear.
+async function queryChildFolders(
+  parentFolderId: string,
+  { orderBy, ascending, limit }: { orderBy: 'name' | 'created_at'; ascending: boolean; limit?: number },
+): Promise<{ data: Folder[] | null; error: { message: string } | null }> {
+  let embedded = supabase
+    .from('folders')
+    .select(CHILD_FOLDER_SELECT)
+    .eq('parent_folder_id', parentFolderId)
+    .eq('collection_items.collection_status', 'active')
+    .eq('collection_items.collection_item_images.is_primary', true)
+    .order('sort_order', { referencedTable: 'collection_items', ascending: true })
+    .limit(1, { referencedTable: 'collection_items' })
+    .order(orderBy, { ascending });
+  if (limit != null) embedded = embedded.limit(limit);
+  const embeddedRes = await embedded;
+  if (!embeddedRes.error) {
+    return { data: ((embeddedRes.data ?? []) as ChildFolderRow[]).map(toFolderWithFirstItem), error: null };
+  }
+
+  if (__DEV__) console.warn('[queryChildFolders] first-item embed failed, using plain query:', embeddedRes.error.message);
+  let plain = supabase.from('folders').select('*').eq('parent_folder_id', parentFolderId).order(orderBy, { ascending });
+  if (limit != null) plain = plain.limit(limit);
+  const plainRes = await plain;
+  return { data: plainRes.data as Folder[] | null, error: plainRes.error };
+}
+
 // Direct child folders of each requested (top-level) folder, capped and
 // ordered exactly like fetchPreviewItems above — same PREVIEW_ITEM_LIMIT,
 // same newest-first order, same one-batched-query-per-caller-id shape (never
@@ -120,17 +175,12 @@ async function fetchChildFolderPreviews(folderIds: string[]): Promise<Record<str
   if (!folderIds.length) return {};
   const results = await Promise.all(
     folderIds.map((id) =>
-      supabase
-        .from('folders')
-        .select('*')
-        .eq('parent_folder_id', id)
-        .order('created_at', { ascending: false })
-        .limit(PREVIEW_ITEM_LIMIT),
+      queryChildFolders(id, { orderBy: 'created_at', ascending: false, limit: PREVIEW_ITEM_LIMIT }),
     ),
   );
   const byFolder: Record<string, Folder[]> = {};
   folderIds.forEach((id, i) => {
-    byFolder[id] = (results[i].data ?? []) as Folder[];
+    byFolder[id] = results[i].data ?? [];
   });
   return byFolder;
 }
@@ -385,11 +435,10 @@ export function useChildFolders(parentFolderId: string | undefined) {
     }
     setLoading(true);
     try {
-      const { data, error: queryError } = await supabase
-        .from('folders')
-        .select('*')
-        .eq('parent_folder_id', parentFolderId)
-        .order('name', { ascending: true });
+      const { data, error: queryError } = await queryChildFolders(parentFolderId, {
+        orderBy: 'name',
+        ascending: true,
+      });
 
       if (queryError) {
         console.error('[useChildFolders] query failed:', queryError.message, queryError);

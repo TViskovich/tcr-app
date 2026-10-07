@@ -506,10 +506,11 @@ export function ProfileV2Screen({ userId }: Props) {
   // tab switch) reads the by-then-likely-already-resolved cache instead of
   // starting the request from scratch.
   const previewGridEntries = Object.values(previewEntries).flat();
+  // Nested folder tiles render their first card (Folder.first_item_image_id
+  // — see components/collection/nested-folder-tile-image.ts), so those ids
+  // are warmed in this same batch too.
   const { urls: previewItemUrls, servedTiers: previewServedTiers } = useSignedItemImages(
-    previewGridEntries
-      .filter((e): e is Extract<CollectionGridEntry, { kind: 'item' }> => e.kind === 'item')
-      .map((e) => e.item.primary_image_id),
+    previewGridEntries.map((e) => (e.kind === 'item' ? e.item.primary_image_id : e.folder.first_item_image_id)),
     COMPACT_IMAGE_TIER,
   );
   useSignedFolderCovers(

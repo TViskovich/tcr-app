@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -34,6 +34,7 @@ import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
 import { FolderCoverAdjuster } from '@/components/collection/folder-cover-adjuster';
 import { FolderCoverImage } from '@/components/collection/folder-cover-image';
+import { getNestedFolderTileImage } from '@/components/collection/nested-folder-tile-image';
 import { FolderCoverItemPicker } from '@/components/collection/folder-cover-item-picker';
 import { FolderCoverMenu } from '@/components/collection/folder-cover-menu';
 import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-sheet';
@@ -133,10 +134,34 @@ const BULK_BAR_RESERVED_HEIGHT = 96;
 // mode (isCardMode) is untouched and still uses the original
 // numColumns-based FlatList — this type/the grid-row chunking below is not
 // used there.
+//
+// Reorder mode (and the Move list, 'moveHint'/'moveItem') swaps the grid
+// rows for one compact list row per item
+// ('reorderItem', after a one-line 'reorderHint') in this SAME FlatList —
+// same data source, same tap-to-rank state, just a denser, scannable view.
+// position is the item's place in the order Done would save (see
+// reorderPositions); child folders aren't reorderable and aren't listed.
 type FolderGridRow =
   | { kind: 'sticky' }
   | { kind: 'row'; entries: CollectionGridEntry[]; isLast: boolean }
-  | { kind: 'empty' };
+  | { kind: 'empty' }
+  | { kind: 'reorderHint' }
+  | { kind: 'reorderItem'; item: CollectionItem; position: number }
+  | { kind: 'moveHint' }
+  | { kind: 'moveItem'; item: CollectionItem };
+
+// Reorder list row — thumbnail height (card-ratio width), and the row's
+// vertical padding around it: 56 + 2 * 8 = 72pt rows, several times denser
+// than the 3-column card grid.
+const REORDER_THUMB_HEIGHT = 56;
+const REORDER_ROW_PADDING_V = 8;
+
+// "2018 · Topps Chrome · PSA 10" — fields already on every loaded item, no
+// extra fetch. Empty parts are skipped; an item with none gets no line.
+function reorderRowMetadata(item: CollectionItem): string {
+  const grade = [item.grading_company, item.grade].filter(Boolean).join(' ');
+  return [item.year, item.brand, grade].filter(Boolean).join(' · ');
+}
 
 // The gallery for one folder. The default view (no `player` route param)
 // renders every CollectionItem in the folder directly, one tile each — no
@@ -412,6 +437,7 @@ export default function CollectionFolderScreen() {
 
   function cancelSelectMode() {
     setSelectMode(false);
+    setMoveListMode(false);
     setSelectedIds(new Set());
   }
 
@@ -451,6 +477,24 @@ export default function CollectionFolderScreen() {
   }, [items]);
 
   const [showBulkMoveModal, setShowBulkMoveModal] = useState(false);
+  // Move list — the compact multi-select list the bulk bar's (always
+  // enabled) Move button opens, mirroring Reorder: pick the action first,
+  // then the items. A sub-step of Select mode using selectedIds, cleared on
+  // entry so the list always starts with nothing selected. Its own Move
+  // button then opens the existing MoveItemModal unchanged.
+  const [moveListMode, setMoveListMode] = useState(false);
+
+  function handleEnterMoveList() {
+    setSelectedIds(new Set());
+    setMoveListMode(true);
+  }
+  // Items just moved out, hidden from this folder at once instead of
+  // waiting on the background refetch. Scoped to the exact `items` array
+  // they were moved from: the refetch's new array (which no longer has
+  // them) replaces it as the truth automatically; if that refetch fails,
+  // `items` is unchanged and they stay hidden, since the move itself
+  // already succeeded server-side.
+  const [movedAway, setMovedAway] = useState<{ ids: Set<string>; from: CollectionItem[] } | null>(null);
 
   // Mirrors app/item/[id].tsx's handleItemMoved: the modal itself already
   // confirmed the RPC committed (all-or-nothing — see
@@ -463,6 +507,7 @@ export default function CollectionFolderScreen() {
   // folder-detail screen) isn't touched from here; both already refresh via
   // their own useFocusEffect on next visit, same as Phase 1.
   function handleBulkMoved(movedCount: number, folderName: string) {
+    setMovedAway({ ids: new Set(selectedIds), from: items });
     setShowBulkMoveModal(false);
     cancelSelectMode();
     refreshItems();
@@ -577,9 +622,16 @@ export default function CollectionFolderScreen() {
   // at the small 'preview' tier — this map now backs only the grid cells
   // (and the cover item picker's grid). The card-mode hero requests its own
   // bounded 'detail' set below instead of sharing this one (item-images beta
-  // privacy hardening, Phase 3B).
-  const { urls: signedUrls, servedTiers: gridServedTiers } = useSignedItemImages(
-    items.map((i) => i.primary_image_id),
+  // privacy hardening, Phase 3B). Also carries each nested child folder's
+  // first-card image id (Folder.first_item_image_id) in the SAME batch, so
+  // nested folder tiles render their first card at this exact tier/cache key
+  // — see getNestedFolderTileImage.
+  const {
+    urls: signedUrls,
+    statuses: gridStatuses,
+    servedTiers: gridServedTiers,
+  } = useSignedItemImages(
+    [...items.map((i) => i.primary_image_id), ...childFolders.map((f) => f.first_item_image_id)],
     COMPACT_IMAGE_TIER,
   );
 
@@ -608,11 +660,13 @@ export default function CollectionFolderScreen() {
   // comment) still filters down to just that player's cards, reusing this
   // exact same grid rather than a second parallel one.
   const cardItems = useMemo(() => {
-    if (!activePlayer) return items;
+    const present =
+      movedAway && movedAway.from === items ? items.filter((i) => !movedAway.ids.has(i.id)) : items;
+    if (!activePlayer) return present;
     return activePlayer === NO_PLAYER_KEY
-      ? items.filter((i) => !i.player?.trim())
-      : items.filter((i) => i.player?.trim() === activePlayer);
-  }, [items, activePlayer]);
+      ? present.filter((i) => !i.player?.trim())
+      : present.filter((i) => i.player?.trim() === activePlayer);
+  }, [items, activePlayer, movedAway]);
 
   // Hero preview — a stable collection cover, not an auto-playing slideshow.
   // Ordered newest-first (useItems already orders collection_items by
@@ -1138,13 +1192,47 @@ export default function CollectionFolderScreen() {
     return rows;
   }, [gridEntries]);
 
+  // Each item's 1-based place in the order handleReorderDone would save —
+  // the SAME rule it uses (ranked ids first, in tap order; every unranked
+  // item after, in its current order), so the list's numbers always preview
+  // exactly what Done persists. Rows themselves stay in the current saved
+  // order and never move while tapping, so the scroll position never jumps.
+  const reorderPositions = useMemo(() => {
+    const positions = new Map<string, number>();
+    if (!reorderMode) return positions;
+    rankedIds.forEach((id, index) => positions.set(id, index + 1));
+    let next = rankedIds.length + 1;
+    for (const item of items) {
+      if (!positions.has(item.id)) positions.set(item.id, next++);
+    }
+    return positions;
+  }, [reorderMode, rankedIds, items]);
+
   const stickyRowsData = useMemo<FolderGridRow[]>(() => {
+    if (moveListMode && filteredCardItems.length > 0) {
+      return [
+        { kind: 'sticky' },
+        { kind: 'moveHint' },
+        ...filteredCardItems.map((item) => ({ kind: 'moveItem' as const, item })),
+      ];
+    }
+    if (reorderMode && filteredCardItems.length > 0) {
+      return [
+        { kind: 'sticky' },
+        { kind: 'reorderHint' },
+        ...filteredCardItems.map((item) => ({
+          kind: 'reorderItem' as const,
+          item,
+          position: reorderPositions.get(item.id) ?? 0,
+        })),
+      ];
+    }
     if (gridRows.length === 0) return [{ kind: 'sticky' }, { kind: 'empty' }];
     return [
       { kind: 'sticky' },
       ...gridRows.map((entries, index) => ({ kind: 'row' as const, entries, isLast: index === gridRows.length - 1 })),
     ];
-  }, [gridRows]);
+  }, [gridRows, reorderMode, moveListMode, filteredCardItems, reorderPositions]);
 
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
@@ -1385,6 +1473,15 @@ export default function CollectionFolderScreen() {
   // into a function so it isn't duplicated between the two grids.
   function renderGridTile(entry: CollectionGridEntry, key: string) {
     if (entry.kind === 'folder') {
+      // First card inside the nested folder, falling back to its cover —
+      // see getNestedFolderTileImage. This folder's OWN hero (above) is
+      // untouched and still uses its cover.
+      const tileImage = getNestedFolderTileImage(
+        entry.folder,
+        identity,
+        { urls: signedUrls, statuses: gridStatuses, servedTiers: gridServedTiers },
+        coverUrls,
+      );
       return (
         <Pressable
           key={key}
@@ -1402,9 +1499,9 @@ export default function CollectionFolderScreen() {
               params: { folderId: entry.folder.id, title: entry.folder.name },
             })
           }>
-          {coverUrls.get(entry.folder.id) ? (
+          {tileImage ? (
             <Image
-              source={{ uri: coverUrls.get(entry.folder.id), cacheKey: folderCoverCacheKey(identity, entry.folder) }}
+              source={tileImage}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={150}
@@ -1455,9 +1552,11 @@ export default function CollectionFolderScreen() {
         // JSX below), so entering it there would produce selection state
         // with no visible way to act on or exit it. Reorder mode has no
         // long-press of its own — tap-to-rank responds to a plain,
-        // immediate tap, no hold gesture required.
+        // immediate tap, no hold gesture required. The long-pressed item is
+        // NOT pre-selected — long-press just opens the Reorder/Move bar;
+        // items are then picked for Move by tapping them.
         onLongPress={() => {
-          if (!isCardMode && !selectMode && !reorderMode) enterSelectMode(entry.item.id);
+          if (!isCardMode && !selectMode && !reorderMode) enterSelectMode();
         }}
         accessibilityRole="button"
         accessibilityState={
@@ -1505,6 +1604,131 @@ export default function CollectionFolderScreen() {
         )}
       </Pressable>
     );
+  }
+
+  // Compact list row shared by the Order Items and Move lists — thumbnail,
+  // title, one metadata line, and a caller-supplied trailing marker. Same
+  // COMPACT-tier signed URL + cache key (signedUrls/gridServedTiers) as the
+  // grid, so no new image work.
+  function renderCompactItemRow(
+    item: CollectionItem,
+    {
+      testID,
+      highlighted,
+      onPress,
+      disabled,
+      accessibilityLabel,
+      trailing,
+    }: {
+      testID: string;
+      highlighted: boolean;
+      onPress: () => void;
+      disabled?: boolean;
+      accessibilityLabel: string;
+      trailing: ReactNode;
+    },
+  ) {
+    const title = item.title ?? item.player ?? 'Card';
+    const metadata = reorderRowMetadata(item);
+    const imageUri = item.primary_image_id ? signedUrls.get(item.primary_image_id) : undefined;
+    return (
+      <Pressable
+        testID={testID}
+        style={({ pressed }) => [styles.reorderRow, highlighted && styles.reorderRowRanked, pressed && styles.reorderRowPressed]}
+        onPress={onPress}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityState={{ selected: highlighted }}
+        accessibilityLabel={accessibilityLabel}>
+        <View style={styles.reorderThumb}>
+          {item.primary_image_id && imageUri ? (
+            <Image
+              source={{
+                uri: imageUri,
+                cacheKey: itemImageCacheKey(identity, item.primary_image_id, COMPACT_IMAGE_TIER, gridServedTiers),
+              }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={150}
+              cachePolicy="memory-disk"
+            />
+          ) : (
+            <View style={styles.thumbPlaceholder} />
+          )}
+        </View>
+        <View style={styles.reorderRowText}>
+          <Text style={styles.reorderRowTitle} numberOfLines={1}>
+            {title}
+          </Text>
+          {metadata ? (
+            <Text style={styles.reorderRowMeta} numberOfLines={1}>
+              {metadata}
+            </Text>
+          ) : null}
+        </View>
+        {trailing}
+      </Pressable>
+    );
+  }
+
+  // Order Items row — tap-to-rank, same handler/state/wording as the grid
+  // tile it replaces in this mode.
+  function renderReorderRow(item: CollectionItem, position: number) {
+    const rank = rankedIds.indexOf(item.id) + 1;
+    const isRanked = rank > 0;
+    const title = item.title ?? item.player ?? 'Card';
+    return renderCompactItemRow(item, {
+      testID: `reorder-item-${item.id}`,
+      highlighted: isRanked,
+      onPress: () => toggleItemRank(item.id),
+      disabled: savingReorder,
+      accessibilityLabel: isRanked
+        ? `${title}, rank ${rank}, tap to remove`
+        : `${title}, position ${position}, tap to rank`,
+      // Ranked: the same accent rank badge as the grid. Unranked: the muted
+      // position it will land in if Done is tapped now.
+      trailing: isRanked ? (
+        <View style={styles.reorderRankBadge}>
+          <Text style={styles.rankBadgeText}>{rank}</Text>
+        </View>
+      ) : (
+        <Text style={styles.reorderPosition}>#{position}</Text>
+      ),
+    });
+  }
+
+  // Move list row — tap-to-select, the same selectedIds/toggleItemSelected
+  // the grid's Select mode uses. Check on the right: filled accent check when
+  // selected, empty ring when not.
+  function renderMoveRow(item: CollectionItem) {
+    const selected = selectedIds.has(item.id);
+    const title = item.title ?? item.player ?? 'Card';
+    return renderCompactItemRow(item, {
+      testID: `move-item-${item.id}`,
+      highlighted: selected,
+      onPress: () => toggleItemSelected(item.id),
+      accessibilityLabel: selected ? `${title}, selected, tap to deselect` : `${title}, tap to select`,
+      trailing: selected ? (
+        <IconSymbol name="checkmark.circle.fill" size={24} color={PV2.accent} />
+      ) : (
+        <View style={styles.moveCheckEmpty} />
+      ),
+    });
+  }
+
+  // Move list's Select All / Clear — over the rows actually listed (the
+  // search-filtered set, same as the rows on screen).
+  const allListedSelected =
+    filteredCardItems.length > 0 && filteredCardItems.every((item) => selectedIds.has(item.id));
+  function toggleSelectAllListed() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const item of filteredCardItems) {
+        if (allListedSelected) next.delete(item.id);
+        else next.add(item.id);
+      }
+      return next;
+    });
   }
 
   function gridTileKey(entry: CollectionGridEntry) {
@@ -1658,6 +1882,12 @@ export default function CollectionFolderScreen() {
                     Cancel
                   </Text>
                 </Pressable>
+              ) : moveListMode ? (
+                // Back to the grid, still in Select mode with the selection
+                // kept — the outer Cancel there exits Select mode entirely.
+                <Pressable onPress={() => setMoveListMode(false)} hitSlop={10}>
+                  <Text style={styles.selectCancelText}>Cancel</Text>
+                </Pressable>
               ) : selectMode ? (
                 <Pressable onPress={cancelSelectMode} hitSlop={10}>
                   <Text style={styles.selectCancelText}>Cancel</Text>
@@ -1681,6 +1911,22 @@ export default function CollectionFolderScreen() {
                     ) : (
                       <Text style={styles.reorderDoneText}>Done</Text>
                     )}
+                  </Pressable>
+                </View>
+              ) : moveListMode ? (
+                <View style={styles.reorderHeaderRight}>
+                  <Text style={styles.selectCountText}>{selectedIds.size} Selected</Text>
+                  <Pressable
+                    onPress={() => setShowBulkMoveModal(true)}
+                    hitSlop={10}
+                    disabled={selectedIds.size === 0}
+                    style={styles.reorderDoneBtn}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: selectedIds.size === 0 }}
+                    accessibilityLabel={`Move ${selectedIds.size} selected`}>
+                    <Text style={[styles.reorderDoneText, selectedIds.size === 0 && styles.moveHeaderBtnDisabled]}>
+                      Move
+                    </Text>
                   </Pressable>
                 </View>
               ) : selectMode ? (
@@ -1787,7 +2033,19 @@ export default function CollectionFolderScreen() {
             <FlatList<FolderGridRow>
               data={stickyRowsData}
               keyExtractor={(row, index) =>
-                row.kind === 'sticky' ? 'sticky-header' : row.kind === 'empty' ? 'empty-state' : `row-${index}`
+                row.kind === 'sticky'
+                  ? 'sticky-header'
+                  : row.kind === 'empty'
+                    ? 'empty-state'
+                    : row.kind === 'reorderHint'
+                      ? 'reorder-hint'
+                      : row.kind === 'reorderItem'
+                        ? `reorder-${row.item.id}`
+                        : row.kind === 'moveHint'
+                          ? 'move-hint'
+                          : row.kind === 'moveItem'
+                            ? `move-${row.item.id}`
+                            : `row-${index}`
               }
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
@@ -1824,6 +2082,25 @@ export default function CollectionFolderScreen() {
               renderItem={({ item: row }) => {
                 if (row.kind === 'sticky') return renderFolderStickyBar();
                 if (row.kind === 'empty') return emptyStateContent;
+                if (row.kind === 'reorderHint') {
+                  return (
+                    <Text style={styles.reorderHint}>
+                      Tap items in the order you want them. Tap again to undo. The rest keep their current order.
+                    </Text>
+                  );
+                }
+                if (row.kind === 'reorderItem') return renderReorderRow(row.item, row.position);
+                if (row.kind === 'moveHint') {
+                  return (
+                    <View style={styles.moveHintRow}>
+                      <Text style={styles.moveHintText}>Tap items to select them.</Text>
+                      <Pressable onPress={toggleSelectAllListed} hitSlop={10} accessibilityRole="button">
+                        <Text style={styles.moveSelectAllText}>{allListedSelected ? 'Clear' : 'Select All'}</Text>
+                      </Pressable>
+                    </View>
+                  );
+                }
+                if (row.kind === 'moveItem') return renderMoveRow(row.item);
                 return (
                   <View style={[styles.manualGridRow, !row.isLast && styles.manualGridRowGap]}>
                     {row.entries.map((entry) => renderGridTile(entry, gridTileKey(entry)))}
@@ -1845,23 +2122,19 @@ export default function CollectionFolderScreen() {
           selection, so it has to stay reachable at 0 selected too; Move
           alone becomes "unavailable" there via its own disabled state
           below, never by hiding the whole bar. */}
-      {selectMode && (
+      {selectMode && !moveListMode && (
         <View style={[styles.bulkBar, { bottom: TAB_BAR_HEIGHT + insets.bottom + 16 }]} pointerEvents="box-none">
+          {/* Just the two actions, centered — the selection count already
+              shows in the header ("N Selected"). */}
           <View style={styles.bulkBarInner}>
-            <Text style={styles.bulkBarCount}>
-              {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select items'}
-            </Text>
             <View style={styles.bulkBarActions}>
               <Pressable style={styles.bulkBarReorderBtn} onPress={handleEnterReorderMode}>
                 <Text style={styles.bulkBarReorderBtnText}>Reorder</Text>
               </Pressable>
-              <Pressable
-                style={[styles.bulkBarMoveBtn, selectedIds.size === 0 && styles.bulkBarMoveBtnDisabled]}
-                onPress={() => setShowBulkMoveModal(true)}
-                disabled={selectedIds.size === 0}>
-                <Text style={[styles.bulkBarMoveBtnText, selectedIds.size === 0 && styles.bulkBarMoveBtnTextDisabled]}>
-                  Move
-                </Text>
+              {/* Always enabled, like Reorder — picks the action; the items
+                  are chosen in the Move list it opens, which starts clean. */}
+              <Pressable style={styles.bulkBarMoveBtn} onPress={handleEnterMoveList}>
+                <Text style={styles.bulkBarMoveBtnText}>Move</Text>
               </Pressable>
             </View>
           </View>
@@ -2057,7 +2330,7 @@ const styles = StyleSheet.create({
   bulkBarInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     backgroundColor: 'rgba(9,10,16,0.97)',
     borderWidth: 1,
     borderColor: 'rgba(100,105,145,0.28)',
@@ -2069,11 +2342,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 16,
     elevation: 10,
-  },
-  bulkBarCount: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: PV2.textPrimary,
   },
   bulkBarActions: {
     flexDirection: 'row',
@@ -2098,16 +2366,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 22,
   },
-  bulkBarMoveBtnDisabled: {
-    backgroundColor: 'rgba(255,255,255,0.10)',
-  },
   bulkBarMoveBtnText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '700',
-  },
-  bulkBarMoveBtnTextDisabled: {
-    color: PV2.textTertiary,
   },
   // Title's own full-width row — the like/comment/bookmark/share controls
   // that used to share this row (squeezing the title's available width)
@@ -2470,6 +2732,106 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '800',
+  },
+  // Reorder list (reorder mode only) — dark rows on the page background,
+  // hairline separators, thumbnail left, rank right.
+  reorderHint: {
+    color: PV2.textTertiary,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  reorderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: REORDER_ROW_PADDING_V,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: PV2.dividerColor,
+    // Reserved transparent left edge so the ranked accent bar below never
+    // shifts the row's content.
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
+  },
+  // Ranked = picked: a faint accent wash plus a thin accent bar on the left
+  // edge, alongside the numbered badge on the right.
+  reorderRowRanked: {
+    backgroundColor: PV2.accentSoft,
+    borderLeftColor: PV2.accent,
+  },
+  reorderRowPressed: {
+    opacity: 0.7,
+  },
+  reorderThumb: {
+    height: REORDER_THUMB_HEIGHT,
+    aspectRatio: PREVIEW_CARD_ASPECT_RATIO,
+    borderRadius: 3,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  reorderRowText: {
+    flex: 1,
+    gap: 3,
+  },
+  reorderRowTitle: {
+    color: PV2.textPrimary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  reorderRowMeta: {
+    color: PV2.textSecondary,
+    fontSize: 12,
+  },
+  reorderRankBadge: {
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
+    paddingHorizontal: 6,
+    backgroundColor: PV2.accent,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moveHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  moveHintText: {
+    color: PV2.textTertiary,
+    fontSize: 12,
+  },
+  moveSelectAllText: {
+    color: PV2.accent,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  // Unselected check — an empty ring the size of the filled check icon.
+  moveCheckEmpty: {
+    width: 22,
+    height: 22,
+    marginHorizontal: 1,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: PV2.textTertiary,
+  },
+  moveHeaderBtnDisabled: {
+    color: PV2.textTertiary,
+  },
+  reorderPosition: {
+    minWidth: 26,
+    textAlign: 'center',
+    color: PV2.textTertiary,
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   emptyWrap: {
     flex: 1,

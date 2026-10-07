@@ -3,6 +3,7 @@ import { FlatList, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SECTION_GUTTER } from '@/components/collection/collection-header-row';
 import { CollectionMoreTile } from '@/components/collection/collection-more-tile';
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
+import { getNestedFolderTileImage } from '@/components/collection/nested-folder-tile-image';
 import { GRID_CELL_WIDTH, GRID_GAP, GRID_HORIZONTAL_MARGIN } from '@/components/profile-v2/profile-v2-grid';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { PREVIEW_ITEM_LIMIT, type CollectionGridEntry } from '@/hooks/use-collection';
@@ -10,7 +11,7 @@ import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
-import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder } from '@/types';
 
 // Shows ~3.6 cards across the screen width so the next one is always
@@ -133,8 +134,13 @@ export function HorizontalCardPreview({
   const folderEntries = entries.filter(
     (e): e is Extract<CollectionGridEntry, { kind: 'folder' }> => e.kind === 'folder',
   );
-  const { urls: signedUrls, servedTiers } = useSignedItemImages(
-    itemEntries.map((e) => e.item.primary_image_id),
+  // Nested folder tiles show their first card (Folder.first_item_image_id)
+  // — signed in the same batch, at the same tier, as the item tiles.
+  const { urls: signedUrls, statuses: signedStatuses, servedTiers } = useSignedItemImages(
+    [
+      ...itemEntries.map((e) => e.item.primary_image_id),
+      ...folderEntries.map((e) => e.folder.first_item_image_id),
+    ],
     COMPACT_IMAGE_TIER,
   );
   const { urls: coverUrls } = useSignedFolderCovers(folderEntries.map((e) => e.folder.id));
@@ -181,12 +187,22 @@ export function HorizontalCardPreview({
           );
         }
         const entry = row.entry;
+        // First card inside the nested folder, falling back to its cover.
+        const folderTileImage =
+          entry.kind === 'folder'
+            ? getNestedFolderTileImage(
+                entry.folder,
+                identity,
+                { urls: signedUrls, statuses: signedStatuses, servedTiers },
+                coverUrls,
+              )
+            : null;
         return entry.kind === 'folder' ? (
           <View style={{ width: tileWidth }}>
             <CollectionPreviewCard
               testID={`child-folder-preview-${entry.folder.id}`}
-              imageUrl={coverUrls.get(entry.folder.id) ?? null}
-              cacheKey={folderCoverCacheKey(identity, entry.folder)}
+              imageUrl={folderTileImage?.uri ?? null}
+              cacheKey={folderTileImage?.cacheKey}
               tileWidth={tileWidth}
               variant={variant}
               squareEdges={!compact}
