@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Animated,
-  Image as RNImage,
   Pressable,
   StyleSheet,
   Text,
@@ -22,6 +21,7 @@ import { RepostHeader, type SourceOwnerAttribution } from '@/components/feed/rep
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
+import { useMediaSize } from '@/lib/feed-media-dimensions';
 import { supabase } from '@/lib/supabase';
 import { fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
@@ -441,11 +441,20 @@ export function PostCard({
   const { height: windowHeight } = useWindowDimensions();
   const singleCardMaxHeight = windowHeight * SINGLE_CARD_MAX_HEIGHT_FRACTION;
 
-  // Natural aspect ratio of the current post's LEAD image, measured
-  // client-side — nothing in the schema stores source width/height, so
-  // this is the only way to size the box to the image's real shape rather
-  // than force-cropping every post into a fixed 5:7 box. null until
-  // measured (or on failure), meaning "use MEDIA_DEFAULT_ASPECT_RATIO".
+  // Natural aspect ratio of the current post's LEAD image — nothing in the
+  // schema stores source width/height, so it comes from the shared feed
+  // media-size cache (lib/feed-media-dimensions.ts: sizes measured this
+  // session or persisted from earlier launches, else measured once through
+  // expo-image). This is what sizes the box to the image's real shape
+  // rather than force-cropping every post into a fixed 5:7 box. Read at
+  // render — so an already-known size is there on the card's FIRST render
+  // and the frame is final from the start — and derived from the lead uri
+  // every render, so a recycled card never shows a previous post's shape.
+  // null while unknown (or on failure), meaning "use
+  // MEDIA_DEFAULT_ASPECT_RATIO". leadMediaSettled gates the item image and
+  // card-share body below: while a size is still being measured, the frame
+  // shows only its background, so an image is never drawn at a temporary
+  // geometry and then resized.
   // Shared by the standard image path AND card-share: a card-share post's
   // outer Feed frame is now derived from its FIRST card's image, using the
   // exact same measure→clamp→maxHeight pipeline a single-photo post uses
@@ -457,22 +466,11 @@ export function PostCard({
   // only because this was a carousel. rate_my_grails is still excluded —
   // GrailsPostBody is a static grid with its own layout, not part of this
   // single/multi-photo frame unification.
-  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
-
-  // Text-post photo frame — same viewport-relative cap idea as
-  // singleCardMaxHeight above, but a smaller fraction, so a text photo never
-  // out-sizes a shared card. Shared by the single-image, carousel, and
-  // legacy-image_url text-post branches below.
-  const textPhotoFrame = {
-    aspectRatio: mediaAspectRatio != null ? clampMediaAspectRatio(mediaAspectRatio) : TEXT_POST_DEFAULT_ASPECT_RATIO,
-    maxHeight: windowHeight * TEXT_POST_MAX_HEIGHT_FRACTION,
-  };
 
   // Stable primitive (a URL string, or null) rather than depending on
   // post.cardShareItems (a fresh array reference on every parent re-render
-  // even when its content is unchanged) — keeps the effect below from
-  // re-measuring on every render that doesn't actually change which image
-  // is the lead card.
+  // even when its content is unchanged) — keeps the lead-image size
+  // lookup below keyed on the image itself, not on an array identity.
   const cardShareLeadImageUrl = isCardShare ? (post.cardShareItems[0]?.snapshot_image_url ?? null) : null;
 
   // Same lead-image measurement, extended to post_images-backed text posts
@@ -485,33 +483,28 @@ export function PostCard({
   const postImagesLeadUrl =
     isTextPost && post.images.length > 0 ? (post.images[0]?.image_url ?? null) : null;
 
-  useEffect(() => {
-    setMediaAspectRatio(null);
-    if (isRateMyGrails) return;
-    // Text posts CAN carry an optional attached photo (app/post/new.tsx)
-    // and reuse this exact responsive sizing via post.image_url (or, for a
-    // 2-4 image post, via postImagesLeadUrl above); card-share posts have
-    // no top-level image_url at all and measure their first card's
-    // snapshot instead (see cardShareLeadImageUrl above).
-    const uri = isCardShare ? cardShareLeadImageUrl : (postImagesLeadUrl ?? post.image_url);
-    if (!uri) return;
-    let cancelled = false;
-    RNImage.getSize(
-      uri,
-      (width, height) => {
-        if (!cancelled && height > 0) setMediaAspectRatio(width / height);
-      },
-      () => {
-        // Left as null (MEDIA_DEFAULT_ASPECT_RATIO fallback) — a failed
-        // measurement here is not the same failure as the image itself
-        // failing to load (that's handled by the Image's own onError /
-        // imageError state below), so this must never trip that path.
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [post.image_url, postImagesLeadUrl, cardShareLeadImageUrl, isRateMyGrails, isCardShare]);
+  // Text posts CAN carry an optional attached photo (app/post/new.tsx)
+  // and reuse this exact responsive sizing via post.image_url (or, for a
+  // 2-4 image post, via postImagesLeadUrl above); card-share posts have no
+  // top-level image_url at all and use their first card's snapshot instead
+  // (see cardShareLeadImageUrl above). rate_my_grails has its own layout.
+  const leadImageUri = isRateMyGrails
+    ? null
+    : isCardShare
+      ? cardShareLeadImageUrl
+      : (postImagesLeadUrl ?? post.image_url);
+  const leadMedia = useMediaSize(leadImageUri);
+  const mediaAspectRatio = leadMedia.size ? leadMedia.size.width / leadMedia.size.height : null;
+  const leadMediaSettled = leadMedia.settled;
+
+  // Text-post photo frame — same viewport-relative cap idea as
+  // singleCardMaxHeight above, but a smaller fraction, so a text photo never
+  // out-sizes a shared card. Shared by the single-image, carousel, and
+  // legacy-image_url text-post branches below.
+  const textPhotoFrame = {
+    aspectRatio: mediaAspectRatio != null ? clampMediaAspectRatio(mediaAspectRatio) : TEXT_POST_DEFAULT_ASPECT_RATIO,
+    maxHeight: windowHeight * TEXT_POST_MAX_HEIGHT_FRACTION,
+  };
 
   const rating = useGrailRating({
     postId: post.id,
@@ -707,7 +700,12 @@ export function PostCard({
               },
             ]}>
             {post.cardShareItems.length > 0 ? (
-              <CardSharePostBody cards={post.cardShareItems} mediaBorderRadius={MEDIA_CORNER_RADIUS} />
+              // Rendered once the frame's lead size has settled, so its
+              // cards appear inside the final frame rather than inside the
+              // default one first.
+              leadMediaSettled ? (
+                <CardSharePostBody cards={post.cardShareItems} mediaBorderRadius={MEDIA_CORNER_RADIUS} />
+              ) : null
             ) : (
               <View style={styles.cardShareUnavailable}>
                 <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
@@ -840,7 +838,9 @@ export function PostCard({
                     // non-text posts — see the early return — so no onError
                     // is needed here.)
                     <FittedRoundedImage uri={post.image_url} radius={MEDIA_CORNER_RADIUS} />
-                  ) : (
+                  ) : leadMediaSettled ? (
+                    // Same gate as card-share: drawn only once the frame
+                    // above has its final aspect ratio.
                     <Image
                       source={{ uri: post.image_url }}
                       style={StyleSheet.absoluteFill}
@@ -852,7 +852,7 @@ export function PostCard({
                       transition={200}
                       onError={() => setImageError(true)}
                     />
-                  )}
+                  ) : null}
                 </TouchableOpacity>
 
                 {/* Source context row — foreign repost only; now the ONE
@@ -968,11 +968,11 @@ const MEDIA_CORNER_RADIUS = 11;
 // upper end (2/1 — "2:1 landscape") keeps very wide/panoramic uploads from
 // going too short — shared by both bounds below, unchanged. Used as the
 // actual style only once the source image's natural size has been measured
-// (see useEffect below); until then (or if measuring fails),
-// MEDIA_DEFAULT_ASPECT_RATIO — 5/7, which also happens to already match a
-// standard 2.5"x3.5" trading card almost exactly — is used as a
-// same-as-before fallback so there's no layout jump for the common case
-// and no broken box if getSize ever errors.
+// (see useMediaSize / mediaAspectRatio in PostCard); until then (or if
+// measuring fails), MEDIA_DEFAULT_ASPECT_RATIO — 5/7, which also happens to
+// already match a standard 2.5"x3.5" trading card almost exactly — is used
+// as the fallback frame, with the image itself held back until the size has
+// settled, and no broken box if measuring ever fails.
 const MEDIA_MIN_ASPECT_RATIO = 4 / 5;
 const MEDIA_MAX_ASPECT_RATIO = 2 / 1;
 const MEDIA_DEFAULT_ASPECT_RATIO = 5 / 7;
@@ -1146,8 +1146,8 @@ const styles = StyleSheet.create({
   // CardShare's own media box. aspectRatio no longer lives here as a fixed
   // literal — like mediaImageWrap, it's set inline per-post from
   // mediaAspectRatio (measured from the FIRST card, clamped via
-  // clampSingleCardAspectRatio — see the JSX and the mediaAspectRatio
-  // useEffect above) or MEDIA_DEFAULT_ASPECT_RATIO before that resolves.
+  // clampSingleCardAspectRatio — see the JSX and mediaAspectRatio /
+  // useMediaSize above) or MEDIA_DEFAULT_ASPECT_RATIO before that resolves.
   // The frame still stays fixed for the lifetime of this render regardless
   // of which card is swiped to — only ever measured once, from the lead
   // card — so swiping between differently-shaped cards never resizes the
@@ -1236,7 +1236,7 @@ const styles = StyleSheet.create({
   },
   // aspectRatio no longer lives here — it's now set inline per-post from
   // the measured (and clamped) natural ratio, or MEDIA_DEFAULT_ASPECT_RATIO
-  // before that measurement resolves (see the JSX and useEffect above).
+  // before that size is known (see the JSX and useMediaSize above).
   // Corner treatment (11px radius) and placeholder background unchanged.
   mediaImageWrap: {
     borderRadius: MEDIA_CORNER_RADIUS,
