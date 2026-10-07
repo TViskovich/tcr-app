@@ -101,7 +101,18 @@ export function ProfileV2Grid({
   // collection slot contributes every id in its previewImageIds, all
   // resolved together in this single call.
   const slotImageIds = slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? [])));
-  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(slotImageIds, COMPACT_IMAGE_TIER);
+  // displayExpiredWhileRefreshing — OWN profile only: on a return after the
+  // 5-minute signed-URL lifetime, every slot already has its bytes on disk
+  // under its stable cacheKey, so render those immediately instead of
+  // waiting ~0.8s for the re-sign (see useSignedItemImages). Safe for the
+  // owner, who can always see their own images. Never for someone else's
+  // profile: an image there may have been made private since it was cached,
+  // so it must wait for a fresh signing answer and stays hidden if that
+  // answer is 'unavailable'. Every image here is rendered through expo-image
+  // with the stable cacheKey; nothing fetches or shares these URLs.
+  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(slotImageIds, COMPACT_IMAGE_TIER, {
+    displayExpiredWhileRefreshing: isOwnProfile,
+  });
 
   // Warms expo-image's own cache for the whole grid up front, the moment
   // the signing batch resolves — same pattern app/collection/[folderId].tsx

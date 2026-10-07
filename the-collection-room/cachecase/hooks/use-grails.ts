@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react';
 
 import { Alert } from 'react-native';
 
-import { supabase } from '@/lib/supabase';
+import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import type { CollectionItem, ShowcaseItem } from '@/types';
 
 import { insertGrailSlot, useGrailSlots } from './use-grail-slots';
@@ -18,7 +18,7 @@ import { insertGrailSlot, useGrailSlots } from './use-grail-slots';
 // pre-existing ShowcaseItem shape. note/badge_type are always null here —
 // confirmed unread by every consumer before this shim was written.
 export function useGrails(userId: string | undefined) {
-  const { slots, loading, refresh } = useGrailSlots(userId);
+  const { slots, loading, refresh, removeSlot } = useGrailSlots(userId);
 
   const grails: ShowcaseItem[] = useMemo(
     () =>
@@ -88,47 +88,45 @@ export function useGrails(userId: string | undefined) {
         }
         return;
       }
+      // The own Profile V2 screen may be holding a still-fresh cached copy
+      // of these slots — mark it stale so its next focus reloads.
+      invalidateOwnProfileCache(userId);
       await refresh();
     },
     [userId, slots, refresh],
   );
 
-  // Deletes by (user_id, item_id) directly — not by first computing which
-  // slot_index the item occupies and clearing that slot. More defensive
-  // of the two equivalent approaches: removes every row matching this
-  // user+item regardless of how many there are, rather than trusting
-  // there's exactly one (which profile_grail_slots_unique_item should
-  // guarantee, but this doesn't rely on that guarantee holding).
-  // .select('id') makes the zero-row case distinguishable from a real
-  // success — a request that returns no error but deletes nothing (e.g.
-  // the row was already gone) must not be reported as a successful
-  // removal.
+  // Optimistic: the item leaves every mounted Grails surface (this screen
+  // and, e.g., Profile V2 underneath it) immediately, via useGrailSlots'
+  // shared removeSlot — the same conditional DELETE Profile V2 uses, keyed
+  // on the exact slot row this item occupies (profile_grail_slots_unique_item
+  // guarantees there's at most one). Restored everywhere if it fails.
   const removeFromGrails = useCallback(
     async (itemId: string): Promise<void> => {
       if (!userId) return;
-      const { data: deletedRows, error } = await supabase
-        .from('profile_grail_slots')
-        .delete()
-        .eq('user_id', userId)
-        .eq('item_id', itemId)
-        .select('id');
-
-      if (error) {
-        console.error('[useGrails] removeFromGrails failed:', error.message, error);
-        Alert.alert('Error', 'Could not remove from Grails. Please try again.');
-        return;
-      }
-
-      if (!deletedRows || deletedRows.length === 0) {
-        console.error('[useGrails] removeFromGrails deleted zero rows for', { userId, itemId });
+      const slot = slots.find((s) => s.entry_type === 'item' && s.item_id === itemId);
+      if (!slot) {
         await refresh();
         Alert.alert('Not Found', 'This item was not found in your Grail slots.');
         return;
       }
-
-      await refresh();
+      const outcome = await removeSlot({
+        slotIndex: slot.slot_index,
+        expectedSlotId: slot.id,
+        expectedEntryType: 'item',
+        expectedRefId: itemId,
+      });
+      if (outcome === 'removed') {
+        // Own Profile V2's cached copy may still be "fresh" — mark it stale
+        // so its next focus reconciles with Supabase in the background.
+        invalidateOwnProfileCache(userId);
+      } else if (outcome === 'conflict') {
+        Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
+      } else if (outcome === 'failed') {
+        Alert.alert('Couldn’t remove from Grails. Try again.');
+      }
     },
-    [userId, refresh],
+    [userId, slots, refresh, removeSlot],
   );
 
   return { grails, loading, isFull, isInGrails, addToGrails, removeFromGrails, refresh };

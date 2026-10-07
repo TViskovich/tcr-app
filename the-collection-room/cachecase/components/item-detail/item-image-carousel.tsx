@@ -113,6 +113,13 @@ export type CarouselImage = {
   // 'detail'-tier resolution the resting slide uses.
   zoomUri?: string;
   zoomCacheKey?: string;
+  // An already-signed, already-cached lower-tier URL for this slide (the
+  // 'preview' tier a grid on the previous screen rendered), shown at once
+  // while `uri` (the 'detail' tier) is still signing, then kept as
+  // expo-image's placeholder until the detail image has loaded — so the
+  // slide goes preview -> detail with no spinner and no blank in between.
+  previewUri?: string;
+  previewCacheKey?: string;
 };
 
 type ZoomableItemImageProps = {
@@ -127,6 +134,8 @@ type ZoomableItemImageProps = {
   cacheKey?: string;
   zoomUri?: string;
   zoomCacheKey?: string;
+  previewUri?: string;
+  previewCacheKey?: string;
   pageWidth: number;
   index: number;
   totalImages: number;
@@ -164,6 +173,8 @@ function ZoomableItemImage({
   cacheKey,
   zoomUri,
   zoomCacheKey,
+  previewUri,
+  previewCacheKey,
   pageWidth,
   index,
   totalImages,
@@ -287,9 +298,11 @@ function ZoomableItemImage({
             disabled={!onPress}
             accessibilityRole={onPress ? 'imagebutton' : undefined}
             accessibilityLabel={accessibilityLabel}>
-            {uri ? (
+            {uri || previewUri ? (
               <Image
-                source={{ uri, cacheKey }}
+                source={uri ? { uri, cacheKey } : { uri: previewUri, cacheKey: previewCacheKey }}
+                placeholder={uri && previewUri ? { uri: previewUri, cacheKey: previewCacheKey } : undefined}
+                placeholderContentFit="cover"
                 style={styles.image}
                 contentFit="cover"
                 transition={200}
@@ -383,6 +396,8 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0, onZoomedI
           cacheKey={images[0]?.cacheKey}
           zoomUri={images[0]?.zoomUri}
           zoomCacheKey={images[0]?.zoomCacheKey}
+          previewUri={images[0]?.previewUri}
+          previewCacheKey={images[0]?.previewCacheKey}
           pageWidth={pageWidth}
           index={0}
           totalImages={images.length}
@@ -436,6 +451,8 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0, onZoomedI
             cacheKey={item.cacheKey}
             zoomUri={item.zoomUri}
             zoomCacheKey={item.zoomCacheKey}
+            previewUri={item.previewUri}
+            previewCacheKey={item.previewCacheKey}
             pageWidth={pageWidth}
             index={index}
             totalImages={images.length}

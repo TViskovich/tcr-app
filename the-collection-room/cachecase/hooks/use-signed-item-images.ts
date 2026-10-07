@@ -135,6 +135,15 @@ type CacheEntry = {
 // identity-scoping (see lib/persisted-signed-url-cache.ts's storage key).
 const cache = new Map<string, CacheEntry>();
 
+// Last known signed URL per (identity, image, tier) whose persisted entry had
+// already EXPIRED when this process read it — memory only, same identity-
+// scoped keys as `cache`, never persisted, never authoritative. Used solely
+// by callers that opt into displayExpiredWhileRefreshing (see the hook): an
+// expired URL can't fetch anything from the network (the token is dead), but
+// handed to expo-image with the image's stable cacheKey it lets bytes that
+// are already on disk render immediately while a fresh URL is signed.
+const expiredDisplayUrls = new Map<string, string>();
+
 // Separate from `cache` above on purpose (Phase 1 in-flight dedupe) — this
 // tracks signing work currently IN PROGRESS, not completed results. Keyed
 // identically (`${identity}:${imageId}`). Two components requesting the
@@ -172,6 +181,24 @@ function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
 // one that's genuinely gone or never existed.
 function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
   return !!entry && entry.expiresAt > Date.now();
+}
+
+// Read-only peek at the in-memory cache for one image at one tier — never
+// fetches, never reads or writes the persisted layer, never changes any
+// entry. Lets a screen show an image another screen already signed at a
+// lower tier (e.g. a grid's 'preview' URL) while its own tier is still
+// signing. Same identity-scoped key as everything else here, so it can
+// never return another account's URL. servedTier is set when that cached
+// entry is itself a tier fallback (see CacheEntry), for building the right
+// byte-cache key.
+export function peekCachedSignedItemImage(
+  identity: string,
+  imageId: string,
+  tier: ImageTier,
+): { url: string; servedTier?: ImageTier } | null {
+  const entry = cache.get(`${identity}:${imageId}${imageTierCacheSuffix(tier)}`);
+  if (!isUsable(entry) || !entry.url) return null;
+  return entry.servedTier ? { url: entry.url, servedTier: entry.servedTier } : { url: entry.url };
 }
 
 type EdgeResult =
@@ -345,9 +372,20 @@ async function fetchSignedImageBatchWithRetry(
 // tier only changes which cached/signed representation backs each entry, and
 // is part of every cache identity below (in-memory, persisted, in-flight) so
 // the same image at two tiers never collides.
+// options.displayExpiredWhileRefreshing (opt-in, default off): while an id
+// has no usable signed URL but a previously signed one is known (expired
+// in-memory entry, or an expired persisted entry), return that expired URL
+// in `urls` (status stays 'loading') until the fresh one arrives. ONLY for
+// callers that render through expo-image with the stable cacheKey
+// (lib/private-image-cache-key.ts): a byte-cache hit renders instantly with
+// no network; a miss simply fails to load (dead token) and is replaced as
+// soon as signing returns. Never used for anything that fetches or shares
+// the URL itself. A server 'unavailable' answer still removes the image as
+// before (that entry is usable, with url null, so no expired URL is served).
 export function useSignedItemImages(
   imageIds: (string | null | undefined)[],
   tier: ImageTier = DEFAULT_IMAGE_TIER,
+  options: { displayExpiredWhileRefreshing?: boolean } = {},
 ): {
   urls: Map<string, string>;
   statuses: Map<string, SignedImageStatus>;
@@ -498,6 +536,11 @@ export function useSignedItemImages(
           if (entry && entry.expiresAt > Date.now()) {
             cache.set(`${identity}:${cacheIdOf(id)}`, { url: entry.url, expiresAt: entry.expiresAt });
             hydratedAny = true;
+          } else if (entry?.url && !expiredDisplayUrls.has(`${identity}:${cacheIdOf(id)}`)) {
+            // Expired: not trusted as a signed URL (still re-signed below),
+            // only kept as a display handle for opted-in callers.
+            expiredDisplayUrls.set(`${identity}:${cacheIdOf(id)}`, entry.url);
+            hydratedAny = true;
           }
         }
         if (hydratedAny) bump((n) => n + 1);
@@ -544,7 +587,8 @@ export function useSignedItemImages(
   const statuses = new Map<string, SignedImageStatus>();
   const servedTiers = new Map<string, ImageTier>();
   for (const id of ids) {
-    const entry = cache.get(`${identity}:${cacheIdOf(id)}`);
+    const cacheKey = `${identity}:${cacheIdOf(id)}`;
+    const entry = cache.get(cacheKey);
     if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
@@ -554,6 +598,14 @@ export function useSignedItemImages(
         statuses.set(id, 'unavailable');
       }
     } else {
+      if (options.displayExpiredWhileRefreshing) {
+        // A tier-fallback entry's URL is a different tier's bytes — never
+        // reused here, so it can't be displayed under this tier's cacheKey.
+        const expired: CacheEntry | undefined = cache.get(cacheKey);
+        const expiredUrl =
+          (expired?.url && !expired.servedTier ? expired.url : null) ?? expiredDisplayUrls.get(cacheKey);
+        if (expiredUrl) urls.set(id, expiredUrl);
+      }
       statuses.set(id, 'loading');
     }
   }

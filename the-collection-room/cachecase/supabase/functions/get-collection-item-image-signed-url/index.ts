@@ -18,8 +18,11 @@
 // This function runs as service-role and therefore bypasses table RLS
 // entirely — canViewItem below is the ONLY authorization boundary for image
 // delivery; the table-level RLS change alone does not protect this path.
-// The folder leg is resolved via one batched call to
-// folder_effective_visibility_batch() rather than a second,
+// Every fact canViewItem needs (storage path, owner, item privacy, folder
+// visibility, Grail showcase) comes from ONE service-role call to
+// resolve_item_images_for_signing() (supabase/migrations/
+// 20261011120000_add_resolve_item_images_for_signing.sql), whose folder leg
+// reuses _folder_is_effectively_visible_for() rather than a second,
 // independently-maintained ancestor walk here.
 //
 // Part of the item-images beta privacy hardening (Architecture B — see the
@@ -102,7 +105,7 @@ type ResolvedRow = {
   // publish" — see supabase/migrations/20260910120000_
   // grail_slot_visibility_exception.sql). True when this row's item_id is
   // referenced by an entry_type='item' profile_grail_slots row belonging to
-  // the same owner — resolved below via one batched query, mirroring the
+  // the same owner — resolved by resolve_item_images_for_signing, mirroring the
   // equivalent additional OR branch added to items_select_public /
   // collection_item_images_select_public in that migration. Independent of
   // folder_effectively_visible/item_is_public: a Grail-showcased item signs
@@ -116,13 +119,16 @@ type ResolvedRow = {
 // condition (Model A, most-restrictive-wins), PLUS the narrow Grail-slot
 // exception added alongside those same policies (see this file's
 // ResolvedRow.grail_showcased doc comment above). The folder leg
-// (folder_effectively_visible) is resolved by the recursive
-// folder_effective_visibility_batch() RPC (supabase/migrations/
-// 20260902120000_recursive_folder_hierarchy_privacy.sql) rather than a
-// second, independently-maintained ancestor walk here — this function only
-// combines that result with the item's own privacy flag and the Grail
-// exception, matching this app's established per-module RLS-mirroring
-// convention (see canViewRegisteredCard in ../_shared/registry-image.ts).
+// (folder_effectively_visible) comes from the recursive
+// _folder_is_effectively_visible_for() (supabase/migrations/
+// 20260902120000_recursive_folder_hierarchy_privacy.sql), evaluated by
+// resolve_item_images_for_signing with caller NULL — this function only
+// consults it after its own owner check has failed (caller != owner), where
+// that function's answer doesn't depend on the caller, so the rule is
+// unchanged. This function only combines that result with the item's own
+// privacy flag and the Grail exception, matching this app's established
+// per-module RLS-mirroring convention (see canViewRegisteredCard in
+// ../_shared/registry-image.ts).
 // Owner override applies regardless of any other flag; a non-owner needs
 // EITHER (the folder, and every one of its ancestors, AND the item to be
 // public) OR (this exact item to be Grail-showcased by its own owner).
@@ -133,26 +139,6 @@ function canViewItem(
   if (callerId !== null && callerId === row.owner_id) return true;
   if (row.folder_effectively_visible && row.item_is_public) return true;
   return row.grail_showcased;
-}
-
-// One batched call for every distinct folder referenced by this request's
-// items, rather than one RPC round trip per folder.
-async function resolveVisibleFolderIds(
-  client: ReturnType<typeof serviceRoleClient>,
-  folderIds: string[],
-  callerId: string | null,
-): Promise<Set<string>> {
-  if (!folderIds.length) return new Set();
-  const { data, error } = await client.rpc('folder_effective_visibility_batch', {
-    folder_ids: folderIds,
-    caller: callerId,
-  });
-  if (error || !data) return new Set();
-  return new Set(
-    (data as { folder_id: string; visible: boolean }[])
-      .filter((row) => row.visible)
-      .map((row) => row.folder_id),
-  );
 }
 
 Deno.serve(async (req: Request) => {
@@ -193,42 +179,25 @@ Deno.serve(async (req: Request) => {
 
   const client = serviceRoleClient();
 
-  const { userId, invalid } = await resolveCaller(client, req);
+  // Two independent server calls, run concurrently: resolving the caller's
+  // token, and ONE set-based lookup of every fact canViewItem needs for every
+  // requested image (resolve_item_images_for_signing — see its migration).
+  // That lookup is caller-independent, which is what lets it run alongside
+  // the token check instead of after it. This replaced a chain of separate
+  // lookups (image rows -> items + grail slots -> folders + folder
+  // visibility). Still the service-role client (bypasses RLS entirely), so
+  // canViewItem below remains the ONLY authorization boundary — nothing about
+  // a row being returned implies the caller may view it. An invalid token is
+  // still rejected with 401 before anything is returned.
+  const [{ userId, invalid }, { data: rows, error: lookupError }] = await Promise.all([
+    resolveCaller(client, req),
+    client.rpc('resolve_item_images_for_signing', { p_image_ids: imageIds }),
+  ]);
   if (invalid) {
     return jsonResponse({ error: 'invalid_token' }, 401);
   }
 
-  // Three separate, unambiguous batched lookups — collection_item_images
-  // -> collection_items -> folders — rather than one embedded PostgREST
-  // select. An embedded `collection_items!inner(..., folders!inner(...))`
-  // select USED to work here, but folders.cover_item_id (added by
-  // 20260901120000_add_folder_cover_item_id.sql, referencing
-  // collection_items(id) for the folder-cover-picker feature) gave
-  // PostgREST a SECOND foreign-key path between collection_items and
-  // folders (alongside the original collection_items.folder_id ->
-  // folders.id), so it can no longer auto-resolve which relationship
-  // `folders!inner(...)` means and fails the whole query with PGRST201
-  // ("more than one relationship was found"). That failure was silently
-  // swallowed by the `if (error)` branch below, three lines down, which
-  // exists for a DIFFERENT reason (never reporting a query-level failure
-  // per-row) but has the side effect of returning HTTP 200 with every id
-  // marked unavailable — exactly the "200s in the logs, blank previews"
-  // symptom this was diagnosed from. Confirmed by reproducing the exact
-  // broken query directly against the live REST API and getting that same
-  // PGRST201 back, not by inspection alone. Splitting into separate
-  // queries (matching get-folder-cover-signed-url's own already-working
-  // pattern) sidesteps the ambiguity entirely rather than depending on a
-  // PostgREST relationship-hint string that would silently break again the
-  // next time a new FK is added between these two tables. Still uses the
-  // service-role client (bypasses RLS entirely), so canViewItem below is
-  // the ONLY authorization boundary here — nothing about any of these
-  // queries succeeding implies the caller may view any of these rows.
-  const { data: images, error: imagesError } = await client
-    .from('collection_item_images')
-    .select('id, item_id, storage_path')
-    .in('id', imageIds);
-
-  if (imagesError) {
+  if (lookupError) {
     // A query-level failure must not be reported per-row (that would imply
     // some rows were successfully checked and others weren't) — every
     // requested id fails uniformly.
@@ -238,70 +207,30 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  const imageRows = (images ?? []) as { id: string; item_id: string; storage_path: string | null }[];
-
-  type ItemRow = { id: string; folder_id: string; is_public: boolean };
-  const itemById = new Map<string, ItemRow>();
-  const itemIds = [...new Set(imageRows.map((img) => img.item_id))];
-  if (itemIds.length) {
-    const { data: items } = await client.from('collection_items').select('id, folder_id, is_public').in('id', itemIds);
-    for (const it of (items ?? []) as ItemRow[]) {
-      itemById.set(it.id, it);
-    }
-  }
-
-  type FolderRow = { id: string; user_id: string };
-  const folderById = new Map<string, FolderRow>();
-  const folderIds = [...new Set([...itemById.values()].map((it) => it.folder_id))];
-  if (folderIds.length) {
-    const { data: folders } = await client.from('folders').select('id, user_id').in('id', folderIds);
-    for (const f of (folders ?? []) as FolderRow[]) {
-      folderById.set(f.id, f);
-    }
-  }
-
-  const visibleFolderIds = await resolveVisibleFolderIds(client, folderIds, userId);
-
-  // Grail-slot visibility exception — one batched lookup covering every
-  // distinct item this request's images belong to, mirroring the narrow OR
-  // branch added to items_select_public/collection_item_images_select_public
-  // (supabase/migrations/20260910120000_grail_slot_visibility_exception.sql).
-  // Cross-checked against each item's own owner below (gs.user_id vs.
-  // folder.user_id) as the same defense-in-depth that migration's policies
-  // apply — a slot can never legitimately reference another user's item
-  // (profile_grail_slots_insert_own), but this never trusts that
-  // structurally alone.
-  const grailShowcasedOwnerByItemId = new Map<string, string>();
-  if (itemIds.length) {
-    const { data: grailRows } = await client
-      .from('profile_grail_slots')
-      .select('item_id, user_id')
-      .eq('entry_type', 'item')
-      .in('item_id', itemIds);
-    for (const row of (grailRows ?? []) as { item_id: string | null; user_id: string }[]) {
-      if (row.item_id) grailShowcasedOwnerByItemId.set(row.item_id, row.user_id);
-    }
-  }
-
+  // Images whose item or folder no longer exists have no row, and are
+  // reported unavailable below — same as before.
   const resolved = new Map<string, ResolvedRow>();
-  for (const img of imageRows) {
-    if (!img.storage_path) continue;
-    const item = itemById.get(img.item_id);
-    if (!item) continue;
-    const folder = folderById.get(item.folder_id);
-    if (!folder) continue;
-    resolved.set(img.id, {
-      id: img.id,
-      item_id: img.item_id,
-      storage_path: img.storage_path,
-      folder_effectively_visible: visibleFolderIds.has(folder.id),
-      item_is_public: item.is_public,
-      // folders.user_id and collection_items.user_id are always equal for
-      // any legitimately-created row (items_insert_own requires the item's
-      // owner to already own the target folder) — using the folder's is the
-      // established convention here, unchanged from before this pass.
-      owner_id: folder.user_id,
-      grail_showcased: grailShowcasedOwnerByItemId.get(img.item_id) === folder.user_id,
+  for (const row of (rows ?? []) as {
+    image_id: string;
+    item_id: string;
+    storage_path: string | null;
+    owner_id: string;
+    item_is_public: boolean;
+    folder_effectively_visible: boolean;
+    grail_showcased: boolean;
+  }[]) {
+    if (!row.storage_path) continue;
+    resolved.set(row.image_id, {
+      id: row.image_id,
+      item_id: row.item_id,
+      storage_path: row.storage_path,
+      folder_effectively_visible: row.folder_effectively_visible === true,
+      item_is_public: row.item_is_public === true,
+      // folders.user_id — the established owner convention here (folders.
+      // user_id and collection_items.user_id are always equal for any
+      // legitimately-created row; items_insert_own requires it).
+      owner_id: row.owner_id,
+      grail_showcased: row.grail_showcased === true,
     });
   }
 

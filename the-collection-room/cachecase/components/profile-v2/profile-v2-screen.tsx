@@ -39,7 +39,6 @@ import {
 import { useAllItems, useFolders, type CollectionGridEntry } from '@/hooks/use-collection';
 import {
   expectedRefIdForSlot,
-  removeGrailSlot,
   useGrailSlots,
   type ExpectedGrailSlot,
 } from '@/hooks/use-grail-slots';
@@ -427,6 +426,7 @@ export function ProfileV2Screen({ userId }: Props) {
     error: grailSlotsError,
     refresh: refreshGrailSlots,
     reorder: reorderGrailSlots,
+    removeSlot: removeGrailSlotOptimistic,
   } = useGrailSlots(userId, ownProfileSeed?.grailSlots, ownProfileSeedFresh);
   // Explicit chooser intent, not a bare slotIndex — an 'add' can never
   // silently become a 'replace' (or vice versa) if the target slot's
@@ -1177,22 +1177,19 @@ export function ProfileV2Screen({ userId }: Props) {
           text: 'Remove',
           style: 'destructive',
           onPress: async () => {
-            const { error, conflict } = await removeGrailSlot(currentUserId, expected);
-            if (error) {
-              console.error('[ProfileV2Screen] removeGrailSlot failed:', error);
-              await refreshGrailSlots();
-              if (conflict === 'slot_conflict') {
-                Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
-              } else {
-                Alert.alert('Error', 'Could not remove this Grail slot. Please try again.');
-              }
-              return;
-            }
-            // Real mutation succeeded — same reasoning as
-            // handleGrailReorderDone above.
+            // Optimistic: the slot leaves the grid (and any other mounted
+            // Grails surface) right now; rolled back if the DELETE fails.
+            // hasRealSettleOccurredRef lets the own-profile cache-write
+            // effect persist the updated grailSlots (and again on rollback)
+            // — only that part of the cached payload changes, so there's no
+            // full invalidation/refetch for a removal made here.
             hasRealSettleOccurredRef.current = true;
-            invalidateOwnProfileCache(userId);
-            await refreshGrailSlots();
+            const outcome = await removeGrailSlotOptimistic(expected);
+            if (outcome === 'conflict') {
+              Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
+            } else if (outcome === 'failed') {
+              Alert.alert('Couldn’t remove from Grails. Try again.');
+            }
           },
         },
       ],

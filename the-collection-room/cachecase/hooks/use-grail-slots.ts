@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PostgrestError } from '@supabase/supabase-js';
 
-import { attachPrimaryImageIds } from '@/lib/item-images';
 import { supabase } from '@/lib/supabase';
-import type { CollectionItem, GrailSlot, GrailSlotConflict, GrailSlotEntryType } from '@/types';
+import type { CollectionItem, Folder, GrailSlot, GrailSlotConflict, GrailSlotEntryType } from '@/types';
 
 // The identity + current source a caller last saw for one occupied slot —
 // what replaceGrailSlot and removeGrailSlot both re-verify, in their own
@@ -193,6 +192,152 @@ export async function removeGrailSlot(
   return { error: null, conflict: null };
 }
 
+// The single query behind useGrailSlots' load(). folders <-> collection_items
+// has two foreign keys (collection_items.folder_id and folders.cover_item_id),
+// so the folder's items are embedded through folder_id explicitly.
+const GRAIL_SLOTS_SELECT =
+  '*, item:collection_items(*, primary_image:collection_item_images(id)), ' +
+  'collection:folders(*, preview_items:collection_items!collection_items_folder_id_fkey(id, primary_image:collection_item_images(id)))';
+
+type EmbeddedPrimaryImage = { id: string }[] | null | undefined;
+type RawGrailSlotRow = Omit<GrailSlot, 'item' | 'collection'> & {
+  item?: (CollectionItem & { primary_image?: EmbeddedPrimaryImage }) | null;
+  collection?: (Folder & { preview_items?: { id: string; primary_image?: EmbeddedPrimaryImage }[] | null }) | null;
+};
+
+// Raw embedded row -> the exact GrailSlot shape consumers (and the
+// own-profile cache) have always seen: item.primary_image_id on item slots;
+// previewImageIds + collectionItemCount on collection slots. The embedding
+// helper keys are stripped so nothing new leaks into cached payloads.
+function toGrailSlot(row: RawGrailSlotRow): GrailSlot {
+  const { item, collection, ...rest } = row;
+  const slot: GrailSlot = { ...rest };
+
+  if (item !== undefined) {
+    if (item) {
+      const { primary_image, ...itemRest } = item;
+      slot.item = { ...itemRest, primary_image_id: primary_image?.[0]?.id ?? null };
+    } else {
+      slot.item = null;
+    }
+  }
+
+  if (collection !== undefined) {
+    if (collection) {
+      const { preview_items, ...folderRest } = collection;
+      slot.collection = folderRest;
+      if (row.entry_type === 'collection' && row.collection_id) {
+        const previewItems = preview_items ?? [];
+        // collectionItemCount counts every active item in the folder (not
+        // just imaged ones) so "N items" matches the folder's real size,
+        // matching how the main Collection page counts items.
+        const seen = new Set<string>();
+        const previewImageIds: string[] = [];
+        for (const previewItem of previewItems) {
+          const primaryImageId = previewItem.primary_image?.[0]?.id;
+          if (!primaryImageId || seen.has(primaryImageId)) continue;
+          seen.add(primaryImageId);
+          previewImageIds.push(primaryImageId);
+          if (previewImageIds.length >= PREVIEW_IMAGE_LIMIT) break;
+        }
+        slot.previewImageIds = previewImageIds;
+        slot.collectionItemCount = previewItems.length;
+      }
+    } else {
+      slot.collection = null;
+    }
+  }
+
+  return slot;
+}
+
+// ── Optimistic removal, shared across every mounted useGrailSlots ──
+//
+// Several screens can have the same user's slots loaded at once (Profile V2
+// stays mounted under an item's detail screen, for example), each in its own
+// hook instance. A removal is applied to all of them immediately, before the
+// DELETE round trip, and rolled back on failure — so no surface waits on the
+// network or a refetch, and none disagrees with another.
+//
+// removedSlotIds holds slot row ids whose DELETE is in flight or has
+// succeeded. A deleted row's id never comes back (re-adding inserts a new
+// row), so every load() filters these out for the rest of the session — a
+// refresh that started before the DELETE committed can't resurrect it.
+const removedSlotIds = new Set<string>();
+const inFlightRemovals = new Set<string>();
+
+export type GrailSlotsEvent =
+  | { type: 'remove'; userId: string; slotId: string }
+  | { type: 'restore'; userId: string; slot: GrailSlot }
+  | { type: 'reload'; userId: string };
+
+const grailSlotsListeners = new Set<(event: GrailSlotsEvent) => void>();
+
+function emitGrailSlotsEvent(event: GrailSlotsEvent) {
+  grailSlotsListeners.forEach((listener) => listener(event));
+}
+
+// For lightweight Grails views that aren't a full useGrailSlots instance
+// (hooks/use-item-grail-membership.ts) — the same event stream and the same
+// removed-id filter, so they stay in step with every full instance.
+export function subscribeGrailSlotsEvents(listener: (event: GrailSlotsEvent) => void): () => void {
+  grailSlotsListeners.add(listener);
+  return () => {
+    grailSlotsListeners.delete(listener);
+  };
+}
+
+export function isGrailSlotRemoved(slotId: string): boolean {
+  return removedSlotIds.has(slotId);
+}
+
+// removed: the DELETE committed (local state already reflects it).
+// failed: the DELETE errored; the slot has been restored everywhere.
+// conflict: the slot changed or was already gone server-side; every
+//   instance is reloading to show the real state.
+// in_flight: a removal of this exact slot is already running; ignored.
+export type RemoveGrailSlotOutcome = 'removed' | 'failed' | 'conflict' | 'in_flight';
+
+// The shared optimistic removal behind useGrailSlots().removeSlot and
+// useItemGrailMembership: the slot disappears from every mounted Grails view
+// at once, then the existing conditional DELETE (removeGrailSlot) runs.
+// `previous` is the caller's full copy of the slot, used to restore it
+// everywhere on failure; a caller without one passes null and every view
+// reloads instead.
+export async function removeGrailSlotOptimistically(
+  userId: string,
+  expected: ExpectedGrailSlot,
+  previous: GrailSlot | null,
+): Promise<RemoveGrailSlotOutcome> {
+  const slotId = expected.expectedSlotId;
+  if (inFlightRemovals.has(slotId)) return 'in_flight';
+
+  inFlightRemovals.add(slotId);
+  removedSlotIds.add(slotId);
+  emitGrailSlotsEvent({ type: 'remove', userId, slotId });
+
+  let result: { error: string | null; conflict: GrailSlotConflict };
+  try {
+    result = await removeGrailSlot(userId, expected);
+  } catch (e) {
+    console.error('[useGrailSlots] removeSlot threw:', e);
+    result = { error: 'threw', conflict: null };
+  } finally {
+    inFlightRemovals.delete(slotId);
+  }
+
+  if (!result.error) return 'removed';
+
+  removedSlotIds.delete(slotId);
+  if (result.conflict === 'slot_conflict' || !previous) {
+    // Unknown current state — show whatever the server has now.
+    emitGrailSlotsEvent({ type: 'reload', userId });
+    return result.conflict === 'slot_conflict' ? 'conflict' : 'failed';
+  }
+  emitGrailSlotsEvent({ type: 'restore', userId, slot: previous });
+  return 'failed';
+}
+
 // `seed`, when given (own-profile local cache — see lib/own-profile-cache.ts,
 // own-profile only), hydrates `slots` synchronously at mount, for this exact
 // `userId`, so load() below treats it as "already has data" (a background,
@@ -212,8 +357,8 @@ export function useGrailSlots(
   // refresh (e.g. on returning from an item's detail screen) is
   // stale-while-revalidate: once slots exist for this user they stay on
   // screen — `loading` (which blanks the whole grid) is only raised for a
-  // genuine first load — and an image-id lookup failure keeps the ids
-  // already known instead of nulling every slot's photo.
+  // genuine first load — and a failed refresh keeps the slots (and image
+  // ids) already shown.
   const slotsRef = useRef<{ userId: string | undefined; slots: GrailSlot[] }>(
     seed ? { userId, slots: seed } : { userId: undefined, slots: [] },
   );
@@ -240,11 +385,29 @@ export function useGrailSlots(
     }
 
     async function runLoad(loadSeq: number) {
+    // One request for everything the grid needs — slots, each item slot's
+    // item + primary image id, each collection slot's folder + its active
+    // items (manual sort_order) + their primary image ids. Previously this
+    // was up to four sequential round trips (slots, item image ids, folder
+    // previews, preview image ids). Same rows and same RLS as those separate
+    // queries: embedded resources are filtered by the same policies, and the
+    // embedded filters below only trim embedded rows, never parent slots.
+    // Signed image URLs are still resolved afterwards, by the renderer, via
+    // useSignedItemImages and its own caches — slots render without
+    // waiting on them.
     const { data, error: queryError } = await supabase
       .from('profile_grail_slots')
-      .select('*, item:collection_items(*), collection:folders(*)')
+      .select(GRAIL_SLOTS_SELECT)
       .eq('user_id', userId)
-      .order('slot_index', { ascending: true });
+      .eq('item.primary_image.is_primary', true)
+      .eq('collection.preview_items.collection_status', 'active')
+      .eq('collection.preview_items.primary_image.is_primary', true)
+      .order('slot_index', { ascending: true })
+      // Manual folder ordering (supabase/migrations/
+      // 20260912120000_add_collection_item_manual_ordering.sql) — a
+      // Grail-showcased collection's preview is "this folder's items in
+      // order", same as every other consumer of that ordering.
+      .order('sort_order', { referencedTable: 'collection.preview_items', ascending: true });
 
     if (loadSeqRef.current !== loadSeq) return;
     if (queryError) {
@@ -256,106 +419,11 @@ export function useGrailSlots(
       return;
     }
 
-    let nextSlots = (data ?? []) as GrailSlot[];
+    const nextSlots = ((data ?? []) as unknown as RawGrailSlotRow[])
+      .filter((s) => !removedSlotIds.has(s.id))
+      .map(toGrailSlot);
     setError(null);
 
-    // Attaches primary_image_id onto every visible item-slot's embedded
-    // CollectionItem in one batched query (item-images beta privacy
-    // hardening, Phase 3C) — propagates for free through hooks/use-grails.ts's
-    // ShowcaseItem shim to components/profile/grails-slot.tsx too, since
-    // that shim just repackages this same slot.item object. RLS has
-    // already determined visibility by this point: a slot the caller isn't
-    // allowed to see has item: null and is filtered out of `itemSlots`
-    // below, so this — and any later signing request built from its
-    // result — never runs for a hidden item.
-    const itemSlots = nextSlots.filter(
-      (s): s is typeof s & { item: CollectionItem } => s.entry_type === 'item' && !!s.item,
-    );
-    if (itemSlots.length) {
-      const previousIds = new Map(
-        slotsRef.current.slots.flatMap((s) => (s.item ? [[s.item.id, s.item.primary_image_id ?? null] as const] : [])),
-      );
-      const withPrimaryIds = await attachPrimaryImageIds(itemSlots.map((s) => s.item), previousIds);
-      const byItemId = new Map(withPrimaryIds.map((i) => [i.id, i]));
-      nextSlots = nextSlots.map((s) =>
-        s.entry_type === 'item' && s.item ? { ...s, item: byItemId.get(s.item.id) ?? s.item } : s,
-      );
-    }
-
-    // One uncapped, narrow-column query covering every collection slot's
-    // folder at once — not a per-folder query (N+1) and not a single
-    // global .limit() (which could let one busy folder starve another's
-    // share of the cap). Every row for the batch's folders comes back;
-    // capping/counting happens per-folder, client-side, below.
-    const collectionIds = Array.from(
-      new Set(
-        nextSlots
-          .filter((s) => s.entry_type === 'collection' && s.collection_id)
-          .map((s) => s.collection_id as string),
-      ),
-    );
-
-    if (collectionIds.length) {
-      const { data: previewRows, error: previewError } = await supabase
-        .from('collection_items')
-        .select('id, folder_id, created_at')
-        .eq('collection_status', 'active')
-        .in('folder_id', collectionIds)
-        // Manual folder ordering (supabase/migrations/
-        // 20260912120000_add_collection_item_manual_ordering.sql) — a
-        // Grail-showcased collection's preview is "this folder's items in
-        // order" the same as every other consumer of that ordering, not an
-        // independent recency rule.
-        .order('sort_order', { ascending: true });
-
-      if (previewError) {
-        // Preview images are a UX nicety layered on top of already-valid
-        // slot data — a failed preview query must not block the slots
-        // themselves (the label/count still renders from the joined
-        // collection row) from showing.
-        console.error('[useGrailSlots] preview query failed:', previewError.message, previewError);
-      } else {
-        const previewItemRows = (previewRows ?? []) as { id: string; folder_id: string }[];
-        // Same attachPrimaryImageIds helper the item-slot pass above uses —
-        // one batched collection_item_images lookup covering every
-        // collection slot's preview candidates combined (item-images beta
-        // privacy hardening, signed-delivery migration), not a per-folder
-        // or per-item query. Preview URLs are resolved later, from
-        // primary_image_id, through the same signed-delivery path
-        // (useSignedItemImages) the item-slot images already use — this
-        // hook only ever hands out ids, never a raw/public URL.
-        const withPrimaryIds = await attachPrimaryImageIds(previewItemRows);
-        const primaryImageIdByItemId = new Map(withPrimaryIds.map((r) => [r.id, r.primary_image_id]));
-
-        const byFolder = new Map<string, string[]>();
-        for (const row of previewItemRows) {
-          const list = byFolder.get(row.folder_id);
-          if (list) list.push(row.id);
-          else byFolder.set(row.folder_id, [row.id]);
-        }
-
-        nextSlots = nextSlots.map((slot) => {
-          if (slot.entry_type !== 'collection' || !slot.collection_id) return slot;
-          const itemIds = byFolder.get(slot.collection_id) ?? [];
-          // collectionItemCount counts every row in the folder (not just
-          // imaged ones) so "N items" always matches the folder's real
-          // size, matching how the main Collection page counts items.
-          const collectionItemCount = itemIds.length;
-          const seen = new Set<string>();
-          const previewImageIds: string[] = [];
-          for (const itemId of itemIds) {
-            const primaryImageId = primaryImageIdByItemId.get(itemId);
-            if (!primaryImageId || seen.has(primaryImageId)) continue;
-            seen.add(primaryImageId);
-            previewImageIds.push(primaryImageId);
-            if (previewImageIds.length >= PREVIEW_IMAGE_LIMIT) break;
-          }
-          return { ...slot, previewImageIds, collectionItemCount };
-        });
-      }
-    }
-
-    if (loadSeqRef.current !== loadSeq) return;
     slotsRef.current = { userId, slots: nextSlots };
     setSlots(nextSlots);
     }
@@ -402,5 +470,49 @@ export function useGrailSlots(
     return { error: null };
   }, [userId]);
 
-  return { slots, loading, error, refresh: load, reorder };
+  // Applies optimistic removals/rollbacks from any instance (including this
+  // one) to this instance's slots.
+  useEffect(() => {
+    if (!userId) return;
+    const listener = (event: GrailSlotsEvent) => {
+      if (event.userId !== userId) return;
+      if (event.type === 'reload') {
+        load();
+        return;
+      }
+      setSlots((prev) => {
+        let next: GrailSlot[];
+        if (event.type === 'remove') {
+          if (!prev.some((s) => s.id === event.slotId)) return prev;
+          next = prev.filter((s) => s.id !== event.slotId);
+        } else {
+          if (prev.some((s) => s.id === event.slot.id)) return prev;
+          next = [...prev, event.slot].sort((a, b) => a.slot_index - b.slot_index);
+        }
+        slotsRef.current = { userId, slots: next };
+        return next;
+      });
+    };
+    grailSlotsListeners.add(listener);
+    return () => {
+      grailSlotsListeners.delete(listener);
+    };
+  }, [userId, load]);
+
+  // Optimistic remove: the slot disappears everywhere at once, then the
+  // existing conditional DELETE (removeGrailSlot) runs. A removal leaves
+  // that slot_index empty — other slots keep their indexes, exactly as the
+  // server does (no compaction). No refetch on success: the conditional
+  // DELETE matched exactly the row shown, so local state already equals
+  // the server's.
+  const removeSlot = useCallback(
+    async (expected: ExpectedGrailSlot): Promise<RemoveGrailSlotOutcome> => {
+      if (!userId) return 'failed';
+      const previous = slotsRef.current.slots.find((s) => s.id === expected.expectedSlotId) ?? null;
+      return removeGrailSlotOptimistically(userId, expected, previous);
+    },
+    [userId],
+  );
+
+  return { slots, loading, error, refresh: load, reorder, removeSlot };
 }

@@ -16,7 +16,7 @@ import {
 
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
@@ -37,14 +37,14 @@ import { ItemShareSheet } from '@/components/share/item-share-sheet';
 import { SendItemDmSheet } from '@/components/share/send-item-dm-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useGrails } from '@/hooks/use-grails';
+import { useItemGrailMembership } from '@/hooks/use-item-grail-membership';
 import { useItemImages } from '@/hooks/use-item-images';
 import { useItemLikes } from '@/hooks/use-item-likes';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { peekCachedSignedItemImage, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { getComicBookDetails, updateComicBookItem } from '@/lib/comic-book-items';
+import { updateComicBookItem } from '@/lib/comic-book-items';
 import {
   COMIC_EDITION_OPTIONS,
   COMIC_GRADING_COMPANY_OPTIONS,
@@ -55,8 +55,8 @@ import {
 } from '@/lib/comic-book-options';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
-import { getPokemonCardDetails, updatePokemonItem } from '@/lib/pokemon-items';
-import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { updatePokemonItem } from '@/lib/pokemon-items';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -144,6 +144,19 @@ type OwnerProfile = {
   username: string;
   display_name: string | null;
   avatar_url: string | null;
+};
+
+// fetchItem's single joined request. collection_items.user_id references
+// profiles directly; pokemon_card_details / comic_book_details are keyed by
+// item_id (their primary key), so each embeds as one object or null.
+const ITEM_DETAIL_SELECT =
+  '*, owner:profiles!collection_items_user_id_fkey(username, display_name, avatar_url), ' +
+  'pokemon_details:pokemon_card_details(*), comic_details:comic_book_details(*)';
+
+type ItemDetailRow = CollectionItem & {
+  owner: OwnerProfile | null;
+  pokemon_details: PokemonCardDetails | null;
+  comic_details: ComicBookDetails | null;
 };
 
 function itemToForm(item: CollectionItem): EditForm {
@@ -521,6 +534,7 @@ export default function ItemDetailScreen() {
   const editItemIsPrivate = !editItemIsPublic;
   const [saving, setSaving] = useState(false);
   const [grailsLoading, setGrailsLoading] = useState(false);
+  const [grailsRemoving, setGrailsRemoving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   // Phase 1 item move — single-item only (see components/item-detail/
@@ -571,7 +585,26 @@ export default function ItemDetailScreen() {
   // Send in DM recipient sheet (components/share/send-item-dm-sheet.tsx).
   const [sendDmVisible, setSendDmVisible] = useState(false);
 
-  const { loading: grailSlotsLoading, isFull, isInGrails, addToGrails, removeFromGrails } = useGrails(currentUserId);
+  // Lightweight membership view (just the viewer's slot rows), not the full
+  // Grails payload — see hooks/use-item-grail-membership.ts.
+  const {
+    loading: grailSlotsLoading,
+    isFull,
+    isInGrails,
+    addToGrails,
+    removeFromGrails,
+    refresh: refreshGrailMembership,
+  } = useItemGrailMembership(currentUserId);
+  // Re-check on returning to this screen (e.g. the item was added to or
+  // removed from Grails elsewhere while this screen was underneath). The
+  // first focus is skipped — the hook already loads on mount. Removals made
+  // anywhere also arrive instantly via the shared Grails event stream.
+  const grailFocusCountRef = useRef(0);
+  useFocusEffect(
+    useCallback(() => {
+      if (grailFocusCountRef.current++ > 0) refreshGrailMembership();
+    }, [refreshGrailMembership]),
+  );
   // Not gated on isOwner — RLS (registered_cards_select_visible) already
   // restricts what a non-owner can read (public rows, or their own), so
   // this only lets an already-permitted read happen. It has to run for
@@ -581,13 +614,17 @@ export default function ItemDetailScreen() {
   // below), unaffected by this. The hook's own automatic effect only ever
   // performs a SELECT (see hooks/use-registered-card.ts) — registerItem()
   // is a separate function, never auto-invoked.
+  //
+  // Keyed on the route id (not item?.id) so this SELECT starts at mount, in
+  // parallel with fetchItem, instead of waiting for it — same id, same
+  // RLS-filtered read; an item the viewer can't see simply has no row.
   const {
     registeredCard,
     loading: registryLoading,
     registering,
     registerItem,
     retrySnapshotImage,
-  } = useRegisteredCardForItem(item?.id);
+  } = useRegisteredCardForItem(id);
   const {
     images: galleryImages,
     loading: galleryLoading,
@@ -597,56 +634,43 @@ export default function ItemDetailScreen() {
     removeImage: removeGalleryImage,
     setPrimary: setPrimaryGalleryImage,
     reorder: reorderGalleryImages,
-  } = useItemImages(item?.id);
+    // Route id, not item?.id: the gallery rows (and so the detail-tier
+    // signing that follows them) load in parallel with fetchItem rather than
+    // after it. RLS filters collection_item_images exactly as before.
+  } = useItemImages(id);
 
   useEffect(() => {
     async function fetchItem() {
-      const { data } = await supabase
+      // One request: the item plus everything the first render needs — the
+      // owner's identity (ItemOwnerRow shows it to every viewer) and, for
+      // Pokémon / comic book items, their one-to-one detail row. These used
+      // to be three sequential round trips (item -> owner -> details).
+      // Embedded rows go through the same RLS as the old separate queries;
+      // a details row the viewer can't see, or that doesn't exist, comes
+      // back null exactly like the old maybeSingle().
+      const { data: row } = await supabase
         .from('collection_items')
-        .select('*')
+        .select(ITEM_DETAIL_SELECT)
         .eq('id', id)
         .single();
 
-      if (data) {
+      if (row) {
+        const { owner, pokemon_details, comic_details, ...itemRow } = row as unknown as ItemDetailRow;
+        const data = itemRow as CollectionItem;
         setItem(data);
         setForm(itemToForm(data));
+        if (owner) setOwnerProfile(owner);
 
-        // Always fetched now (not just for non-owners) — the Instagram-style
-        // ItemOwnerRow above the image shows the owner's identity
-        // regardless of viewer, same as the owner-only card further down
-        // still does for non-owners only (that block's own !isOwner check
-        // is unaffected by this).
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('username, display_name, avatar_url')
-          .eq('id', data.user_id)
-          .single();
-        if (profile) setOwnerProfile(profile as OwnerProfile);
-
-        // Pokémon detail row — only ever fetched here (item detail/edit),
-        // never for folder grids, search, saved, or profile preview tiles,
-        // so this stays exactly one extra query, only when actually needed
-        // (see pokemonDetails' own comment above).
+        // Only populated for the matching item_type, same as before.
         if (data.item_type === 'pokemon') {
-          try {
-            const details = await getPokemonCardDetails(data.id);
-            setPokemonDetails(details);
-            setPokemonForm(pokemonItemToForm(data, details));
-          } catch (e) {
-            if (__DEV__) console.error('[ItemDetail] pokemon_card_details fetch failed:', e);
-          }
+          const details = pokemon_details ?? null;
+          setPokemonDetails(details);
+          setPokemonForm(pokemonItemToForm(data, details));
         }
-
-        // Comic Book detail row — only ever fetched here, same reasoning as
-        // pokemonDetails above.
         if (data.item_type === 'comic_book') {
-          try {
-            const details = await getComicBookDetails(data.id);
-            setComicDetails(details);
-            setComicForm(comicItemToForm(data, details));
-          } catch (e) {
-            if (__DEV__) console.error('[ItemDetail] comic_book_details fetch failed:', e);
-          }
+          const details = comic_details ?? null;
+          setComicDetails(details);
+          setComicForm(comicItemToForm(data, details));
         }
       }
       setFetching(false);
@@ -1417,13 +1441,18 @@ export default function ItemDetailScreen() {
 
   async function handleGrailsToggle() {
     if (!item) return;
-    setGrailsLoading(true);
     if (isInGrails(item.id)) {
+      // Optimistic — the button flips to "Add to Grails" immediately (and
+      // Profile V2 updates too); it's only disabled, without a spinner,
+      // until the DELETE settles so a fast re-tap can't race it.
+      setGrailsRemoving(true);
       await removeFromGrails(item.id);
+      setGrailsRemoving(false);
     } else {
+      setGrailsLoading(true);
       await addToGrails(item.id);
+      setGrailsLoading(false);
     }
-    setGrailsLoading(false);
   }
 
   // View-mode carousel now renders through the signed-delivery Edge
@@ -1481,14 +1510,29 @@ export default function ItemDetailScreen() {
   // as "not loading" (i.e. genuinely unavailable, never a fake spinner).
   const carouselImages: CarouselImage[] = useMemo(() => {
     if (galleryImages.length > 0) {
-      return galleryImages.map((img) => ({
-        id: img.id,
-        uri: signedGalleryUrls.get(img.id),
-        status: signedGalleryStatuses.get(img.id),
-        cacheKey: itemImageCacheKey(cacheIdentity, img.id, DETAIL_IMAGE_TIER, galleryServedTiers),
-        zoomUri: img.id === zoomedImageId ? zoomOriginalUrls.get(img.id) : undefined,
-        zoomCacheKey: img.id === zoomedImageId ? itemImageCacheKey(cacheIdentity, img.id, 'original') : undefined,
-      }));
+      return galleryImages.map((img) => {
+        // A 'preview'-tier URL the previous screen's grid already signed
+        // (memory cache only — no request). Shown immediately while the
+        // 'detail' tier signs, then held as the placeholder until it loads.
+        const preview = peekCachedSignedItemImage(cacheIdentity, img.id, COMPACT_IMAGE_TIER);
+        return {
+          id: img.id,
+          uri: signedGalleryUrls.get(img.id),
+          status: signedGalleryStatuses.get(img.id),
+          cacheKey: itemImageCacheKey(cacheIdentity, img.id, DETAIL_IMAGE_TIER, galleryServedTiers),
+          zoomUri: img.id === zoomedImageId ? zoomOriginalUrls.get(img.id) : undefined,
+          zoomCacheKey: img.id === zoomedImageId ? itemImageCacheKey(cacheIdentity, img.id, 'original') : undefined,
+          previewUri: preview?.url,
+          previewCacheKey: preview
+            ? itemImageCacheKey(
+                cacheIdentity,
+                img.id,
+                COMPACT_IMAGE_TIER,
+                preview.servedTier ? new Map([[img.id, preview.servedTier]]) : undefined,
+              )
+            : undefined,
+        };
+      });
     }
     return buildItemImageList([item?.image_url]).map((uri, i) => ({
       id: `legacy-${item?.id ?? 'unknown'}-${i}`,
@@ -2105,7 +2149,7 @@ export default function ItemDetailScreen() {
                           disabled && styles.grailsButtonDisabled,
                         ]}
                         onPress={handleGrailsToggle}
-                        disabled={grailsLoading || disabled}
+                        disabled={grailsLoading || grailsRemoving || disabled}
                         activeOpacity={0.8}>
                         {grailsLoading ? (
                           <ActivityIndicator color={inGrails ? '#C9952C' : '#fff'} />
