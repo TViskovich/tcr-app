@@ -318,7 +318,11 @@ export default function CollectionScreen() {
         />
       )}
 
-      {loading ? (
+      {/* Spinner only when there is nothing to show yet. The focus refresh
+          (e.g. returning from Add Item) runs with folders already loaded —
+          keep the list on screen and update it in place, same as the
+          folder screen's showInitialLoading. */}
+      {loading && folders.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.accent} />
         </View>
