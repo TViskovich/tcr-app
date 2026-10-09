@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -22,6 +23,7 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
+import { FindUserDropdown } from '@/components/feed/find-user-dropdown';
 import { FollowingItemsFeed, prefetchFollowingFeed } from '@/components/feed/following-items-feed';
 import { RepostMenu } from '@/components/feed/repost-menu';
 import {
@@ -103,6 +105,22 @@ export default function HomeScreen() {
   }
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  // Find User (long-press the logo): where the logo's bottom-center sits on
+  // screen when it opened (null = closed) — the dropdown anchors to it.
+  const [findUserAnchor, setFindUserAnchor] = useState<{ x: number; y: number } | null>(null);
+  const logoRef = useRef<View>(null);
+
+  function openFindUser() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    const fallback = { x: 0, y: 0 };
+    if (!logoRef.current) {
+      setFindUserAnchor(fallback);
+      return;
+    }
+    logoRef.current.measureInWindow((x, y, width, height) => {
+      setFindUserAnchor(width > 0 ? { x: x + width / 2, y: y + height } : fallback);
+    });
+  }
   // The entry whose Repost control opened the Repost / Quote menu (null =
   // closed). The menu acts on its ORIGINAL (a repost's repostOf).
   const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
@@ -479,8 +497,23 @@ export default function HomeScreen() {
             slightly small on-device versus the mockup's visual weight;
             header paddingVertical/height untouched, so this is the only
             change. */}
-        <TouchableOpacity onPress={scrollToTop} hitSlop={12} accessibilityRole="button" accessibilityLabel="Scroll to top">
-          <CacheCaseLogo variant="light" size={28} />
+        {/* Tap: scroll to top (unchanged). Long press: Find User. A press
+            that becomes a long press never also fires onPress. */}
+        <TouchableOpacity
+          onPress={scrollToTop}
+          onLongPress={openFindUser}
+          delayLongPress={350}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to top"
+          accessibilityHint="Long press to find a user"
+          accessibilityActions={[{ name: 'longpress', label: 'Find user' }]}
+          onAccessibilityAction={(e) => {
+            if (e.nativeEvent.actionName === 'longpress') openFindUser();
+          }}>
+          <View ref={logoRef} collapsable={false}>
+            <CacheCaseLogo variant="light" size={28} />
+          </View>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -690,6 +723,13 @@ export default function HomeScreen() {
           if (original) router.push({ pathname: '/quote/[id]', params: { id: original.id } });
         }}
         onClose={() => setRepostMenuFor(null)}
+      />
+
+      <FindUserDropdown
+        visible={findUserAnchor !== null}
+        anchor={findUserAnchor && findUserAnchor.y > 0 ? findUserAnchor : null}
+        currentUserId={currentUserId}
+        onClose={() => setFindUserAnchor(null)}
       />
 
       <CreateMenu

@@ -11,6 +11,7 @@ import {
 } from './persisted-signed-url-cache';
 import { purgeOwnProfileCache, readOwnProfileCache } from './own-profile-cache';
 import { supabase } from './supabase';
+import { clearRecentProfilesMemory } from './recent-profiles';
 import { clearVisitedProfiles } from './visited-profile-cache';
 
 type AuthContextValue = {
@@ -88,6 +89,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (previousIdentity !== 'anon') purgeOwnProfileCache(previousIdentity).catch(() => {});
       // Other users' profiles as the previous identity saw them (memory only).
       clearVisitedProfiles();
+      // Find User's recent collectors — in-memory mirror only; each
+      // account's persisted list stays keyed to that account.
+      clearRecentProfilesMemory();
     }
 
     supabase.auth.getSession().then(({ data }) => {

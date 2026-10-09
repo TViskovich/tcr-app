@@ -68,6 +68,7 @@ import {
 import { registerScrollToTop } from '@/lib/scroll-to-top';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
+import { recordRecentProfile } from '@/lib/recent-profiles';
 import { peekVisitedProfile, rememberVisitedProfile } from '@/lib/visited-profile-cache';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
@@ -99,16 +100,15 @@ const LOCATION_MAX_LENGTH = 80;
 // boundedPreviewItemUrls comment further down for how this is applied.
 const PREVIEW_PREFETCH_LIMIT = 6;
 
-// Owner-only action row buttons (see ownerActionRow below), one flag each.
-// Settings (now an options/sliders glyph) is shown. TEMP (Profile V3
+// Owner-only action row (see ownerActionRow below). Its Settings button
+// was removed (redundant with the profile options icon). TEMP (Profile V3
 // cleanup pass) — the Saved bookmark shortcut stays hidden while it waits
 // on a new home elsewhere in the redesigned layout; nothing behind it
-// (route, handler, the icon's own JSX) was removed — flip its flag back to
+// (route, handler, the icon's own JSX) was removed — flip this flag back to
 // true to restore it exactly as it was. The row is owner-only — the public
 // viewer's Back and Grails-bookmark controls live in the top action row
 // above the identity card (publicBackRow), so there's no public-viewer
-// branch for these flags to interact with.
-const SHOW_OWNER_SETTINGS_ICON = true;
+// branch for this flag to interact with.
 const SHOW_OWNER_SAVED_ICON = false;
 
 // TEMP (Profile V3 cleanup pass) — the Edit Profile form's Hero Theme
@@ -661,6 +661,21 @@ export function ProfileV2Screen({ userId }: Props) {
     allItemsLoading,
     profilePosts,
   ]);
+
+  // Find User's "Recent" list (lib/recent-profiles.ts): someone else's
+  // profile counts as visited once it has actually loaded — with its
+  // current username/display name and public avatar — for the signed-in
+  // viewer only.
+  const recentDisplayName = profile ? profile.hero_display_name || profile.display_name || null : null;
+  useEffect(() => {
+    if (isOwnProfile || !currentUserId || !profile || profile.id !== userId) return;
+    void recordRecentProfile(currentUserId, {
+      id: profile.id,
+      username: profile.username,
+      displayName: recentDisplayName,
+      avatarUrl: profile.avatar_url ?? null,
+    });
+  }, [isOwnProfile, currentUserId, userId, profile, recentDisplayName]);
 
   // Visitor counterpart of the effect above: remembers the last fully
   // settled view of someone else's profile in memory only (see
@@ -2259,25 +2274,13 @@ export function ProfileV2Screen({ userId }: Props) {
                 entirely for a public viewer rather than rendered empty, so
                 the grid→tab-row gap below can close up to its normal
                 spacing instead of reserving room for a row with nothing in
-                it. Each button has its own flag (SHOW_OWNER_SETTINGS_ICON,
-                SHOW_OWNER_SAVED_ICON); with both off the row isn't rendered
-                at all, so no empty, padded row is left behind. Hidden
+                it. Gated by SHOW_OWNER_SAVED_ICON (its only button); with it
+                off the row isn't rendered at all, so no empty, padded row
+                is left behind. Hidden
                 during edit mode — never coexisted with Cancel/Save when
                 Back lived inside the canvas either. */}
-            {profile && !editMode && isOwnProfile && (SHOW_OWNER_SETTINGS_ICON || SHOW_OWNER_SAVED_ICON) && (
+            {profile && !editMode && isOwnProfile && SHOW_OWNER_SAVED_ICON && (
               <View style={styles.ownerActionRow}>
-                {SHOW_OWNER_SETTINGS_ICON && (
-                  <TouchableOpacity
-                    onPress={() => router.push('/settings')}
-                    hitSlop={10}
-                    style={styles.ownerIconBtn}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="Settings"
-                    testID="profile-settings-button">
-                    <IconSymbol name="slider.horizontal.3" size={18} color="#fff" accessible={false} />
-                  </TouchableOpacity>
-                )}
                 {/* Saved screen (app/saved.tsx) — fully built (Saved
                     Collections/Cards/Grails, already on the signed-image
                     architecture) but had no reachable entry point anywhere
@@ -2765,8 +2768,8 @@ const styles = StyleSheet.create({
   tabBodyWrap: {
     marginTop: TAB_CONTENT_TOP_GAP,
   },
-  // Owner-only now (see the render site) — Settings/Saved, gated by
-  // SHOW_OWNER_SETTINGS_ICON / SHOW_OWNER_SAVED_ICON.
+  // Owner-only now (see the render site) — the Saved shortcut, gated by
+  // SHOW_OWNER_SAVED_ICON.
   ownerActionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
