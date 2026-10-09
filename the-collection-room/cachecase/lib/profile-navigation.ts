@@ -19,8 +19,25 @@ export function navigateToProfile(
   username: string,
 ) {
   if (currentUserId && targetUserId === currentUserId) {
-    router.push('/(tabs)/profile');
+    navigateToOwnProfile(router);
     return;
   }
   router.push({ pathname: '/user/[username]', params: { username } });
+}
+
+// Returns to the EXISTING owner Profile tab rather than creating another.
+// From a screen pushed above the tab group (another user's profile, a post,
+// an item, a conversation…), router.push('/(tabs)/profile') would push a
+// second copy of the whole tab navigator onto the root stack, so instead
+// dismissTo pops back to the original one, switching it to Profile (its
+// state and scroll position kept). From inside the tabs there is nothing to
+// dismiss — and the tab navigator can't handle dismissTo — so it's a plain
+// tab switch. canDismiss() is true exactly when something is pushed above
+// the tabs, since no tab has its own nested stack.
+export function navigateToOwnProfile(router: ImperativeRouter) {
+  if (router.canDismiss()) {
+    router.dismissTo('/(tabs)/profile');
+  } else {
+    router.navigate('/(tabs)/profile');
+  }
 }

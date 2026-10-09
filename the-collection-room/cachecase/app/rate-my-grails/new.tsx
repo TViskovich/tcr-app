@@ -22,6 +22,7 @@ import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
+import { navigateToOwnProfile } from '@/lib/profile-navigation';
 import { createSnapshotPost } from '@/lib/share-snapshots';
 
 const MAX_CHARS = 280;
@@ -127,7 +128,7 @@ export default function NewRateMyGrailsScreen() {
           </Text>
           <TouchableOpacity
             style={styles.emptyButton}
-            onPress={() => router.push('/(tabs)/profile')}>
+            onPress={() => navigateToOwnProfile(router)}>
             <Text style={styles.emptyButtonText}>Go to Profile</Text>
           </TouchableOpacity>
         </View>
