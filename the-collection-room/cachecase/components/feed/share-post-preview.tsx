@@ -38,10 +38,12 @@ type Props = {
 // placement and engagement row are the published post's own, by
 // construction, not a parallel approximation.
 //
-// Preview-only: pointerEvents="none" disables every touch target (profile,
-// post, like, comment, carousel-slide navigation), all handlers are no-ops,
-// and currentUserId is left undefined so the owner-only options menu never
-// renders. No post exists yet, so id/user_id are placeholders, counts are 0
+// Preview-only: no touch navigates or acts. A single-item preview ignores
+// every touch (pointerEvents="none"); a card-share preview keeps only its
+// carousel swipeable (PostCard's readOnly blocks the author and like/
+// comment controls, and the preview cards' item_id: null disables slide
+// taps). All handlers are no-ops, and currentUserId is left undefined so
+// the owner-only options menu never renders. No post exists yet, so id/user_id are placeholders, counts are 0
 // and the timestamp is "now".
 export function SharePostPreview({ avatarUrl, displayName, username, caption, cards, itemPost }: Props) {
   const [createdAt] = useState(() => new Date().toISOString());
@@ -99,9 +101,14 @@ export function SharePostPreview({ avatarUrl, displayName, username, caption, ca
       };
 
   return (
-    <View style={styles.bleed} pointerEvents="none">
+    // A single-item (repost) preview ignores every touch. A card-share
+    // preview only blocks the author and like/comment controls (readOnly):
+    // its carousel must still receive horizontal swipes to page between
+    // the selected cards, and those cards don't navigate (item_id: null).
+    <View style={styles.bleed} pointerEvents={itemPost ? 'none' : 'box-none'}>
       <PostCard
         post={post}
+        readOnly
         currentUserId={undefined}
         onUserPress={noop}
         onPostPress={noop}

@@ -29,6 +29,21 @@ type Props = {
   // passes its own MEDIA_CORNER_RADIUS here so the carousel is clipped to
   // the exact same radius as a single-photo Feed post.
   mediaBorderRadius?: number;
+  // Feed-frame sizing hand-off (PostCard): while the frame's lead size is
+  // still unknown the body stays MOUNTED but invisible, so its images load
+  // in the background, and the first card's real size is reported on load
+  // — an independent way for PostCard's frame to settle. Both optional;
+  // every other caller is unaffected.
+  hidden?: boolean;
+  onFirstImageLoad?: (width: number, height: number) => void;
+  // Feed: a card tap opens the POST (Post Detail), with the tapped card's
+  // index — replaces the default tap below, which opens that card's own
+  // original item (what Post Detail itself keeps). Every card is tappable
+  // when this is set, including one whose original item was deleted.
+  onCardPress?: (index: number) => void;
+  // Page to open on (Post Detail opened from a specific feed card).
+  // Clamped to the card list; defaults to the first card.
+  initialIndex?: number;
 };
 
 // Renders a "Share Card" carousel post's body — a true swipeable carousel
@@ -76,10 +91,19 @@ type Props = {
 // post is made (item_id goes null via ON DELETE SET NULL when that
 // happens). A slide with a null item_id still renders its snapshot content
 // in full, it just isn't tappable.
-export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
+export function CardSharePostBody({
+  cards,
+  mediaBorderRadius = 0,
+  hidden = false,
+  onFirstImageLoad,
+  onCardPress,
+  initialIndex = 0,
+}: Props) {
   const router = useRouter();
   const [pageWidth, setPageWidth] = useState(0);
-  const [activeIndex, setActiveIndex] = useState(0);
+  // Read once, at mount — the page the carousel opens on.
+  const [startIndex] = useState(() => Math.min(Math.max(0, Math.floor(initialIndex)), Math.max(0, cards.length - 1)));
+  const [activeIndex, setActiveIndex] = useState(startIndex);
 
   // If the card list ever shrinks (or is replaced) such that activeIndex
   // points past the end, clamp it back into range rather than leaving the
@@ -112,7 +136,7 @@ export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
   if (cards.length === 0) return null;
 
   return (
-    <View style={styles.wrap} onLayout={handleLayout}>
+    <View style={[styles.wrap, hidden && styles.hidden]} onLayout={handleLayout}>
       {/* Stationary outer mask — kept as a harmless safety net (see this
           file's own top-of-file history comment); the real per-page clip
           now lives on pageMask below, not here. Sized to 100%/100% of
@@ -132,6 +156,7 @@ export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
             pagingEnabled
             showsHorizontalScrollIndicator={false}
             getItemLayout={(_, index) => ({ length: pageWidth, offset: pageWidth * index, index })}
+            initialScrollIndex={startIndex > 0 ? startIndex : undefined}
             onMomentumScrollEnd={handleMomentumEnd}
             renderItem={({ item: card, index }) => (
               // Dedicated per-page mask — the ONE thing in this render tree
@@ -148,11 +173,12 @@ export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
                 ]}>
                 <Pressable
                   style={styles.slide}
-                  disabled={!card.item_id}
-                  onPress={() =>
-                    card.item_id && router.push({ pathname: '/item/[id]', params: { id: card.item_id } })
-                  }
-                  accessibilityRole={card.item_id ? 'imagebutton' : undefined}
+                  disabled={!onCardPress && !card.item_id}
+                  onPress={() => {
+                    if (onCardPress) onCardPress(index);
+                    else if (card.item_id) router.push({ pathname: '/item/[id]', params: { id: card.item_id } });
+                  }}
+                  accessibilityRole={onCardPress || card.item_id ? 'imagebutton' : undefined}
                   accessibilityLabel={`Card ${index + 1} of ${cards.length}${card.snapshot_title ? `: ${card.snapshot_title}` : ''}`}>
                   {card.snapshot_image_url ? (
                     // 'contain' (was 'cover') — matches PostCard's single-photo
@@ -164,7 +190,17 @@ export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
                     // resizing the shared frame while swiping. No borderRadius
                     // here — correctness comes from pageMask above, not from
                     // this Image's own styling.
-                    <Image source={{ uri: card.snapshot_image_url }} style={styles.image} contentFit="contain" transition={200} />
+                    <Image
+                      source={{ uri: card.snapshot_image_url }}
+                      style={styles.image}
+                      contentFit="contain"
+                      transition={200}
+                      onLoad={
+                        index === 0 && onFirstImageLoad
+                          ? (e) => onFirstImageLoad(e.source.width, e.source.height)
+                          : undefined
+                      }
+                    />
                   ) : (
                     <View style={[styles.image, styles.placeholder]}>
                       <Text style={styles.placeholderText}>No image</Text>
@@ -215,6 +251,9 @@ export function CardSharePostBody({ cards, mediaBorderRadius = 0 }: Props) {
 const styles = StyleSheet.create({
   wrap: {
     flex: 1,
+  },
+  hidden: {
+    opacity: 0,
   },
   // Stationary outer safety-net mask — see this file's top-of-file history
   // comment. width/height 100% of `wrap` — the exact same box handleLayout

@@ -92,7 +92,7 @@ export function ProfileV2ExpandedDetails({
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel="Edit profile">
-              <IconSymbol name="ellipsis" size={24} color={PV2.textSecondary} />
+              <IconSymbol name="slider.horizontal.3" size={24} color={PV2.textSecondary} />
             </TouchableOpacity>
           )}
           <TouchableOpacity

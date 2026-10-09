@@ -15,16 +15,24 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
-import { fetchFolderOwnerIds, fetchFolderShareItems } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
-import { deletePost } from '@/lib/posts';
+import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
 import { FollowingItemsFeed } from '@/components/feed/following-items-feed';
-import { fetchCardShareItems, fetchGrailData, fetchPostImages, PostCard, type FeedPost } from '@/components/feed/post-card';
+import { RepostMenu } from '@/components/feed/repost-menu';
+import {
+  FEED_POST_SELECT,
+  FEED_POST_TYPES,
+  hydrateFeedPosts,
+  PostCard,
+  removeOwnRepost,
+  setRepostState,
+  type FeedPost,
+} from '@/components/feed/post-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
@@ -57,216 +65,26 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
 
   const { data: postRows, error: postsError } = await supabase
     .from('posts')
-    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
-    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share', 'folder_share'])
+    .select(FEED_POST_SELECT)
+    .in('post_type', [...FEED_POST_TYPES])
     .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1)
     .abortSignal(signal);
 
   if (postsError) {
-    // An aborted request resolves as an error-shaped result rather than
-    // rejecting (see this function's own comment above) — expected
-    // cancellation from focus-loss/request-replacement must not be logged
-    // as if it were a real failure. Still thrown either way, unchanged:
-    // the caller's own controller.signal.aborted check already discards
-    // an aborted result correctly regardless of what's thrown here.
+    // An aborted request (superseded load or lost focus) is expected, not
+    // an error worth logging — the caller's own aborted-signal check
+    // discards it either way.
     if (!signal.aborted) {
       console.error('[queryFeed] posts query failed:', postsError.message, postsError);
     }
     throw postsError;
   }
 
-  if (!postRows?.length) return [];
-
-  const userIds = [...new Set((postRows as any[]).map((p) => p.user_id as string))];
-  // Text/rate_my_grails/card_share posts have no item_id — filter nulls before querying collection_items.
-  const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
-  const postIds = (postRows as any[]).map((p) => p.id as string);
-  const grailPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'rate_my_grails')
-    .map((p) => p.id as string);
-  const cardSharePostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'card_share')
-    .map((p) => p.id as string);
-  const textPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'text')
-    .map((p) => p.id as string);
-  const folderSharePostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'folder_share')
-    .map((p) => p.id as string);
-  // Shared folders' ids, for folder_share repost attribution (see
-  // fetchFolderOwnerIds).
-  const sharedFolderIds = (postRows as any[])
-    .filter((p) => p.post_type === 'folder_share' && p.folder_id)
-    .map((p) => p.folder_id as string);
-
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap, folderShareMap, folderOwnerMap] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('id, username, display_name, hero_display_name, avatar_url')
-      .in('id', userIds)
-      .abortSignal(signal),
-    // 'title' (was 'name' — collection_items has no such column; that
-    // select was silently failing this whole query with a 42703 Postgres
-    // error on every page that had ANY 'item' post, for as long as this
-    // line has existed. Neither this call's own {data} destructure nor the
-    // itemMap builder below ever checked `error`, so the failure surfaced
-    // as nothing worse than a blank item_name fallback caption — until
-    // sourceOwner (foreign-repost attribution) started depending on this
-    // same, always-failing query too, which is what actually made it
-    // visible). Confirmed live via a direct read-only REST query against
-    // the production project: the unqualified 'name' column errors with
-    // PGRST 42703, 'title' resolves correctly.
-    itemIds.length > 0
-      ? supabase.from('collection_items').select('id, title, image_url, user_id').in('id', itemIds).abortSignal(signal)
-      : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
-    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
-    currentUserId
-      ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId).abortSignal(signal)
-      : Promise.resolve({ data: [] }),
-    grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, signal, currentUserId)
-      : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
-    // Throws on failure (see fetchCardShareItems) — not caught here, same
-    // reasoning as fetchUserPosts: a card-share query failure should fail
-    // this fetch loudly rather than silently render posts with missing
-    // card data.
-    fetchCardShareItems(cardSharePostIds, signal),
-    // Same throws-loudly convention — see fetchCardShareItems's comment
-    // just above.
-    fetchPostImages(textPostIds, signal),
-    fetchFolderShareItems(folderSharePostIds, signal),
-    fetchFolderOwnerIds(sharedFolderIds, signal),
-  ]);
-
-  const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
-  // Logged (not thrown) — a failure here degrades item_name/sourceOwner
-  // for this page's 'item' posts (itemMap stays empty, same as zero
-  // matching rows) rather than failing the whole feed load, but must never
-  // go silent again the way the 'name'-column typo above did for however
-  // long it went unnoticed.
-  if ((itemsRes as any).error) {
-    console.error('[queryFeed] collection_items query failed:', (itemsRes as any).error.message, (itemsRes as any).error);
-  }
-  const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
-
-  // Foreign-repost attribution — same "second, separate profiles query for
-  // just the source items' own owners" pattern as fetchUserPosts (post-
-  // card.tsx) for the exact same reason: an item's owner is frequently not
-  // any post's own author in this page, so profileMap above can't be
-  // assumed to already have it. Reuses profileMap as a fallback first
-  // (when an owner DOES happen to already be a post author on this page,
-  // e.g. multiple people reposting the same popular card), so this only
-  // ever queries for ids genuinely missing from it.
-  const missingOwnerIds = [
-    ...new Set(
-      [...(itemsRes.data ?? []).map((i: any) => i.user_id as string | null), ...folderOwnerMap.values()].filter(
-        (id): id is string => !!id && !profileMap.has(id),
-      ),
-    ),
-  ];
-  if (missingOwnerIds.length > 0) {
-    const { data: ownerProfiles, error: ownerProfilesError } = await supabase
-      .from('profiles')
-      .select('id, username, display_name, avatar_url')
-      .in('id', missingOwnerIds)
-      .abortSignal(signal);
-    if (ownerProfilesError) {
-      // Best-effort — see FeedPost.sourceOwner's own comment: a failure
-      // here must not fail the whole feed page, only means those specific
-      // reposts render without the owner attribution header this render.
-      console.error('[queryFeed] source-owner profiles query failed:', ownerProfilesError.message, ownerProfilesError);
-    } else {
-      for (const row of (ownerProfiles ?? []) as any[]) profileMap.set(row.id, row);
-    }
-  }
-
-  const likeCountMap = new Map<string, number>();
-  const likedSet = new Set<string>();
-  for (const row of (likesRes.data ?? []) as any[]) {
-    likeCountMap.set(row.post_id, (likeCountMap.get(row.post_id) ?? 0) + 1);
-    if (row.user_id === currentUserId) likedSet.add(row.post_id);
-  }
-
-  const commentCountMap = new Map<string, number>();
-  for (const row of (commentsRes.data ?? []) as any[]) {
-    commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
-  }
-
-  const followedSet = new Set<string>(
-    ((followsRes.data ?? []) as any[]).map((f) => f.following_id as string),
-  );
-
-  const { cardsMap, ratingTotals } = grailData;
-
-  const posts = (postRows as any[]).map((post) => {
-    const profile = profileMap.get(post.user_id) ?? {};
-    const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
-    // Source owner: the item's owner for an 'item' post, the shared
-    // folder's owner for a 'folder_share' post (see fetchFolderOwnerIds).
-    const sourceOwnerId = (
-      post.post_type === 'folder_share'
-        ? post.folder_id
-          ? folderOwnerMap.get(post.folder_id)
-          : undefined
-        : (item as any).user_id
-    ) as string | undefined;
-    const ownerProfile = sourceOwnerId && sourceOwnerId !== post.user_id ? profileMap.get(sourceOwnerId) : undefined;
-    const rating = ratingTotals.get(post.id);
-    return {
-      id: post.id,
-      user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
-      item_id: post.item_id ?? null,
-      image_url: post.image_url ?? (item as any).image_url ?? null,
-      content: post.content ?? null,
-      caption: post.caption ?? null,
-      created_at: post.created_at,
-      item_name: (item as any).title ?? null,
-      sourceOwner: ownerProfile
-        ? {
-            id: ownerProfile.id,
-            username: ownerProfile.username ?? 'user',
-            displayName: ownerProfile.display_name ?? null,
-            avatarUrl: ownerProfile.avatar_url ?? null,
-          }
-        : null,
-      username: profile.username ?? 'user',
-      // Hero/display name is what the profile screen's own identity card
-      // shows as the large primary name (profile-v2-screen.tsx's own
-      // `profile?.hero_display_name || profile?.display_name || ...`
-      // fallback) — Feed's author row now matches that same source of
-      // truth instead of the plain display_name column, falling through to
-      // display_name only when no hero name is set. PostCard's own
-      // `post.display_name || post.username` (unchanged) is what completes
-      // the fallback chain down to username.
-      display_name: profile.hero_display_name || profile.display_name || null,
-      avatar_url: profile.avatar_url ?? null,
-      likeCount: likeCountMap.get(post.id) ?? 0,
-      liked: likedSet.has(post.id),
-      commentCount: commentCountMap.get(post.id) ?? 0,
-      isFollowing: followedSet.has(post.user_id),
-      grailCards: cardsMap.get(post.id) ?? [],
-      avgRating: rating ? rating.sum / rating.count : null,
-      ratingCount: rating?.count ?? 0,
-      myRating: rating?.mine ?? null,
-      cardShareItems: cardShareMap.get(post.id) ?? [],
-      images: postImagesMap.get(post.id) ?? [],
-      folderShare:
-        post.post_type === 'folder_share'
-          ? {
-              folderId: post.folder_id ?? null,
-              folderName: post.folder_name ?? 'Folder',
-              itemCount: post.folder_item_count ?? 0,
-              items: folderShareMap.get(post.id) ?? [],
-              coverUrl: post.folder_cover_snapshot_url ?? null,
-            }
-          : null,
-    };
-  });
-
+  // Shared with a profile's Posts tab (fetchUserPosts) — every post type,
+  // reposts included, hydrates the same way everywhere.
+  const posts = await hydrateFeedPosts((postRows ?? []) as any, signal, currentUserId);
   return sortPostsByCreatedAtDesc(posts);
 }
 
@@ -285,6 +103,10 @@ export default function HomeScreen() {
   }
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  // The entry whose Repost control opened the Repost / Quote menu (null =
+  // closed). The menu acts on its ORIGINAL (a repost's repostOf).
+  const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
+  const repostMenuOriginal = repostMenuFor ? (repostMenuFor.repostOf ?? repostMenuFor) : null;
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
   // Piece 6 — measured label widths for the active-tab underline below, so
   // it's sized to each tab's own text ("tab-local") instead of one fixed
@@ -496,6 +318,41 @@ export default function HomeScreen() {
     }, [loadFeed]),
   );
 
+  // Originals with a repost/undo request in flight — a double tap while
+  // one is pending is ignored (the server is idempotent too: one repost per
+  // user per original).
+  const repostInFlightRef = useRef(new Set<string>());
+
+  // Repost / undo repost of an entry's ORIGINAL (a repost's own repostOf).
+  // Optimistic count/state; rolled back if the request fails. A new repost
+  // appears as its own feed entry on the quiet refresh that follows; an
+  // undo removes the user's repost entry once confirmed.
+  async function handleRepost(entry: FeedPost) {
+    if (!currentUserId) return;
+    const original = entry.repostOf ?? entry;
+    if (repostInFlightRef.current.has(original.id)) return;
+    repostInFlightRef.current.add(original.id);
+    const undo = !!original.repostedByMe;
+    setPosts((prev) => setRepostState(prev, original.id, !undo));
+    try {
+      const result = undo ? await undoRepost(currentUserId, original.id) : await repostPost(currentUserId, original.id);
+      if (result.status !== 'ok') {
+        setPosts((prev) => setRepostState(prev, original.id, undo));
+        Alert.alert(
+          undo ? 'Couldn’t remove repost' : 'Couldn’t repost',
+          result.reason === 'not_found' ? 'This post is no longer available.' : 'Please try again.',
+        );
+        return;
+      }
+      if (undo) setPosts((prev) => removeOwnRepost(prev, original.id, currentUserId));
+      // The reposter's own Profile Posts tab now differs.
+      invalidateOwnProfileCache(currentUserId);
+      if (!undo) loadFeed();
+    } finally {
+      repostInFlightRef.current.delete(original.id);
+    }
+  }
+
   async function handleLike(postId: string) {
     if (!currentUserId) return;
     const post = posts.find((p) => p.id === postId);
@@ -560,6 +417,11 @@ export default function HomeScreen() {
       });
       Alert.alert('Error', 'Could not delete post. Please try again.');
       return;
+    }
+    // Deleting your own repost un-reposts its original.
+    if (removed.repostOf) {
+      const originalId = removed.repostOf.id;
+      setPosts((prev) => setRepostState(prev, originalId, false));
     }
     // Mark the own-profile cache stale — PostCard's own delete affordance
     // is owner-gated, so a reachable delete is always the signed-in user's
@@ -709,7 +571,19 @@ export default function HomeScreen() {
               <PostCard
                 post={item}
                 currentUserId={currentUserId}
-                onUserPress={() => navigateToProfile(router, currentUserId, item.user_id, item.username)}
+                // A repost shows its ORIGINAL post's author and content, so
+                // the author/source links follow item.repostOf; the
+                // "reposted" line opens the reposter (item itself).
+                onUserPress={() => {
+                  const shown = item.repostOf ?? item;
+                  navigateToProfile(router, currentUserId, shown.user_id, shown.username);
+                }}
+                onReposterPress={() => navigateToProfile(router, currentUserId, item.user_id, item.username)}
+                onRepost={() => setRepostMenuFor(item)}
+                onOpenQuoted={(quotedId) => {
+                  skipNextFocusReloadRef.current = true;
+                  router.push({ pathname: '/post/[id]', params: { id: quotedId } });
+                }}
                 onPostPress={() => {
                   // See skipNextFocusReloadRef's own comment above — set
                   // right before the push so the focus effect that fires
@@ -721,6 +595,15 @@ export default function HomeScreen() {
                     params: { id: item.id },
                   });
                 }}
+                // Share Card post: same navigation, opening Post Detail's
+                // carousel on the card that was tapped.
+                onCardSharePress={(cardIndex) => {
+                  skipNextFocusReloadRef.current = true;
+                  router.push({
+                    pathname: '/post/[id]',
+                    params: { id: item.id, cardIndex: String(cardIndex) },
+                  });
+                }}
                 onCommentPress={() => {
                   router.push({
                     pathname: '/post-reply/[id]',
@@ -730,13 +613,16 @@ export default function HomeScreen() {
                 onLike={() => handleLike(item.id)}
                 onDelete={() => handleDeletePost(item.id)}
                 onSourceOwnerPress={
-                  item.sourceOwner
-                    ? () => navigateToProfile(router, currentUserId, item.sourceOwner!.id, item.sourceOwner!.username)
+                  (item.repostOf ?? item).sourceOwner
+                    ? () => {
+                        const owner = (item.repostOf ?? item).sourceOwner!;
+                        navigateToProfile(router, currentUserId, owner.id, owner.username);
+                      }
                     : undefined
                 }
                 onSourceItemPress={
-                  item.item_id
-                    ? () => router.push({ pathname: '/item/[id]', params: { id: item.item_id! } })
+                  (item.repostOf ?? item).item_id
+                    ? () => router.push({ pathname: '/item/[id]', params: { id: (item.repostOf ?? item).item_id! } })
                     : undefined
                 }
               />
@@ -758,6 +644,22 @@ export default function HomeScreen() {
         </View>
       )}
       </View>
+
+      <RepostMenu
+        visible={!!repostMenuOriginal}
+        reposted={!!repostMenuOriginal?.repostedByMe}
+        onRepost={() => {
+          const entry = repostMenuFor;
+          setRepostMenuFor(null);
+          if (entry) handleRepost(entry);
+        }}
+        onQuote={() => {
+          const original = repostMenuOriginal;
+          setRepostMenuFor(null);
+          if (original) router.push({ pathname: '/quote/[id]', params: { id: original.id } });
+        }}
+        onClose={() => setRepostMenuFor(null)}
+      />
 
       <CreateMenu
         visible={createMenuOpen}

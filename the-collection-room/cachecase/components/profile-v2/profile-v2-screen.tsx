@@ -24,7 +24,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { PostgrestError } from '@supabase/supabase-js';
 
 import { FolderCoverWarmup } from '@/components/collection/folder-cover-warmup';
-import { fetchUserPosts, type FeedPost } from '@/components/feed/post-card';
+import { fetchUserPosts, removeOwnRepost, setRepostState, type FeedPost } from '@/components/feed/post-card';
+import { RepostMenu } from '@/components/feed/repost-menu';
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
@@ -49,7 +50,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
-import { deletePost } from '@/lib/posts';
+import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -98,16 +99,17 @@ const LOCATION_MAX_LENGTH = 80;
 // boundedPreviewItemUrls comment further down for how this is applied.
 const PREVIEW_PREFETCH_LIMIT = 6;
 
-// TEMP (Profile V3 cleanup pass) — the owner-only Settings cog and Saved
-// bookmark shortcut are hidden from the rendered UI while these controls
-// wait on a new home elsewhere in the redesigned layout. Nothing behind
-// them (routes, handlers, the icons' own JSX) was removed — flip this back
-// to true to restore them exactly as they were. The row this gates is
-// owner-only now (see ownerActionRow below) — the public viewer's Back and
-// Grails-bookmark controls both moved up to the top action row above the
-// identity card (publicBackRow), so there's no public-viewer branch left
-// for this flag to interact with.
-const SHOW_OWNER_SETTINGS_AND_SAVED_ICONS = false;
+// Owner-only action row buttons (see ownerActionRow below), one flag each.
+// Settings (now an options/sliders glyph) is shown. TEMP (Profile V3
+// cleanup pass) — the Saved bookmark shortcut stays hidden while it waits
+// on a new home elsewhere in the redesigned layout; nothing behind it
+// (route, handler, the icon's own JSX) was removed — flip its flag back to
+// true to restore it exactly as it was. The row is owner-only — the public
+// viewer's Back and Grails-bookmark controls live in the top action row
+// above the identity card (publicBackRow), so there's no public-viewer
+// branch for these flags to interact with.
+const SHOW_OWNER_SETTINGS_ICON = true;
+const SHOW_OWNER_SAVED_ICON = false;
 
 // TEMP (Profile V3 cleanup pass) — the Edit Profile form's Hero Theme
 // label + swatch picker are hidden from the rendered UI while this
@@ -1048,6 +1050,43 @@ export function ProfileV2Screen({ userId }: Props) {
     }
   }
 
+  // Originals with a repost/undo in flight (double-tap guard) — same
+  // pattern as app/(tabs)/index.tsx's handleRepost.
+  const repostInFlightRef = useRef(new Set<string>());
+  // The Posts-tab entry whose Repost control opened the Repost / Quote
+  // menu (null = closed); the menu acts on its ORIGINAL.
+  const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
+  const repostMenuOriginal = repostMenuFor ? (repostMenuFor.repostOf ?? repostMenuFor) : null;
+
+  // Repost / undo repost of an entry's ORIGINAL, from this profile's Posts
+  // tab. Optimistic count/state, rolled back on failure. The signed-in
+  // user's own Posts tab gains/loses its repost entry on its next refresh
+  // (own-profile cache invalidated); a confirmed undo removes it here
+  // immediately when this list contains it.
+  async function handleRepost(entry: FeedPost) {
+    if (!currentUserId) return;
+    const original = entry.repostOf ?? entry;
+    if (repostInFlightRef.current.has(original.id)) return;
+    repostInFlightRef.current.add(original.id);
+    const undo = !!original.repostedByMe;
+    setProfilePosts((prev) => setRepostState(prev, original.id, !undo));
+    try {
+      const result = undo ? await undoRepost(currentUserId, original.id) : await repostPost(currentUserId, original.id);
+      if (result.status !== 'ok') {
+        setProfilePosts((prev) => setRepostState(prev, original.id, undo));
+        Alert.alert(
+          undo ? 'Couldn’t remove repost' : 'Couldn’t repost',
+          result.reason === 'not_found' ? 'This post is no longer available.' : 'Please try again.',
+        );
+        return;
+      }
+      if (undo) setProfilePosts((prev) => removeOwnRepost(prev, original.id, currentUserId));
+      invalidateOwnProfileCache(currentUserId);
+    } finally {
+      repostInFlightRef.current.delete(original.id);
+    }
+  }
+
   // Owner-only (PostCard itself gates the "..." affordance to
   // currentUserId === post.user_id, same as app/(tabs)/index.tsx's own
   // handleDeletePost) — optimistic removal, spliced back into its exact
@@ -1070,6 +1109,11 @@ export function ProfileV2Screen({ userId }: Props) {
       });
       Alert.alert('Error', 'Could not delete post. Please try again.');
       return;
+    }
+    // Deleting your own repost un-reposts its original.
+    if (removed.repostOf) {
+      const originalId = removed.repostOf.id;
+      setProfilePosts((prev) => setRepostState(prev, originalId, false));
     }
     // Real mutation succeeded — same reasoning as handleGrailReorderDone
     // above. Only meaningful when this IS the signed-in user's own
@@ -2002,6 +2046,22 @@ export function ProfileV2Screen({ userId }: Props) {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {grailImagesWarmup}
+      {/* Repost / Quote menu for a Posts-tab entry (see repostMenuFor). */}
+      <RepostMenu
+        visible={!!repostMenuOriginal}
+        reposted={!!repostMenuOriginal?.repostedByMe}
+        onRepost={() => {
+          const entry = repostMenuFor;
+          setRepostMenuFor(null);
+          if (entry) handleRepost(entry);
+        }}
+        onQuote={() => {
+          const original = repostMenuOriginal;
+          setRepostMenuFor(null);
+          if (original) router.push({ pathname: '/quote/[id]', params: { id: original.id } });
+        }}
+        onClose={() => setRepostMenuFor(null)}
+      />
       {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
           deliberately a sibling OUTSIDE the ScrollView below, not one of
           its direct children, so it can never shift
@@ -2199,39 +2259,43 @@ export function ProfileV2Screen({ userId }: Props) {
                 entirely for a public viewer rather than rendered empty, so
                 the grid→tab-row gap below can close up to its normal
                 spacing instead of reserving room for a row with nothing in
-                it. Gated by SHOW_OWNER_SETTINGS_AND_SAVED_ICONS — false
-                hides Settings/Saved without leaving an empty, padded row
-                behind; flip it back to true to restore them exactly as
-                they were. Hidden during edit mode — never coexisted with
-                Cancel/Save when Back lived inside the canvas either. */}
-            {profile && !editMode && isOwnProfile && SHOW_OWNER_SETTINGS_AND_SAVED_ICONS && (
+                it. Each button has its own flag (SHOW_OWNER_SETTINGS_ICON,
+                SHOW_OWNER_SAVED_ICON); with both off the row isn't rendered
+                at all, so no empty, padded row is left behind. Hidden
+                during edit mode — never coexisted with Cancel/Save when
+                Back lived inside the canvas either. */}
+            {profile && !editMode && isOwnProfile && (SHOW_OWNER_SETTINGS_ICON || SHOW_OWNER_SAVED_ICON) && (
               <View style={styles.ownerActionRow}>
-                <TouchableOpacity
-                  onPress={() => router.push('/settings')}
-                  hitSlop={10}
-                  style={styles.ownerIconBtn}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Settings"
-                  testID="profile-settings-button">
-                  <IconSymbol name="gearshape.fill" size={18} color="#fff" accessible={false} />
-                </TouchableOpacity>
+                {SHOW_OWNER_SETTINGS_ICON && (
+                  <TouchableOpacity
+                    onPress={() => router.push('/settings')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Settings"
+                    testID="profile-settings-button">
+                    <IconSymbol name="slider.horizontal.3" size={18} color="#fff" accessible={false} />
+                  </TouchableOpacity>
+                )}
                 {/* Saved screen (app/saved.tsx) — fully built (Saved
                     Collections/Cards/Grails, already on the signed-image
                     architecture) but had no reachable entry point anywhere
                     in the app; this row's own justifyContent: 'space-between'
                     plus this doc comment block's "Owner sees Settings/Saved"
                     already assumed a second icon here. */}
-                <TouchableOpacity
-                  onPress={() => router.push('/saved')}
-                  hitSlop={10}
-                  style={styles.ownerIconBtn}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Saved"
-                  testID="profile-saved-button">
-                  <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
-                </TouchableOpacity>
+                {SHOW_OWNER_SAVED_ICON && (
+                  <TouchableOpacity
+                    onPress={() => router.push('/saved')}
+                    hitSlop={10}
+                    style={styles.ownerIconBtn}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Saved"
+                    testID="profile-saved-button">
+                    <IconSymbol name="bookmark.fill" size={18} color="#fff" accessible={false} />
+                  </TouchableOpacity>
+                )}
               </View>
             )}
           </View>
@@ -2511,7 +2575,8 @@ export function ProfileV2Screen({ userId }: Props) {
                     <ProfileV2Posts
                       posts={profilePosts}
                       currentUserId={currentUserId}
-                      onUserPress={(username) => navigateToProfile(router, currentUserId, userId, username)}
+                      onUserPress={(authorId, username) => navigateToProfile(router, currentUserId, authorId, username)}
+                      onRepost={setRepostMenuFor}
                       onPostPress={(postId) => router.push({ pathname: '/post/[id]', params: { id: postId } })}
                       onSourceOwnerPress={(ownerId, username) => navigateToProfile(router, currentUserId, ownerId, username)}
                       onSourceItemPress={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
@@ -2701,7 +2766,7 @@ const styles = StyleSheet.create({
     marginTop: TAB_CONTENT_TOP_GAP,
   },
   // Owner-only now (see the render site) — Settings/Saved, gated by
-  // SHOW_OWNER_SETTINGS_AND_SAVED_ICONS.
+  // SHOW_OWNER_SETTINGS_ICON / SHOW_OWNER_SAVED_ICON.
   ownerActionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

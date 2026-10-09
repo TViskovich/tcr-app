@@ -21,7 +21,7 @@ import { RepostHeader, type SourceOwnerAttribution } from '@/components/feed/rep
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
-import { useMediaSize } from '@/lib/feed-media-dimensions';
+import { rememberMediaSize, useMediaSize } from '@/lib/feed-media-dimensions';
 import { supabase } from '@/lib/supabase';
 import { fetchFolderOwnerIds, fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
@@ -31,7 +31,7 @@ export type { SourceOwnerAttribution };
 export type FeedPost = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share' | 'repost' | 'quote';
   // 'item' posts only — the live collection_items.id this post was created
   // from (posts.item_id, ON DELETE SET NULL — null once the source item is
   // deleted, same "tap to view original" gap card_share_items' own item_id
@@ -82,6 +82,23 @@ export type FeedPost = {
   // FUTURE fetch and the post quietly falls back to rendering with no
   // special repost header, rather than crashing or showing stale data.
   sourceOwner?: SourceOwnerAttribution | null;
+  // 'repost' rows only: the ORIGINAL post this repost references, fully
+  // hydrated (see hydrateFeedPosts). A repost renders this post's content
+  // under "@username reposted"; its own id, author (the reposter), likes
+  // and comments stay on the repost row itself.
+  repostOf?: FeedPost | null;
+  repostOfPostId?: string | null;
+  // Original posts only (never reposts): how many reposts reference this
+  // post, and whether one of them is the signed-in user's — the Repost
+  // control's count and state.
+  repostCount?: number;
+  repostedByMe?: boolean;
+  // 'quote' rows only: the post this quote references, hydrated (see
+  // hydrateFeedPosts) — rendered embedded under the quote's own comment
+  // (content). null when the quoted post was deleted (its reference is
+  // cleared, the quote itself stays).
+  quoted?: FeedPost | null;
+  quoteOfPostId?: string | null;
 };
 
 // Shared by app/(tabs)/index.tsx's queryFeed and
@@ -203,115 +220,156 @@ export async function fetchPostImages(postIds: string[], signal: AbortSignal): P
   return map;
 }
 
-// One user's own post history, newest first — no date window, no engagement
-// ranking (unlike the main feed's queryFeed), since this powers a profile's
-// Posts tab rather than a ranked/windowed feed. Mirrors queryFeed's row
-// shaping so it can reuse the same PostCard renderer below. `signal`
-// required — see fetchGrailData's comment above.
-export async function fetchUserPosts(userId: string, signal: AbortSignal, currentUserId?: string): Promise<FeedPost[]> {
-  const { data: postRows, error: postsError } = await supabase
-    .from('posts')
-    .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
-    .eq('user_id', userId)
-    .in('post_type', ['item', 'text', 'rate_my_grails', 'card_share', 'folder_share'])
-    .order('created_at', { ascending: false })
-    .abortSignal(signal);
+// Every posts column the feed renders from, plus repost_of_post_id — one
+// list shared by every loader so a row always hydrates the same way.
+export const FEED_POST_SELECT =
+  'id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url, repost_of_post_id, quote_of_post_id';
 
-  if (postsError) {
-    console.error('[fetchUserPosts] posts query failed:', postsError.message, postsError);
-    throw postsError;
+// How many levels of referenced posts (repost -> original, quote ->
+// quoted) hydrateFeedPosts resolves.
+const REFERENCE_DEPTH = 3;
+
+// Every post type the feed renders. 'repost' rows render their ORIGINAL
+// post (FeedPost.repostOf), resolved by hydrateFeedPosts.
+export const FEED_POST_TYPES = ['item', 'text', 'rate_my_grails', 'card_share', 'folder_share', 'repost', 'quote'] as const;
+
+type FeedPostRow = {
+  id: string;
+  user_id: string;
+  item_id: string | null;
+  post_type: FeedPost['post_type'] | null;
+  image_url: string | null;
+  content: string | null;
+  caption: string | null;
+  created_at: string;
+  folder_id: string | null;
+  folder_name: string | null;
+  folder_item_count: number | null;
+  folder_cover_snapshot_url: string | null;
+  repost_of_post_id: string | null;
+  quote_of_post_id: string | null;
+};
+
+// Turns raw posts rows (FEED_POST_SELECT) into renderable FeedPosts — the
+// one hydration shared by the main feed (app/(tabs)/index.tsx's queryFeed)
+// and a profile's Posts tab (fetchUserPosts below), so every post type
+// renders identically wherever it appears. Batch queries per page, never
+// per post (posts -> profiles goes through auth.users, so PostgREST can't
+// embed it; everything is merged in JS).
+//
+// Reposts: a 'repost' row's ORIGINAL post is fetched (when not already on
+// this page) and hydrated in the same batch as everything else, so it
+// renders with its own type-specific content (cards, collage, grails,
+// images…), and attached as repostOf. The repost row keeps its own id,
+// author (the reposter), likes and comments. A repost whose original
+// can't be loaded is dropped (deleting an original already deletes its
+// reposts — ON DELETE CASCADE). Each ORIGINAL also gets repostCount /
+// repostedByMe for the Repost control. `signal` required — see
+// fetchGrailData's comment above.
+export async function hydrateFeedPosts(
+  rows: FeedPostRow[],
+  signal: AbortSignal,
+  currentUserId?: string,
+): Promise<FeedPost[]> {
+  if (!rows.length) return [];
+
+  // Every post a row references — a repost's original, a quote's quoted
+  // post — fetched in batched rounds (one query per level, never per post)
+  // up to REFERENCE_DEPTH levels: enough for a repost of a quote of a
+  // quote, whose deepest level is only shown as a "Quoting @user" label.
+  const known = new Map(rows.map((r) => [r.id, r]));
+  let frontier = rows;
+  for (let level = 0; level < REFERENCE_DEPTH && frontier.length > 0; level++) {
+    const missing = [
+      ...new Set(
+        frontier
+          .flatMap((r) => [r.repost_of_post_id, r.quote_of_post_id])
+          .filter((id): id is string => !!id && !known.has(id)),
+      ),
+    ];
+    if (missing.length === 0) break;
+    const { data, error } = await supabase
+      .from('posts')
+      .select(FEED_POST_SELECT)
+      .in('id', missing)
+      .abortSignal(signal);
+    if (error) {
+      console.error('[hydrateFeedPosts] referenced posts query failed:', error.message, error);
+      break;
+    }
+    frontier = (data ?? []) as unknown as FeedPostRow[];
+    for (const r of frontier) known.set(r.id, r);
   }
+  const postRows = [...known.values()];
 
-  if (!postRows?.length) return [];
-
-  const itemIds = [...new Set((postRows as any[]).map((p) => p.item_id).filter(Boolean) as string[])];
-  const postIds = (postRows as any[]).map((p) => p.id as string);
-  const grailPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'rate_my_grails')
-    .map((p) => p.id as string);
-  const cardSharePostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'card_share')
-    .map((p) => p.id as string);
-  const textPostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'text')
-    .map((p) => p.id as string);
-  const folderSharePostIds = (postRows as any[])
-    .filter((p) => p.post_type === 'folder_share')
-    .map((p) => p.id as string);
-  // Shared folders' ids, for folder_share repost attribution (see
+  const userIds = [...new Set(postRows.map((p) => p.user_id))];
+  const itemIds = [...new Set(postRows.map((p) => p.item_id).filter(Boolean) as string[])];
+  const postIds = postRows.map((p) => p.id);
+  // Originals (never reposts) — what the Repost control counts.
+  const contentIds = postRows.filter((p) => p.post_type !== 'repost').map((p) => p.id);
+  const grailPostIds = postRows.filter((p) => p.post_type === 'rate_my_grails').map((p) => p.id);
+  const cardSharePostIds = postRows.filter((p) => p.post_type === 'card_share').map((p) => p.id);
+  const textPostIds = postRows.filter((p) => p.post_type === 'text').map((p) => p.id);
+  const folderSharePostIds = postRows.filter((p) => p.post_type === 'folder_share').map((p) => p.id);
+  // Shared folders' ids, for folder_share source-owner attribution (see
   // fetchFolderOwnerIds).
-  const sharedFolderIds = (postRows as any[])
+  const sharedFolderIds = postRows
     .filter((p) => p.post_type === 'folder_share' && p.folder_id)
     .map((p) => p.folder_id as string);
 
-  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap, folderShareMap, folderOwnerMap] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('id, username, display_name, hero_display_name, avatar_url')
-      .eq('id', userId)
-      .abortSignal(signal)
-      .single(),
-    // 'title' (was 'name' — collection_items has no such column; see
-    // queryFeed's own identical comment in app/(tabs)/index.tsx for the
-    // full root-cause writeup, confirmed live via a direct read-only REST
-    // query against the production project).
-    itemIds.length > 0
-      ? supabase.from('collection_items').select('id, title, image_url, user_id').in('id', itemIds).abortSignal(signal)
-      : Promise.resolve({ data: [] }),
-    supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
-    supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
-    grailPostIds.length > 0
-      ? fetchGrailData(grailPostIds, signal, currentUserId)
-      : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
-    // fetchCardShareItems throws on failure (logging its own error first) —
-    // deliberately not caught here, so a card-share query failure fails
-    // this whole fetch loudly via the caller's own error handling, rather
-    // than silently rendering posts with missing card data.
-    fetchCardShareItems(cardSharePostIds, signal),
-    // Same "throws, not caught here" convention as fetchCardShareItems —
-    // a post_images query failure must fail this whole fetch loudly, not
-    // silently render text posts with missing images.
-    fetchPostImages(textPostIds, signal),
-    fetchFolderShareItems(folderSharePostIds, signal),
-    fetchFolderOwnerIds(sharedFolderIds, signal),
-  ]);
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, repostsRes, grailData, cardShareMap, postImagesMap, folderShareMap, folderOwnerMap] =
+    await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, username, display_name, hero_display_name, avatar_url')
+        .in('id', userIds)
+        .abortSignal(signal),
+      itemIds.length > 0
+        ? supabase.from('collection_items').select('id, title, image_url, user_id').in('id', itemIds).abortSignal(signal)
+        : Promise.resolve({ data: [] }),
+      supabase.from('likes').select('post_id, user_id').in('post_id', postIds).abortSignal(signal),
+      supabase.from('comments').select('post_id').in('post_id', postIds).abortSignal(signal),
+      currentUserId
+        ? supabase.from('follows').select('following_id').eq('follower_id', currentUserId).abortSignal(signal)
+        : Promise.resolve({ data: [] }),
+      contentIds.length > 0
+        ? supabase.from('posts').select('user_id, repost_of_post_id').in('repost_of_post_id', contentIds).abortSignal(signal)
+        : Promise.resolve({ data: [] }),
+      grailPostIds.length > 0
+        ? fetchGrailData(grailPostIds, signal, currentUserId)
+        : Promise.resolve({ cardsMap: new Map(), ratingTotals: new Map() }),
+      fetchCardShareItems(cardSharePostIds, signal),
+      fetchPostImages(textPostIds, signal),
+      fetchFolderShareItems(folderSharePostIds, signal),
+      fetchFolderOwnerIds(sharedFolderIds, signal),
+    ]);
 
-  const profile = (profileRes.data as any) ?? {};
+  const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
   if ((itemsRes as any).error) {
-    console.error('[fetchUserPosts] collection_items query failed:', (itemsRes as any).error.message, (itemsRes as any).error);
+    console.error('[hydrateFeedPosts] collection_items query failed:', (itemsRes as any).error.message, (itemsRes as any).error);
   }
   const itemMap = new Map((itemsRes.data ?? []).map((i: any) => [i.id, i]));
 
-  // Foreign-repost attribution ("Share → Post to Feed" on someone else's
-  // public card) — a SECOND, separate profiles query for the source
-  // items' own owners, since an item's owner is frequently not `userId`
-  // (this whole function's one post-author) at all. Only fetched for
-  // owner ids that actually differ from `userId` — an own-item share's
-  // owner is trivially `userId` itself, which this profile query already
-  // has (profileRes above), so there's nothing to look up for it.
-  const foreignOwnerIds = [
+  // Source items' / shared folders' owners for repost attribution: most
+  // are already in profileMap (they posted on this page too), so only the
+  // missing ones need a second, small batched profiles lookup.
+  const missingOwnerIds = [
     ...new Set(
       [...(itemsRes.data ?? []).map((i: any) => i.user_id as string | null), ...folderOwnerMap.values()].filter(
-        (id): id is string => !!id && id !== userId,
+        (id): id is string => !!id && !profileMap.has(id),
       ),
     ),
   ];
-  const ownerProfileMap = new Map<string, any>();
-  if (foreignOwnerIds.length > 0) {
+  if (missingOwnerIds.length > 0) {
     const { data: ownerProfiles, error: ownerProfilesError } = await supabase
       .from('profiles')
       .select('id, username, display_name, avatar_url')
-      .in('id', foreignOwnerIds)
+      .in('id', missingOwnerIds)
       .abortSignal(signal);
     if (ownerProfilesError) {
-      // Best-effort — a failure here must not fail the whole post list;
-      // it only means those specific reposts render without the owner
-      // attribution header this render, exactly like a since-deleted
-      // source item/profile already does (see FeedPost.sourceOwner's own
-      // comment).
-      console.error('[fetchUserPosts] source-owner profiles query failed:', ownerProfilesError.message, ownerProfilesError);
+      console.error('[hydrateFeedPosts] source-owner profiles query failed:', ownerProfilesError.message, ownerProfilesError);
     } else {
-      for (const row of (ownerProfiles ?? []) as any[]) ownerProfileMap.set(row.id, row);
+      for (const row of (ownerProfiles ?? []) as any[]) profileMap.set(row.id, row);
     }
   }
 
@@ -327,12 +385,27 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     commentCountMap.set(row.post_id, (commentCountMap.get(row.post_id) ?? 0) + 1);
   }
 
+  const followedSet = new Set<string>(((followsRes.data ?? []) as any[]).map((f) => f.following_id as string));
+
+  if ((repostsRes as any).error) {
+    console.error('[hydrateFeedPosts] repost counts query failed:', (repostsRes as any).error.message, (repostsRes as any).error);
+  }
+  const repostCountMap = new Map<string, number>();
+  const repostedByMe = new Set<string>();
+  for (const row of (repostsRes.data ?? []) as any[]) {
+    repostCountMap.set(row.repost_of_post_id, (repostCountMap.get(row.repost_of_post_id) ?? 0) + 1);
+    if (row.user_id === currentUserId) repostedByMe.add(row.repost_of_post_id);
+  }
+
   const { cardsMap, ratingTotals } = grailData;
 
-  return (postRows as any[]).map((post) => {
+  const built = new Map<string, FeedPost>();
+  for (const post of postRows) {
+    const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
-    // Source owner: the item's owner for an 'item' post, the shared
-    // folder's owner for a 'folder_share' post (see fetchFolderOwnerIds).
+    // The source's owner — a shared folder's (folder_share) or the source
+    // item's (item posts) — shown as repost attribution only when it isn't
+    // the poster themselves.
     const sourceOwnerId = (
       post.post_type === 'folder_share'
         ? post.folder_id
@@ -340,13 +413,12 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
           : undefined
         : (item as any).user_id
     ) as string | undefined;
-    const ownerProfile =
-      sourceOwnerId && sourceOwnerId !== post.user_id ? ownerProfileMap.get(sourceOwnerId) : undefined;
+    const ownerProfile = sourceOwnerId && sourceOwnerId !== post.user_id ? profileMap.get(sourceOwnerId) : undefined;
     const rating = ratingTotals.get(post.id);
-    return {
+    built.set(post.id, {
       id: post.id,
       user_id: post.user_id,
-      post_type: (post.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
+      post_type: post.post_type ?? 'item',
       item_id: post.item_id ?? null,
       image_url: post.image_url ?? (item as any).image_url ?? null,
       content: post.content ?? null,
@@ -362,20 +434,12 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
           }
         : null,
       username: profile.username ?? 'user',
-      // Hero/display name first, matching the profile identity card's own
-      // source of truth (profile-v2-screen.tsx's `hero_display_name ||
-      // display_name || ...`) — same fallback queryFeed
-      // in app/(tabs)/index.tsx uses, so every PostCard consumer (Feed,
-      // and this file's own fetchUserPosts for a profile's Posts tab)
-      // resolves the author name identically. PostCard's own
-      // `post.display_name || post.username` (unchanged) completes the
-      // fallback down to username.
       display_name: profile.hero_display_name || profile.display_name || null,
       avatar_url: profile.avatar_url ?? null,
       likeCount: likeCountMap.get(post.id) ?? 0,
       liked: likedSet.has(post.id),
       commentCount: commentCountMap.get(post.id) ?? 0,
-      isFollowing: false,
+      isFollowing: followedSet.has(post.user_id),
       grailCards: cardsMap.get(post.id) ?? [],
       avgRating: rating ? rating.sum / rating.count : null,
       ratingCount: rating?.count ?? 0,
@@ -392,8 +456,73 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
               coverUrl: post.folder_cover_snapshot_url ?? null,
             }
           : null,
-    };
-  });
+      repostOfPostId: post.repost_of_post_id ?? null,
+      repostCount: repostCountMap.get(post.id) ?? 0,
+      repostedByMe: repostedByMe.has(post.id),
+      quoteOfPostId: post.quote_of_post_id ?? null,
+    });
+  }
+
+  // Attaches what each post references, depth-bounded. A repost whose
+  // original is gone is dropped; a quote whose quoted post is gone keeps
+  // quoted: null ("This post is unavailable").
+  function link(id: string, depth: number): FeedPost | null {
+    const post = built.get(id);
+    if (!post) return null;
+    if (depth >= REFERENCE_DEPTH) return post;
+    if (post.post_type === 'repost') {
+      const original = post.repostOfPostId ? link(post.repostOfPostId, depth + 1) : null;
+      return original ? { ...post, repostOf: original } : null;
+    }
+    if (post.post_type === 'quote') {
+      return { ...post, quoted: post.quoteOfPostId ? link(post.quoteOfPostId, depth + 1) : null };
+    }
+    return post;
+  }
+
+  return rows.map((row) => link(row.id, 0)).filter((p): p is FeedPost => !!p);
+}
+
+// Local list updates for a repost/undo of `originalId` by the signed-in
+// user — shared by every screen holding a FeedPost list. setRepostState
+// updates the original's count/state wherever it appears: as itself, or as
+// the repostOf of any repost of it. A no-op where it already matches, so a
+// rollback can apply the inverse safely.
+export function setRepostState(list: FeedPost[], originalId: string, reposted: boolean): FeedPost[] {
+  const patch = (p: FeedPost): FeedPost =>
+    p.id !== originalId || !!p.repostedByMe === reposted
+      ? p
+      : { ...p, repostedByMe: reposted, repostCount: Math.max(0, (p.repostCount ?? 0) + (reposted ? 1 : -1)) };
+  return list.map((p) => (p.repostOf ? (p.repostOf.id === originalId ? { ...p, repostOf: patch(p.repostOf) } : p) : patch(p)));
+}
+
+// After a confirmed undo: removes the user's own repost entry of
+// `originalId` from a loaded list.
+export function removeOwnRepost(list: FeedPost[], originalId: string, userId: string): FeedPost[] {
+  return list.filter((p) => !(p.post_type === 'repost' && p.user_id === userId && p.repostOf?.id === originalId));
+}
+
+// One user's own post history (their posts AND their reposts), newest
+// first — no date window, no engagement ranking (unlike the main feed's
+// queryFeed), since this powers a profile's Posts tab rather than a
+// ranked/windowed feed. Same hydration as the feed (hydrateFeedPosts), so
+// it reuses the same PostCard renderer. `signal` required — see
+// fetchGrailData's comment above.
+export async function fetchUserPosts(userId: string, signal: AbortSignal, currentUserId?: string): Promise<FeedPost[]> {
+  const { data: postRows, error: postsError } = await supabase
+    .from('posts')
+    .select(FEED_POST_SELECT)
+    .eq('user_id', userId)
+    .in('post_type', [...FEED_POST_TYPES])
+    .order('created_at', { ascending: false })
+    .abortSignal(signal);
+
+  if (postsError) {
+    console.error('[fetchUserPosts] posts query failed:', postsError.message, postsError);
+    throw postsError;
+  }
+
+  return hydrateFeedPosts((postRows ?? []) as unknown as FeedPostRow[], signal, currentUserId);
 }
 
 function formatAge(iso: string) {
@@ -404,20 +533,30 @@ function formatAge(iso: string) {
 }
 
 export function PostCard({
-  post,
+  post: entry,
   currentUserId,
   onUserPress,
   onPostPress,
+  onCardSharePress,
   onCommentPress,
   onLike,
   onDelete,
   onSourceOwnerPress,
   onSourceItemPress,
+  onRepost,
+  onReposterPress,
+  onOpenQuoted,
+  embedded = false,
+  readOnly = false,
 }: {
   post: FeedPost;
   currentUserId: string | undefined;
   onUserPress: () => void;
   onPostPress: () => void;
+  // card_share only: a tap on one of the post's cards, with its index —
+  // lets the caller open Post Detail on that same card. Falls back to
+  // onPostPress when not given.
+  onCardSharePress?: (cardIndex: number) => void;
   // Feed comment/reply redesign — the comment icon now opens the dedicated
   // reply composer (app/post-reply/[id].tsx) instead of reusing
   // onPostPress's plain "go to post detail" navigation. Required (not
@@ -436,14 +575,41 @@ export function PostCard({
   // repost keeps compiling unchanged.
   onSourceOwnerPress?: () => void;
   onSourceItemPress?: () => void;
+  // Share Card's local preview: the header (author) and the like/comment
+  // row ignore touches, while the media stays interactive — so a
+  // multi-card preview can still be swiped. Its cards themselves are
+  // already non-navigating there (preview rows carry item_id: null).
+  readOnly?: boolean;
+  // The Repost control was tapped — the caller opens its Repost / Quote
+  // menu for the post's ORIGINAL (see entry/post below). Optional: the
+  // control renders only where a caller wires it.
+  onRepost?: () => void;
+  // A quote's embedded post was tapped — open that post (its own Post
+  // Detail, where its cards/items/folder navigate as usual).
+  onOpenQuoted?: (postId: string) => void;
+  // Rendered INSIDE a quote, as its embedded post: no action row and no
+  // nested embed (a quoted quote shows its comment plus "Quoting @user").
+  // The caller makes it non-interactive and handles the tap.
+  embedded?: boolean;
+  // A repost's "@username reposted" line — opens the reposter's profile.
+  // (onUserPress is the shown author, i.e. the ORIGINAL post's.)
+  onReposterPress?: () => void;
 }) {
+  // A repost (post_type 'repost') renders its ORIGINAL post's content —
+  // author, media, caption, item/folder links, type-specific presentation —
+  // from `post`, while its own engagement and ownership stay on `entry`:
+  // likes, comments, and delete (= undo repost) belong to the repost row.
+  // For every other post, entry and post are the same object.
+  const post = entry.repostOf ?? entry;
+  const isRepost = post !== entry;
   const [imageError, setImageError] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
   const isCardShare = post.post_type === 'card_share';
   const isFolderShare = post.post_type === 'folder_share';
-  const isOwner = !!currentUserId && currentUserId === post.user_id;
+  const isOwner = !!currentUserId && currentUserId === entry.user_id;
+  const isQuote = post.post_type === 'quote';
   // A "Share to Feed" repost of someone else's public card or folder — see
   // FeedPost.sourceOwner's own comment for exactly when this is set. A
   // folder repost only swaps the header (RepostHeader); its body is the
@@ -549,8 +715,10 @@ export function PostCard({
   // single owner-only affordance goes straight to this confirmation.
   function handleDeleteTap() {
     Alert.alert(
-      'Delete Post',
-      "This will permanently remove this post, its comments, and likes. This can't be undone.",
+      isRepost ? 'Remove Repost' : 'Delete Post',
+      isRepost
+        ? "This removes your repost and its comments and likes. The original post isn't affected."
+        : "This will permanently remove this post, its comments, and likes. This can't be undone.",
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: onDelete },
@@ -564,7 +732,24 @@ export function PostCard({
   const displayName = post.display_name || post.username;
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, embedded && styles.cardEmbedded]}>
+      {/* Repost attribution — "@reposter reposted", above the ORIGINAL
+          post's own header and content below. Opens the reposter's
+          profile. */}
+      {isRepost && (
+        <TouchableOpacity
+          style={styles.repostedByRow}
+          onPress={onReposterPress}
+          disabled={!onReposterPress || readOnly}
+          activeOpacity={0.7}
+          accessibilityRole={onReposterPress ? 'button' : undefined}
+          accessibilityLabel={`@${entry.username} reposted`}>
+          <IconSymbol name="arrow.2.squarepath" size={13} color={PV2.textTertiary} />
+          <Text style={styles.repostedByText} numberOfLines={1}>
+            @{entry.username} reposted
+          </Text>
+        </TouchableOpacity>
+      )}
       {/* User row — tapping the avatar/name/date group navigates to their
           public profile; the owner-only "..." sits outside that touch
           target as its own sibling, in the same row. Foreign repost:
@@ -586,7 +771,7 @@ export function PostCard({
           onDeletePress={isOwner && onDelete ? handleDeleteTap : undefined}
         />
       ) : (
-        <View style={styles.cardHeader}>
+        <View style={styles.cardHeader} pointerEvents={readOnly ? 'none' : 'auto'}>
           <TouchableOpacity style={styles.cardHeaderUserTouch} onPress={onUserPress} activeOpacity={0.7}>
             <View style={styles.cardAvatar}>
               {post.avatar_url ? (
@@ -719,12 +904,27 @@ export function PostCard({
               },
             ]}>
             {post.cardShareItems.length > 0 ? (
-              // Rendered once the frame's lead size has settled, so its
-              // cards appear inside the final frame rather than inside the
-              // default one first.
-              leadMediaSettled ? (
-                <CardSharePostBody cards={post.cardShareItems} mediaBorderRadius={MEDIA_CORNER_RADIUS} />
-              ) : null
+              // Mounted from the start but invisible until the frame's
+              // lead size has settled, so its cards appear inside the final
+              // frame rather than inside the default one first — while their
+              // images already load. The first card's own load reports its
+              // size, which settles the frame even if the background
+              // measurement (useMediaSize) never answers.
+              <CardSharePostBody
+                cards={post.cardShareItems}
+                mediaBorderRadius={MEDIA_CORNER_RADIUS}
+                hidden={!leadMediaSettled}
+                // Feed: tapping a card opens this post (like every other
+                // post's media), not the card's item — Post Detail's own
+                // carousel is where a card opens its original item. Not in
+                // the read-only preview, whose cards don't navigate.
+                onCardPress={
+                  readOnly ? undefined : (cardIndex) => (onCardSharePress ? onCardSharePress(cardIndex) : onPostPress())
+                }
+                onFirstImageLoad={(width, height) => {
+                  if (cardShareLeadImageUrl) rememberMediaSize(cardShareLeadImageUrl, width, height);
+                }}
+              />
             ) : (
               <View style={styles.cardShareUnavailable}>
                 <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
@@ -732,6 +932,56 @@ export function PostCard({
             )}
           </View>
         </View>
+      ) : isQuote ? (
+        // Quote: the quoter's comment, then the quoted post embedded — its
+        // OWN author, media and presentation, via this same component in
+        // `embedded` mode. The embed is one tap target opening the quoted
+        // post. Inside an embed, a quoted quote shows only its comment and
+        // a "Quoting @user" label, never a second embed.
+        <>
+          {post.content ? (
+            <TouchableOpacity
+              style={styles.cardTextWrap}
+              onPress={onPostPress}
+              disabled={embedded}
+              activeOpacity={0.95}>
+              <Text style={styles.cardTextContent}>{post.content}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {embedded ? (
+            post.quoted ? (
+              <Text style={styles.quotingLabel} numberOfLines={1}>
+                Quoting @{post.quoted.username}
+              </Text>
+            ) : null
+          ) : (
+            <View style={styles.quoteEmbedColumn}>
+              {post.quoted ? (
+                <Pressable
+                  onPress={() => onOpenQuoted?.(post.quoted!.id)}
+                  disabled={!onOpenQuoted || readOnly}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Quoted post by @${post.quoted.username}`}>
+                  <View pointerEvents="none">
+                    <PostCard
+                      post={post.quoted}
+                      embedded
+                      currentUserId={currentUserId}
+                      onUserPress={noopPress}
+                      onPostPress={noopPress}
+                      onCommentPress={noopPress}
+                      onLike={noopPress}
+                    />
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={styles.quoteUnavailable}>
+                  <Text style={styles.cardShareUnavailableText}>This post is unavailable</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </>
       ) : (
         <>
           {isTextPost && (
@@ -857,21 +1107,25 @@ export function PostCard({
                     // non-text posts — see the early return — so no onError
                     // is needed here.)
                     <FittedRoundedImage uri={post.image_url} radius={MEDIA_CORNER_RADIUS} />
-                  ) : leadMediaSettled ? (
-                    // Same gate as card-share: drawn only once the frame
-                    // above has its final aspect ratio.
+                  ) : (
+                    // Same gate as card-share: mounted (so it loads) but
+                    // invisible until the frame above has its final aspect
+                    // ratio; its own load can settle that ratio.
                     <Image
                       source={{ uri: post.image_url }}
-                      style={StyleSheet.absoluteFill}
+                      style={[StyleSheet.absoluteFill, !leadMediaSettled && styles.mediaHidden]}
                       // 'contain' (never crops — an aspect mismatch against
                       // the box above only ever letterboxes, so the full
                       // card is always visible even for an unusually-cropped
                       // upload).
                       contentFit="contain"
                       transition={200}
+                      onLoad={(e) => {
+                        if (post.image_url) rememberMediaSize(post.image_url, e.source.width, e.source.height);
+                      }}
                       onError={() => setImageError(true)}
                     />
-                  ) : null}
+                  )}
                 </TouchableOpacity>
 
                 {/* Source context row — foreign repost only; now the ONE
@@ -927,7 +1181,8 @@ export function PostCard({
           rendered rather than faked. Indented to MEDIA_CONTENT_LEFT_INSET,
           the same left inset Piece 3 established for the media/content
           column, so this row lines up with it instead of the avatar. */}
-      <View style={styles.actionsRow}>
+      {!embedded && (
+      <View style={styles.actionsRow} pointerEvents={readOnly ? 'none' : 'auto'}>
         {/* Comment first, matching the X-style mockup's icon order. Feed
             comment/reply redesign: now opens the dedicated reply composer
             (onCommentPress) instead of post detail (onPostPress) — tapping
@@ -936,8 +1191,28 @@ export function PostCard({
             mapping (outline speech bubble) — no new icon system introduced. */}
         <TouchableOpacity onPress={onCommentPress} hitSlop={8} style={styles.commentBtn}>
           <IconSymbol name="message" size={19} color={PV2.textSecondary} />
-          <Text style={styles.commentCount}>{post.commentCount}</Text>
+          <Text style={styles.commentCount}>{entry.commentCount}</Text>
         </TouchableOpacity>
+
+        {/* Repost — opens the Repost / Quote menu for the ORIGINAL (post),
+            so its count/state are the original's whichever entry shows it.
+            Your own posts can be reposted and quoted too. */}
+        {onRepost && (
+          <TouchableOpacity
+            onPress={onRepost}
+            hitSlop={8}
+            style={styles.commentBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Repost or quote"
+            accessibilityState={{ selected: !!post.repostedByMe }}>
+            <IconSymbol
+              name="arrow.2.squarepath"
+              size={19}
+              color={post.repostedByMe ? PV2.accent : PV2.textSecondary}
+            />
+            <Text style={[styles.likeCount, post.repostedByMe && styles.likeCountActive]}>{post.repostCount ?? 0}</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Piece 6: emoji replaced with IconSymbol's existing 'heart'/
             'heart.fill' mapping (outline when inactive, filled when
@@ -946,19 +1221,22 @@ export function PostCard({
         <Pressable onPress={handleLikeTap} hitSlop={8} style={styles.likeBtn}>
           <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
             <IconSymbol
-              name={post.liked ? 'heart.fill' : 'heart'}
+              name={entry.liked ? 'heart.fill' : 'heart'}
               size={19}
-              color={post.liked ? PV2.accent : PV2.textSecondary}
+              color={entry.liked ? PV2.accent : PV2.textSecondary}
             />
           </Animated.View>
-          <Text style={[styles.likeCount, post.liked && styles.likeCountActive]}>
-            {post.likeCount}
+          <Text style={[styles.likeCount, entry.liked && styles.likeCountActive]}>
+            {entry.likeCount}
           </Text>
         </Pressable>
       </View>
+      )}
     </View>
   );
 }
+
+function noopPress() {}
 
 // Left inset for the new indented content column (Piece 3 — caption/image
 // for the standard image path) below the header — matches cardHeader's own
@@ -1098,6 +1376,49 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 2,
   },
+  // Repost attribution row, above a repost's original header.
+  repostedByRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    marginBottom: -4,
+  },
+  repostedByText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textTertiary,
+  },
+  // A post embedded in a quote: no outer margins (the quote's column
+  // places it) and no shadow.
+  cardEmbedded: {
+    marginHorizontal: 0,
+    marginBottom: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  // A quote's embed, aligned with its comment's text column.
+  quoteEmbedColumn: {
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    paddingBottom: 8,
+  },
+  quoteUnavailable: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    paddingVertical: 18,
+    alignItems: 'center',
+  },
+  quotingLabel: {
+    paddingLeft: MEDIA_CONTENT_LEFT_INSET,
+    paddingRight: 12,
+    paddingBottom: 10,
+    fontSize: 13,
+    color: PV2.textTertiary,
+  },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1179,6 +1500,10 @@ const styles = StyleSheet.create({
     borderRadius: MEDIA_CORNER_RADIUS,
     backgroundColor: PV2.collectorPanelBg,
     overflow: 'hidden',
+  },
+  // Media mounted (so it loads) but not yet shown — see leadMediaSettled.
+  mediaHidden: {
+    opacity: 0,
   },
   cardShareUnavailable: {
     flex: 1,

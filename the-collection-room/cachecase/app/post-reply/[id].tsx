@@ -106,6 +106,12 @@ function resolvePostPreviewContent(
     };
   }
 
+  // A quote's own content is its comment (the quoted post isn't repeated
+  // here).
+  if (postType === 'quote') {
+    return { text: post.content ?? null, previewImageUrl: null, additionalImageCount: 0 };
+  }
+
   // 'item' and any future/unrecognized post_type — "any other post type
   // with media" resolves the same generic way, from the post's own
   // top-level caption + image_url. Not an item-specific special case.
@@ -234,16 +240,35 @@ export default function PostReplyScreen() {
       setLoading(true);
       setLoadError(null);
       try {
-        const { data: row, error: postError } = await supabase
+        const { data: entryRow, error: postError } = await supabase
           .from('posts')
-          .select('id, user_id, post_type, image_url, content, caption, created_at')
+          .select('id, user_id, post_type, image_url, content, caption, created_at, repost_of_post_id')
           .eq('id', postId)
           .abortSignal(controller.signal)
           .single();
         if (controller.signal.aborted) return;
 
-        if (postError || !row) {
+        if (postError || !entryRow) {
           throw new Error(postError?.message ?? 'This post could not be found.');
+        }
+
+        // A repost has no content of its own: preview its ORIGINAL post
+        // (author + content), while the reply itself still goes on the
+        // repost (target.id / target.user_id below), which owns its own
+        // comments.
+        let row = entryRow;
+        if (entryRow.post_type === 'repost' && entryRow.repost_of_post_id) {
+          const { data: originalRow, error: originalError } = await supabase
+            .from('posts')
+            .select('id, user_id, post_type, image_url, content, caption, created_at, repost_of_post_id')
+            .eq('id', entryRow.repost_of_post_id)
+            .abortSignal(controller.signal)
+            .single();
+          if (controller.signal.aborted) return;
+          if (originalError || !originalRow) {
+            throw new Error(originalError?.message ?? 'This post could not be found.');
+          }
+          row = originalRow;
         }
 
         const profileIds = [...new Set([row.user_id, currentUserId].filter((v): v is string => !!v))];
@@ -293,8 +318,8 @@ export default function PostReplyScreen() {
         );
 
         setTarget({
-          id: row.id,
-          user_id: row.user_id,
+          id: entryRow.id,
+          user_id: entryRow.user_id,
           timestamp: row.created_at,
           username: authorProfile?.username ?? 'user',
           authorName: authorProfile?.display_name || authorProfile?.username || 'User',

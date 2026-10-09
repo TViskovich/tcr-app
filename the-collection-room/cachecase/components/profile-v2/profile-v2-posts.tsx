@@ -6,7 +6,14 @@ import { PV2 } from './profile-v2-theme';
 type Props = {
   posts: FeedPost[];
   currentUserId: string | undefined;
-  onUserPress: (username: string) => void;
+  // The tapped author's own id + username: a post's author, or — for a
+  // repost — the ORIGINAL post's author shown in its header, or the
+  // reposter (its "reposted" line). Never assumed to be this profile's
+  // owner.
+  onUserPress: (userId: string, username: string) => void;
+  // The Repost control was tapped — open the Repost / Quote menu for this
+  // entry (see PostCard's onRepost).
+  onRepost: (post: FeedPost) => void;
   onPostPress: (postId: string) => void;
   // Feed comment/reply redesign — opens the dedicated reply composer,
   // separate from onPostPress (post detail). See post-card.tsx's own
@@ -33,6 +40,7 @@ export function ProfileV2Posts({
   posts,
   currentUserId,
   onUserPress,
+  onRepost,
   onPostPress,
   onCommentPress,
   onLike,
@@ -66,22 +74,30 @@ export function ProfileV2Posts({
 
   return (
     <View style={styles.list}>
-      {posts.map((post) => (
-        <PostCard
-          key={post.id}
-          post={post}
-          currentUserId={currentUserId}
-          onUserPress={() => onUserPress(post.username)}
-          onPostPress={() => onPostPress(post.id)}
-          onCommentPress={() => onCommentPress(post.id)}
-          onLike={() => onLike(post.id)}
-          onDelete={() => onDelete(post.id)}
-          onSourceOwnerPress={
-            post.sourceOwner ? () => onSourceOwnerPress(post.sourceOwner!.id, post.sourceOwner!.username) : undefined
-          }
-          onSourceItemPress={post.item_id ? () => onSourceItemPress(post.item_id!) : undefined}
-        />
-      ))}
+      {posts.map((post) => {
+        // A repost shows its ORIGINAL post (author, content, source links);
+        // engagement and delete stay on the repost entry itself.
+        const shown = post.repostOf ?? post;
+        return (
+          <PostCard
+            key={post.id}
+            post={post}
+            currentUserId={currentUserId}
+            onUserPress={() => onUserPress(shown.user_id, shown.username)}
+            onReposterPress={() => onUserPress(post.user_id, post.username)}
+            onRepost={() => onRepost(post)}
+            onOpenQuoted={(quotedId) => onPostPress(quotedId)}
+            onPostPress={() => onPostPress(post.id)}
+            onCommentPress={() => onCommentPress(post.id)}
+            onLike={() => onLike(post.id)}
+            onDelete={() => onDelete(post.id)}
+            onSourceOwnerPress={
+              shown.sourceOwner ? () => onSourceOwnerPress(shown.sourceOwner!.id, shown.sourceOwner!.username) : undefined
+            }
+            onSourceItemPress={shown.item_id ? () => onSourceItemPress(shown.item_id!) : undefined}
+          />
+        );
+      })}
     </View>
   );
 }

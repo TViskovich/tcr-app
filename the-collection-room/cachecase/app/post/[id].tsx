@@ -24,7 +24,15 @@ import { CardSharePostBody } from '@/components/feed/card-share-post-body';
 import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { GrailsPostBody } from '@/components/feed/grails-post-body';
 import { FolderShareCollage } from '@/components/feed/folder-share-collage';
-import { fetchPostImages, type SourceOwnerAttribution } from '@/components/feed/post-card';
+import {
+  FEED_POST_SELECT,
+  fetchPostImages,
+  hydrateFeedPosts,
+  PostCard,
+  type FeedPost,
+  type SourceOwnerAttribution,
+} from '@/components/feed/post-card';
+import { RepostMenu } from '@/components/feed/repost-menu';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { RepostHeader } from '@/components/feed/repost-header';
 import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer-modal';
@@ -37,7 +45,7 @@ import { prefetchFolderHeaderCover } from '@/hooks/use-signed-folder-covers';
 import { useAuth } from '@/lib/auth';
 import { fetchFolderOwnerIds, fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
-import { deletePost } from '@/lib/posts';
+import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -105,10 +113,14 @@ const GLOBAL_NAV_HEIGHT = TAB_BAR_HEIGHT;
 // closer to the nav, per the "feel visually attached" request.
 const IMMERSIVE_NAV_GAP = 6;
 
+// Every posts column this screen renders from, plus repost_of_post_id.
+const POST_DETAIL_SELECT =
+  'id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url, repost_of_post_id, quote_of_post_id';
+
 type PostDetail = {
   id: string;
   user_id: string;
-  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share';
+  post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share' | 'quote';
   // 'item' posts only — see post-card.tsx's own FeedPost.item_id comment.
   item_id: string | null;
   image_url: string | null;
@@ -136,6 +148,21 @@ type PostDetail = {
   // 'item' posts only, foreign-repost only — see post-card.tsx's own
   // FeedPost.sourceOwner comment for exactly when this is set.
   sourceOwner: SourceOwnerAttribution | null;
+  // Universal reposts. When this screen shows a REPOST, every content field
+  // above (post_type, media, caption, author name/avatar…) is its ORIGINAL
+  // post's, while id / user_id / likes / comments stay the repost row's own
+  // — its engagement and ownership (delete = undo repost). For any other
+  // post, contentPostId === id and contentOwnerId === user_id.
+  contentPostId: string;
+  contentOwnerId: string;
+  repostedBy: { id: string; username: string } | null;
+  // Of the ORIGINAL post (contentPostId).
+  repostCount: number;
+  repostedByMe: boolean;
+  // Quote posts (post_type 'quote'): the quoted post, hydrated the same way
+  // as the feed — embedded under the quote's comment (content). null when
+  // the quoted post was deleted.
+  quoted: FeedPost | null;
 };
 
 type Comment = {
@@ -292,6 +319,10 @@ function PostHeader({
   onCommentTap,
   onOpenSourceOwnerProfile,
   onOpenSourceItem,
+  cardShareInitialIndex,
+  onRepostTap,
+  onOpenReposterProfile,
+  onOpenQuoted,
 }: {
   post: PostDetail;
   commentCount: number;
@@ -319,6 +350,16 @@ function PostHeader({
   // Foreign-repost only (post.sourceOwner set — see isForeignRepost below).
   onOpenSourceOwnerProfile: () => void;
   onOpenSourceItem: () => void;
+  // card_share only: the card its carousel opens on (the feed card that was
+  // tapped — see the screen's cardIndex param).
+  cardShareInitialIndex: number;
+  // The Repost control — opens the Repost / Quote menu for the ORIGINAL
+  // post (post.contentPostId). And, for a repost, its "@username reposted"
+  // line opens the reposter.
+  onRepostTap: () => void;
+  onOpenReposterProfile: () => void;
+  // A quote's embedded post was tapped — open it.
+  onOpenQuoted: (postId: string) => void;
 }) {
   const displayName = post.display_name || post.username;
   // Same "Post to Feed" repost distinction as post-card.tsx's own
@@ -327,6 +368,19 @@ function PostHeader({
   const isForeignRepost = (post.post_type === 'item' || post.post_type === 'folder_share') && !!post.sourceOwner;
   return (
     <View>
+      {/* Repost attribution — the content below is the ORIGINAL post's. */}
+      {post.repostedBy && (
+        <Pressable
+          style={styles.repostedByRow}
+          onPress={onOpenReposterProfile}
+          accessibilityRole="button"
+          accessibilityLabel={`@${post.repostedBy.username} reposted`}>
+          <IconSymbol name="arrow.2.squarepath" size={13} color={PV2.textTertiary} />
+          <Text style={styles.repostedByText} numberOfLines={1}>
+            @{post.repostedBy.username} reposted
+          </Text>
+        </Pressable>
+      )}
       {/* Header bar — avatar + name above the photo. Foreign repost:
           replaced by the compact RepostHeader (its own repost strip +
           owner row), giving the ORIGINAL OWNER (not the reposter) the
@@ -371,7 +425,38 @@ function PostHeader({
           below; this branch previously never rendered any image for a text
           post at all, even when one existed), grails grid for Rate My
           Grails, carousel for card_share, image otherwise */}
-      {post.post_type === 'text' ? (
+      {post.post_type === 'quote' ? (
+        // Quote: the comment, then the quoted post embedded (the feed's own
+        // PostCard in embedded mode) — one tap target opening it, where its
+        // cards/items/folder navigate as usual.
+        <>
+          {post.content ? <Text style={styles.textContent}>{post.content}</Text> : null}
+          <View style={styles.quoteEmbedWrap}>
+            {post.quoted ? (
+              <Pressable
+                onPress={() => onOpenQuoted(post.quoted!.id)}
+                accessibilityRole="button"
+                accessibilityLabel={`Quoted post by @${post.quoted.username}`}>
+                <View pointerEvents="none">
+                  <PostCard
+                    post={post.quoted}
+                    embedded
+                    currentUserId={undefined}
+                    onUserPress={noopHandler}
+                    onPostPress={noopHandler}
+                    onCommentPress={noopHandler}
+                    onLike={noopHandler}
+                  />
+                </View>
+              </Pressable>
+            ) : (
+              <View style={styles.quoteUnavailable}>
+                <Text style={styles.quoteUnavailableText}>This post is unavailable</Text>
+              </View>
+            )}
+          </View>
+        </>
+      ) : post.post_type === 'text' ? (
         hasImmersiveMedia ? (
           <>
             <ImmersiveMedia
@@ -440,7 +525,11 @@ function PostHeader({
         // controlled fallback instead of silently rendering nothing.
         <View style={styles.imageWrap}>
           {post.cardShareItems.length > 0 ? (
-            <CardSharePostBody cards={post.cardShareItems} />
+            // Default card tap here: opens that card's ORIGINAL item
+            // (item_id), Back returns to this screen. A card whose item was
+            // deleted (item_id null) isn't tappable; one the viewer can't
+            // see opens Item Detail's own "Item not found" state.
+            <CardSharePostBody cards={post.cardShareItems} initialIndex={cardShareInitialIndex} />
           ) : (
             <View style={styles.cardShareUnavailable}>
               <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
@@ -514,12 +603,32 @@ function PostHeader({
             <Text style={styles.actionCount}>{commentCount}</Text>
           </View>
         )}
+
+        {/* Repost — opens the Repost / Quote menu for the ORIGINAL post,
+            so count/state are the original's even on a repost's own
+            detail screen. */}
+        <Pressable
+          onPress={onRepostTap}
+          hitSlop={8}
+          style={[styles.actionBtn, styles.commentCountBtn]}
+          accessibilityRole="button"
+          accessibilityLabel="Repost or quote"
+          accessibilityState={{ selected: post.repostedByMe }}>
+          <IconSymbol
+            name="arrow.2.squarepath"
+            size={20}
+            color={post.repostedByMe ? PV2.accent : PV2.textSecondary}
+          />
+          <Text style={[styles.actionCount, post.repostedByMe && styles.likedCount]}>{post.repostCount}</Text>
+        </Pressable>
       </View>
 
       <View style={styles.divider} />
     </View>
   );
 }
+
+function noopHandler() {}
 
 function CommentRow({
   comment,
@@ -559,7 +668,9 @@ function CommentRow({
 }
 
 export default function PostDetailScreen() {
-  const { id: postId } = useLocalSearchParams<{ id: string }>();
+  // cardIndex: a Share Card post opened from a specific feed card starts
+  // its carousel there (see CardSharePostBody's initialIndex).
+  const { id: postId, cardIndex } = useLocalSearchParams<{ id: string; cardIndex?: string }>();
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -696,9 +807,56 @@ export default function PostDetailScreen() {
     router.push({ pathname: '/item/[id]', params: { id: post.item_id } });
   }
 
+  function handleOpenReposterProfile() {
+    if (!post?.repostedBy) return;
+    navigateToProfile(router, currentUserId, post.repostedBy.id, post.repostedBy.username);
+  }
+
+  // A repost/undo request in flight — a second tap meanwhile is ignored
+  // (the server is idempotent too: one repost per user per original).
+  const repostInFlightRef = useRef(false);
+  // The Repost / Quote menu (Repost control).
+  const [repostMenuOpen, setRepostMenuOpen] = useState(false);
+
+  function handleOpenQuoted(quotedId: string) {
+    router.push({ pathname: '/post/[id]', params: { id: quotedId } });
+  }
+
+  // Repost / undo repost of the ORIGINAL post shown here. Optimistic,
+  // rolled back on failure. Undoing from your own repost's detail screen
+  // leaves it (that repost no longer exists).
+  async function handleRepostTap() {
+    if (!post || !currentUserId || repostInFlightRef.current) return;
+    repostInFlightRef.current = true;
+    const undo = post.repostedByMe;
+    const originalId = post.contentPostId;
+    const apply = (reposted: boolean) =>
+      setPost((prev) =>
+        prev && prev.repostedByMe !== reposted
+          ? { ...prev, repostedByMe: reposted, repostCount: Math.max(0, prev.repostCount + (reposted ? 1 : -1)) }
+          : prev,
+      );
+    apply(!undo);
+    try {
+      const result = undo ? await undoRepost(currentUserId, originalId) : await repostPost(currentUserId, originalId);
+      if (result.status !== 'ok') {
+        apply(undo);
+        Alert.alert(
+          undo ? 'Couldn’t remove repost' : 'Couldn’t repost',
+          result.reason === 'not_found' ? 'This post is no longer available.' : 'Please try again.',
+        );
+        return;
+      }
+      invalidateOwnProfileCache(currentUserId);
+      if (undo && post.repostedBy?.id === currentUserId) handleBack();
+    } finally {
+      repostInFlightRef.current = false;
+    }
+  }
+
   const rating = useGrailRating({
-    postId: post?.id ?? '',
-    postOwnerId: post?.user_id ?? '',
+    postId: post?.contentPostId ?? '',
+    postOwnerId: post?.contentOwnerId ?? '',
     currentUserId,
     initialAvg: post?.avgRating ?? null,
     initialCount: post?.ratingCount ?? 0,
@@ -810,7 +968,7 @@ export default function PostDetailScreen() {
       try {
         const { data: postRow, error: postError } = await supabase
           .from('posts')
-          .select('id, user_id, item_id, post_type, image_url, content, caption, created_at, folder_id, folder_name, folder_item_count, folder_cover_snapshot_url')
+          .select(POST_DETAIL_SELECT)
           .eq('id', postId)
           .abortSignal(controller.signal)
           .single();
@@ -830,12 +988,56 @@ export default function PostDetailScreen() {
           return;
         }
 
-        const row = postRow as any;
+        // The route's own post (a repost, or any other post) — its id/
+        // user_id, likes and comments are what this screen engages with.
+        const entryRow = postRow as any;
+        // Whose CONTENT is shown: a repost's original, otherwise the post
+        // itself. Every type-specific query below reads `row`.
+        let row = entryRow;
+        if (entryRow.post_type === 'repost') {
+          const { data: originalRow, error: originalError } = await supabase
+            .from('posts')
+            .select(POST_DETAIL_SELECT)
+            .eq('id', entryRow.repost_of_post_id)
+            .abortSignal(controller.signal)
+            .maybeSingle();
+          if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+          if (originalError) {
+            console.error('[PostDetail] load: repost original query failed:', originalError.message, originalError);
+            setLoadError(originalError.message);
+            return;
+          }
+          // Deleting an original deletes its reposts (ON DELETE CASCADE), so
+          // this is only a race with that delete.
+          if (!originalRow) {
+            setNotFound(true);
+            return;
+          }
+          row = originalRow as any;
+        }
         const isRateMyGrails = row.post_type === 'rate_my_grails';
         const isCardShare = row.post_type === 'card_share';
         const isText = row.post_type === 'text';
 
-        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap, folderShareMap] = await Promise.all([
+        // A quote's quoted post — same hydration as the feed, so it embeds
+        // with its own type-specific presentation.
+        async function loadQuoted(quotedId: string): Promise<FeedPost | null> {
+          const { data, error } = await supabase
+            .from('posts')
+            .select(FEED_POST_SELECT)
+            .eq('id', quotedId)
+            .abortSignal(controller.signal)
+            .maybeSingle();
+          if (error) {
+            console.error('[PostDetail] load: quoted post query failed:', error.message, error);
+            return null;
+          }
+          if (!data) return null;
+          const [quotedPost] = await hydrateFeedPosts([data as never], controller.signal, currentUserId);
+          return quotedPost ?? null;
+        }
+
+        const [profileRes, itemRes, likesRes, commentsResult, cardsRes, ratingsRes, cardShareItemsRes, postImagesMap, folderShareMap, reposterRes, repostsRes, quotedPost] = await Promise.all([
           supabase.from('profiles').select('id, username, display_name, avatar_url').eq('id', row.user_id).abortSignal(controller.signal).single(),
           // Text/rate_my_grails/card_share posts have no item_id — skip the items lookup to avoid a malformed query.
           // 'title' (was 'name' — collection_items has no such column; see
@@ -850,18 +1052,18 @@ export default function PostDetailScreen() {
             ? supabase
                 .from('rate_my_grail_cards')
                 .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
-                .eq('post_id', postId)
+                .eq('post_id', row.id)
                 .order('display_order', { ascending: true })
                 .abortSignal(controller.signal)
             : Promise.resolve({ data: [] }),
           isRateMyGrails
-            ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', postId).abortSignal(controller.signal)
+            ? supabase.from('grail_ratings').select('rater_user_id, score').eq('post_id', row.id).abortSignal(controller.signal)
             : Promise.resolve({ data: [] }),
           isCardShare
             ? supabase
                 .from('card_share_items')
                 .select('id, post_id, item_id, snapshot_image_url, snapshot_title, snapshot_subtitle, display_order')
-                .eq('post_id', postId)
+                .eq('post_id', row.id)
                 .order('display_order', { ascending: true })
                 .abortSignal(controller.signal)
             : Promise.resolve({ data: [], error: null }),
@@ -873,10 +1075,17 @@ export default function PostDetailScreen() {
           // {error} — see post-reply/[id].tsx's own identical call for
           // precedent), rather than silently rendering this text post with
           // no photo.
-          isText ? fetchPostImages([postId], controller.signal) : Promise.resolve(new Map<string, PostImage[]>()),
+          isText ? fetchPostImages([row.id], controller.signal) : Promise.resolve(new Map<string, PostImage[]>()),
           row.post_type === 'folder_share'
-            ? fetchFolderShareItems([postId], controller.signal)
+            ? fetchFolderShareItems([row.id], controller.signal)
             : Promise.resolve(new Map<string, FolderShareItemT[]>()),
+          // A repost's "@username reposted" line.
+          entryRow !== row
+            ? supabase.from('profiles').select('id, username').eq('id', entryRow.user_id).abortSignal(controller.signal).maybeSingle()
+            : Promise.resolve({ data: null }),
+          // The ORIGINAL's reposts — the Repost control's count/state.
+          supabase.from('posts').select('user_id').eq('repost_of_post_id', row.id).abortSignal(controller.signal),
+          row.post_type === 'quote' && row.quote_of_post_id ? loadQuoted(row.quote_of_post_id) : Promise.resolve(null),
         ]);
 
         if (loadControllerRef.current !== controller || controller.signal.aborted) return;
@@ -941,10 +1150,19 @@ export default function PostDetailScreen() {
           }
         }
 
+        const reposter = (reposterRes as { data: { id: string; username: string | null } | null }).data;
+        const repostRows = ((repostsRes as { data: { user_id: string }[] | null }).data ?? []);
         setPost({
-          id: row.id,
-          user_id: row.user_id,
-          post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share',
+          id: entryRow.id,
+          user_id: entryRow.user_id,
+          contentPostId: row.id,
+          contentOwnerId: row.user_id,
+          repostedBy:
+            entryRow !== row ? { id: entryRow.user_id, username: reposter?.username ?? 'user' } : null,
+          repostCount: repostRows.length,
+          repostedByMe: repostRows.some((r) => r.user_id === currentUserId),
+          quoted: quotedPost,
+          post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share' | 'quote',
           item_id: row.item_id ?? null,
           image_url: row.image_url ?? null,
           content: row.content ?? null,
@@ -1120,8 +1338,10 @@ export default function PostDetailScreen() {
   function handleDeletePostPress() {
     if (!post || deletingPost) return;
     Alert.alert(
-      'Delete Post',
-      "This will permanently remove this post, its comments, and likes. This can't be undone.",
+      post.repostedBy ? 'Remove Repost' : 'Delete Post',
+      post.repostedBy
+        ? "This removes your repost and its comments and likes. The original post isn't affected."
+        : "This will permanently remove this post, its comments, and likes. This can't be undone.",
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -1290,6 +1510,7 @@ export default function PostDetailScreen() {
           ListHeaderComponent={
             <PostHeader
               post={post}
+              cardShareInitialIndex={Number(cardIndex) || 0}
               commentCount={comments.length}
               likeScaleAnim={likeScaleAnim}
               onLikeTap={handleLikeTap}
@@ -1308,6 +1529,9 @@ export default function PostDetailScreen() {
               onCommentTap={handleOpenReply}
               onOpenSourceOwnerProfile={handleOpenSourceOwnerProfile}
               onOpenSourceItem={handleOpenSourceItem}
+              onRepostTap={() => setRepostMenuOpen(true)}
+              onOpenReposterProfile={handleOpenReposterProfile}
+              onOpenQuoted={handleOpenQuoted}
             />
           }
           ListEmptyComponent={
@@ -1402,6 +1626,20 @@ export default function PostDetailScreen() {
           swiping between images while zoomed in full-screen is deferred
           (see this screen's own Phase 2 notes). */}
       <ItemPhotoViewerModal visible={!!viewerUri} uri={viewerUri ?? undefined} onClose={() => setViewerUri(null)} />
+      {/* Repost / Quote menu — acts on the ORIGINAL post shown here. */}
+      <RepostMenu
+        visible={repostMenuOpen && !!post}
+        reposted={!!post?.repostedByMe}
+        onRepost={() => {
+          setRepostMenuOpen(false);
+          handleRepostTap();
+        }}
+        onQuote={() => {
+          setRepostMenuOpen(false);
+          if (post) router.push({ pathname: '/quote/[id]', params: { id: post.contentPostId } });
+        }}
+        onClose={() => setRepostMenuOpen(false)}
+      />
     </>
   );
 }
@@ -1570,6 +1808,36 @@ const styles = StyleSheet.create({
   grailsWrap: {
     padding: 12,
     backgroundColor: PV2.bg,
+  },
+  // Repost attribution row, above a repost's original header.
+  repostedByRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingTop: 10,
+  },
+  repostedByText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textTertiary,
+  },
+  // A quote's embedded post, under its comment.
+  quoteEmbedWrap: {
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
+  quoteUnavailable: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.panelBorder,
+    paddingVertical: 18,
+    alignItems: 'center',
+  },
+  quoteUnavailableText: {
+    fontSize: 13,
+    color: PV2.textSecondary,
   },
   userRow: {
     flexDirection: 'row',

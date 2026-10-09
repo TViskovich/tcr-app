@@ -31,6 +31,7 @@ const MAPPING = {
   'message.fill': 'chat',
   'person.fill': 'person',
   'gearshape.fill': 'settings',
+  'slider.horizontal.3': 'tune',
   'magnifyingglass': 'search',
   'crown.fill': 'emoji-events',
   // Create menu icons

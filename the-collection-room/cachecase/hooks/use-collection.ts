@@ -630,15 +630,22 @@ export type CollectionItemWithFolderVisibility = CollectionItem & {
 // lib/own-profile-cache.ts), hydrates `items` synchronously at mount; load()
 // below still runs and still overwrites it once the real query resolves.
 // Read once, at mount only.
+// `folderId`, when given, narrows the same query to that one folder's
+// DIRECT items (collection_items.folder_id — never descendants), exactly as
+// the Collection screens treat folder membership. Used by Share Card's
+// folder-first picker to load one folder's cards on demand. Omitted
+// (undefined) = every folder, unchanged for every existing caller.
 export function useAllItems(
   userId: string | undefined,
   options?: {
     publicOnly?: boolean;
     seed?: CollectionItemWithFolderVisibility[] | null;
     skipInitialLoad?: boolean;
+    folderId?: string;
   },
 ) {
   const publicOnly = options?.publicOnly ?? false;
+  const folderId = options?.folderId;
   const [items, setItems] = useState<CollectionItemWithFolderVisibility[]>(() => options?.seed ?? []);
   const [loading, setLoading] = useState(() => !options?.seed);
   const [error, setError] = useState<string | null>(null);
@@ -689,6 +696,7 @@ export function useAllItems(
       .eq('user_id', userId)
       .eq('collection_status', 'active');
     if (publicOnly) query = query.eq('is_public', true);
+    if (folderId) query = query.eq('folder_id', folderId);
     const { data, error: queryError } = await query.order('created_at', { ascending: false });
     if (!isCurrent()) return;
     if (queryError) {
@@ -756,7 +764,7 @@ export function useAllItems(
     if (!isCurrent()) return;
     setItems(withPrimaryIds);
     setLoading(false);
-  }, [userId, publicOnly]);
+  }, [userId, publicOnly, folderId]);
 
   // skipInitialLoad, when true, suppresses exactly this ONE automatic call
   // (captured once, at mount — a later change to the prop is ignored, same

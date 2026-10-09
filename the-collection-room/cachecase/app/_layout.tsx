@@ -105,6 +105,9 @@ function RootLayoutNav() {
                 visibility in modals..." warning, confirmed reproduced
                 before this fix). */}
             <Stack.Screen name="post-reply/[id]" options={{ presentation: 'modal', headerShown: false }} />
+            {/* Quote composer — same modal, own-header treatment as the reply
+                composer above (app/quote/[id].tsx). */}
+            <Stack.Screen name="quote/[id]" options={{ presentation: 'modal', headerShown: false }} />
             {/* DM thread renders its own glass ConversationHeader — set
                 statically (not via an inline Stack.Screen) so the native
                 header never paints for a frame before being hidden. */}

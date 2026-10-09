@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,6 +11,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -17,28 +19,104 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { SharePostPreview } from '@/components/feed/share-post-preview';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { type CollectionItemWithFolderVisibility, useAllItems } from '@/hooks/use-collection';
+import {
+  type CollectionItemWithFolderVisibility,
+  useAllItems,
+  useChildFolders,
+  useFolders,
+} from '@/hooks/use-collection';
 import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { rememberMediaSize, useMediaSize } from '@/lib/feed-media-dimensions';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { attachPrimaryImageIds } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CardShareItem, CollectionItem } from '@/types';
+import type { CardShareItem, CollectionItem, Folder } from '@/types';
 
 const MAX_CHARS = 280;
 const MAX_CARDS = 5;
+// Folder picker tiles — same 3-across layout as the Grails collection
+// picker (app/grail-slot/pick-collection.tsx), inside this screen's own
+// 16pt scroll padding.
+const FOLDER_COLUMNS = 3;
+const FOLDER_GAP = 10;
+const SCROLL_PADDING = 16;
+
+// What the picker is browsing: null = the folder picker itself; 'all' =
+// every card (the original single grid); 'folder' = one folder's direct
+// cards (and its child folders), with the path from the root folder down so
+// Back can step up one level at a time.
+type Browse = { kind: 'all' } | { kind: 'folder'; trail: Folder[] };
+
+// A feed post needs an image to be worth sharing — this is a product/UX
+// filter only; create-snapshot-post's own copy step independently fails
+// the whole request for any item with no resolvable image regardless of
+// this (see that function's own module comment). Trimmed, not just
+// truthy — a whitespace-only string is not a usable image. Still filtered
+// on the legacy image_url field — every real item with a gallery image
+// also has this field set (kept in sync by the same DB functions that
+// maintain primary_image_id), so this remains an accurate proxy for "has
+// an image" without needing to wait on a signed lookup just to decide the
+// picker's contents.
+function hasShareableImage(item: CollectionItem) {
+  return !!item.image_url?.trim();
+}
+
+// Loads ONE browse scope's cards — the signed-in user's own active items,
+// all of them or one folder's direct items — through the same useAllItems
+// query (owner-scoped, folder visibility, primary image ids) this screen
+// has always used, plus one batched preview-tier signing call for them.
+// Keyed by scope at its call site, so every scope mounts fresh: a spinner
+// until ITS rows arrive, never the previous scope's cards. onLoaded hands
+// each result to the screen, which keeps every card it has seen so a
+// selection made in another folder still resolves (reorder strip, preview,
+// Post re-validation).
+function ScopedCards({
+  userId,
+  folderId,
+  onLoaded,
+  children,
+}: {
+  userId: string | undefined;
+  folderId?: string;
+  onLoaded: (items: CollectionItemWithFolderVisibility[]) => void;
+  children: (scope: {
+    items: CollectionItemWithFolderVisibility[];
+    loading: boolean;
+    error: string | null;
+    refresh: () => void;
+    imageUrls: Map<string, string>;
+  }) => ReactNode;
+}) {
+  const { items: allRows, loading, error, refresh } = useAllItems(userId, { folderId });
+  const items = allRows.filter(hasShareableImage);
+  const { urls: imageUrls } = useSignedItemImages(
+    items.map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
+  );
+  useEffect(() => {
+    onLoaded(allRows);
+  }, [allRows, onLoaded]);
+  return <>{children({ items, loading, error, refresh, imageUrls })}</>;
+}
 
 // Card picker for the Create menu's "Share Card" option — lets the
-// signed-in user pick 1-5 of their own collection_items (across every
-// folder, via useAllItems) and post them to the feed. 1 selected copies
+// signed-in user pick 1-5 of their own collection_items and post them to
+// the feed. Folder-first: it opens on a collection picker ("All Cards" =
+// every card, as before, then the user's root folders in Collection order),
+// and loads a scope's cards only once it's opened (ScopedCards). The
+// selection lives above that browsing, so cards picked in different
+// folders all stay selected. 1 selected copies
 // its snapshot then inserts directly (mirrors app/item/new.tsx's own
 // share-to-feed pattern). 2-5 selected goes through the
 // create-snapshot-post Edge Function (Phase 3E — supersedes the original
@@ -59,7 +137,23 @@ export default function ShareCardScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
-  const { items, loading, error, refresh } = useAllItems(currentUserId);
+  const [browse, setBrowse] = useState<Browse | null>(null);
+  const currentFolder = browse?.kind === 'folder' ? browse.trail[browse.trail.length - 1] : null;
+  // Every one of the user's own cards loaded in ANY scope so far, by id —
+  // what selection resolves against, so a card picked in one folder stays
+  // selectable/postable after browsing to another.
+  const [knownItems, setKnownItems] = useState<Map<string, CollectionItemWithFolderVisibility>>(() => new Map());
+  const rememberItems = useCallback((loaded: CollectionItemWithFolderVisibility[]) => {
+    if (!loaded.length) return;
+    setKnownItems((prev) => {
+      const next = new Map(prev);
+      for (const item of loaded) next.set(item.id, item);
+      return next;
+    });
+  }, []);
+  const { width: windowWidth } = useWindowDimensions();
+  const folderTileWidth = (windowWidth - SCROLL_PADDING * 2 - FOLDER_GAP * (FOLDER_COLUMNS - 1)) / FOLDER_COLUMNS;
+  const scrollRef = useRef<ScrollView>(null);
   // Own profile only — the "current user's avatar/username" the preview
   // (below) needs, same hook every other screen in this app already uses
   // for that. Not used for anything else on this screen.
@@ -72,18 +166,9 @@ export default function ShareCardScreen() {
   const [caption, setCaption] = useState('');
   const [posting, setPosting] = useState(false);
 
-  // A feed post needs an image to be worth sharing — this is a product/UX
-  // filter only; create-snapshot-post's own copy step independently fails
-  // the whole request for any item with no resolvable image regardless of
-  // this (see that function's own module comment). Trimmed, not just
-  // truthy — a whitespace-only string is not a usable image. Still
-  // filtered on the legacy image_url
-  // field (unrelated to Step 2's render migration below) — every real
-  // item with a gallery image also has this field set (kept in sync by
-  // the same DB functions that maintain primary_image_id), so this
-  // remains an accurate proxy for "has an image" without needing to wait
-  // on a signed lookup just to decide the picker's contents.
-  const shareableItems = items.filter((i) => !!i.image_url?.trim());
+  // Own cards with an image (see hasShareableImage), from every scope
+  // loaded so far.
+  const shareableItems = [...knownItems.values()].filter(hasShareableImage);
 
   // Route-param preselection ("Post to Feed" from Item Detail's Share Item
   // sheet, via /share-card/new?itemId=<id>) — fetched directly by id,
@@ -233,16 +318,72 @@ export default function ShareCardScreen() {
   // Share Card flow, completely unaffected.
   const isForeignRepost = !!sourceItem && sourceItem.user_id !== currentUserId;
 
-  // One batched call for the whole picker grid — never one signing
-  // request per card (item-images beta privacy hardening, Phase 3E).
-  // Picker grid + reorder thumbnails are small — 'preview' tier. Sourced
-  // from resolvableItems (not shareableItems) so a foreign preselected
-  // source item's reorder-strip thumbnail (below) resolves too, even
-  // though it never appears in the picker grid itself.
+  // Reorder-strip thumbnails and the preview's fallback — 'preview' tier,
+  // one batched call for just the SELECTED cards (plus a preselected source
+  // item), which may come from several folders. Each picker grid signs its
+  // own cards (ScopedCards); both share the same cache and in-flight
+  // requests, so a card already shown in a grid never signs twice.
   const { urls: signedItemImageUrls } = useSignedItemImages(
-    resolvableItems.map((i) => i.primary_image_id),
+    resolvableItems
+      .filter((i) => i.id === sourceItem?.id || selectedIds.includes(i.id))
+      .map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
   );
+
+  // The folder picker's data — root folders in the user's normal
+  // Collection order (useFolders: the Collection tab's own name order),
+  // with resolved covers and direct item counts, each fetched in one batch
+  // (never per folder) — no card rows at all until a scope is opened. Not
+  // loaded for a foreign repost, which never shows the picker.
+  const pickerUserId = itemId && (sourceLoading || isForeignRepost) ? undefined : currentUserId;
+  const {
+    folders: rootFolders,
+    itemCounts,
+    loading: foldersLoading,
+    error: foldersError,
+    refresh: refreshFolders,
+  } = useFolders(pickerUserId);
+  // An opened folder's own child folders, shown above its cards — the same
+  // one-level-at-a-time hierarchy the Collection screens use (a folder's
+  // cards are its DIRECT items only; descendants are reached by opening a
+  // child). Filtered by parent so a previous folder's children never show
+  // for the frame before this folder's load starts.
+  const { folders: childFolderRows } = useChildFolders(currentFolder?.id);
+  const childFolders = currentFolder ? childFolderRows.filter((f) => f.parent_folder_id === currentFolder.id) : [];
+  // One batched preview-tier call for every folder tile shown, with the
+  // stable cacheKeys the Collection screens use (coverSource).
+  const { coverSource } = useSignedFolderCovers(
+    [...rootFolders, ...childFolders].map((f) => f.id),
+    COMPACT_IMAGE_TIER,
+  );
+
+  function openFolder(folder: Folder) {
+    setBrowse((prev) => ({ kind: 'folder', trail: prev?.kind === 'folder' ? [...prev.trail, folder] : [folder] }));
+  }
+
+  // Up one level: a child folder back to its parent, a root folder or All
+  // Cards back to the picker. Never leaves the screen — that's Cancel.
+  const goUp = useCallback(() => {
+    setBrowse((prev) =>
+      prev?.kind === 'folder' && prev.trail.length > 1 ? { kind: 'folder', trail: prev.trail.slice(0, -1) } : null,
+    );
+  }, []);
+
+  // Each level starts at its top.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [browse]);
+
+  // Android's hardware Back steps up a level while browsing, instead of
+  // closing the composer (and its selection) outright.
+  useEffect(() => {
+    if (!browse) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      goUp();
+      return true;
+    });
+    return () => sub.remove();
+  }, [browse, goUp]);
 
   // Effective (most-restrictive-wins) public visibility — the same rule
   // enforced by items_select_public/collection_item_images_select_public
@@ -256,7 +397,6 @@ export default function ShareCardScreen() {
     return item.folder_is_public && item.is_public;
   }
 
-  const hasPrivateCards = shareableItems.some((i) => !isPubliclyShareable(i));
   const canPost = selectedIds.length >= 1 && !posting;
 
   // The compose step's own view of the selection, in FINAL posting order —
@@ -283,6 +423,32 @@ export default function ShareCardScreen() {
     DETAIL_IMAGE_TIER,
   );
 
+  // Preview media URLs are signed and CHANGE while Preview is open — none,
+  // then the 'preview' tier, then 'detail' — unlike a real feed post's one
+  // fixed snapshot URL. PostCard keys its media gate on the LEAD image's URL
+  // (useMediaSize): every new URL unmounts the media until that URL is
+  // measured, and measuring the detail URL means downloading the full
+  // 1400px image first. So the preview went blank exactly when its sharper
+  // image arrived. The detail image is the same picture as the preview tier
+  // (same aspect ratio, the only thing PostCard uses the size for), so the
+  // lead keeps its preview-tier URL until that has been measured, then
+  // switches to detail with the measured size handed over — the frame stays
+  // mounted and the sharper bytes simply load into it. Preview-only, in
+  // memory: nothing here reaches a durable post row.
+  const leadImageId = isForeignRepost ? sourceItem?.primary_image_id : selectedItems[0]?.primary_image_id;
+  const leadPreviewUrl = leadImageId ? (signedItemImageUrls.get(leadImageId) ?? null) : null;
+  const leadPreviewMedia = useMediaSize(leadPreviewUrl);
+
+  function previewImageUrl(imageId: string | null | undefined): string | null {
+    if (!imageId) return null;
+    const preview = signedItemImageUrls.get(imageId) ?? null;
+    const detail = signedDetailImageUrls.get(imageId) ?? null;
+    if (imageId !== leadImageId || !detail || !preview) return detail ?? preview;
+    if (!leadPreviewMedia.settled) return preview;
+    if (leadPreviewMedia.size) rememberMediaSize(detail, leadPreviewMedia.size.width, leadPreviewMedia.size.height);
+    return detail;
+  }
+
   // Fake, LOCAL-ONLY CardShareItem rows for the preview — no post exists
   // yet, so there is no real card_share_items id/post_id to read. Reuses
   // the exact fields CardSharePostBody actually renders (snapshot_title/
@@ -298,9 +464,7 @@ export default function ShareCardScreen() {
     id: item.id,
     post_id: 'preview',
     item_id: null,
-    snapshot_image_url: item.primary_image_id
-      ? (signedDetailImageUrls.get(item.primary_image_id) ?? signedItemImageUrls.get(item.primary_image_id) ?? null)
-      : null,
+    snapshot_image_url: previewImageUrl(item.primary_image_id),
     snapshot_title: item.title,
     snapshot_subtitle: item.brand,
     display_order: index,
@@ -447,10 +611,7 @@ export default function ShareCardScreen() {
   // urls the normal compose flow's own previewCards already resolves
   // (detail tier, falling back to the picker-grid's compact tier while
   // detail is still resolving) rather than a third signing call.
-  const foreignRepostPreviewImageUrl =
-    isForeignRepost && sourceItem?.primary_image_id
-      ? (signedDetailImageUrls.get(sourceItem.primary_image_id) ?? signedItemImageUrls.get(sourceItem.primary_image_id) ?? null)
-      : null;
+  const foreignRepostPreviewImageUrl = isForeignRepost ? previewImageUrl(sourceItem?.primary_image_id) : null;
 
   return (
     <>
@@ -478,21 +639,9 @@ export default function ShareCardScreen() {
           combined into one gate so the composer (and its "1/5 selected"
           count) never flashes an intermediate 0-selected state while a
           preselected source item is still loading in. */}
-      {loading || (!!itemId && sourceLoading) ? (
+      {!!itemId && sourceLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.link} />
-        </View>
-      ) : error ? (
-        // Distinct from the empty state below — a failed query must never
-        // look identical to "you have no cards." error itself (the raw
-        // Supabase message) is only ever logged, via useAllItems's own
-        // console.error — never rendered here.
-        <View style={styles.center}>
-          <Text style={styles.emptyTitle}>Couldn&apos;t load your collection</Text>
-          <Text style={styles.emptyBody}>Something went wrong. Please try again.</Text>
-          <TouchableOpacity style={styles.emptyButton} onPress={refresh}>
-            <Text style={styles.emptyButtonText}>Retry</Text>
-          </TouchableOpacity>
         </View>
       ) : itemId && sourceError ? (
         // The route-preselected source item couldn't be loaded (private,
@@ -562,76 +711,193 @@ export default function ShareCardScreen() {
             />
           </ScrollView>
         </KeyboardAvoidingView>
-      ) : shareableItems.length === 0 && !itemId ? (
-        <View style={styles.center}>
-          <Text style={styles.emptyTitle}>No cards to share</Text>
-          <Text style={styles.emptyBody}>
-            Add a photo to a card in your collection before sharing it.
-          </Text>
-          <TouchableOpacity style={styles.emptyButton} onPress={() => router.push('/(tabs)/collection')}>
-            <Text style={styles.emptyButtonText}>Go to Collection</Text>
-          </TouchableOpacity>
-        </View>
       ) : (
         <KeyboardAvoidingView
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView
+            ref={scrollRef}
             contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
-            <View style={styles.selectRow}>
-              <Text style={styles.sectionLabel}>
-                Choose 1{'–'}{MAX_CARDS} cards
-              </Text>
-              <Text style={styles.selectedCount}>
-                {selectedIds.length}/{MAX_CARDS} selected
-              </Text>
-            </View>
-            {selectedIds.length >= MAX_CARDS && (
-              <Text style={styles.maxHint}>Maximum {MAX_CARDS} cards</Text>
-            )}
-            {hasPrivateCards && (
-              <Text style={styles.privateHint}>
-                Dimmed cards are private — only public cards in public collections can be shared.
-              </Text>
-            )}
+            {browse === null ? (
+              <>
+                {/* Step 1 — choose where to browse. All Cards first (the
+                    original single grid), then the user's root folders. */}
+                <View style={styles.selectRow}>
+                  <Text style={styles.sectionLabel}>Choose a collection</Text>
+                  {selectedIds.length > 0 && (
+                    <Text style={styles.selectedCount}>
+                      {selectedIds.length}/{MAX_CARDS} selected
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.folderGrid}>
+                  <CollectionPreviewCard
+                    imageUrl={null}
+                    title="All Cards"
+                    tileWidth={folderTileWidth}
+                    onPress={() => setBrowse({ kind: 'all' })}
+                  />
+                  {rootFolders.map((folder) => {
+                    const count = itemCounts[folder.id] ?? 0;
+                    return (
+                      <CollectionPreviewCard
+                        key={folder.id}
+                        imageUrl={coverSource(folder)?.uri ?? null}
+                        cacheKey={coverSource(folder)?.cacheKey}
+                        title={folder.name}
+                        subtitle={`${count} ${count === 1 ? 'item' : 'items'}`}
+                        tileWidth={folderTileWidth}
+                        onPress={() => openFolder(folder)}
+                      />
+                    );
+                  })}
+                </View>
+                {foldersLoading && rootFolders.length === 0 ? (
+                  <ActivityIndicator style={styles.scopeState} color={PV2.link} />
+                ) : foldersError && rootFolders.length === 0 ? (
+                  <View style={styles.scopeState}>
+                    <Text style={styles.emptyBody}>Couldn&apos;t load your collections.</Text>
+                    <TouchableOpacity style={styles.emptyButton} onPress={refreshFolders}>
+                      <Text style={styles.emptyButtonText}>Retry</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {/* Back up one level (to the parent folder, or the picker) —
+                    never leaves the composer; Cancel does that. */}
+                <TouchableOpacity
+                  style={styles.backRow}
+                  onPress={goUp}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to collections">
+                  <IconSymbol name="chevron.left" size={18} color={PV2.textPrimary} />
+                  <Text style={styles.backTitle} numberOfLines={1}>
+                    {currentFolder ? currentFolder.name : 'All Cards'}
+                  </Text>
+                </TouchableOpacity>
 
-            <View style={styles.grid}>
-              {shareableItems.map((item) => {
-                const selectedIndex = selectedIds.indexOf(item.id);
-                const isSelected = selectedIndex !== -1;
-                const shareable = isPubliclyShareable(item);
-                const signedUrl = item.primary_image_id
-                  ? signedItemImageUrls.get(item.primary_image_id)
-                  : undefined;
-                return (
-                  <Pressable
-                    key={item.id}
-                    style={styles.slotShadow}
-                    onPress={() => toggleSelect(item)}
-                    disabled={!shareable}
-                    accessibilityState={{ disabled: !shareable, selected: isSelected }}
-                    accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
-                    <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
-                      {signedUrl && (
-                        <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" transition={150} />
-                      )}
-                      {isSelected && (
-                        <View style={styles.selectedBadge}>
-                          <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>
+                {childFolders.length > 0 && (
+                  <View style={styles.folderGrid}>
+                    {childFolders.map((folder) => (
+                      <CollectionPreviewCard
+                        key={folder.id}
+                        imageUrl={coverSource(folder)?.uri ?? null}
+                        cacheKey={coverSource(folder)?.cacheKey}
+                        title={folder.name}
+                        tileWidth={folderTileWidth}
+                        onPress={() => openFolder(folder)}
+                      />
+                    ))}
+                  </View>
+                )}
+
+                {/* This scope's cards. Keyed by scope, so opening a
+                    different folder (or All Cards) mounts a fresh load. */}
+                <ScopedCards
+                  key={currentFolder?.id ?? 'all'}
+                  userId={currentUserId}
+                  folderId={currentFolder?.id}
+                  onLoaded={rememberItems}>
+                  {(scope) =>
+                    scope.loading ? (
+                      <ActivityIndicator style={styles.scopeState} color={PV2.link} />
+                    ) : scope.error ? (
+                      // Distinct from the empty state below — a failed query
+                      // must never look identical to "you have no cards."
+                      // The raw Supabase message is only ever logged (via
+                      // useAllItems's own console.error), never rendered.
+                      <View style={styles.scopeState}>
+                        <Text style={styles.emptyTitle}>Couldn&apos;t load your collection</Text>
+                        <Text style={styles.emptyBody}>Something went wrong. Please try again.</Text>
+                        <TouchableOpacity style={styles.emptyButton} onPress={scope.refresh}>
+                          <Text style={styles.emptyButtonText}>Retry</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : scope.items.length === 0 ? (
+                      currentFolder ? (
+                        <Text style={styles.scopeEmpty}>
+                          {childFolders.length > 0
+                            ? 'No cards with photos directly in this collection.'
+                            : 'No cards with photos in this collection.'}
+                        </Text>
+                      ) : (
+                        <View style={styles.scopeState}>
+                          <Text style={styles.emptyTitle}>No cards to share</Text>
+                          <Text style={styles.emptyBody}>
+                            Add a photo to a card in your collection before sharing it.
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.emptyButton}
+                            onPress={() => router.push('/(tabs)/collection')}>
+                            <Text style={styles.emptyButtonText}>Go to Collection</Text>
+                          </TouchableOpacity>
                         </View>
-                      )}
-                      {!shareable && (
-                        <View style={styles.privateBadge} pointerEvents="none">
-                          <Text style={styles.privateBadgeText}>Private</Text>
+                      )
+                    ) : (
+                      <>
+                        <View style={styles.selectRow}>
+                          <Text style={styles.sectionLabel}>
+                            Choose 1{'–'}{MAX_CARDS} cards
+                          </Text>
+                          <Text style={styles.selectedCount}>
+                            {selectedIds.length}/{MAX_CARDS} selected
+                          </Text>
                         </View>
-                      )}
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
+                        {selectedIds.length >= MAX_CARDS && (
+                          <Text style={styles.maxHint}>Maximum {MAX_CARDS} cards</Text>
+                        )}
+                        {scope.items.some((i) => !isPubliclyShareable(i)) && (
+                          <Text style={styles.privateHint}>
+                            Dimmed cards are private — only public cards in public collections can be shared.
+                          </Text>
+                        )}
+
+                        <View style={styles.grid}>
+                          {scope.items.map((item) => {
+                            const selectedIndex = selectedIds.indexOf(item.id);
+                            const isSelected = selectedIndex !== -1;
+                            const shareable = isPubliclyShareable(item);
+                            const signedUrl = item.primary_image_id
+                              ? scope.imageUrls.get(item.primary_image_id)
+                              : undefined;
+                            return (
+                              <Pressable
+                                key={item.id}
+                                style={styles.slotShadow}
+                                onPress={() => toggleSelect(item)}
+                                disabled={!shareable}
+                                accessibilityState={{ disabled: !shareable, selected: isSelected }}
+                                accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
+                                <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
+                                  {signedUrl && (
+                                    <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" transition={150} />
+                                  )}
+                                  {isSelected && (
+                                    <View style={styles.selectedBadge}>
+                                      <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>
+                                    </View>
+                                  )}
+                                  {!shareable && (
+                                    <View style={styles.privateBadge} pointerEvents="none">
+                                      <Text style={styles.privateBadgeText}>Private</Text>
+                                    </View>
+                                  )}
+                                </View>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )
+                  }
+                </ScopedCards>
+              </>
+            )}
 
             {/* Step 2 — only appears once there's something to compose.
                 Reorder strip, caption, and preview all live in this one
@@ -785,6 +1051,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
+  },
+  folderGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: FOLDER_GAP,
+  },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+  },
+  backTitle: {
+    flexShrink: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  // Loading / error / empty inside the scroll — content-height, not the
+  // full-screen flex:1 center the top-level states use.
+  scopeState: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  scopeEmpty: {
+    fontSize: 14,
+    color: PV2.textSecondary,
+    textAlign: 'center',
+    paddingVertical: 24,
   },
   slotShadow: {
     width: '31%',
