@@ -26,7 +26,12 @@ import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
+import {
+  peekCachedSignedItemImage,
+  prefetchItemDetailImages,
+  prefetchSignedItemImages,
+  useSignedItemImages,
+} from '@/hooks/use-signed-item-images';
 import type { CollectibleItemType } from '@/types';
 
 // Recent-uploads wall for the Following tab — a separate data model/layout
@@ -250,6 +255,74 @@ async function queryFollowingCommentCounts(itemIds: string[], signal: AbortSigna
     commentCountMap.set(row.item_id, (commentCountMap.get(row.item_id) ?? 0) + 1);
   }
   return commentCountMap;
+}
+
+// A background Following preparation (prefetchFollowingFeed) still in
+// flight, per user — an initial load that starts meanwhile waits for it
+// instead of running the same queries a second time.
+const pendingPrefetches = new Map<string, Promise<void>>();
+
+// Prepares the Following feed's first screen in the background, BEFORE the
+// tab is opened — the head start Profile, Collections and folder screens
+// get from loading during their push transition, which an in-screen tab
+// toggle never has. Bounded and once per session per user: skipped if this
+// user already has a Following snapshot (any age — the warm path already
+// handles that) or a preparation in flight. It runs the feed's own row
+// query (+ comment counts) and stores the result as the normal session
+// snapshot, so opening Following within the freshness window renders it
+// with no network at all (after it, the snapshot still renders at once and
+// refreshes quietly, as on any return). Then it signs ONLY the first
+// INITIAL_VISIBLE_ITEM_COUNT images at the feed's preview tier, through the
+// shared signed-URL cache, and downloads those few into expo-image's cache
+// under the tiles' own stable cacheKeys — never the rest of the feed.
+// Never throws.
+export function prefetchFollowingFeed(userId: string): void {
+  if (followingFeedSessions.has(userId) || pendingPrefetches.has(userId)) return;
+  const controller = new AbortController();
+  const run = (async () => {
+    try {
+      const rows = await queryFollowingItemRows(userId, controller.signal);
+      const counts = rows.items.length
+        ? await queryFollowingCommentCounts(
+            rows.items.map((i) => i.id),
+            controller.signal,
+          )
+        : new Map<string, number>();
+      // The feed loaded on its own meanwhile — its data wins.
+      if (followingFeedSessions.has(userId)) return;
+      const items = rows.items.map((item) => ({ ...item, commentCount: counts.get(item.id) ?? 0 }));
+      updateSessionSnapshot(userId, { items, followedCount: rows.followedCount, fetchedAt: Date.now() });
+
+      const firstImageIds = items
+        .slice(0, INITIAL_VISIBLE_ITEM_COUNT)
+        .map((i) => i.primary_image_id)
+        .filter((id): id is string => !!id);
+      await prefetchSignedItemImages(firstImageIds, FOLLOWING_IMAGE_TIER);
+      await Promise.all(
+        firstImageIds.map(async (imageId) => {
+          // Same identity + tier keys the tiles use (servedTier when the
+          // server fell back to the original), so these bytes are exactly
+          // the cache entries the tiles read.
+          const signed = peekCachedSignedItemImage(userId, imageId, FOLLOWING_IMAGE_TIER);
+          if (!signed) return;
+          try {
+            const ref = await Image.loadAsync({
+              uri: signed.url,
+              cacheKey: itemImageCacheKey(userId, imageId, signed.servedTier ?? FOLLOWING_IMAGE_TIER),
+            });
+            ref.release?.();
+          } catch {
+            // best-effort — the tile loads it normally
+          }
+        }),
+      );
+    } catch {
+      // best-effort — opening Following runs its own load
+    } finally {
+      pendingPrefetches.delete(userId);
+    }
+  })();
+  pendingPrefetches.set(userId, run);
 }
 
 function FollowingItemTile({
@@ -562,6 +635,25 @@ export function FollowingItemsFeed({
 
       if (mode === 'initial') setLoading(true);
       else if (mode === 'refresh') setRefreshing(true);
+
+      // A background preparation (prefetchFollowingFeed) is already fetching
+      // exactly this: wait for it rather than duplicating its queries, and
+      // use its snapshot if it produced one. If it failed, fall through to
+      // the normal load.
+      const pendingPrefetch = mode === 'initial' ? pendingPrefetches.get(currentUserId) : undefined;
+      if (pendingPrefetch) {
+        await pendingPrefetch;
+        if (controllerRef.current !== controller || controller.signal.aborted) return;
+        const prepared = followingFeedSessions.get(currentUserId);
+        if (prepared) {
+          setItems(prepared.items);
+          setFollowedCount(prepared.followedCount);
+          setLoadError(null);
+          setLoading(false);
+          controllerRef.current = null;
+          return;
+        }
+      }
       // 'background': no loading/refreshing flag at all — a stale-cache
       // quiet refresh must never blank or re-skeleton content that's
       // already correctly on screen.

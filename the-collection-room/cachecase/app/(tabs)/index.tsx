@@ -22,7 +22,7 @@ import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
-import { FollowingItemsFeed } from '@/components/feed/following-items-feed';
+import { FollowingItemsFeed, prefetchFollowingFeed } from '@/components/feed/following-items-feed';
 import { RepostMenu } from '@/components/feed/repost-menu';
 import {
   FEED_POST_SELECT,
@@ -322,6 +322,25 @@ export default function HomeScreen() {
   // one is pending is ignored (the server is idempotent too: one repost per
   // user per original).
   const repostInFlightRef = useRef(new Set<string>());
+
+  // Following head start: once For You's first load has settled, prepare
+  // Following's first screen in the background at the next idle moment
+  // (prefetchFollowingFeed — bounded: one row query + comment counts, then
+  // only the first few preview images). Never before For You is on screen,
+  // never in front of an interaction, and at most once per signed-in user
+  // per session (the function itself also skips when Following already has
+  // data or a preparation running). Following opened earlier still loads on
+  // its own, or joins this if it's in flight.
+  const followingPrefetchedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentUserId || loading || followingPrefetchedForRef.current === currentUserId) return;
+    const userId = currentUserId;
+    const handle = requestIdleCallback(() => {
+      followingPrefetchedForRef.current = userId;
+      prefetchFollowingFeed(userId);
+    });
+    return () => cancelIdleCallback(handle);
+  }, [currentUserId, loading]);
 
   // Repost / undo repost of an entry's ORIGINAL (a repost's own repostOf).
   // Optimistic count/state; rolled back if the request fails. A new repost

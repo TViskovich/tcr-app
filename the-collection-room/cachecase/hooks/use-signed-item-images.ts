@@ -494,40 +494,56 @@ async function signItemImageIds(
 // Edge Function still decides authorization per id; this only moves WHEN
 // the request is made. Fire-and-forget, never throws.
 export function prefetchItemDetailImages(imageIds: (string | null | undefined)[]): void {
+  void prefetchSignedItemImages(imageIds, DETAIL_IMAGE_TIER);
+}
+
+// The same tap-time / background signing for any tier: signs the ids that
+// have no fresh (memory or persisted) entry, through the exact same pass,
+// cache, in-flight dedupe, persistence and identity guard as the hook — so
+// a screen opened later reads the result from cache, or joins the request
+// still in flight, and never signs the same image twice. Resolves once
+// every requested id is settled (including ids another caller was already
+// signing); never rejects.
+export async function prefetchSignedItemImages(
+  imageIds: (string | null | undefined)[],
+  tier: ImageTier,
+): Promise<void> {
   const ids = Array.from(new Set(imageIds.filter((id): id is string => !!id)));
   if (!ids.length) return;
-  void (async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const identity = data.session?.user?.id ?? 'anon';
-      if (!isActiveSignedUrlIdentity(identity)) return;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const identity = data.session?.user?.id ?? 'anon';
+    if (!isActiveSignedUrlIdentity(identity)) return;
 
-      const suffix = imageTierCacheSuffix(DETAIL_IMAGE_TIER);
-      const keyOf = (id: string) => `${identity}:${id}${suffix}`;
-      const needed = (id: string) => !isFresh(cache.get(keyOf(id))) && !inFlight.has(keyOf(id));
-      let missing = ids.filter(needed);
-      if (!missing.length) return;
+    const suffix = imageTierCacheSuffix(tier);
+    const keyOf = (id: string) => `${identity}:${id}${suffix}`;
+    const needed = (id: string) => !isFresh(cache.get(keyOf(id))) && !inFlight.has(keyOf(id));
+    let missing = ids.filter(needed);
 
-      // Same gap-only hydration as the hook: a still-valid persisted entry
-      // (e.g. after a cold start) needs no request at all.
-      const gaps = missing.filter((id) => !cache.has(keyOf(id)));
-      if (gaps.length) {
-        const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
-        for (const id of gaps) {
-          const entry = persisted[`${id}${suffix}`];
-          if (entry && entry.expiresAt > Date.now() && !cache.has(keyOf(id))) {
-            cache.set(keyOf(id), { url: entry.url, expiresAt: entry.expiresAt });
-          }
+    // Same gap-only hydration as the hook: a still-valid persisted entry
+    // (e.g. after a cold start) needs no request at all.
+    const gaps = missing.filter((id) => !cache.has(keyOf(id)));
+    if (gaps.length) {
+      const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
+      for (const id of gaps) {
+        const entry = persisted[`${id}${suffix}`];
+        if (entry && entry.expiresAt > Date.now() && !cache.has(keyOf(id))) {
+          cache.set(keyOf(id), { url: entry.url, expiresAt: entry.expiresAt });
         }
-        missing = missing.filter(needed);
-        if (!missing.length) return;
       }
-
-      await signItemImageIds(missing, DETAIL_IMAGE_TIER, identity, data.session?.access_token ?? null, () => false);
-    } catch {
-      // best-effort — the destination screen still requests it normally
+      missing = missing.filter(needed);
     }
-  })();
+
+    const pending = ids.map((id) => inFlight.get(keyOf(id))).filter((p): p is Promise<void> => !!p);
+    await Promise.all([
+      missing.length
+        ? signItemImageIds(missing, tier, identity, data.session?.access_token ?? null, () => false)
+        : Promise.resolve(),
+      ...pending,
+    ]);
+  } catch {
+    // best-effort — the destination screen still requests it normally
+  }
 }
 
 // Accepts collection_item_images.id values only (nulls/undefineds filtered
