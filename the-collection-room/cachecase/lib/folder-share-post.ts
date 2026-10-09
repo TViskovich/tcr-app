@@ -69,6 +69,30 @@ export async function fetchFolderShareItems(
   return result;
 }
 
+// Live owner of each shared folder (folders.user_id), for repost attribution
+// on folder_share posts — same live-join model as an 'item' post's source
+// owner (see FeedPost.sourceOwner): a post whose author differs from the
+// folder's owner is a repost of someone else's folder. Read through RLS, so a
+// folder the viewer can no longer see (made private, or deleted —
+// posts.folder_id goes NULL) simply has no entry and the post renders
+// without the repost header. Best-effort: logs and returns what it has.
+export async function fetchFolderOwnerIds(
+  folderIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const ids = [...new Set(folderIds)];
+  if (ids.length === 0) return result;
+  const query = supabase.from('folders').select('id, user_id').in('id', ids);
+  const { data, error } = await (signal ? query.abortSignal(signal) : query);
+  if (error) {
+    console.error('[fetchFolderOwnerIds] folders query failed:', error.message, error);
+    return result;
+  }
+  for (const row of data ?? []) result.set(row.id as string, row.user_id as string);
+  return result;
+}
+
 // Picker/preview helper — a folder's shareable items, using the same
 // eligibility the create_folder_share_post RPC enforces server-side (the RPC
 // is the authority; this only mirrors it for UI).
@@ -99,7 +123,8 @@ export async function fetchShareableFolderItems(
 
 // All-or-nothing creation via the create-snapshot-post Edge Function (image
 // copies + post + snapshot rows happen server-side as one unit; the server
-// also enforces ownership and folder/item privacy).
+// also enforces folder/item privacy). The caller may be the folder's owner or
+// anyone sharing another collector's effectively-public folder (a repost).
 export async function createFolderSharePost(
   folderId: string,
   caption: string | null,

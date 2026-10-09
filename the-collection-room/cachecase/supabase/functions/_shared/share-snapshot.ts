@@ -102,12 +102,12 @@ async function downloadValidateUpload(
 // function's own PR): the caller may always snapshot their OWN item,
 // regardless of its own privacy flags (unchanged — matches
 // create_card_share_post's original rule). For an item the caller does
-// NOT own, snapshotType MUST be 'post' (the single-item path — the only
-// one that can ever reach this with a foreign item; card_share/
-// rate_my_grails pre-validate ownership themselves in create-snapshot-
-// post before ever calling this, and folder_share's own per-item calls
-// are already scoped to the folder owner's items there too), and the item
-// must be genuinely public: active, collection_items.is_public, and its
+// NOT own, snapshotType MUST be 'post' (the single-item path) or
+// 'folder_share' (a repost of another collector's public folder — its
+// per-item calls are scoped to that folder owner's public items in
+// create-snapshot-post; card_share/rate_my_grails pre-validate ownership
+// themselves there before ever calling this), and the item must be
+// genuinely public: active, collection_items.is_public, and its
 // whole folder chain effectively visible to an anonymous viewer. That
 // last check re-derives items_select_public's own RLS rule (this function
 // runs under the service-role client, which bypasses RLS entirely) via
@@ -167,7 +167,7 @@ export async function copyItemImageIntoShareSnapshots(
   });
 
   if (item.user_id !== callerId) {
-    if (snapshotType !== 'post') {
+    if (snapshotType !== 'post' && snapshotType !== 'folder_share') {
       console.error('[copyItemImageIntoShareSnapshots] unauthorized: non-owner + non-post snapshotType', { itemId, snapshotType });
       return { ok: false, reason: 'unauthorized' };
     }

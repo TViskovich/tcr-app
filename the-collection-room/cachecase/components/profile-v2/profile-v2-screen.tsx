@@ -7,7 +7,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -30,6 +29,7 @@ import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
+import { ShareSheet } from '@/components/share/share-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   getHeroCanvasPickerThemes,
@@ -65,6 +65,7 @@ import {
   type ProfileImageKind,
 } from '@/lib/storage';
 import { registerScrollToTop } from '@/lib/scroll-to-top';
+import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
@@ -926,26 +927,24 @@ export function ProfileV2Screen({ userId }: Props) {
     }
   }
 
-  // Expandable profile-details panel (below ProfileV2IdentityCard) — see
-  // `detailsExpanded` state below. Share follows the exact same
-  // Share.share(...) + deep-link-in-message pattern already used by
-  // app/collection/[folderId].tsx's own handleShare, just pointed at this
-  // profile's route (app/user/[username].tsx) instead of a folder's.
-  async function handleShareProfile() {
+  // Share (in the expandable profile-details panel below
+  // ProfileV2IdentityCard) opens the shared CacheCase Share sheet. Profiles
+  // have no feed post type and DMs only carry item/photo attachments, so
+  // Share to Feed / Share to DM are shown as unavailable; Share Elsewhere
+  // sends this profile's deep link (app/user/[username].tsx — see
+  // lib/share/share-target.ts).
+  const [shareSheetVisible, setShareSheetVisible] = useState(false);
+
+  function handleShareProfileElsewhere() {
     if (!profile) return;
     // Same hero_display_name → display_name → username fallback used for
     // the rest of this screen (see the `displayName` const near the
-    // bottom of this component) — recomputed here rather than referenced
-    // across the function body's early-return boundaries.
-    const shareName = profile.hero_display_name || profile.display_name || profile.username;
-    try {
-      await Share.share({
-        title: shareName,
-        message: `Check out @${profile.username} on CacheCase\ncachecase://user/${profile.username}`,
-      });
-    } catch {
-      // user dismissed share sheet — no-op
-    }
+    // bottom of this component).
+    shareElsewhere({
+      type: 'profile',
+      username: profile.username,
+      title: profile.hero_display_name || profile.display_name || profile.username,
+    });
   }
 
   // Temporary owner-only entry point for testing the real
@@ -2056,7 +2055,7 @@ export function ProfileV2Screen({ userId }: Props) {
                   isFollowing={isFollowing}
                   followLoading={followLoading}
                   messageLoading={msgLoading}
-                  onSharePress={handleShareProfile}
+                  onSharePress={() => setShareSheetVisible(true)}
                   onFollowersPress={() => router.push({ pathname: '/followers/[userId]', params: { userId } })}
                   onFollowingPress={() => router.push({ pathname: '/following/[userId]', params: { userId } })}
                   onOpenInboxPress={isOwnProfile ? () => router.navigate('/(tabs)/messages') : undefined}
@@ -2529,6 +2528,21 @@ export function ProfileV2Screen({ userId }: Props) {
       </KeyboardAvoidingView>
 
       <GrailSlotChooser target={grailChooserTarget} onClose={closeGrailChooser} />
+
+      {profile && (
+        <ShareSheet
+          visible={shareSheetVisible}
+          onClose={() => setShareSheetVisible(false)}
+          heading="Share Profile"
+          imageUri={profile.avatar_url}
+          imageShape="circle"
+          title={displayName}
+          subtitle={`@${profile.username}`}
+          feed={{ kind: 'unsupported', subtitle: 'Not available for profiles yet' }}
+          dm={{ kind: 'unsupported', subtitle: 'Not available for profiles yet' }}
+          onShareElsewhere={handleShareProfileElsewhere}
+        />
+      )}
 
       {isOwnProfile && currentUserId && (
         <CreateFolderModal

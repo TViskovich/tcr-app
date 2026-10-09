@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,10 +13,11 @@ import {
   View,
 } from 'react-native';
 
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PostCard, type FeedPost } from '@/components/feed/post-card';
+import type { SourceOwnerAttribution } from '@/components/feed/repost-header';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useProfile } from '@/hooks/use-profile';
@@ -48,7 +49,80 @@ type OwnedFolder = {
 // item); 'none' = no cover, the collage is shown.
 type CoverPlan = { kind: 'upload' } | { kind: 'item'; imageId: string } | { kind: 'none' };
 
-// Create menu -> Share Folder. Step 1: pick one of your own folders (only
+// Effectively public = the folder and every ancestor is public (all of a
+// user's ancestors are their own folders, so the owned list has them).
+function isEffectivelyPublicIn(folders: OwnedFolder[], folder: OwnedFolder): boolean {
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const seen = new Set<string>();
+  let current: OwnedFolder | undefined = folder;
+  while (current) {
+    if (!current.is_public || seen.has(current.id)) return false;
+    seen.add(current.id);
+    if (!current.parent_folder_id) return true;
+    current = byId.get(current.parent_folder_id);
+  }
+  return false;
+}
+
+// Another collector's folder, opened from its Share sheet → Share to Feed (a
+// repost). Read through RLS, so it only resolves when the viewer can see it —
+// for a non-owner that means effectively public. create-snapshot-post
+// re-checks that server-side. null when it can't be read or its owner's
+// profile can't be loaded (the post would have no attribution to show).
+async function fetchOtherUsersFolder(
+  folderId: string,
+): Promise<{ folder: OwnedFolder; owner: SourceOwnerAttribution } | null> {
+  const { data: folder, error } = await supabase
+    .from('folders')
+    .select('id, name, is_public, parent_folder_id, cover_source, cover_item_id, user_id')
+    .eq('id', folderId)
+    .maybeSingle();
+  if (error || !folder) {
+    if (error) console.error('[share-folder] shared folder query failed:', error.message);
+    return null;
+  }
+  const { data: owner, error: ownerError } = await supabase
+    .from('profiles')
+    .select('id, username, display_name, avatar_url')
+    .eq('id', folder.user_id)
+    .maybeSingle();
+  if (ownerError || !owner) {
+    if (ownerError) console.error('[share-folder] folder owner query failed:', ownerError.message);
+    return null;
+  }
+  return {
+    folder: folder as OwnedFolder,
+    owner: {
+      id: owner.id,
+      username: owner.username ?? 'user',
+      displayName: owner.display_name ?? null,
+      avatarUrl: owner.avatar_url ?? null,
+    },
+  };
+}
+
+async function resolveCoverPlan(folder: OwnedFolder): Promise<CoverPlan> {
+  if (folder.cover_source === 'upload') return { kind: 'upload' };
+  // Eligible = public, active, has a primary photo (what the server allows).
+  let query = supabase
+    .from('collection_items')
+    .select('id')
+    .eq('folder_id', folder.id)
+    .eq('collection_status', 'active')
+    .eq('is_public', true);
+  if (folder.cover_source === 'item') {
+    if (!folder.cover_item_id) return { kind: 'none' };
+    query = query.eq('id', folder.cover_item_id);
+  } else {
+    query = query.order('created_at', { ascending: false });
+  }
+  const { data } = await query.limit(50);
+  const withImages = await attachPrimaryImageIds((data ?? []) as { id: string }[]);
+  const first = withImages.find((i) => !!i.primary_image_id);
+  return first?.primary_image_id ? { kind: 'item', imageId: first.primary_image_id } : { kind: 'none' };
+}
+
+// Create menu (or a folder's Share sheet) -> Share Folder. Step 1: pick one of your own folders (only
 // effectively-public ones can be posted to the feed — the create_folder_share_post
 // RPC re-checks this server-side). Step 2: optional caption plus a preview
 // that is the real feed PostCard, then Post publishes a 'folder_share' post
@@ -57,6 +131,12 @@ type CoverPlan = { kind: 'upload' } | { kind: 'item'; imageId: string } | { kind
 // native share sheet.
 export default function ShareFolderScreen() {
   const router = useRouter();
+  // Set by a folder's Share sheet → Share to Feed (app/collection/
+  // [folderId].tsx). One of the viewer's own folders: selected straight away
+  // when effectively public, otherwise the picker shows as usual (non-public
+  // folders appear disabled). Someone else's folder: loaded directly and
+  // posted as a repost attributed to its owner (see fetchOtherUsersFolder).
+  const { folderId: preselectFolderId } = useLocalSearchParams<{ folderId?: string }>();
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -74,67 +154,12 @@ export default function ShareFolderScreen() {
   const [caption, setCaption] = useState('');
   const [posting, setPosting] = useState(false);
   const [createdAt] = useState(() => new Date().toISOString());
+  // Set only when sharing ANOTHER collector's folder (a repost): its owner,
+  // shown in the preview's repost header exactly as the published post will
+  // show it. The folder can't be swapped in that mode (no "Change").
+  const [sourceOwner, setSourceOwner] = useState<SourceOwnerAttribution | null>(null);
 
-  useEffect(() => {
-    if (!currentUserId) return;
-    let cancelled = false;
-    supabase
-      .from('folders')
-      .select('id, name, is_public, parent_folder_id, cover_source, cover_item_id')
-      .eq('user_id', currentUserId)
-      .order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          console.error('[share-folder] folders query failed:', error.message);
-          setFoldersError(true);
-        } else {
-          setFolders((data ?? []) as OwnedFolder[]);
-        }
-        setLoadingFolders(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUserId]);
-
-  // Effectively public = the folder and every ancestor is public (all of a
-  // user's ancestors are their own folders, so the owned list has them).
-  function isEffectivelyPublic(folder: OwnedFolder): boolean {
-    const byId = new Map(folders.map((f) => [f.id, f]));
-    const seen = new Set<string>();
-    let current: OwnedFolder | undefined = folder;
-    while (current) {
-      if (!current.is_public || seen.has(current.id)) return false;
-      seen.add(current.id);
-      if (!current.parent_folder_id) return true;
-      current = byId.get(current.parent_folder_id);
-    }
-    return false;
-  }
-
-  async function resolveCoverPlan(folder: OwnedFolder): Promise<CoverPlan> {
-    if (folder.cover_source === 'upload') return { kind: 'upload' };
-    // Eligible = public, active, has a primary photo (what the server allows).
-    let query = supabase
-      .from('collection_items')
-      .select('id')
-      .eq('folder_id', folder.id)
-      .eq('collection_status', 'active')
-      .eq('is_public', true);
-    if (folder.cover_source === 'item') {
-      if (!folder.cover_item_id) return { kind: 'none' };
-      query = query.eq('id', folder.cover_item_id);
-    } else {
-      query = query.order('created_at', { ascending: false });
-    }
-    const { data } = await query.limit(50);
-    const withImages = await attachPrimaryImageIds((data ?? []) as { id: string }[]);
-    const first = withImages.find((i) => !!i.primary_image_id);
-    return first?.primary_image_id ? { kind: 'item', imageId: first.primary_image_id } : { kind: 'none' };
-  }
-
-  function selectFolder(folder: OwnedFolder) {
+  const selectFolder = useCallback((folder: OwnedFolder) => {
     setSelected(folder);
     setPreview(null);
     setPreviewError(false);
@@ -146,6 +171,48 @@ export default function ShareFolderScreen() {
         console.error('[share-folder] preview items failed:', e);
         setPreviewError(true);
       });
+  }, []);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    let cancelled = false;
+    supabase
+      .from('folders')
+      .select('id, name, is_public, parent_folder_id, cover_source, cover_item_id')
+      .eq('user_id', currentUserId)
+      .order('created_at', { ascending: false })
+      .then(async ({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.error('[share-folder] folders query failed:', error.message);
+          setFoldersError(true);
+        } else {
+          const owned = (data ?? []) as OwnedFolder[];
+          setFolders(owned);
+          const preselect = preselectFolderId ? owned.find((f) => f.id === preselectFolderId) : undefined;
+          if (preselect) {
+            if (isEffectivelyPublicIn(owned, preselect)) selectFolder(preselect);
+          } else if (preselectFolderId) {
+            // Not one of the viewer's folders — a repost of someone else's.
+            const shared = await fetchOtherUsersFolder(preselectFolderId);
+            if (cancelled) return;
+            if (shared) {
+              setSourceOwner(shared.owner);
+              selectFolder(shared.folder);
+            } else {
+              Alert.alert('Can’t share this folder', 'This folder isn’t available to share right now.');
+            }
+          }
+        }
+        setLoadingFolders(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, preselectFolderId, selectFolder]);
+
+  function isEffectivelyPublic(folder: OwnedFolder): boolean {
+    return isEffectivelyPublicIn(folders, folder);
   }
 
   function leaveScreen() {
@@ -214,6 +281,7 @@ export default function ShareFolderScreen() {
           myRating: null,
           cardShareItems: [],
           images: [],
+          sourceOwner,
           folderShare: {
             folderId: selected.id,
             folderName: selected.name,
@@ -303,9 +371,11 @@ export default function ShareFolderScreen() {
               <Text style={styles.sectionLabel} numberOfLines={1}>
                 {selected.name}
               </Text>
-              <TouchableOpacity onPress={() => setSelected(null)} hitSlop={8} disabled={posting}>
-                <Text style={styles.changeText}>Change</Text>
-              </TouchableOpacity>
+              {!sourceOwner && (
+                <TouchableOpacity onPress={() => setSelected(null)} hitSlop={8} disabled={posting}>
+                  <Text style={styles.changeText}>Change</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <TextInput

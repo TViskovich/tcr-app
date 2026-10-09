@@ -6,7 +6,6 @@ import {
   FlatList,
   Platform,
   Pressable,
-  Share,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -32,6 +31,7 @@ import { PREVIEW_CARD_ASPECT_RATIO } from '@/components/collection/collection-pr
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { FolderCommentsSheet } from '@/components/collection/folder-comments-sheet';
+import { ShareSheet } from '@/components/share/share-sheet';
 import { FolderCoverAdjuster } from '@/components/collection/folder-cover-adjuster';
 import { FolderCoverImage } from '@/components/collection/folder-cover-image';
 import { getNestedFolderTileImage } from '@/components/collection/nested-folder-tile-image';
@@ -67,6 +67,7 @@ import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
+import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, FolderCoverCrop } from '@/types';
@@ -948,22 +949,33 @@ export default function CollectionFolderScreen() {
     });
   }
 
-  // Same share text/deep-link pattern as the legacy app/folder/[id].tsx
-  // screen this was migrated from, pointed at the canonical route.
-  async function handleShare() {
-    if (!folder) return;
-    const handle = isOwner
-      ? (session?.user?.email?.split('@')[0] ?? 'me')
-      : (ownerProfile?.username ?? 'user');
-    try {
-      await Share.share({
-        title: folder.name,
-        message: `Check out "${folder.name}" by @${handle} on The Collection Room\nthecollectionroom://collection/${folderId}`,
-      });
-    } catch {
-      // user dismissed share sheet — no-op
-    }
+  // Share — opens the shared CacheCase Share sheet (see the ShareSheet
+  // below). Share to Feed reuses the existing durable folder_share flow
+  // (app/share-folder/new.tsx, preselected via folderId) for the owner AND
+  // for anyone else viewing it — a non-owner can only open a folder that is
+  // effectively public (RLS), and their post is a repost attributed to the
+  // owner. create-snapshot-post re-checks effective public visibility
+  // server-side either way. DMs only carry item/photo attachments today,
+  // so Share to DM is shown as unavailable for folders.
+  const [shareSheetVisible, setShareSheetVisible] = useState(false);
+
+  function handleShareToFeed() {
+    router.push({ pathname: '/share-folder/new', params: { folderId } } as never);
   }
+
+  // Share Elsewhere — native share sheet with the folder's deep link (see
+  // lib/share/share-target.ts). The owner's own folder omits the "by @"
+  // part rather than guessing a handle from their email.
+  function handleShareElsewhere() {
+    if (!folder) return;
+    shareElsewhere({
+      type: 'folder',
+      id: folder.id,
+      title: folder.name,
+      ownerUsername: isOwner ? null : (ownerProfile?.username ?? null),
+    });
+  }
+
 
   // Closes Edit Folder and opens FolderCoverMenu in its place — sequential,
   // not stacked, since Edit Folder has nothing left to show once the owner
@@ -1519,7 +1531,7 @@ export default function CollectionFolderScreen() {
               />
               <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
             </Pressable>
-            <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+            <Pressable onPress={() => setShareSheetVisible(true)} hitSlop={10} style={styles.iconBtn}>
               <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
             </Pressable>
           </View>
@@ -1933,7 +1945,7 @@ export default function CollectionFolderScreen() {
                 />
                 <Text style={[styles.likeCount, liked && styles.likeCountActive]}>{likeCount}</Text>
               </Pressable>
-              <Pressable onPress={handleShare} hitSlop={10} style={styles.iconBtn}>
+              <Pressable onPress={() => setShareSheetVisible(true)} hitSlop={10} style={styles.iconBtn}>
                 <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
               </Pressable>
             </View>
@@ -2300,6 +2312,32 @@ export default function CollectionFolderScreen() {
           onCancel={handleCancelAdjustCover}
         />
       )}
+
+      <ShareSheet
+        visible={shareSheetVisible}
+        onClose={() => setShareSheetVisible(false)}
+        heading="Share Folder"
+        imageUri={coverUrl ?? coverPreviewPeek?.url ?? null}
+        imageShape="square"
+        title={folderTitle}
+        subtitle={ownerProfile ? `@${ownerProfile.username}` : null}
+        feed={
+          !currentUserId
+            ? { kind: 'unsupported', subtitle: 'Sign in to post to your feed' }
+            : isOwner && folder && !folder.is_public
+              ? {
+                  kind: 'blocked',
+                  subtitle: 'Make this folder public to share',
+                  noticeTitle: 'This folder must be public before it can be posted.',
+                  noticeText: 'Change the folder’s visibility and try again.',
+                  fixLabel: 'Edit Folder',
+                  onFix: () => setTimeout(() => setEditVisible(true), 350),
+                }
+              : { kind: 'available', subtitle: 'Create a CacheCase post with this folder', onPress: handleShareToFeed }
+        }
+        dm={{ kind: 'unsupported', subtitle: 'Not available for folders yet' }}
+        onShareElsewhere={handleShareElsewhere}
+      />
 
       <FolderCommentsSheet
         visible={commentsVisible}

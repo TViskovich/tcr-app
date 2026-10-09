@@ -35,7 +35,7 @@ import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover } from '@/hooks/use-signed-folder-covers';
 import { useAuth } from '@/lib/auth';
-import { fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
+import { fetchFolderOwnerIds, fetchFolderShareItems, type FolderShareData, type FolderShareItem as FolderShareItemT } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -324,7 +324,7 @@ function PostHeader({
   // Same "Post to Feed" repost distinction as post-card.tsx's own
   // isForeignRepost — see FeedPost.sourceOwner's own comment for exactly
   // when this is set.
-  const isForeignRepost = post.post_type === 'item' && !!post.sourceOwner;
+  const isForeignRepost = (post.post_type === 'item' || post.post_type === 'folder_share') && !!post.sourceOwner;
   return (
     <View>
       {/* Header bar — avatar + name above the photo. Foreign repost:
@@ -909,12 +909,20 @@ export default function PostDetailScreen() {
         // until itemRes resolves. A single-post screen, so this doesn't
         // warrant the batched second-query pattern queryFeed/fetchUserPosts
         // use for a whole page of posts.
+        // folder_share: the shared folder's live owner instead (see
+        // fetchFolderOwnerIds) — a post by anyone else is a folder repost.
+        let sourceOwnerId: string | null = item?.user_id ?? null;
+        if (row.post_type === 'folder_share' && row.folder_id) {
+          const folderOwners = await fetchFolderOwnerIds([row.folder_id], controller.signal);
+          if (loadControllerRef.current !== controller || controller.signal.aborted) return;
+          sourceOwnerId = folderOwners.get(row.folder_id) ?? null;
+        }
         let sourceOwner: SourceOwnerAttribution | null = null;
-        if (item?.user_id && item.user_id !== row.user_id) {
+        if (sourceOwnerId && sourceOwnerId !== row.user_id) {
           const { data: ownerProfile, error: ownerProfileError } = await supabase
             .from('profiles')
             .select('id, username, display_name, avatar_url')
-            .eq('id', item.user_id)
+            .eq('id', sourceOwnerId)
             .abortSignal(controller.signal)
             .maybeSingle();
           if (loadControllerRef.current !== controller || controller.signal.aborted) return;

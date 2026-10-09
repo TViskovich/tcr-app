@@ -15,7 +15,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
-import { fetchFolderShareItems } from '@/lib/folder-share-post';
+import { fetchFolderOwnerIds, fetchFolderShareItems } from '@/lib/folder-share-post';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -95,8 +95,13 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   const folderSharePostIds = (postRows as any[])
     .filter((p) => p.post_type === 'folder_share')
     .map((p) => p.id as string);
+  // Shared folders' ids, for folder_share repost attribution (see
+  // fetchFolderOwnerIds).
+  const sharedFolderIds = (postRows as any[])
+    .filter((p) => p.post_type === 'folder_share' && p.folder_id)
+    .map((p) => p.folder_id as string);
 
-  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap, folderShareMap] = await Promise.all([
+  const [profilesRes, itemsRes, likesRes, commentsRes, followsRes, grailData, cardShareMap, postImagesMap, folderShareMap, folderOwnerMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -133,6 +138,7 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
     // just above.
     fetchPostImages(textPostIds, signal),
     fetchFolderShareItems(folderSharePostIds, signal),
+    fetchFolderOwnerIds(sharedFolderIds, signal),
   ]);
 
   const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
@@ -156,9 +162,9 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   // ever queries for ids genuinely missing from it.
   const missingOwnerIds = [
     ...new Set(
-      (itemsRes.data ?? [])
-        .map((i: any) => i.user_id as string | null)
-        .filter((id): id is string => !!id && !profileMap.has(id)),
+      [...(itemsRes.data ?? []).map((i: any) => i.user_id as string | null), ...folderOwnerMap.values()].filter(
+        (id): id is string => !!id && !profileMap.has(id),
+      ),
     ),
   ];
   if (missingOwnerIds.length > 0) {
@@ -198,8 +204,16 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   const posts = (postRows as any[]).map((post) => {
     const profile = profileMap.get(post.user_id) ?? {};
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
-    const itemOwnerId = (item as any).user_id as string | undefined;
-    const ownerProfile = itemOwnerId && itemOwnerId !== post.user_id ? profileMap.get(itemOwnerId) : undefined;
+    // Source owner: the item's owner for an 'item' post, the shared
+    // folder's owner for a 'folder_share' post (see fetchFolderOwnerIds).
+    const sourceOwnerId = (
+      post.post_type === 'folder_share'
+        ? post.folder_id
+          ? folderOwnerMap.get(post.folder_id)
+          : undefined
+        : (item as any).user_id
+    ) as string | undefined;
+    const ownerProfile = sourceOwnerId && sourceOwnerId !== post.user_id ? profileMap.get(sourceOwnerId) : undefined;
     const rating = ratingTotals.get(post.id);
     return {
       id: post.id,

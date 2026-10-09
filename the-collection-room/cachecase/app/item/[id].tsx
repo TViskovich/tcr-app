@@ -5,7 +5,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Share,
   StyleSheet,
   Switch,
   Text,
@@ -21,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
+import { GradedToggle, GradingCompanyField } from '@/components/item-detail/graded-toggle';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemCommentsSheet } from '@/components/item-detail/item-comments-sheet';
 import { ItemDescription } from '@/components/item-detail/item-description';
@@ -33,7 +33,7 @@ import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
-import { ItemShareSheet } from '@/components/share/item-share-sheet';
+import { ShareSheet } from '@/components/share/share-sheet';
 import { SendItemDmSheet } from '@/components/share/send-item-dm-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -44,6 +44,7 @@ import { peekCachedSignedItemImage, useSignedItemImages } from '@/hooks/use-sign
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { POKEMON_GRADING_COMPANIES, SPORTS_CARD_GRADING_COMPANIES } from '@/lib/card-grading-options';
 import { updateComicBookItem } from '@/lib/comic-book-items';
 import {
   COMIC_EDITION_OPTIONS,
@@ -59,6 +60,7 @@ import { updatePokemonItem } from '@/lib/pokemon-items';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
+import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { ComicBookDetails, ComicConditionType, CollectionItem, PokemonCardDetails } from '@/types';
@@ -520,6 +522,11 @@ export default function ItemDetailScreen() {
   // item, only-when-needed pattern as pokemonDetails/pokemonForm above.
   const [comicDetails, setComicDetails] = useState<ComicBookDetails | null>(null);
   const [comicForm, setComicForm] = useState<ComicEditForm | null>(null);
+  // Graded for Sports Card / Pokémon edit forms. No stored flag: derived on
+  // entering edit mode from whether a grade or grading company exists, and
+  // setting it back to "-" clears both so the save removes them.
+  const [sportsGraded, setSportsGraded] = useState(false);
+  const [pokemonGraded, setPokemonGraded] = useState(false);
   const isComicBookItem = item?.item_type === 'comic_book';
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
@@ -573,7 +580,7 @@ export default function ItemDetailScreen() {
     useItemLikes(id, currentUserId);
   const [itemCommentsVisible, setItemCommentsVisible] = useState(false);
   // CacheCase-owned Share Item sheet (replaces jumping straight to the
-  // native share sheet) — see components/share/item-share-sheet.tsx.
+  // native share sheet) — see components/share/share-sheet.tsx.
   // shareNavigatingRef is a synchronous re-entry guard for its "Post to
   // Feed" row: the sheet's own onClose->onPostToFeed sequence still leaves
   // a brief window (Modal close animation + router.push) where a second
@@ -688,6 +695,8 @@ export default function ItemDetailScreen() {
     if (!isOwner) return;
     if (item) {
       setForm(itemToForm(item));
+      setSportsGraded(!!(item.grade || item.grading_company));
+      setPokemonGraded(!!(pokemonDetails?.grade || pokemonDetails?.grading_company));
       setEditItemIsPublic(item.is_public);
       if (item.item_type === 'pokemon') {
         setPokemonForm(pokemonItemToForm(item, pokemonDetails));
@@ -739,6 +748,16 @@ export default function ItemDetailScreen() {
   function updateField(key: keyof EditForm) {
     return (value: string) =>
       setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  function changeSportsGraded(next: boolean) {
+    if (!next) setForm((prev) => (prev ? { ...prev, grade: '', gradingCompany: '' } : prev));
+    setSportsGraded(next);
+  }
+
+  function changePokemonGraded(next: boolean) {
+    if (!next) setPokemonForm((prev) => (prev ? { ...prev, grade: '', gradingCompany: '' } : prev));
+    setPokemonGraded(next);
   }
 
   async function handleAddPhotos() {
@@ -870,8 +889,8 @@ export default function ItemDetailScreen() {
         language: pokemonForm.language.trim() || null,
         edition: pokemonForm.edition.trim() || null,
         holoType: pokemonForm.holoType.trim() || null,
-        gradingCompany: pokemonForm.gradingCompany.trim() || null,
-        grade: pokemonForm.grade.trim() || null,
+        gradingCompany: pokemonGraded ? pokemonForm.gradingCompany.trim() || null : null,
+        grade: pokemonGraded ? pokemonForm.grade.trim() || null : null,
       });
       // The RPC returns only the updated collection_items row — the detail
       // row is rebuilt locally from the exact values just submitted (the
@@ -887,8 +906,8 @@ export default function ItemDetailScreen() {
         language: pokemonForm.language.trim() || null,
         edition: pokemonForm.edition.trim() || null,
         holo_type: pokemonForm.holoType.trim() || null,
-        grading_company: pokemonForm.gradingCompany.trim() || null,
-        grade: pokemonForm.grade.trim() || null,
+        grading_company: pokemonGraded ? pokemonForm.gradingCompany.trim() || null : null,
+        grade: pokemonGraded ? pokemonForm.grade.trim() || null : null,
       };
       setItem(updated);
       setEditItemIsPublic(updated.is_public);
@@ -1037,8 +1056,8 @@ export default function ItemDetailScreen() {
           team: form.team.trim() || null,
           year: form.year ? parseInt(form.year, 10) : null,
           brand: form.brand.trim() || null,
-          grade: form.grade.trim() || null,
-          grading_company: form.gradingCompany.trim() || null,
+          grade: sportsGraded ? form.grade.trim() || null : null,
+          grading_company: sportsGraded ? form.gradingCompany.trim() || null : null,
           serial_number: form.serialNumber.trim() || null,
           estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
           description: form.description.trim() || null,
@@ -1349,50 +1368,18 @@ export default function ItemDetailScreen() {
     Alert.alert('Not Registered', 'This card has not been registered with CacheCase yet.');
   }
 
-  // Native Share.share()+deep-link — reached via the Share Item sheet's
-  // "Share Outside CacheCase" row (see ItemShareSheet below), not the
-  // item's Share button directly. Branding/scheme updated off the legacy
-  // "The Collection Room"/`thecollectionroom://` copy still used by
-  // app/collection/[folderId].tsx's own handleShare (out of scope here) to
-  // the current CacheCase branding and the app's one registered scheme
-  // (app.json's "scheme": "cachecase" — `thecollectionroom://` was never
-  // actually registered there, so that old link never resolved). item.title
-  // (not the richer, type-specific `identity.title` computed just below,
-  // near the JSX) — plain and available regardless of item_type, and this
-  // function is defined well above that computation.
-  //
-  // handle: always the ITEM'S OWNER (ownerProfile — fetched unconditionally
-  // in fetchItem() above, for every viewer, owner included — see that
-  // effect's own "Always fetched now" comment), never the viewer's own
-  // email-derived guess. For a non-owner viewing someone else's item (the
-  // exact case this matters for — e.g. reposting a foreign public card),
-  // this was already correct; for the owner's own item it previously fell
-  // back to session?.user?.email?.split('@')[0] instead of their real
-  // username, which is both unnecessary (ownerProfile already has it) and
-  // wrong whenever their profile username differs from their email's local
-  // part.
-  async function handleShareOutside() {
+  // Share Elsewhere — native share sheet with the item's deep link (see
+  // lib/share/share-target.ts). handle: always the ITEM'S OWNER
+  // (ownerProfile — fetched for every viewer, owner included), never the
+  // viewer's own email-derived guess.
+  function handleShareOutside() {
     if (!item) return;
-    const handle = ownerProfile?.username ?? 'user';
-    const title = item.title || 'this card';
-    // Short delay before presenting the native share sheet — the
-    // CacheCase bottom sheet (a React Native <Modal>) is still mid-
-    // dismiss-animation when this fires (ItemShareSheet's own
-    // handleShareOutside calls onClose() and onShareOutside() back to
-    // back, synchronously); presenting Share.share()'s own native share
-    // controller before that dismiss has actually finished is a known
-    // iOS "already presenting a view controller" conflict. 350ms clears
-    // a standard Modal slide-down comfortably without being perceptible
-    // as a deliberate pause.
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    try {
-      await Share.share({
-        title,
-        message: `Check out "${title}" by @${handle} on CacheCase\ncachecase://item/${item.id}`,
-      });
-    } catch {
-      // user dismissed share sheet — no-op
-    }
+    shareElsewhere({
+      type: 'item',
+      id: item.id,
+      title: item.title || 'this card',
+      ownerUsername: ownerProfile?.username ?? null,
+    });
   }
 
   // Send in DM — the Share Item sheet has already started closing (its own
@@ -1718,8 +1705,14 @@ export default function ItemDetailScreen() {
 
                     {/* Grading */}
                     <Text style={editStyles.sectionHeader}>Grading</Text>
-                    <EditField label="Grading Company" value={pokemonForm.gradingCompany} onChange={updatePokemonField('gradingCompany')} />
-                    <EditField label="Grade" value={pokemonForm.grade} onChange={updatePokemonField('grade')} extra={{ autoCapitalize: 'characters' }} />
+                    <GradedToggle graded={pokemonGraded} onChange={changePokemonGraded}>
+                      <GradingCompanyField
+                        companies={POKEMON_GRADING_COMPANIES}
+                        value={pokemonForm.gradingCompany}
+                        onChange={updatePokemonField('gradingCompany')}
+                      />
+                      <EditField label="Grade" value={pokemonForm.grade} onChange={updatePokemonField('grade')} extra={{ autoCapitalize: 'characters' }} />
+                    </GradedToggle>
 
                     {/* Value & Notes */}
                     <Text style={editStyles.sectionHeader}>Value & Notes</Text>
@@ -1917,8 +1910,14 @@ export default function ItemDetailScreen() {
 
                   <Text style={editStyles.sectionHeader}>Card Info</Text>
                   <EditField label="Brand" value={form.brand} onChange={updateField('brand')} />
-                  <EditField label="Grade" value={form.grade} onChange={updateField('grade')} extra={{ autoCapitalize: 'characters' }} />
-                  <EditField label="Grading Company" value={form.gradingCompany} onChange={updateField('gradingCompany')} />
+                  <GradedToggle graded={sportsGraded} onChange={changeSportsGraded}>
+                    <GradingCompanyField
+                      companies={SPORTS_CARD_GRADING_COMPANIES}
+                      value={form.gradingCompany}
+                      onChange={updateField('gradingCompany')}
+                    />
+                    <EditField label="Grade" value={form.grade} onChange={updateField('grade')} extra={{ autoCapitalize: 'characters' }} />
+                  </GradedToggle>
                   <EditField label="Serial Number" value={form.serialNumber} onChange={updateField('serialNumber')} />
 
                   <Text style={editStyles.sectionHeader}>Value</Text>
@@ -2205,18 +2204,27 @@ export default function ItemDetailScreen() {
         currentUserId={currentUserId}
       />
 
-      {/* Send in DM pre-check — see dmShareKnownBlocked below. */}
-      <ItemShareSheet
+      {/* Share to DM pre-check — see dmShareKnownBlocked above. */}
+      <ShareSheet
         visible={shareSheetVisible}
         onClose={() => setShareSheetVisible(false)}
+        heading="Share Item"
         imageUri={carouselImages[0]?.uri}
         title={identity.title}
         subtitle={identity.subtitleLines.filter(Boolean).join(' · ') || null}
-        onPostToFeed={handleShareToFeed}
-        onSendInDM={handleSendInDM}
-        onShareOutside={handleShareOutside}
-        sendInDMBlocked={dmShareKnownBlocked}
-        onEditItem={isOwner && !isTransferredOut ? enterEdit : undefined}
+        feed={{ kind: 'available', subtitle: 'Create a CacheCase post with this item', onPress: handleShareToFeed }}
+        dm={
+          dmShareKnownBlocked
+            ? {
+                kind: 'blocked',
+                subtitle: 'Make this item public to share',
+                noticeTitle: 'This item must be public before it can be shared in DM.',
+                noticeText: 'Change the item’s visibility and try again.',
+                ...(isOwner && !isTransferredOut ? { fixLabel: 'Edit Item', onFix: enterEdit } : {}),
+              }
+            : { kind: 'available', subtitle: 'Send this item to someone on CacheCase', onPress: handleSendInDM }
+        }
+        onShareElsewhere={handleShareOutside}
       />
 
       <SendItemDmSheet

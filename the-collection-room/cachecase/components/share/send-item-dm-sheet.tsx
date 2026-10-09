@@ -33,7 +33,7 @@ type Props = {
   itemId: string;
   // Already-resolved preview (Item Detail signs its own carousel images —
   // this sheet never re-fetches or re-signs anything, same contract as
-  // ItemShareSheet).
+  // ShareSheet).
   imageUri?: string;
   title: string;
   subtitleLines: (string | null)[];
@@ -339,7 +339,7 @@ function Header({
 
 // Same palette/treatments as the in-conversation Share Item picker
 // (components/conversation/share-item-picker.tsx): PV2 surfaces and text,
-// item-share-sheet row/button shapes, brand accent for the primary action.
+// share-sheet row/button shapes, brand accent for the primary action.
 const styles = StyleSheet.create({
   screen: {
     flex: 1,

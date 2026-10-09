@@ -23,7 +23,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
 import { useMediaSize } from '@/lib/feed-media-dimensions';
 import { supabase } from '@/lib/supabase';
-import { fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
+import { fetchFolderOwnerIds, fetchFolderShareItems, type FolderShareData } from '@/lib/folder-share-post';
 import type { CardShareItem, PostImage, RateMyGrailCard } from '@/types';
 
 export type { SourceOwnerAttribution };
@@ -68,7 +68,9 @@ export type FeedPost = {
   // 'folder_share' posts only — snapshot of the shared folder (see
   // lib/folder-share-post.ts). null/undefined for every other post type.
   folderShare?: FolderShareData | null;
-  // 'item' posts only, and only when the source item's owner (collection_
+  // 'item' and 'folder_share' posts (for a folder: the shared folder's
+  // owner, folders.user_id via fetchFolderOwnerIds). For an 'item' post,
+  // only when the source item's owner (collection_
   // items.user_id, resolved live — see queryFeed/fetchUserPosts) differs
   // from this post's own user_id — i.e. this is a REPOST of someone else's
   // public card, not a share of the poster's own. null/undefined for an
@@ -236,8 +238,13 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
   const folderSharePostIds = (postRows as any[])
     .filter((p) => p.post_type === 'folder_share')
     .map((p) => p.id as string);
+  // Shared folders' ids, for folder_share repost attribution (see
+  // fetchFolderOwnerIds).
+  const sharedFolderIds = (postRows as any[])
+    .filter((p) => p.post_type === 'folder_share' && p.folder_id)
+    .map((p) => p.folder_id as string);
 
-  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap, folderShareMap] = await Promise.all([
+  const [profileRes, itemsRes, likesRes, commentsRes, grailData, cardShareMap, postImagesMap, folderShareMap, folderOwnerMap] = await Promise.all([
     supabase
       .from('profiles')
       .select('id, username, display_name, hero_display_name, avatar_url')
@@ -266,6 +273,7 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
     // silently render text posts with missing images.
     fetchPostImages(textPostIds, signal),
     fetchFolderShareItems(folderSharePostIds, signal),
+    fetchFolderOwnerIds(sharedFolderIds, signal),
   ]);
 
   const profile = (profileRes.data as any) ?? {};
@@ -283,9 +291,9 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
   // has (profileRes above), so there's nothing to look up for it.
   const foreignOwnerIds = [
     ...new Set(
-      (itemsRes.data ?? [])
-        .map((i: any) => i.user_id as string | null)
-        .filter((id): id is string => !!id && id !== userId),
+      [...(itemsRes.data ?? []).map((i: any) => i.user_id as string | null), ...folderOwnerMap.values()].filter(
+        (id): id is string => !!id && id !== userId,
+      ),
     ),
   ];
   const ownerProfileMap = new Map<string, any>();
@@ -323,8 +331,17 @@ export async function fetchUserPosts(userId: string, signal: AbortSignal, curren
 
   return (postRows as any[]).map((post) => {
     const item = post.item_id ? (itemMap.get(post.item_id) ?? {}) : {};
-    const itemOwnerId = (item as any).user_id as string | undefined;
-    const ownerProfile = itemOwnerId && itemOwnerId !== post.user_id ? ownerProfileMap.get(itemOwnerId) : undefined;
+    // Source owner: the item's owner for an 'item' post, the shared
+    // folder's owner for a 'folder_share' post (see fetchFolderOwnerIds).
+    const sourceOwnerId = (
+      post.post_type === 'folder_share'
+        ? post.folder_id
+          ? folderOwnerMap.get(post.folder_id)
+          : undefined
+        : (item as any).user_id
+    ) as string | undefined;
+    const ownerProfile =
+      sourceOwnerId && sourceOwnerId !== post.user_id ? ownerProfileMap.get(sourceOwnerId) : undefined;
     const rating = ratingTotals.get(post.id);
     return {
       id: post.id,
@@ -427,9 +444,11 @@ export function PostCard({
   const isCardShare = post.post_type === 'card_share';
   const isFolderShare = post.post_type === 'folder_share';
   const isOwner = !!currentUserId && currentUserId === post.user_id;
-  // A "Post to Feed" repost of someone else's public card — see
-  // FeedPost.sourceOwner's own comment for exactly when this is set.
-  const isForeignRepost = post.post_type === 'item' && !!post.sourceOwner;
+  // A "Share to Feed" repost of someone else's public card or folder — see
+  // FeedPost.sourceOwner's own comment for exactly when this is set. A
+  // folder repost only swaps the header (RepostHeader); its body is the
+  // folder_share branch below either way.
+  const isForeignRepost = (post.post_type === 'item' || post.post_type === 'folder_share') && !!post.sourceOwner;
 
   // Single-card ('item') post media height cap — SINGLE_CARD_MAX_HEIGHT_FRACTION
   // of the actual device viewport, not a fixed pixel value, so this scales

@@ -447,7 +447,7 @@ function PickerTile({
 // DM-specific theme: grid tiles/selected border/badges from
 // app/share-card/new.tsx, search field from app/(tabs)/search.tsx, header
 // from share-card's Cancel/title bar, confirmation panel from
-// components/share/item-share-sheet.tsx.
+// components/share/share-sheet.tsx.
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -668,7 +668,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   // Brand foil accent (CHAT.accent) with dark text; shape matches
-  // item-share-sheet's cancel button.
+  // share-sheet's cancel button.
   sendBtn: {
     marginTop: 14,
     paddingVertical: 15,

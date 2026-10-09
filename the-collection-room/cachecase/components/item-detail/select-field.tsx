@@ -19,16 +19,19 @@ type SelectFieldProps = {
   options: string[];
   placeholder?: string;
   onChange: (value: string) => void;
+  // Compact row: label on the left, a narrower trigger on the right (e.g.
+  // the Sports Card/Pokémon "Graded" control) instead of label-above.
+  inline?: boolean;
 };
 
-export function SelectField({ label, value, options, placeholder, onChange }: SelectFieldProps) {
+export function SelectField({ label, value, options, placeholder, onChange, inline = false }: SelectFieldProps) {
   const { open, anchor, triggerRef, openMenu, closeMenu } = useAnchoredMenu();
   return (
-    <View style={fieldStyles.wrap}>
-      <Text style={fieldStyles.label}>{label}</Text>
+    <View style={[fieldStyles.wrap, inline && fieldStyles.inlineWrap]}>
+      <Text style={inline ? fieldStyles.inlineLabel : fieldStyles.label}>{label}</Text>
       <Pressable
         ref={triggerRef}
-        style={fieldStyles.trigger}
+        style={[fieldStyles.trigger, inline && fieldStyles.inlineTrigger]}
         onPress={openMenu}
         accessibilityRole="button"
         accessibilityLabel={label}
@@ -45,7 +48,7 @@ export function SelectField({ label, value, options, placeholder, onChange }: Se
           return (
             <Pressable
               key={option}
-              style={fieldStyles.menuItem}
+              style={[fieldStyles.menuItem, inline && fieldStyles.inlineMenuItem]}
               onPress={() => {
                 onChange(option);
                 closeMenu();
@@ -148,6 +151,29 @@ const fieldStyles = StyleSheet.create({
     fontWeight: '500',
     color: PV2.textSecondary,
     marginBottom: 4,
+  },
+  // Label and a narrow trigger sized for short values ("-", "Yes"), kept
+  // together at the left so the row reads as one compact field.
+  inlineWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 20,
+  },
+  inlineLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: PV2.textSecondary,
+  },
+  inlineTrigger: {
+    width: 112,
+  },
+  // Drops the 200px item minimum so the menu matches the narrow trigger's
+  // width (AnchoredMenu's own minWidth), with tighter rows.
+  inlineMenuItem: {
+    minWidth: 0,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    gap: 8,
   },
   trigger: {
     flexDirection: 'row',

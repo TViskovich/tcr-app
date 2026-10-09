@@ -107,7 +107,7 @@ export function AttachmentSheet({ onClose, onShareItem, onCamera, onPhotos }: Pr
   );
 }
 
-// Row/divider/cancel treatment mirrors components/share/item-share-sheet.tsx
+// Row/divider/cancel treatment mirrors components/share/share-sheet.tsx
 // (the app's Share Item sheet): flat rows on the panel separated by
 // hairline dividers, 44px rounded-square icon tiles, PV2 text tokens. The
 // accent is limited to the primary row's icon tile.
@@ -239,7 +239,7 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: PV2.dividerColor,
   },
-  // Same fill/radius/type as item-share-sheet's cancelButton, kept as a
+  // Same fill/radius/type as share-sheet's cancelButton, kept as a
   // centered button per the earlier layout request.
   cancelBtn: {
     alignSelf: 'center',

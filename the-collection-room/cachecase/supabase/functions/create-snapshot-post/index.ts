@@ -210,9 +210,17 @@ Deno.serve(async (req: Request) => {
 // post + child rows.
 //
 // Privacy at posting time (stricter than card_share, which only checks
-// ownership): the folder must be the caller's and effectively public (folder
-// and every ancestor is_public, evaluated as an anonymous viewer), and only
-// active, is_public items with a primary photo are eligible.
+// ownership): the folder must be effectively public (folder and every
+// ancestor is_public, evaluated as an anonymous viewer), and only the
+// folder owner's active, is_public items with a primary photo are eligible.
+//
+// The caller may be the folder's owner OR anyone else (a repost of another
+// collector's public folder — same model as an 'item' post of someone else's
+// public card): the post row belongs to the caller, posts.folder_id points at
+// the ORIGINAL folder (whose folders.user_id stays the owner — the feed
+// resolves that live for attribution), and the snapshot copies land under
+// the caller's own share-snapshots prefix, so deleting the post removes only
+// the caller's copies. Nothing about the folder itself is changed or copied.
 //
 // posts.folder_item_count = the number of ELIGIBLE (public, active,
 // photographed) items at posting time — NOT the folder's full item count.
@@ -240,9 +248,10 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
     .select('id, name, user_id, cover_source, cover_storage_path, cover_item_id')
     .eq('id', folderId)
     .maybeSingle();
-  if (!folder || folder.user_id !== userId) {
+  if (!folder) {
     return jsonResponse({ status: 'failed', reason: 'unauthorized' }, 200);
   }
+  const ownerId = folder.user_id as string;
 
   // Effectively public, as an anonymous viewer would see it.
   const { data: visibility } = await client.rpc('folder_effective_visibility_batch', {
@@ -257,7 +266,7 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
     .from('collection_items')
     .select('id, title, brand, created_at')
     .eq('folder_id', folderId)
-    .eq('user_id', userId)
+    .eq('user_id', ownerId)
     .eq('collection_status', 'active')
     .eq('is_public', true)
     .order('sort_order', { ascending: true })

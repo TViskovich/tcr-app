@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
+import { GradedToggle, GradingCompanyField } from '@/components/item-detail/graded-toggle';
 import { PendingItemGalleryManager, type PendingItemPhoto } from '@/components/item-detail/pending-item-gallery-manager';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { AnchoredMenu, menuStyles, useAnchoredMenu } from '@/components/profile-v2/profile-v2-anchored-menu';
@@ -37,6 +38,7 @@ import {
   COMIC_RAW_CONDITION_OPTIONS,
   COMIC_SPECIAL_COVER_FINISH_OPTIONS,
 } from '@/lib/comic-book-options';
+import { POKEMON_GRADING_COMPANIES, SPORTS_CARD_GRADING_COMPANIES } from '@/lib/card-grading-options';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { createPokemonItem } from '@/lib/pokemon-items';
@@ -88,7 +90,7 @@ const INITIAL_FORM: FormState = {
 // Pokémon has no Title field of its own — collection_items.title is derived
 // server-side from pokemonName by create_pokemon_item/update_pokemon_item
 // (see lib/pokemon-items.ts) — and reuses estimatedValue/description from
-// the common Value & Notes section rather than duplicating them here.
+// the common Estimated Value/Description fields rather than duplicating them here.
 type PokemonFormState = {
   pokemonName: string;
   setName: string;
@@ -400,6 +402,11 @@ export default function AddItemScreen() {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [pokemonForm, setPokemonForm] = useState<PokemonFormState>(INITIAL_POKEMON_FORM);
   const [comicForm, setComicForm] = useState<ComicFormState>(INITIAL_COMIC_FORM);
+  // Graded for Sports Card / Pokémon — starts as "-" for a new item. Setting
+  // it back to "-" clears that form's Grade + Grading Company (see changeSportsGraded/
+  // changePokemonGraded), so nothing hidden is ever saved.
+  const [sportsGraded, setSportsGraded] = useState(false);
+  const [pokemonGraded, setPokemonGraded] = useState(false);
   // Collectible Type — defaults to Sports Card. Sports Card, Pokémon, and
   // Comic Book all have real forms (see COLLECTIBLE_TYPES above); Figurine
   // still swaps the metadata section below for a temporary shell and
@@ -456,6 +463,16 @@ export default function AddItemScreen() {
 
   function updatePokemon(key: keyof PokemonFormState) {
     return (value: string) => setPokemonForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function changeSportsGraded(next: boolean) {
+    if (!next) setForm((prev) => ({ ...prev, grade: '', gradingCompany: '' }));
+    setSportsGraded(next);
+  }
+
+  function changePokemonGraded(next: boolean) {
+    if (!next) setPokemonForm((prev) => ({ ...prev, grade: '', gradingCompany: '' }));
+    setPokemonGraded(next);
   }
 
   function updateComic(key: keyof ComicFormState) {
@@ -632,8 +649,8 @@ export default function AddItemScreen() {
             team: form.team.trim() || null,
             year: form.year ? parseInt(form.year, 10) : null,
             brand: form.brand.trim() || null,
-            grade: form.grade.trim() || null,
-            grading_company: form.gradingCompany.trim() || null,
+            grade: sportsGraded ? form.grade.trim() || null : null,
+            grading_company: sportsGraded ? form.gradingCompany.trim() || null : null,
             serial_number: form.serialNumber.trim() || null,
             estimated_value: form.estimatedValue ? parseFloat(form.estimatedValue) : null,
             description: form.description.trim() || null,
@@ -663,8 +680,8 @@ export default function AddItemScreen() {
               language: pokemonForm.language.trim() || null,
               edition: pokemonForm.edition.trim() || null,
               holoType: pokemonForm.holoType.trim() || null,
-              gradingCompany: pokemonForm.gradingCompany.trim() || null,
-              grade: pokemonForm.grade.trim() || null,
+              gradingCompany: pokemonGraded ? pokemonForm.gradingCompany.trim() || null : null,
+              grade: pokemonGraded ? pokemonForm.grade.trim() || null : null,
             })
           : await createComicBookItem(folderId, {
               estimatedValue: comicForm.estimatedValue ? parseFloat(comicForm.estimatedValue) : null,
@@ -861,16 +878,18 @@ export default function AddItemScreen() {
               {/* Card Info */}
               <Text style={styles.sectionHeader}>Card Info</Text>
               {field('Brand', 'brand', form, update)}
-              {field('Grade', 'grade', form, update, { autoCapitalize: 'characters' })}
-              {field('Grading Company', 'gradingCompany', form, update)}
+              <GradedToggle graded={sportsGraded} onChange={changeSportsGraded}>
+                <GradingCompanyField
+                  companies={SPORTS_CARD_GRADING_COMPANIES}
+                  value={form.gradingCompany}
+                  onChange={update('gradingCompany')}
+                />
+                {field('Grade', 'grade', form, update, { autoCapitalize: 'characters' })}
+              </GradedToggle>
               {field('Serial Number', 'serialNumber', form, update)}
 
-              {/* Value */}
-              <Text style={styles.sectionHeader}>Value</Text>
               {field('Estimated Value ($)', 'estimatedValue', form, update, { keyboardType: 'decimal-pad' })}
 
-              {/* Notes */}
-              <Text style={styles.sectionHeader}>Notes</Text>
               <View style={fieldStyles.wrap}>
                 <Text style={fieldStyles.label}>Description</Text>
                 <TextInput
@@ -899,13 +918,18 @@ export default function AddItemScreen() {
 
               {/* Grading */}
               <Text style={styles.sectionHeader}>Grading</Text>
-              {pokemonField('Grading Company', 'gradingCompany', pokemonForm, updatePokemon)}
-              {pokemonField('Grade', 'grade', pokemonForm, updatePokemon, { autoCapitalize: 'characters' })}
+              <GradedToggle graded={pokemonGraded} onChange={changePokemonGraded}>
+                <GradingCompanyField
+                  companies={POKEMON_GRADING_COMPANIES}
+                  value={pokemonForm.gradingCompany}
+                  onChange={updatePokemon('gradingCompany')}
+                />
+                {pokemonField('Grade', 'grade', pokemonForm, updatePokemon, { autoCapitalize: 'characters' })}
+              </GradedToggle>
 
-              {/* Value & Notes — reuses the same common fields (estimated_value/
+              {/* Reuses the same common fields (estimated_value/
                   description) as the Sports Card form, just on pokemonForm's
                   own local state instead of form's. */}
-              <Text style={styles.sectionHeader}>Value & Notes</Text>
               {pokemonField('Estimated Value ($)', 'estimatedValue', pokemonForm, updatePokemon, { keyboardType: 'decimal-pad' })}
               <View style={fieldStyles.wrap}>
                 <Text style={fieldStyles.label}>Description</Text>
@@ -1071,10 +1095,9 @@ export default function AddItemScreen() {
                 )}
               </CollapsibleSection>
 
-              {/* Value & Notes — reuses the same common fields (estimated_value/
+              {/* Reuses the same common fields (estimated_value/
                   description) as the Sports Card/Pokémon forms, just on
                   comicForm's own local state instead of form's/pokemonForm's. */}
-              <Text style={styles.sectionHeader}>Value & Notes</Text>
               {comicField('Estimated Value ($)', 'estimatedValue', comicForm, updateComic, { keyboardType: 'decimal-pad' })}
               <View style={fieldStyles.wrap}>
                 <Text style={fieldStyles.label}>Description</Text>
