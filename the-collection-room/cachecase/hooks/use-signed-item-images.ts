@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 
 import { useAuth } from '@/lib/auth';
 import { DEFAULT_IMAGE_TIER, DETAIL_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
@@ -8,7 +9,7 @@ import {
   mergePersistedSignedUrlEntries,
   readPersistedSignedUrlMap,
 } from '@/lib/persisted-signed-url-cache';
-import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
+import { supabase, supabaseAnonKey, supabaseFunctionsRegion, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-collection-item-image-signed-url Edge
 // Function (item-images beta privacy hardening, Phase 3). Batches every
@@ -251,6 +252,14 @@ async function fetchSignedImageBatchAttempt(
   };
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
+  }
+  // Run the function in the database's region (see supabaseFunctionsRegion):
+  // its lookup and Storage-signing calls then stay in-region — measured
+  // ~150-200 ms faster per batch (warm medians) from a remote client.
+  // Native only: a browser would preflight this custom header, which the
+  // function's CORS allowlist doesn't include.
+  if (supabaseFunctionsRegion && Platform.OS !== 'web') {
+    headers['x-region'] = supabaseFunctionsRegion;
   }
 
   const controller = new AbortController();

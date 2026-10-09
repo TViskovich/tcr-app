@@ -47,6 +47,13 @@ let activeSignedUrlIdentity: string | undefined;
 
 export function setActiveSignedUrlIdentity(identity: string): void {
   activeSignedUrlIdentity = identity;
+  // Start reading this identity's persisted maps now (app start / sign-in),
+  // so the first grid that needs them — e.g. a cold Following open — finds
+  // them already parsed instead of waiting on AsyncStorage before it can
+  // even send its signing request. One read per map per identity per
+  // session (see readPersistedSignedUrlMap).
+  void readPersistedSignedUrlMap(ITEM_IMAGES_CACHE_DOMAIN, identity);
+  void readPersistedSignedUrlMap(FOLDER_COVERS_CACHE_DOMAIN, identity);
 }
 
 // True until the first identity is observed, then only for that identity.
@@ -87,13 +94,20 @@ function isValidEntry(value: unknown): value is PersistedSignedUrlEntry {
   );
 }
 
-// Best-effort — a read failure (corrupt JSON, storage unavailable) simply
-// yields an empty map, which falls through to the caller's own normal
-// missing/fetch path exactly as if nothing had ever been persisted. Never
-// throws, never blocks rendering.
-export async function readPersistedSignedUrlMap(domain: string, identity: string): Promise<PersistedMap> {
+// The parsed contents of each (domain, identity) blob, read from
+// AsyncStorage ONCE per session and then kept in step with every write
+// below (merge / remove / purge) — not a second cache, just this store's
+// own contents already parsed. Every signing hook used to re-read and
+// re-parse the whole blob each time it had an id missing from memory,
+// which sat in front of the signing request itself (e.g. both of the
+// Following feed's batches on a cold open). Keyed by the same
+// identity-namespaced storage key, so it can never cross identities.
+const loadedMaps = new Map<string, PersistedMap>();
+const loadingMaps = new Map<string, Promise<PersistedMap>>();
+
+async function loadMap(key: string): Promise<PersistedMap> {
   try {
-    const raw = await AsyncStorage.getItem(storageKey(domain, identity));
+    const raw = await AsyncStorage.getItem(key);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return {};
@@ -105,6 +119,37 @@ export async function readPersistedSignedUrlMap(domain: string, identity: string
   } catch {
     return {};
   }
+}
+
+// Best-effort — a read failure (corrupt JSON, storage unavailable) simply
+// yields an empty map, which falls through to the caller's own normal
+// missing/fetch path exactly as if nothing had ever been persisted. Never
+// throws, never blocks rendering. The returned map is shared — read-only
+// for callers.
+export function readPersistedSignedUrlMap(domain: string, identity: string): Promise<Readonly<PersistedMap>> {
+  const key = storageKey(domain, identity);
+  const loaded = loadedMaps.get(key);
+  if (loaded) return Promise.resolve(loaded);
+  let loading = loadingMaps.get(key);
+  if (!loading) {
+    loading = loadMap(key).then((map) => {
+      // A write that landed while this read was in flight already set the
+      // newer contents — never replace them with the older read.
+      if (loadingMaps.get(key) === loading && !loadedMaps.has(key)) loadedMaps.set(key, map);
+      loadingMaps.delete(key);
+      return loadedMaps.get(key) ?? map;
+    });
+    loadingMaps.set(key, loading);
+  }
+  return loading;
+}
+
+// Current parsed contents for a write: loads first if needed, then reads the
+// latest map SYNCHRONOUSLY so overlapping writes each build on the previous
+// one's result instead of an older snapshot.
+async function currentMap(domain: string, identity: string): Promise<PersistedMap> {
+  await readPersistedSignedUrlMap(domain, identity);
+  return loadedMaps.get(storageKey(domain, identity)) ?? {};
 }
 
 // Read-modify-write merge of `patch` into the existing persisted map for
@@ -125,8 +170,11 @@ export async function mergePersistedSignedUrlEntries(
   if (!isActiveSignedUrlIdentity(identity)) return;
   try {
     const key = storageKey(domain, identity);
-    const existing = await readPersistedSignedUrlMap(domain, identity);
-    await AsyncStorage.setItem(key, JSON.stringify({ ...existing, ...patch }));
+    const next = { ...(await currentMap(domain, identity)), ...patch };
+    // Re-checked after the await: a purge may have run meanwhile.
+    if (!isActiveSignedUrlIdentity(identity)) return;
+    loadedMaps.set(key, next);
+    await AsyncStorage.setItem(key, JSON.stringify(next));
   } catch {
     // best-effort — see module comment above
   }
@@ -145,10 +193,11 @@ export async function mergePersistedSignedUrlEntries(
 export async function removePersistedSignedUrlEntry(domain: string, identity: string, id: string): Promise<void> {
   try {
     const key = storageKey(domain, identity);
-    const existing = await readPersistedSignedUrlMap(domain, identity);
+    const existing = await currentMap(domain, identity);
     if (!(id in existing)) return;
     const next = { ...existing };
     delete next[id];
+    loadedMaps.set(key, next);
     await AsyncStorage.setItem(key, JSON.stringify(next));
   } catch {
     // best-effort — see module comment above
@@ -161,6 +210,9 @@ export async function removePersistedSignedUrlEntry(domain: string, identity: st
 // (the key itself is namespaced by identity), so this can never remove or
 // expose a different identity's entries.
 export async function purgePersistedSignedUrlCache(domain: string, identity: string): Promise<void> {
+  const key = storageKey(domain, identity);
+  loadedMaps.delete(key);
+  loadingMaps.delete(key);
   try {
     await AsyncStorage.removeItem(storageKey(domain, identity));
   } catch {
