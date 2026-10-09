@@ -1451,11 +1451,20 @@ export default function ItemDetailScreen() {
   // The carousel is full-width (5:7), so it uses the 'detail' tier rather
   // than the untransformed original. Only a slide the user is actively
   // pinch-zooming additionally requests 'original' (below), on demand.
+  // displayExpiredWhileRefreshing — OWNER only, same rule as the own-profile
+  // grid (components/profile-v2/profile-v2-grid.tsx): signed URLs live 5
+  // minutes, so reopening an item later used to show the grid's 'preview'
+  // (soft at full width) for the whole ~0.5–1s re-sign even though the
+  // 1400px bytes were already on disk under their stable cacheKey. With the
+  // expired URL + that cacheKey, expo-image renders those bytes immediately
+  // while the fresh URL signs. Never for someone else's item: an image there
+  // may have been made private since it was cached, so it must wait for a
+  // fresh signing answer.
   const {
     urls: signedGalleryUrls,
     statuses: signedGalleryStatuses,
     servedTiers: galleryServedTiers,
-  } = useSignedItemImages(galleryImageIds, DETAIL_IMAGE_TIER);
+  } = useSignedItemImages(galleryImageIds, DETAIL_IMAGE_TIER, { displayExpiredWhileRefreshing: isOwner });
 
   // Source-quality image for the ONE slide currently being pinch-zoomed —
   // empty (no request at all) whenever nothing is zoomed. The handler only

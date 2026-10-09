@@ -18,7 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 import { attachPrimaryImageIds } from '@/lib/item-images';
@@ -539,9 +539,10 @@ export default function SearchScreen() {
               <CardRow
                 card={item}
                 imageUrl={item.primary_image_id ? signedCardImageUrls.get(item.primary_image_id) : undefined}
-                onPress={() =>
-                  router.push({ pathname: '/item/[id]', params: { id: item.id } })
-                }
+                onPress={() => {
+                  prefetchItemDetailImages([item.primary_image_id]);
+                  router.push({ pathname: '/item/[id]', params: { id: item.id } });
+                }}
               />
             )}
             refreshControl={

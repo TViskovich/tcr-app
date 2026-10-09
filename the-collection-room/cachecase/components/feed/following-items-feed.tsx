@@ -27,7 +27,7 @@ import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import type { CollectibleItemType } from '@/types';
 
 // Recent-uploads wall for the Following tab — a separate data model/layout
@@ -909,7 +909,12 @@ export function FollowingItemsFeed({
               imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
               columnWidth={width}
               isNewest={item.id === newestItemId}
-              onPress={() => navigateOnce(() => router.push({ pathname: '/item/[id]', params: { id: item.id } }))}
+              onPress={() =>
+                navigateOnce(() => {
+                  prefetchItemDetailImages([item.primary_image_id]);
+                  router.push({ pathname: '/item/[id]', params: { id: item.id } });
+                })
+              }
               onOwnerPress={() =>
                 navigateOnce(() => navigateToProfile(router, currentUserId, item.user_id, item.owner_username))
               }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
-import { DEFAULT_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
+import { DEFAULT_IMAGE_TIER, DETAIL_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 import {
   isActiveSignedUrlIdentity,
   ITEM_IMAGES_CACHE_DOMAIN,
@@ -363,6 +363,164 @@ async function fetchSignedImageBatchWithRetry(
   }
 }
 
+// One pass over `idsToTry`: ids already being fetched by another
+// in-flight call just await that shared promise (no new request); the
+// rest are grouped into fresh batches, each registered against its own
+// promise in `inFlight` for the duration of that request so a
+// concurrent caller for the same id attaches instead of starting a
+// second one. Writes a normal TTL_MS entry (persisted to AsyncStorage
+// too) for every id that actually resolved, or a short-lived
+// isTransientFailure entry (memory only, never persisted) for every id
+// in a batch whose retries were exhausted. Shared by the hook's initial
+// pass, its single bounded follow-up pass, and prefetchItemDetailImages'
+// tap-time pass, so all of them stay identical rather than risking drift
+// between hand-written copies of the same logic — and share the cache,
+// in-flight map, persistence and identity guard.
+async function signItemImageIds(
+  idsToTry: string[],
+  tier: ImageTier,
+  identity: string,
+  accessToken: string | null,
+  isCancelled: () => boolean,
+): Promise<void> {
+  const tierSuffix = imageTierCacheSuffix(tier);
+  const cacheIdOf = (id: string) => `${id}${tierSuffix}`;
+  const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${cacheIdOf(id)}`));
+  const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${cacheIdOf(id)}`));
+
+  const newBatchPromises: Promise<void>[] = [];
+  for (let i = 0; i < toBatch.length; i += MAX_BATCH_SIZE) {
+    const batch = toBatch.slice(i, i + MAX_BATCH_SIZE);
+    const batchPromise: Promise<void> = (async () => {
+      try {
+        const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled, tier);
+
+        // A successful batch is cached even if this effect run was
+        // superseded while it was in flight (the screen's id list or
+        // tier changed, or it unmounted). It used to be discarded here,
+        // while any superseding pass that saw these ids in `inFlight`
+        // awaited this very promise instead of refetching — leaving
+        // those images 'loading' until the 4s follow-up pass, or a later
+        // screen re-signing them from scratch. Not cached: a
+        // cancellation-induced failure (never a real answer), or any
+        // result for an identity the app is no longer acting as
+        // (account switch/sign-out mid-request — see
+        // isActiveSignedUrlIdentity).
+        const now = Date.now();
+        if (outcome.ok) {
+          if (!isActiveSignedUrlIdentity(identity)) return;
+          const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
+          for (const r of outcome.results) {
+            // Fallback = a non-original tier was requested but the
+            // server didn't confirm serving it (it fell back to the
+            // original, or an older un-redeployed function ignored
+            // `tier`). Display-only: memory cache only, tagged with
+            // what was actually served, and NOT persisted.
+            const isFallback = tier !== 'original' && r.status === 'ok' && r.tier !== tier;
+            const entry: CacheEntry = {
+              url: r.status === 'ok' ? r.signed_url : null,
+              expiresAt: now + TTL_MS,
+              ...(isFallback ? { servedTier: r.tier ?? ('original' as const) } : {}),
+            };
+            cache.set(`${identity}:${cacheIdOf(r.id)}`, entry);
+            if (!isFallback) toPersist[cacheIdOf(r.id)] = entry;
+          }
+          // Fire-and-forget — never blocks rendering; a write failure
+          // here only costs a future cold-launch network round trip,
+          // never a correctness issue (see the helper's own comment).
+          mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
+        } else if (!isCancelled()) {
+          // Every retry for this batch was exhausted (or the failure
+          // wasn't retryable at all) — cache every id in it as
+          // unavailable so status doesn't stay stuck at 'loading'
+          // forever, but marked isTransientFailure and expired after
+          // the much shorter FAILURE_TTL_MS rather than the normal
+          // TTL_MS: this was never a real authorization answer, just
+          // the last observation during what's most likely a brief
+          // outage — and, per the type's own comment, NEVER persisted
+          // to AsyncStorage. A persisted transient failure would
+          // otherwise survive an app kill and block a legitimate
+          // future fetch for up to FAILURE_TTL_MS after every cold
+          // launch, which defeats the whole point of that short TTL.
+          for (const id of batch) {
+            cache.set(`${identity}:${cacheIdOf(id)}`, {
+              url: null,
+              expiresAt: now + FAILURE_TTL_MS,
+              isTransientFailure: true,
+            });
+          }
+        }
+      } finally {
+        // Unconditional delete, not an identity-compare-then-delete —
+        // by construction, no other pass can ever reassign one of
+        // THIS batch's ids in `inFlight` while this batch is still
+        // pending: a concurrent pass sees `inFlight.has(id)` already
+        // true (set right after this promise was created, below) and
+        // awaits this same promise instead of registering its own, so
+        // nothing else can be sitting under these keys when this
+        // batch settles.
+        for (const id of batch) {
+          inFlight.delete(`${identity}:${cacheIdOf(id)}`);
+        }
+      }
+    })();
+    newBatchPromises.push(batchPromise);
+    for (const id of batch) inFlight.set(`${identity}:${cacheIdOf(id)}`, batchPromise);
+  }
+
+  await Promise.all([
+    ...newBatchPromises,
+    ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${cacheIdOf(id)}`) ?? Promise.resolve()),
+  ]);
+}
+
+// Starts signing an item's hero image(s) at the 'detail' tier the moment
+// the item is tapped — in parallel with the navigation transition and
+// Item Detail's own gallery-rows query, which its 'detail' signing
+// otherwise has to wait for (it needs the image ids). The destination's
+// useSignedItemImages call then reads the result from the shared cache or
+// awaits this same in-flight request (never a duplicate). No-op for ids
+// that already have a fresh (memory or persisted) entry or a request in
+// flight. Same identity scoping and active-account guard as the hook — the
+// Edge Function still decides authorization per id; this only moves WHEN
+// the request is made. Fire-and-forget, never throws.
+export function prefetchItemDetailImages(imageIds: (string | null | undefined)[]): void {
+  const ids = Array.from(new Set(imageIds.filter((id): id is string => !!id)));
+  if (!ids.length) return;
+  void (async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const identity = data.session?.user?.id ?? 'anon';
+      if (!isActiveSignedUrlIdentity(identity)) return;
+
+      const suffix = imageTierCacheSuffix(DETAIL_IMAGE_TIER);
+      const keyOf = (id: string) => `${identity}:${id}${suffix}`;
+      const needed = (id: string) => !isFresh(cache.get(keyOf(id))) && !inFlight.has(keyOf(id));
+      let missing = ids.filter(needed);
+      if (!missing.length) return;
+
+      // Same gap-only hydration as the hook: a still-valid persisted entry
+      // (e.g. after a cold start) needs no request at all.
+      const gaps = missing.filter((id) => !cache.has(keyOf(id)));
+      if (gaps.length) {
+        const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
+        for (const id of gaps) {
+          const entry = persisted[`${id}${suffix}`];
+          if (entry && entry.expiresAt > Date.now() && !cache.has(keyOf(id))) {
+            cache.set(keyOf(id), { url: entry.url, expiresAt: entry.expiresAt });
+          }
+        }
+        missing = missing.filter(needed);
+        if (!missing.length) return;
+      }
+
+      await signItemImageIds(missing, DETAIL_IMAGE_TIER, identity, data.session?.access_token ?? null, () => false);
+    } catch {
+      // best-effort — the destination screen still requests it normally
+    }
+  })();
+}
+
 // Accepts collection_item_images.id values only (nulls/undefineds filtered
 // out, safe to pass directly from a `.map(img => img.id)` over
 // possibly-incomplete data). Returns a snapshot of the shared cache for
@@ -429,107 +587,7 @@ export function useSignedItemImages(
     let cancelled = false;
     const isCancelled = () => cancelled;
 
-    // One pass over `idsToTry`: ids already being fetched by another
-    // in-flight call just await that shared promise (no new request); the
-    // rest are grouped into fresh batches, each registered against its own
-    // promise in `inFlight` for the duration of that request so a
-    // concurrent caller for the same id attaches instead of starting a
-    // second one. Writes a normal TTL_MS entry (persisted to AsyncStorage
-    // too) for every id that actually resolved, or a short-lived
-    // isTransientFailure entry (memory only, never persisted) for every id
-    // in a batch whose retries were exhausted. Shared by the initial pass
-    // and the single bounded follow-up pass below, so the two stay
-    // identical rather than risking drift between two hand-written copies
-    // of the same logic.
-    async function runPass(idsToTry: string[]): Promise<void> {
-      const alreadyInFlight = idsToTry.filter((id) => inFlight.has(`${identity}:${cacheIdOf(id)}`));
-      const toBatch = idsToTry.filter((id) => !inFlight.has(`${identity}:${cacheIdOf(id)}`));
-
-      const newBatchPromises: Promise<void>[] = [];
-      for (let i = 0; i < toBatch.length; i += MAX_BATCH_SIZE) {
-        const batch = toBatch.slice(i, i + MAX_BATCH_SIZE);
-        const batchPromise: Promise<void> = (async () => {
-          try {
-            const outcome = await fetchSignedImageBatchWithRetry(batch, accessToken, isCancelled, tier);
-
-            // A successful batch is cached even if this effect run was
-            // superseded while it was in flight (the screen's id list or
-            // tier changed, or it unmounted). It used to be discarded here,
-            // while any superseding pass that saw these ids in `inFlight`
-            // awaited this very promise instead of refetching — leaving
-            // those images 'loading' until the 4s follow-up pass, or a later
-            // screen re-signing them from scratch. Not cached: a
-            // cancellation-induced failure (never a real answer), or any
-            // result for an identity the app is no longer acting as
-            // (account switch/sign-out mid-request — see
-            // isActiveSignedUrlIdentity).
-            const now = Date.now();
-            if (outcome.ok) {
-              if (!isActiveSignedUrlIdentity(identity)) return;
-              const toPersist: Record<string, { url: string | null; expiresAt: number }> = {};
-              for (const r of outcome.results) {
-                // Fallback = a non-original tier was requested but the
-                // server didn't confirm serving it (it fell back to the
-                // original, or an older un-redeployed function ignored
-                // `tier`). Display-only: memory cache only, tagged with
-                // what was actually served, and NOT persisted.
-                const isFallback = tier !== 'original' && r.status === 'ok' && r.tier !== tier;
-                const entry: CacheEntry = {
-                  url: r.status === 'ok' ? r.signed_url : null,
-                  expiresAt: now + TTL_MS,
-                  ...(isFallback ? { servedTier: r.tier ?? ('original' as const) } : {}),
-                };
-                cache.set(`${identity}:${cacheIdOf(r.id)}`, entry);
-                if (!isFallback) toPersist[cacheIdOf(r.id)] = entry;
-              }
-              // Fire-and-forget — never blocks rendering; a write failure
-              // here only costs a future cold-launch network round trip,
-              // never a correctness issue (see the helper's own comment).
-              mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
-            } else if (!cancelled) {
-              // Every retry for this batch was exhausted (or the failure
-              // wasn't retryable at all) — cache every id in it as
-              // unavailable so status doesn't stay stuck at 'loading'
-              // forever, but marked isTransientFailure and expired after
-              // the much shorter FAILURE_TTL_MS rather than the normal
-              // TTL_MS: this was never a real authorization answer, just
-              // the last observation during what's most likely a brief
-              // outage — and, per the type's own comment, NEVER persisted
-              // to AsyncStorage. A persisted transient failure would
-              // otherwise survive an app kill and block a legitimate
-              // future fetch for up to FAILURE_TTL_MS after every cold
-              // launch, which defeats the whole point of that short TTL.
-              for (const id of batch) {
-                cache.set(`${identity}:${cacheIdOf(id)}`, {
-                  url: null,
-                  expiresAt: now + FAILURE_TTL_MS,
-                  isTransientFailure: true,
-                });
-              }
-            }
-          } finally {
-            // Unconditional delete, not an identity-compare-then-delete —
-            // by construction, no other pass can ever reassign one of
-            // THIS batch's ids in `inFlight` while this batch is still
-            // pending: a concurrent pass sees `inFlight.has(id)` already
-            // true (set right after this promise was created, below) and
-            // awaits this same promise instead of registering its own, so
-            // nothing else can be sitting under these keys when this
-            // batch settles.
-            for (const id of batch) {
-              inFlight.delete(`${identity}:${cacheIdOf(id)}`);
-            }
-          }
-        })();
-        newBatchPromises.push(batchPromise);
-        for (const id of batch) inFlight.set(`${identity}:${cacheIdOf(id)}`, batchPromise);
-      }
-
-      await Promise.all([
-        ...newBatchPromises,
-        ...alreadyInFlight.map((id) => inFlight.get(`${identity}:${cacheIdOf(id)}`) ?? Promise.resolve()),
-      ]);
-    }
+    const runPass = (idsToTry: string[]) => signItemImageIds(idsToTry, tier, identity, accessToken, isCancelled);
 
     (async () => {
       // Layer 1, step 2: hydrate the in-memory cache from the persisted

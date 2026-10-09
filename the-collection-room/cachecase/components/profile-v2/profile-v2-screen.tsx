@@ -47,7 +47,7 @@ import { useProfile } from '@/hooks/use-profile';
 import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { deletePost } from '@/lib/posts';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
@@ -77,7 +77,7 @@ import { resolveProfileLogoVariant, type ProfileLogoVariant } from './profile-lo
 import { ProfileV2BannerPicker } from './profile-v2-banner-picker';
 import { ProfileV2Collections } from './profile-v2-collections';
 import { ProfileV2ExpandedDetails } from './profile-v2-expanded-details';
-import { ProfileV2Grid } from './profile-v2-grid';
+import { GrailImagesWarmup, ProfileV2Grid } from './profile-v2-grid';
 import { ProfileV2HeroCanvas } from './profile-v2-hero-canvas';
 import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2IdentityCard } from './profile-v2-identity-card';
@@ -1221,6 +1221,7 @@ export function ProfileV2Screen({ userId }: Props) {
   }
 
   function handleGrailItemPress(item: CollectionItem) {
+    prefetchItemDetailImages([item.primary_image_id]);
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
   }
 
@@ -1975,9 +1976,20 @@ export function ProfileV2Screen({ userId }: Props) {
   const themeFallbackSwatch: [string, string] =
     themeDef?.kind === 'procedural' ? themeDef.swatch : ['#1C1C1E', '#0A0A0C'];
 
+  // Grails preview signing + bytes start as soon as the slot rows arrive,
+  // NOT once the grid can render: the grid sits behind `profile`, which
+  // only settles after useProfile's slowest count query. Keyed and first in
+  // BOTH root SafeAreaViews (spinner and loaded), so React keeps this one
+  // instance mounted across that swap instead of remounting it. Invisible
+  // and outside layout — see GrailImagesWarmup / PrivateImageWarmup.
+  const grailImagesWarmup = (
+    <GrailImagesWarmup key="grail-images-warmup" slots={grailSlots} isOwnProfile={isOwnProfile} />
+  );
+
   if (loading && !profile) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
+        {grailImagesWarmup}
         <View style={styles.center}>
           <ActivityIndicator size="large" color={PV2.accent} />
         </View>
@@ -1989,6 +2001,7 @@ export function ProfileV2Screen({ userId }: Props) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {grailImagesWarmup}
       {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
           deliberately a sibling OUTSIDE the ScrollView below, not one of
           its direct children, so it can never shift

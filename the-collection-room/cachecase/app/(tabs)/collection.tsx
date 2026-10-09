@@ -30,6 +30,7 @@ import { useCollapsedSections } from '@/hooks/use-collapsed-sections';
 import { itemMatchesSearch, useFolders } from '@/hooks/use-collection';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover } from '@/hooks/use-signed-folder-covers';
+import { prefetchItemDetailImages } from '@/hooks/use-signed-item-images';
 import type { CollectionItem, Folder } from '@/types';
 
 // Header/rail margin — no longer tied to a grid column formula (the
@@ -251,8 +252,10 @@ export default function CollectionScreen() {
   // Same route shape app/collection/[folderId].tsx's own openItem uses —
   // tapping a preview-row card thumbnail should land on that specific
   // card, not the folder it lives in (see HorizontalCardPreview below).
-  const openItem = (item: CollectionItem) =>
+  const openItem = (item: CollectionItem) => {
+    prefetchItemDetailImages([item.primary_image_id]);
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
+  };
 
   // Tapping a child-folder preview tile navigates directly into that
   // folder — the same recursive /collection/[folderId] route openFolder

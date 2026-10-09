@@ -60,7 +60,7 @@ import {
   prefetchFolderHeaderCover,
   useSignedFolderCovers,
 } from '@/hooks/use-signed-folder-covers';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
@@ -936,6 +936,7 @@ export default function CollectionFolderScreen() {
       const heroIdx = heroItems.findIndex((i) => i.id === item.id);
       if (heroIdx !== -1) goToHeroIndex(heroIdx);
     }
+    prefetchItemDetailImages([item.primary_image_id]);
     router.push({ pathname: '/item/[id]', params: { id: item.id } });
   }
 

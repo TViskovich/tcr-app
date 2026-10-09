@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
@@ -49,6 +48,69 @@ export const GRID_CELL_WIDTH = (GRID_WIDTH - GRID_GAP * 2) / COLS;
 const GRID_CELL_HEIGHT = GRID_CELL_WIDTH / CARD_ASPECT_RATIO;
 const GRID_HEIGHT = GRID_CELL_HEIGHT * 3 + GRID_GAP * 2;
 
+// One batched call for the whole 3x3 grid — never one signing request per
+// slot, and never one per collection slot's preview images either
+// (item-images beta privacy hardening, Phase 3C / signed-delivery
+// migration): an item slot contributes its own primary_image_id, a
+// collection slot contributes every id in its previewImageIds, all
+// resolved together in this single call.
+function grailSlotImageIds(slots: GrailSlot[]) {
+  return slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? [])));
+}
+
+// The grid's one signing call, shared by ProfileV2Grid and
+// GrailImagesWarmup so both hit the exact same ids/tier/options — i.e. the
+// same shared cache entries and in-flight requests, never a second request.
+//
+// displayExpiredWhileRefreshing — OWN profile only: on a return after the
+// 5-minute signed-URL lifetime, every slot already has its bytes on disk
+// under its stable cacheKey, so render those immediately instead of
+// waiting ~0.8s for the re-sign (see useSignedItemImages). Safe for the
+// owner, who can always see their own images. Never for someone else's
+// profile: an image there may have been made private since it was cached,
+// so it must wait for a fresh signing answer and stays hidden if that
+// answer is 'unavailable'. Every image here is rendered through expo-image
+// with the stable cacheKey; nothing fetches or shares these URLs.
+function useGrailSlotImages(slots: GrailSlot[], isOwnProfile: boolean) {
+  return useSignedItemImages(grailSlotImageIds(slots), COMPACT_IMAGE_TIER, {
+    displayExpiredWhileRefreshing: isOwnProfile,
+  });
+}
+
+// Signs and downloads the Grails grid's preview images as soon as the slot
+// rows are known — mounted by the profile screen OUTSIDE its `profile`
+// gate, because the grid itself only renders once useProfile has settled
+// (the profile row plus six count queries), and signing used to wait for
+// that even when the slot rows had already arrived.
+//
+// Bytes: PrivateImageWarmup mounts hidden <Image>s with the exact
+// {uri, cacheKey} shape GrailSlotPreview renders, so expo-image fills the
+// entries the real slots read — the moment the signing batch resolves, and
+// together rather than nine uncoordinated per-slot fetches popping in one
+// by one. (A plain Image.prefetch(url[]) can't be used: it has no cacheKey
+// option in the installed expo-image, so it would fill a URL-keyed entry
+// the slots never read.) Bounded to the grid's own ids: at most SLOT_COUNT
+// item ids plus each collection slot's small previewImageIds list, preview
+// tier only.
+export function GrailImagesWarmup({ slots, isOwnProfile }: { slots: GrailSlot[]; isOwnProfile: boolean }) {
+  // Same identity useSignedItemImages keys its cache by — used only to
+  // build the stable cacheKeys (lib/private-image-cache-key.ts).
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
+  const slotImageIds = grailSlotImageIds(slots);
+  const { urls: signedImageUrls, servedTiers } = useGrailSlotImages(slots, isOwnProfile);
+
+  // Plain per-render list (a handful of entries) — PrivateImageWarmup keys
+  // its hidden images by cacheKey, so a new array identity remounts nothing.
+  const warmupEntries = slotImageIds.flatMap((imageId) => {
+    const uri = imageId ? signedImageUrls.get(imageId) : undefined;
+    if (!imageId || !uri) return [];
+    return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }];
+  });
+
+  return <PrivateImageWarmup entries={warmupEntries} />;
+}
+
 type Props = {
   slots: GrailSlot[];
   loading: boolean;
@@ -87,63 +149,11 @@ export function ProfileV2Grid({
   onToggleRank,
   onEnterReorder,
 }: Props) {
-  // Same identity useSignedItemImages itself keys its cache by — reused
-  // here only to build each warmed image's stable expo-image cacheKey
-  // (Phase 2/3 of the private-image caching upgrade — see
-  // lib/private-image-cache-key.ts). Never a second identity concept.
-  const { session } = useAuth();
-  const identity = session?.user?.id ?? 'anon';
-
-  // One batched call for the whole 3x3 grid — never one signing request per
-  // slot, and never one per collection slot's preview images either
-  // (item-images beta privacy hardening, Phase 3C / signed-delivery
-  // migration): an item slot contributes its own primary_image_id, a
-  // collection slot contributes every id in its previewImageIds, all
-  // resolved together in this single call.
-  const slotImageIds = slots.flatMap((s) => (s.entry_type === 'item' ? [s.item?.primary_image_id] : (s.previewImageIds ?? [])));
-  // displayExpiredWhileRefreshing — OWN profile only: on a return after the
-  // 5-minute signed-URL lifetime, every slot already has its bytes on disk
-  // under its stable cacheKey, so render those immediately instead of
-  // waiting ~0.8s for the re-sign (see useSignedItemImages). Safe for the
-  // owner, who can always see their own images. Never for someone else's
-  // profile: an image there may have been made private since it was cached,
-  // so it must wait for a fresh signing answer and stays hidden if that
-  // answer is 'unavailable'. Every image here is rendered through expo-image
-  // with the stable cacheKey; nothing fetches or shares these URLs.
-  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(slotImageIds, COMPACT_IMAGE_TIER, {
-    displayExpiredWhileRefreshing: isOwnProfile,
-  });
-
-  // Warms expo-image's own cache for the whole grid up front, the moment
-  // the signing batch resolves — same pattern app/collection/[folderId].tsx
-  // already uses for its own hero carousel. Without this, each slot's own
-  // <Image> independently triggers its own fetch/decode the instant its
-  // URL becomes available, and 9 near-simultaneous but uncoordinated
-  // fetches to the same host land at visibly staggered times (connection-
-  // pool limits, decode timing, each with its own fade-in) — the grid
-  // "feeling ready together" instead of popping in one by one is exactly
-  // what a shared prefetch buys, without changing signing (still one
-  // batched useSignedItemImages call) or storage/RLS architecture at all.
-  //
-  // Phase 3: this used to be a plain Image.prefetch(url[]) call, but that
-  // API has no cacheKey option in the installed expo-image version — it
-  // would only ever populate a cache entry keyed by the URL itself, which
-  // GrailSlotPreview (Phase 2) no longer reads from (it reads by stable
-  // cacheKey). PrivateImageWarmup below, given the same ids this grid
-  // already resolved for signing, mounts hidden <Image>s with the exact
-  // {uri, cacheKey} shape the real slots use — genuinely bounded (never
-  // more than SLOT_COUNT item ids, plus each collection slot's own small
-  // previewImageIds list), never "warm the whole collection."
-  const warmupEntries = useMemo(
-    () =>
-      slotImageIds.flatMap((imageId) => {
-        const uri = imageId ? signedImageUrls.get(imageId) : undefined;
-        if (!imageId || !uri) return [];
-        return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }];
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slotImageIds.join(','), signedImageUrls, servedTiers, identity],
-  );
+  // Same batched, preview-tier call as GrailImagesWarmup (above), which the
+  // profile screen mounts before this grid can render — so by the time the
+  // grid mounts, these URLs are already in the shared cache or in flight
+  // and this call never issues a request of its own.
+  const { urls: signedImageUrls, servedTiers } = useGrailSlotImages(slots, isOwnProfile);
 
   // State: initial load failed, nothing loaded yet — never render 9 empty
   // owner-editable "+" slots for a failed query, which would misrepresent
@@ -169,10 +179,6 @@ export function ProfileV2Grid({
 
   return (
     <View style={styles.grid}>
-      {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
-          never participates in this View's own layout (gap/margin), safe
-          as the first child regardless of position. */}
-      <PrivateImageWarmup entries={warmupEntries} />
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {row.map((slot, colIndex) => {

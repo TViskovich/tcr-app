@@ -18,7 +18,7 @@ import { useSavedAll } from '@/hooks/use-saved';
 import type { SavedCardEntry, SavedFolderEntry, SavedGrailsEntry } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
-import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 
@@ -104,9 +104,10 @@ export default function SavedScreen() {
                   key={card.id}
                   card={card}
                   signedImageUrls={signedCardImageUrls}
-                  onPress={() =>
-                    router.push({ pathname: '/item/[id]', params: { id: card.id } })
-                  }
+                  onPress={() => {
+                    prefetchItemDetailImages([card.primary_image_id]);
+                    router.push({ pathname: '/item/[id]', params: { id: card.id } });
+                  }}
                 />
               ))}
             </Section>

@@ -1,5 +1,7 @@
 import type { ImperativeRouter } from 'expo-router';
 
+import { rememberProfileUserId } from '@/lib/visited-profile-cache';
+
 // Single source of truth for "tap a user, go to their profile" — every
 // user-row/avatar/username tap in the app (Feed, Followers/Following,
 // Search, Notifications, an item's owner row, registry history, a
@@ -22,6 +24,13 @@ export function navigateToProfile(
     navigateToOwnProfile(router);
     return;
   }
+  // Every caller already holds the tapped user's id, so hand it to
+  // /user/[username]: it then mounts the profile (and starts its profile,
+  // Grails and image requests) at once, instead of first waiting on its
+  // own username -> id lookup. Public data (profiles are world-readable),
+  // and that route still re-checks the lookup every time, switching if the
+  // username now belongs to someone else.
+  if (targetUserId) rememberProfileUserId(username, targetUserId);
   router.push({ pathname: '/user/[username]', params: { username } });
 }
 
