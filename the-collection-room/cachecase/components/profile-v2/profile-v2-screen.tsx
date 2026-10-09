@@ -67,6 +67,7 @@ import {
 import { registerScrollToTop } from '@/lib/scroll-to-top';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
+import { peekVisitedProfile, rememberVisitedProfile } from '@/lib/visited-profile-cache';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
@@ -382,7 +383,15 @@ export function ProfileV2Screen({ userId }: Props) {
   // via useState's lazy initializer, not on every render — a later mirror
   // write (e.g. this same screen's own cache-write effect below) must not
   // retroactively change what "the seed" was for this mount.
-  const [ownCacheEntry] = useState(() => (isOwnProfile ? peekOwnProfileCacheSync(userId) : null));
+  // Someone else's profile instead seeds from this session's in-memory
+  // snapshot of it (lib/visited-profile-cache.ts), if the viewer already
+  // loaded it — never fresh, so the focus refresh below always revalidates
+  // it; it only replaces a cold spinner-first load with the last view.
+  const [ownCacheEntry] = useState(() => {
+    if (isOwnProfile) return peekOwnProfileCacheSync(userId);
+    const visited = peekVisitedProfile(identity, userId);
+    return visited ? { payload: visited, fresh: false } : null;
+  });
   const ownProfileSeed = ownCacheEntry?.payload ?? null;
   // Whether the seed was fresh (< OWN_PROFILE_CACHE_FRESHNESS_MS old) AT
   // MOUNT — this is what gates the one-shot skipInitialLoad passed to each
@@ -636,6 +645,41 @@ export function ProfileV2Screen({ userId }: Props) {
     });
   }, [
     isOwnProfile,
+    userId,
+    profile,
+    stats,
+    loading,
+    grailSlots,
+    grailSlotsLoading,
+    folders,
+    itemCounts,
+    previewEntries,
+    foldersLoading,
+    allItems,
+    allItemsLoading,
+    profilePosts,
+  ]);
+
+  // Visitor counterpart of the effect above: remembers the last fully
+  // settled view of someone else's profile in memory only (see
+  // lib/visited-profile-cache.ts), for this viewer, so opening it again this
+  // session starts from it. Same "every pipeline settled" gate.
+  useEffect(() => {
+    if (isOwnProfile || !profile) return;
+    if (loading || grailSlotsLoading || foldersLoading || allItemsLoading) return;
+    rememberVisitedProfile(identity, userId, {
+      profile,
+      stats,
+      grailSlots,
+      folders,
+      folderItemCounts: itemCounts,
+      folderPreviewEntries: previewEntries,
+      items: allItems,
+      posts: profilePosts,
+    });
+  }, [
+    isOwnProfile,
+    identity,
     userId,
     profile,
     stats,

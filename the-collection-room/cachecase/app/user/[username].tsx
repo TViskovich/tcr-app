@@ -6,6 +6,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { ProfileV2Screen } from '@/components/profile-v2/profile-v2-screen';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { supabase } from '@/lib/supabase';
+import { peekProfileUserId, rememberProfileUserId } from '@/lib/visited-profile-cache';
 
 // Resolves the route's :username to the profile's real id, then hands off
 // entirely to the shared redesigned profile screen — the exact same
@@ -16,15 +17,21 @@ import { supabase } from '@/lib/supabase';
 // session) whether the viewer is looking at their own profile.
 export default function UserProfileScreen() {
   const { username } = useLocalSearchParams<{ username: string }>();
-  const [userId, setUserId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
+  // Resolved id, tagged with the username it belongs to, so a stale result
+  // can never show under a different username. Starts from the session's
+  // remembered username -> id (lib/visited-profile-cache.ts) when known, so
+  // re-opening a profile renders it immediately (from its own in-memory
+  // snapshot, see ProfileV2Screen) instead of waiting on this lookup. The
+  // lookup below still always runs and wins if the username now points at a
+  // different profile; userId null = not found.
+  const [resolved, setResolved] = useState<{ username: string; userId: string | null } | null>(() => {
+    const known = username ? peekProfileUserId(username) : undefined;
+    return username && known ? { username, userId: known } : null;
+  });
 
   useEffect(() => {
     if (!username) return;
     let cancelled = false;
-    setLoading(true);
-    setNotFound(false);
 
     supabase
       .from('profiles')
@@ -33,18 +40,27 @@ export default function UserProfileScreen() {
       .single()
       .then(({ data }) => {
         if (cancelled) return;
-        if (!data) {
-          setNotFound(true);
+        if (data) {
+          rememberProfileUserId(username, data.id);
+          setResolved((prev) =>
+            prev && prev.username === username && prev.userId === data.id ? prev : { username, userId: data.id },
+          );
         } else {
-          setUserId(data.id);
+          // A failed lookup never discards an id this username already
+          // resolved to; it only reports "not found" when nothing is known.
+          setResolved((prev) => (prev && prev.username === username && prev.userId ? prev : { username, userId: null }));
         }
-        setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
   }, [username]);
+
+  const current = resolved && resolved.username === username ? resolved : null;
+  const loading = !current;
+  const notFound = current?.userId === null;
+  const userId = current?.userId ?? null;
 
   if (loading) {
     return (

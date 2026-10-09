@@ -11,6 +11,7 @@ import {
 } from './persisted-signed-url-cache';
 import { purgeOwnProfileCache, readOwnProfileCache } from './own-profile-cache';
 import { supabase } from './supabase';
+import { clearVisitedProfiles } from './visited-profile-cache';
 
 type AuthContextValue = {
   session: Session | null;
@@ -85,6 +86,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Own-profile cache (lib/own-profile-cache.ts, Profile V2 startup
       // caching) is keyed by real user id only — 'anon' never has one.
       if (previousIdentity !== 'anon') purgeOwnProfileCache(previousIdentity).catch(() => {});
+      // Other users' profiles as the previous identity saw them (memory only).
+      clearVisitedProfiles();
     }
 
     supabase.auth.getSession().then(({ data }) => {
