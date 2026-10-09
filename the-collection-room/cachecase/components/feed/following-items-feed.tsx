@@ -21,7 +21,6 @@ import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
-import { attachPrimaryImageIds } from '@/lib/item-images';
 import type { ImageTier } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
@@ -167,126 +166,90 @@ function updateSessionSnapshot(userId: string, patch: Partial<FollowingFeedSessi
   });
 }
 
-type ItemRow = { id: string; title: string | null; player: string | null; item_type: string | null; created_at: string; user_id: string };
-type LoadRowsResult = { followedCount: number; itemRows: ItemRow[] };
-
-// Phase 1 — ONLY the item rows themselves (plus the follows lookup they
-// depend on). Deliberately does not resolve primary image ids, owner
-// profiles, or like/comment counts here — every one of those is a separate,
-// independently-timed step kicked off by the caller once this resolves (see
-// `load` below), so a tile's title/category/age/owner-placeholder can paint
-// the instant this one query settles, and image-id/signed-URL resolution for
-// the first screen isn't stuck behind resolving image ids for all 60 items
-// first.
-async function queryFollowingItemRows(currentUserId: string, signal: AbortSignal): Promise<LoadRowsResult> {
-  const { data: followRows, error: followError } = await supabase
-    .from('follows')
-    .select('following_id')
-    .eq('follower_id', currentUserId)
-    .abortSignal(signal);
-
-  if (followError) {
-    if (!signal.aborted) console.error('[FollowingItemsFeed] follows query failed:', followError.message);
-    throw followError;
-  }
-
-  const followedIds = [...new Set((followRows ?? []).map((f: any) => f.following_id as string))];
-  if (!followedIds.length) return { followedCount: 0, itemRows: [] };
-
-  const { data: itemRows, error: itemsError } = await supabase
-    .from('collection_items')
-    .select('id, title, player, item_type, created_at, user_id')
-    .in('user_id', followedIds)
-    .eq('is_public', true)
-    .eq('collection_status', 'active')
-    .order('created_at', { ascending: false })
-    .limit(FOLLOWING_ITEMS_LIMIT)
-    .abortSignal(signal);
-
-  if (itemsError) {
-    if (!signal.aborted) console.error('[FollowingItemsFeed] items query failed:', itemsError.message);
-    throw itemsError;
-  }
-
-  return { followedCount: followedIds.length, itemRows: (itemRows ?? []) as ItemRow[] };
-}
-
-// owner_username/'user', null display name/avatar, zero counts, null
-// primary_image_id — every one of those is filled in later by a separate,
-// independently-timed step (queryFollowingItemsMeta, or the priority/
-// background attachPrimaryImageIds calls in `load` below); a tile never
-// regresses from real data back to a fallback once filled in.
-//
-// `previousById`, when passed, carries forward an already-resolved item's
-// image id/owner/engagement fields instead of resetting them to those
-// fallbacks — used by a 'refresh'/'background' reload (see `load` below) so
-// re-fetching the row list doesn't itself blank out photos/metadata that
-// were already showing correctly a moment ago; a genuinely new id (not in
-// `previousById`) still starts from the normal placeholder fallbacks and
-// resolves through the pipeline exactly like a first load.
-function buildShellItems(itemRows: ItemRow[], previousById?: Map<string, FollowingItem>): FollowingItem[] {
-  return itemRows.map((row) => {
-    const prev = previousById?.get(row.id);
-    return {
-      id: row.id,
-      title: row.title ?? null,
-      player: row.player ?? null,
-      item_type: (row.item_type ?? 'sports_card') as CollectibleItemType,
-      created_at: row.created_at,
-      user_id: row.user_id,
-      primary_image_id: prev?.primary_image_id ?? null,
-      owner_username: prev?.owner_username ?? 'user',
-      owner_display_name: prev?.owner_display_name ?? null,
-      owner_avatar_url: prev?.owner_avatar_url ?? null,
-      commentCount: prev?.commentCount ?? 0,
-    };
-  });
-}
-
-// Merges a batch of attachPrimaryImageIds results into existing items state
-// by id — used for both the PRIORITY and BACKGROUND primary-image-id passes
-// in `load` below, each of which only resolves a slice of the full item
-// list, so this only ever touches the ids present in `resolved`.
-function mergePrimaryImageIds(
-  items: FollowingItem[],
-  resolved: { id: string; primary_image_id: string | null }[],
-): FollowingItem[] {
-  const byId = new Map(resolved.map((r) => [r.id, r.primary_image_id]));
-  return items.map((item) => (byId.has(item.id) ? { ...item, primary_image_id: byId.get(item.id) ?? null } : item));
-}
-
-type FollowingItemsMeta = {
-  profileMap: Map<string, { username?: string; display_name?: string; hero_display_name?: string; avatar_url?: string }>;
-  commentCountMap: Map<string, number>;
+type FollowingRow = {
+  id: string;
+  title: string | null;
+  player: string | null;
+  item_type: string | null;
+  created_at: string;
+  user_id: string;
+  primary_image: { id: string }[] | null;
+  owner: { username: string | null; display_name: string | null; hero_display_name: string | null; avatar_url: string | null } | null;
 };
+type LoadRowsResult = { followedCount: number; items: FollowingItem[] };
 
-// Phase 2 — owner profiles plus item_comments counts
-// (supabase/migrations/20260923120000_create_item_social.sql), two
-// already-batched, already-parallel queries, no longer blocking the grid's
-// first paint. Counts only, since these tiles render a read-only count.
-// Likes are intentionally not shown (or fetched) on this screen.
-async function queryFollowingItemsMeta(
-  ownerIds: string[],
-  itemIds: string[],
-  signal: AbortSignal,
-): Promise<FollowingItemsMeta> {
-  const [profilesRes, commentsRes] = await Promise.all([
+// The followed users' newest public, active items — WITH each item's
+// primary image id and owner profile — in ONE request. Embedded through
+// collection_items -> profiles (owner, !inner) -> follows (!inner, filtered
+// to the viewer as follower), so the follow filter, the image id and the
+// owner identity all resolve server-side in the same round trip. This used
+// to be three sequential round trips (follows ids -> items ->
+// attachPrimaryImageIds, with owner profiles in a fourth), each one gating
+// the next, and image signing could only start after the third. Same
+// filters, order and limit as before; same RLS (a plain collection_items
+// read). The viewer's follow COUNT (only the empty state needs it) runs in
+// parallel instead of in front.
+async function queryFollowingItemRows(currentUserId: string, signal: AbortSignal): Promise<LoadRowsResult> {
+  const [followsRes, itemsRes] = await Promise.all([
     supabase
-      .from('profiles')
-      .select('id, username, display_name, hero_display_name, avatar_url')
-      .in('id', ownerIds)
+      .from('follows')
+      .select('following_id', { count: 'exact', head: true })
+      .eq('follower_id', currentUserId)
       .abortSignal(signal),
-    supabase.from('item_comments').select('item_id').in('item_id', itemIds).abortSignal(signal),
+    supabase
+      .from('collection_items')
+      .select(
+        'id, title, player, item_type, created_at, user_id, ' +
+          'primary_image:collection_item_images(id), ' +
+          'owner:profiles!collection_items_user_id_fkey!inner(username, display_name, hero_display_name, avatar_url, ' +
+          'followers:follows!follows_following_id_fkey!inner(follower_id))',
+      )
+      .eq('owner.followers.follower_id', currentUserId)
+      .eq('primary_image.is_primary', true)
+      .eq('is_public', true)
+      .eq('collection_status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(FOLLOWING_ITEMS_LIMIT)
+      .abortSignal(signal),
   ]);
 
-  const profileMap = new Map((profilesRes.data ?? []).map((p: any) => [p.id, p]));
-
-  const commentCountMap = new Map<string, number>();
-  for (const row of (commentsRes.data ?? []) as any[]) {
-    commentCountMap.set(row.item_id, (commentCountMap.get(row.item_id) ?? 0) + 1);
+  if (followsRes.error) {
+    if (!signal.aborted) console.error('[FollowingItemsFeed] follows query failed:', followsRes.error.message);
+    throw followsRes.error;
+  }
+  if (itemsRes.error) {
+    if (!signal.aborted) console.error('[FollowingItemsFeed] items query failed:', itemsRes.error.message);
+    throw itemsRes.error;
   }
 
-  return { profileMap, commentCountMap };
+  const items = ((itemsRes.data ?? []) as unknown as FollowingRow[]).map((row) => ({
+    id: row.id,
+    title: row.title ?? null,
+    player: row.player ?? null,
+    item_type: (row.item_type ?? 'sports_card') as CollectibleItemType,
+    created_at: row.created_at,
+    user_id: row.user_id,
+    primary_image_id: row.primary_image?.[0]?.id ?? null,
+    owner_username: row.owner?.username ?? 'user',
+    owner_display_name: (row.owner?.hero_display_name || row.owner?.display_name) ?? null,
+    owner_avatar_url: row.owner?.avatar_url ?? null,
+    commentCount: 0,
+  }));
+
+  return { followedCount: followsRes.count ?? 0, items };
+}
+
+// item_comments counts (supabase/migrations/20260923120000_create_item_social.sql)
+// — one batched query after the rows, never blocking the grid or its
+// images. Counts only, since these tiles render a read-only count. Likes
+// are intentionally not shown (or fetched) on this screen.
+async function queryFollowingCommentCounts(itemIds: string[], signal: AbortSignal): Promise<Map<string, number>> {
+  const { data } = await supabase.from('item_comments').select('item_id').in('item_id', itemIds).abortSignal(signal);
+  const commentCountMap = new Map<string, number>();
+  for (const row of (data ?? []) as { item_id: string }[]) {
+    commentCountMap.set(row.item_id, (commentCountMap.get(row.item_id) ?? 0) + 1);
+  }
+  return commentCountMap;
 }
 
 function FollowingItemTile({
@@ -624,90 +587,34 @@ export function FollowingItemsFeed({
 
       if (controllerRef.current !== controller || controller.signal.aborted) return;
 
-      // Phase 1 done — tile shells (title/category/age/owner-placeholder)
-      // are ready to paint now, BEFORE any primary image id has even been
-      // looked up. Stop the full-screen skeleton gate here rather than
-      // waiting on anything below. `previousById` (only for 'refresh'/
-      // 'background') carries forward each still-present item's
-      // already-resolved fields so re-fetching the row list doesn't itself
-      // blank out photos/metadata that were already correct.
-      const previousById =
-        mode === 'initial' ? undefined : new Map(itemsRef.current.map((i) => [i.id, i] as const));
-      setItems(buildShellItems(rows.itemRows, previousById));
+      // Complete tiles (image id + owner) from the one request above — the
+      // grid paints and its priority images start signing now. Only the
+      // comment count follows; a refresh carries each still-present item's
+      // known count forward so it never flickers back to 0 meanwhile.
+      const previousCounts = new Map(itemsRef.current.map((i) => [i.id, i.commentCount] as const));
+      setItems(rows.items.map((item) => ({ ...item, commentCount: previousCounts.get(item.id) ?? 0 })));
       setFollowedCount(rows.followedCount);
       setLoadError(null);
       setLoading(false);
       setRefreshing(false);
       updateSessionSnapshot(currentUserId, { fetchedAt: Date.now() });
 
-      if (!rows.itemRows.length) {
+      if (!rows.items.length) {
         controllerRef.current = null;
         return;
       }
 
-      // PRIORITY / BACKGROUND primary-image-id resolution: the first
-      // INITIAL_VISIBLE_ITEM_COUNT item rows (this grid's real, newest-first
-      // render order — the same first-4 group this screen actually mounts
-      // first, see `mountCount` below) get their OWN attachPrimaryImageIds
-      // call, merged into items state as soon as it resolves — not gated
-      // behind the larger remaining-items call. All three requests below
-      // (priority ids, background ids, owner/engagement meta) are fired
-      // together, before any of them is awaited, so none sits waiting on
-      // another to even start; only the ORDER they're applied to state
-      // differs, favoring whichever resolves first (typically priority,
-      // being the smaller request).
-      const priorityRows = rows.itemRows.slice(0, INITIAL_VISIBLE_ITEM_COUNT);
-      const backgroundRows = rows.itemRows.slice(INITIAL_VISIBLE_ITEM_COUNT);
-      const ownerIds = [...new Set(rows.itemRows.map((r) => r.user_id))];
-      const itemIds = rows.itemRows.map((r) => r.id);
-
-      const priorityIdsPromise = attachPrimaryImageIds(priorityRows);
-      const backgroundIdsPromise = attachPrimaryImageIds(backgroundRows);
-      const metaPromise = queryFollowingItemsMeta(ownerIds, itemIds, controller.signal);
-
       try {
-        const priorityWithIds = await priorityIdsPromise;
+        const commentCounts = await queryFollowingCommentCounts(
+          rows.items.map((i) => i.id),
+          controller.signal,
+        );
         if (controllerRef.current === controller && !controller.signal.aborted) {
-          setItems((prev) => mergePrimaryImageIds(prev, priorityWithIds));
+          setItems((prev) => prev.map((item) => ({ ...item, commentCount: commentCounts.get(item.id) ?? 0 })));
         }
       } catch (e) {
         if (!controller.signal.aborted && controllerRef.current === controller) {
-          console.error('[FollowingItemsFeed] priority image-id load failed:', e);
-        }
-      }
-
-      try {
-        const backgroundWithIds = await backgroundIdsPromise;
-        if (controllerRef.current === controller && !controller.signal.aborted) {
-          setItems((prev) => mergePrimaryImageIds(prev, backgroundWithIds));
-        }
-      } catch (e) {
-        if (!controller.signal.aborted && controllerRef.current === controller) {
-          console.error('[FollowingItemsFeed] background image-id load failed:', e);
-        }
-      }
-
-      try {
-        const meta = await metaPromise;
-        if (controllerRef.current === controller && !controller.signal.aborted) {
-          setItems((prev) =>
-            prev.map((item) => {
-              const p = meta.profileMap.get(item.user_id);
-              return {
-                ...item,
-                owner_username: p?.username ?? item.owner_username,
-                owner_display_name: (p?.hero_display_name || p?.display_name) ?? item.owner_display_name,
-                owner_avatar_url: p?.avatar_url ?? item.owner_avatar_url,
-                commentCount: meta.commentCountMap.get(item.id) ?? 0,
-              };
-            }),
-          );
-        }
-      } catch (e) {
-        // Non-fatal — tile shells and images already work without owner/
-        // engagement metadata, so this never re-triggers the error screen.
-        if (!controller.signal.aborted && controllerRef.current === controller) {
-          console.error('[FollowingItemsFeed] meta load failed:', e);
+          console.error('[FollowingItemsFeed] comment counts load failed:', e);
         }
       } finally {
         if (controllerRef.current === controller) controllerRef.current = null;

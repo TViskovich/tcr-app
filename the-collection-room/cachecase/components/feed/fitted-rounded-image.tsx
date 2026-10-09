@@ -42,8 +42,12 @@ export function FittedRoundedImage({ uri, radius, transition = 200 }: Props) {
   const [loaded, setLoaded] = useState<{ uri: string; width: number; height: number } | null>(null);
   const natural = media.size ?? (loaded?.uri === uri ? loaded : null);
 
+  // A zero-size pass (an ancestor hidden or collapsed) is ignored: the
+  // last real box is kept, so an already-drawn photo isn't unmounted and
+  // redrawn with a fresh fade-in when it's shown again.
   function handleLayout(e: LayoutChangeEvent) {
     const { width, height } = e.nativeEvent.layout;
+    if (width <= 0 || height <= 0) return;
     if (width !== box.width || height !== box.height) setBox({ width, height });
   }
 
@@ -68,6 +72,7 @@ export function FittedRoundedImage({ uri, radius, transition = 200 }: Props) {
             style={[StyleSheet.absoluteFill, { borderRadius: radius }]}
             contentFit="contain"
             transition={transition}
+            cachePolicy="memory-disk"
             onLoad={(e) => {
               const { width, height } = e.source;
               if (width > 0 && height > 0) {

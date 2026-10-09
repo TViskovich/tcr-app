@@ -1120,6 +1120,9 @@ export function PostCard({
                       // upload).
                       contentFit="contain"
                       transition={200}
+                      // Memory cache too (expo-image's own), so a remounted
+                      // post redraws without a disk round trip.
+                      cachePolicy="memory-disk"
                       onLoad={(e) => {
                         if (post.image_url) rememberMediaSize(post.image_url, e.source.width, e.source.height);
                       }}

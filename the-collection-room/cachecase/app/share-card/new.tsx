@@ -35,9 +35,10 @@ import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { rememberMediaSize, useMediaSize } from '@/lib/feed-media-dimensions';
-import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER, type ImageTier } from '@/lib/image-tiers';
 import { attachPrimaryImageIds } from '@/lib/item-images';
-import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
+import { invalidateOwnProfileCache, peekOwnProfileCacheSync } from '@/lib/own-profile-cache';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -51,6 +52,10 @@ const MAX_CARDS = 5;
 const FOLDER_COLUMNS = 3;
 const FOLDER_GAP = 10;
 const SCROLL_PADDING = 16;
+// Card tiles in a scope's first screenful (3 per row): signed in their own
+// small batch, ahead of the rest, and downloaded at expo-image's high
+// priority — the rest follow in a second batch at low priority.
+const PRIORITY_CARD_COUNT = 12;
 
 // What the picker is browsing: null = the folder picker itself; 'all' =
 // every card (the original single grid); 'folder' = one folder's direct
@@ -81,33 +86,51 @@ function hasShareableImage(item: CollectionItem) {
 // each result to the screen, which keeps every card it has seen so a
 // selection made in another folder still resolves (reorder strip, preview,
 // Post re-validation).
+//
+// `seed` (rows this scope already showed this session, else the own-profile
+// cache's copy of them) renders on the first frame; the query still runs
+// and replaces it — so reopening a folder shows its cards at once instead
+// of a spinner. Signing is two batches through the shared signed-URL cache:
+// the first screenful (PRIORITY_CARD_COUNT), then the rest, so the visible
+// tiles never wait on a large folder's whole batch.
 function ScopedCards({
+  scopeKey,
   userId,
   folderId,
+  seed,
   onLoaded,
   children,
 }: {
+  scopeKey: string;
   userId: string | undefined;
   folderId?: string;
-  onLoaded: (items: CollectionItemWithFolderVisibility[]) => void;
+  seed: CollectionItemWithFolderVisibility[] | null;
+  onLoaded: (scopeKey: string, items: CollectionItemWithFolderVisibility[]) => void;
   children: (scope: {
     items: CollectionItemWithFolderVisibility[];
     loading: boolean;
     error: string | null;
     refresh: () => void;
     imageUrls: Map<string, string>;
+    servedTiers: Map<string, ImageTier>;
   }) => ReactNode;
 }) {
-  const { items: allRows, loading, error, refresh } = useAllItems(userId, { folderId });
+  const { items: allRows, loading, error, refresh } = useAllItems(userId, { folderId, seed });
   const items = allRows.filter(hasShareableImage);
-  const { urls: imageUrls } = useSignedItemImages(
-    items.map((i) => i.primary_image_id),
+  const priority = useSignedItemImages(
+    items.slice(0, PRIORITY_CARD_COUNT).map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
   );
+  const rest = useSignedItemImages(
+    items.slice(PRIORITY_CARD_COUNT).map((i) => i.primary_image_id),
+    COMPACT_IMAGE_TIER,
+  );
+  const imageUrls = new Map([...rest.urls, ...priority.urls]);
+  const servedTiers = new Map([...rest.servedTiers, ...priority.servedTiers]);
   useEffect(() => {
-    onLoaded(allRows);
-  }, [allRows, onLoaded]);
-  return <>{children({ items, loading, error, refresh, imageUrls })}</>;
+    onLoaded(scopeKey, allRows);
+  }, [scopeKey, allRows, onLoaded]);
+  return <>{children({ items, loading, error, refresh, imageUrls, servedTiers })}</>;
 }
 
 // Card picker for the Create menu's "Share Card" option — lets the
@@ -143,14 +166,37 @@ export default function ShareCardScreen() {
   // what selection resolves against, so a card picked in one folder stays
   // selectable/postable after browsing to another.
   const [knownItems, setKnownItems] = useState<Map<string, CollectionItemWithFolderVisibility>>(() => new Map());
-  const rememberItems = useCallback((loaded: CollectionItemWithFolderVisibility[]) => {
+  // Rows each scope ('all' or a folder id) has shown during this composer
+  // session — reopening it starts from them (see ScopedCards' seed). Lives
+  // and dies with this screen, so it never outlasts the session or crosses
+  // accounts.
+  const scopeRowsRef = useRef(new Map<string, CollectionItemWithFolderVisibility[]>());
+  const rememberItems = useCallback((scopeKey: string, loaded: CollectionItemWithFolderVisibility[]) => {
     if (!loaded.length) return;
+    scopeRowsRef.current.set(scopeKey, loaded);
     setKnownItems((prev) => {
       const next = new Map(prev);
       for (const item of loaded) next.set(item.id, item);
       return next;
     });
   }, []);
+  // The own-profile cache (lib/own-profile-cache.ts) already holds this
+  // user's root folders (same useFolders query and order) and every one of
+  // their items (same useAllItems rows, primary image ids included). Read
+  // once: it lets the folder picker and each card scope paint immediately,
+  // while their own queries still run and replace it.
+  const [ownCache] = useState(() => (currentUserId ? (peekOwnProfileCacheSync(currentUserId)?.payload ?? null) : null));
+  // The seed for the scope being opened, chosen when it's opened (see
+  // openScope): this session's rows for it, else the cache's. Never an empty
+  // list — an empty seed would flash "no cards" before the real answer.
+  const [scopeSeed, setScopeSeed] = useState<CollectionItemWithFolderVisibility[] | null>(null);
+  function seedFor(folderId: string | null): CollectionItemWithFolderVisibility[] | null {
+    const known = scopeRowsRef.current.get(folderId ?? 'all');
+    if (known?.length) return known;
+    if (!ownCache) return null;
+    const cached = folderId ? ownCache.items.filter((i) => i.folder_id === folderId) : ownCache.items;
+    return cached.length ? cached : null;
+  }
   const { width: windowWidth } = useWindowDimensions();
   const folderTileWidth = (windowWidth - SCROLL_PADDING * 2 - FOLDER_GAP * (FOLDER_COLUMNS - 1)) / FOLDER_COLUMNS;
   const scrollRef = useRef<ScrollView>(null);
@@ -323,12 +369,14 @@ export default function ShareCardScreen() {
   // item), which may come from several folders. Each picker grid signs its
   // own cards (ScopedCards); both share the same cache and in-flight
   // requests, so a card already shown in a grid never signs twice.
-  const { urls: signedItemImageUrls } = useSignedItemImages(
+  const { urls: signedItemImageUrls, servedTiers: signedItemServedTiers } = useSignedItemImages(
     resolvableItems
       .filter((i) => i.id === sourceItem?.id || selectedIds.includes(i.id))
       .map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
   );
+  // Same identity the signed-URL cache keys by — for stable byte cacheKeys.
+  const cacheIdentity = currentUserId ?? 'anon';
 
   // The folder picker's data — root folders in the user's normal
   // Collection order (useFolders: the Collection tab's own name order),
@@ -342,7 +390,16 @@ export default function ShareCardScreen() {
     loading: foldersLoading,
     error: foldersError,
     refresh: refreshFolders,
-  } = useFolders(pickerUserId);
+  } = useFolders(pickerUserId, {
+    seed: ownCache
+      ? {
+          folders: ownCache.folders,
+          itemCounts: ownCache.folderItemCounts,
+          previewItems: {},
+          previewEntries: ownCache.folderPreviewEntries,
+        }
+      : null,
+  });
   // An opened folder's own child folders, shown above its cards — the same
   // one-level-at-a-time hierarchy the Collection screens use (a folder's
   // cards are its DIRECT items only; descendants are reached by opening a
@@ -358,16 +415,26 @@ export default function ShareCardScreen() {
   );
 
   function openFolder(folder: Folder) {
+    setScopeSeed(seedFor(folder.id));
     setBrowse((prev) => ({ kind: 'folder', trail: prev?.kind === 'folder' ? [...prev.trail, folder] : [folder] }));
+  }
+
+  function openAllCards() {
+    setScopeSeed(seedFor(null));
+    setBrowse({ kind: 'all' });
   }
 
   // Up one level: a child folder back to its parent, a root folder or All
   // Cards back to the picker. Never leaves the screen — that's Cancel.
   const goUp = useCallback(() => {
+    const parent = browse?.kind === 'folder' && browse.trail.length > 1 ? browse.trail[browse.trail.length - 2] : null;
+    if (parent) setScopeSeed(seedFor(parent.id));
     setBrowse((prev) =>
       prev?.kind === 'folder' && prev.trail.length > 1 ? { kind: 'folder', trail: prev.trail.slice(0, -1) } : null,
     );
-  }, []);
+    // seedFor reads only refs/props that don't need to be dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browse]);
 
   // Each level starts at its top.
   useEffect(() => {
@@ -737,7 +804,7 @@ export default function ShareCardScreen() {
                     imageUrl={null}
                     title="All Cards"
                     tileWidth={folderTileWidth}
-                    onPress={() => setBrowse({ kind: 'all' })}
+                    onPress={openAllCards}
                   />
                   {rootFolders.map((folder) => {
                     const count = itemCounts[folder.id] ?? 0;
@@ -800,13 +867,18 @@ export default function ShareCardScreen() {
                     different folder (or All Cards) mounts a fresh load. */}
                 <ScopedCards
                   key={currentFolder?.id ?? 'all'}
+                  scopeKey={currentFolder?.id ?? 'all'}
                   userId={currentUserId}
                   folderId={currentFolder?.id}
+                  seed={scopeSeed}
                   onLoaded={rememberItems}>
                   {(scope) =>
-                    scope.loading ? (
+                    // Seeded cards stay on screen while they refresh — the
+                    // spinner / error states are only for a scope with
+                    // nothing to show yet.
+                    scope.loading && scope.items.length === 0 ? (
                       <ActivityIndicator style={styles.scopeState} color={PV2.link} />
-                    ) : scope.error ? (
+                    ) : scope.error && scope.items.length === 0 ? (
                       // Distinct from the empty state below — a failed query
                       // must never look identical to "you have no cards."
                       // The raw Supabase message is only ever logged (via
@@ -858,7 +930,7 @@ export default function ShareCardScreen() {
                         )}
 
                         <View style={styles.grid}>
-                          {scope.items.map((item) => {
+                          {scope.items.map((item, index) => {
                             const selectedIndex = selectedIds.indexOf(item.id);
                             const isSelected = selectedIndex !== -1;
                             const shareable = isPubliclyShareable(item);
@@ -875,7 +947,25 @@ export default function ShareCardScreen() {
                                 accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
                                 <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
                                   {signedUrl && (
-                                    <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" transition={150} />
+                                    // Stable cacheKey (same identity every other preview-tier
+                                    // grid uses), so bytes survive signed-URL rotation and are
+                                    // shared with other screens; first screenful first.
+                                    <Image
+                                      source={{
+                                        uri: signedUrl,
+                                        cacheKey: itemImageCacheKey(
+                                          cacheIdentity,
+                                          item.primary_image_id!,
+                                          COMPACT_IMAGE_TIER,
+                                          scope.servedTiers,
+                                        ),
+                                      }}
+                                      style={styles.image}
+                                      contentFit="cover"
+                                      transition={150}
+                                      cachePolicy="memory-disk"
+                                      priority={index < PRIORITY_CARD_COUNT ? 'high' : 'low'}
+                                    />
                                   )}
                                   {isSelected && (
                                     <View style={styles.selectedBadge}>
@@ -920,7 +1010,20 @@ export default function ShareCardScreen() {
                       <View key={item.id} style={styles.reorderThumbWrap}>
                         <View style={styles.reorderThumb}>
                           {signedUrl && (
-                            <Image source={{ uri: signedUrl }} style={styles.image} contentFit="cover" />
+                            <Image
+                              source={{
+                                uri: signedUrl,
+                                cacheKey: itemImageCacheKey(
+                                  cacheIdentity,
+                                  item.primary_image_id!,
+                                  COMPACT_IMAGE_TIER,
+                                  signedItemServedTiers,
+                                ),
+                              }}
+                              style={styles.image}
+                              contentFit="cover"
+                              cachePolicy="memory-disk"
+                            />
                           )}
                           <View style={styles.selectedBadge}>
                             <Text style={styles.selectedBadgeText}>{index + 1}</Text>

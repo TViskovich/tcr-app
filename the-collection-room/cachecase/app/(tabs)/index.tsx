@@ -527,6 +527,9 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Both feeds share this body, so the hidden For You pane can sit
+          over the exact area it normally fills (see forYouPaneHidden). */}
+      <View style={styles.feedBody}>
       {feedMode === 'following' && (
         // Entirely separate data model/layout — recently uploaded
         // collection items from followed collectors, not posts. Owns its
@@ -541,8 +544,16 @@ export default function HomeScreen() {
 
       {/* For You pane stays mounted (just hidden) while Following is shown,
           so switching back is instant and keeps the list's scroll position
-          instead of remounting the FlatList. */}
-      <View style={[styles.forYouPane, feedMode === 'following' && styles.forYouPaneHidden]}>
+          instead of remounting the FlatList. Hidden WITHOUT collapsing its
+          layout (forYouPaneHidden): display:'none' laid the list out at
+          0x0, which shrank the FlatList's render window and unmounted its
+          cells — every post (and its images) then remounted on return,
+          redrawing from disk with a fresh fade-in. */}
+      <View
+        style={[styles.forYouPane, feedMode === 'following' && styles.forYouPaneHidden]}
+        pointerEvents={feedMode === 'following' ? 'none' : 'auto'}
+        accessibilityElementsHidden={feedMode === 'following'}
+        importantForAccessibility={feedMode === 'following' ? 'no-hide-descendants' : 'auto'}>
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
@@ -643,6 +654,7 @@ export default function HomeScreen() {
           />
         </View>
       )}
+      </View>
       </View>
 
       <RepostMenu
@@ -786,11 +798,24 @@ const styles = StyleSheet.create({
   listWrap: {
     flex: 1,
   },
+  // Holds both feeds; the hidden For You pane is positioned against it.
+  feedBody: {
+    flex: 1,
+  },
   forYouPane: {
     flex: 1,
   },
+  // Hidden but laid out at its normal size — over the same area, invisible,
+  // untouchable (pointerEvents) and hidden from screen readers — so the
+  // list's layout, render window and mounted cells survive the Following
+  // tab exactly as they were.
   forYouPaneHidden: {
-    display: 'none',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
   },
   // Piece 3 of the X-style redesign — posts are flat/dark/borderless now
   // (see PostCard's own card style), each separated by its own bottom
