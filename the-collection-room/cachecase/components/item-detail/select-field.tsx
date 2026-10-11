@@ -22,9 +22,21 @@ type SelectFieldProps = {
   // Compact row: label on the left, a narrower trigger on the right (e.g.
   // the Sports Card/Pokémon "Graded" control) instead of label-above.
   inline?: boolean;
+  // Long lists (e.g. Pokémon Rarity): the menu is capped to the screen and
+  // scrolls (see AnchoredMenu's scrollable). Off by default — every
+  // existing dropdown renders exactly as before.
+  scrollable?: boolean;
 };
 
-export function SelectField({ label, value, options, placeholder, onChange, inline = false }: SelectFieldProps) {
+export function SelectField({
+  label,
+  value,
+  options,
+  placeholder,
+  onChange,
+  inline = false,
+  scrollable = false,
+}: SelectFieldProps) {
   const { open, anchor, triggerRef, openMenu, closeMenu } = useAnchoredMenu();
   return (
     <View style={[fieldStyles.wrap, inline && fieldStyles.inlineWrap]}>
@@ -42,7 +54,7 @@ export function SelectField({ label, value, options, placeholder, onChange, inli
         <Text style={fieldStyles.chevron}>▾</Text>
       </Pressable>
 
-      <AnchoredMenu visible={open} anchor={anchor} onRequestClose={closeMenu}>
+      <AnchoredMenu visible={open} anchor={anchor} onRequestClose={closeMenu} scrollable={scrollable}>
         {options.map((option) => {
           const selected = option === value;
           return (

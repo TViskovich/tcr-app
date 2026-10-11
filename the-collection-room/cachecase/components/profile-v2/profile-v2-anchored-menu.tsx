@@ -1,5 +1,6 @@
 import { type ReactNode, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from './profile-v2-theme';
 
@@ -37,7 +38,14 @@ type Props = {
   anchor: AnchorRect | null;
   onRequestClose: () => void;
   children: ReactNode;
+  // Long option lists (e.g. SelectField with many options): the menu is
+  // capped to the space available on screen and scrolls, opening ABOVE the
+  // trigger when there's more room there. Off by default — every existing
+  // short menu renders exactly as before.
+  scrollable?: boolean;
 };
+
+const SCREEN_MARGIN = 16;
 
 // The dropdown box itself — anchored under `anchor` (from useAnchoredMenu
 // above), compact, dark. The project's existing menu-shaped components
@@ -46,7 +54,28 @@ type Props = {
 // under a small button, stay compact, don't cover large portions of the
 // screen" — so none of them fit this use. Built from React Native's own
 // Modal + View.measureInWindow; no new dependency.
-export function AnchoredMenu({ visible, anchor, onRequestClose, children }: Props) {
+export function AnchoredMenu({ visible, anchor, onRequestClose, children, scrollable = false }: Props) {
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  if (scrollable && anchor) {
+    const below = anchor.y + anchor.height + 6;
+    const spaceBelow = windowHeight - below - insets.bottom - SCREEN_MARGIN;
+    const spaceAbove = anchor.y - 6 - insets.top - SCREEN_MARGIN;
+    const openAbove = spaceAbove > spaceBelow;
+    const position = openAbove
+      ? { bottom: windowHeight - anchor.y + 6, maxHeight: spaceAbove }
+      : { top: below, maxHeight: spaceBelow };
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={onRequestClose}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onRequestClose} />
+        <View style={[styles.menu, styles.menuScrollable, position, { left: anchor.x, minWidth: anchor.width }]}>
+          <ScrollView bounces={false} showsVerticalScrollIndicator>
+            {children}
+          </ScrollView>
+        </View>
+      </Modal>
+    );
+  }
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onRequestClose}>
       {/* Invisible full-screen Pressable purely to catch an outside tap and
@@ -99,6 +128,10 @@ const styles = StyleSheet.create({
   // the radius to a true stadium/pill regardless, so this reads as the
   // same pill language as the trigger button above it, not a rounded-rect
   // card.
+  // A taller scrolling list reads as a rounded card rather than a pill.
+  menuScrollable: {
+    borderRadius: 14,
+  },
   menu: {
     position: 'absolute',
     backgroundColor: '#161616',

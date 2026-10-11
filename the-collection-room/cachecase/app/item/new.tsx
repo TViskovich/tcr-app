@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PhotoAdjuster } from '@/components/collection/photo-adjuster';
 import { CollapsibleSection } from '@/components/item-detail/collapsible-section';
 import { GradedToggle, GradingCompanyField } from '@/components/item-detail/graded-toggle';
+import { OptionWithOtherField } from '@/components/item-detail/option-with-other-field';
 import { PendingItemGalleryManager, type PendingItemPhoto } from '@/components/item-detail/pending-item-gallery-manager';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { AnchoredMenu, menuStyles, useAnchoredMenu } from '@/components/profile-v2/profile-v2-anchored-menu';
@@ -38,10 +39,21 @@ import {
   COMIC_RAW_CONDITION_OPTIONS,
   COMIC_SPECIAL_COVER_FINISH_OPTIONS,
 } from '@/lib/comic-book-options';
-import { POKEMON_GRADING_COMPANIES, SPORTS_CARD_GRADING_COMPANIES } from '@/lib/card-grading-options';
+import {
+  POKEMON_GRADING_COMPANIES,
+  SPORTS_CARD_GRADING_COMPANIES,
+  TRADING_CARD_GRADING_COMPANIES,
+} from '@/lib/card-grading-options';
+import { POKEMON_EDITION_OPTIONS, POKEMON_LANGUAGE_OPTIONS, POKEMON_RARITY_OPTIONS } from '@/lib/pokemon-card-options';
 import { addItemImages, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { createPokemonItem } from '@/lib/pokemon-items';
+import { createTradingCardItem } from '@/lib/trading-card-items';
+import {
+  isUnspecifiedFranchise,
+  TRADING_CARD_FRANCHISE_OPTIONS,
+  UNSPECIFIED_FRANCHISE_MESSAGE,
+} from '@/lib/trading-card-options';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectibleItemType, ComicConditionType } from '@/types';
@@ -56,9 +68,10 @@ import type { CollectibleItemType, ComicConditionType } from '@/types';
 // Save until its own detail table/form exists.
 const COLLECTIBLE_TYPES: { value: CollectibleItemType; label: string }[] = [
   { value: 'sports_card', label: 'Sports Card' },
-  { value: 'pokemon', label: 'Pokémon' },
-  { value: 'figurine', label: 'Figurine' },
+  { value: 'pokemon', label: 'Pokémon Card' },
   { value: 'comic_book', label: 'Comic Book' },
+  { value: 'figurine', label: 'Figurine' },
+  { value: 'trading_card', label: 'Trading Card (Other)' },
 ];
 
 type FormState = {
@@ -113,6 +126,38 @@ const INITIAL_POKEMON_FORM: PokemonFormState = {
   language: '',
   edition: '',
   holoType: '',
+  gradingCompany: '',
+  grade: '',
+  estimatedValue: '',
+  description: '',
+};
+
+// Trading Card (Other)'s own form shape (supabase/migrations/
+// 20261017120000_add_trading_card_items.sql, lib/trading-card-items.ts).
+// franchise is the stored value: a listed franchise, the collector's own
+// name after "Other" (OptionWithOtherField), or '' when unset.
+type TradingCardFormState = {
+  franchise: string;
+  cardName: string;
+  setName: string;
+  cardNumber: string;
+  rarity: string;
+  language: string;
+  edition: string;
+  gradingCompany: string;
+  grade: string;
+  estimatedValue: string;
+  description: string;
+};
+
+const INITIAL_TRADING_CARD_FORM: TradingCardFormState = {
+  franchise: '',
+  cardName: '',
+  setName: '',
+  cardNumber: '',
+  rarity: '',
+  language: '',
+  edition: '',
   gradingCompany: '',
   grade: '',
   estimatedValue: '',
@@ -241,6 +286,29 @@ function pokemonField(
   key: keyof PokemonFormState,
   form: PokemonFormState,
   update: (k: keyof PokemonFormState) => (v: string) => void,
+  extra?: object,
+) {
+  return (
+    <View style={fieldStyles.wrap}>
+      <Text style={fieldStyles.label}>{label}</Text>
+      <TextInput
+        style={fieldStyles.input}
+        value={form[key]}
+        onChangeText={update(key)}
+        placeholderTextColor={PV2.textTertiary}
+        placeholder={label}
+        {...extra}
+      />
+    </View>
+  );
+}
+
+// Same shape as pokemonField() above, for TradingCardFormState.
+function tradingCardField(
+  label: string,
+  key: keyof TradingCardFormState,
+  form: TradingCardFormState,
+  update: (k: keyof TradingCardFormState) => (v: string) => void,
   extra?: object,
 ) {
   return (
@@ -402,11 +470,13 @@ export default function AddItemScreen() {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [pokemonForm, setPokemonForm] = useState<PokemonFormState>(INITIAL_POKEMON_FORM);
   const [comicForm, setComicForm] = useState<ComicFormState>(INITIAL_COMIC_FORM);
+  const [tradingCardForm, setTradingCardForm] = useState<TradingCardFormState>(INITIAL_TRADING_CARD_FORM);
   // Graded for Sports Card / Pokémon — starts as "-" for a new item. Setting
   // it back to "-" clears that form's Grade + Grading Company (see changeSportsGraded/
   // changePokemonGraded), so nothing hidden is ever saved.
   const [sportsGraded, setSportsGraded] = useState(false);
   const [pokemonGraded, setPokemonGraded] = useState(false);
+  const [tradingCardGraded, setTradingCardGraded] = useState(false);
   // Collectible Type — defaults to Sports Card. Sports Card, Pokémon, and
   // Comic Book all have real forms (see COLLECTIBLE_TYPES above); Figurine
   // still swaps the metadata section below for a temporary shell and
@@ -416,7 +486,8 @@ export default function AddItemScreen() {
   const isSportsCard = itemType === 'sports_card';
   const isPokemon = itemType === 'pokemon';
   const isComicBook = itemType === 'comic_book';
-  const isSupportedType = isSportsCard || isPokemon || isComicBook;
+  const isTradingCard = itemType === 'trading_card';
+  const isSupportedType = isSportsCard || isPokemon || isComicBook || isTradingCard;
   const selectedTypeLabel = COLLECTIBLE_TYPES.find((t) => t.value === itemType)?.label ?? 'Sports Card';
   // Shared anchored-dropdown mechanics (measure trigger, open a Modal-hosted
   // box just under it, close on outside tap or selection) — see
@@ -463,6 +534,16 @@ export default function AddItemScreen() {
 
   function updatePokemon(key: keyof PokemonFormState) {
     return (value: string) => setPokemonForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updateTradingCard(key: keyof TradingCardFormState) {
+    return (value: string) => setTradingCardForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  // Same rule as Pokémon: "-" clears Grade + Grading Company.
+  function changeTradingCardGraded(next: boolean) {
+    if (!next) setTradingCardForm((prev) => ({ ...prev, grade: '', gradingCompany: '' }));
+    setTradingCardGraded(next);
   }
 
   function changeSportsGraded(next: boolean) {
@@ -617,6 +698,17 @@ export default function AddItemScreen() {
       Alert.alert('Pokémon name required', 'Please enter the Pokémon name for this card.');
       return;
     }
+    // Trading Card (Other)'s one required field — collection_items.title is
+    // derived from it server-side (see create_trading_card_item).
+    if (isTradingCard && !tradingCardForm.cardName.trim()) {
+      Alert.alert('Card name required', 'Please enter the card name.');
+      return;
+    }
+    // "Other" needs a custom franchise — the bare word is never saved.
+    if (isTradingCard && isUnspecifiedFranchise(tradingCardForm.franchise)) {
+      Alert.alert('Franchise required', UNSPECIFIED_FRANCHISE_MESSAGE);
+      return;
+    }
     // Comics' one required field — collection_items.title is derived from
     // this server-side (see create_comic_book_item), same reasoning as
     // Pokémon's pokemonName check above.
@@ -683,6 +775,21 @@ export default function AddItemScreen() {
               gradingCompany: pokemonGraded ? pokemonForm.gradingCompany.trim() || null : null,
               grade: pokemonGraded ? pokemonForm.grade.trim() || null : null,
             })
+          : isTradingCard
+            ? await createTradingCardItem(folderId, {
+                estimatedValue: tradingCardForm.estimatedValue ? parseFloat(tradingCardForm.estimatedValue) : null,
+                description: tradingCardForm.description.trim() || null,
+                isPublic,
+                franchise: tradingCardForm.franchise.trim() || null,
+                cardName: tradingCardForm.cardName.trim() || null,
+                setName: tradingCardForm.setName.trim() || null,
+                cardNumber: tradingCardForm.cardNumber.trim() || null,
+                rarity: tradingCardForm.rarity.trim() || null,
+                language: tradingCardForm.language.trim() || null,
+                edition: tradingCardForm.edition.trim() || null,
+                gradingCompany: tradingCardGraded ? tradingCardForm.gradingCompany.trim() || null : null,
+                grade: tradingCardGraded ? tradingCardForm.grade.trim() || null : null,
+              })
           : await createComicBookItem(folderId, {
               estimatedValue: comicForm.estimatedValue ? parseFloat(comicForm.estimatedValue) : null,
               description: comicForm.description.trim() || null,
@@ -911,9 +1018,24 @@ export default function AddItemScreen() {
               {pokemonField('Pokémon', 'pokemonName', pokemonForm, updatePokemon)}
               {pokemonField('Set', 'setName', pokemonForm, updatePokemon)}
               {pokemonField('Card Number', 'cardNumber', pokemonForm, updatePokemon)}
-              {pokemonField('Rarity', 'rarity', pokemonForm, updatePokemon)}
-              {pokemonField('Language', 'language', pokemonForm, updatePokemon)}
-              {pokemonField('Edition', 'edition', pokemonForm, updatePokemon)}
+              <OptionWithOtherField
+                label="Rarity"
+                options={POKEMON_RARITY_OPTIONS}
+                value={pokemonForm.rarity}
+                onChange={updatePokemon('rarity')}
+              />
+              <OptionWithOtherField
+                label="Language"
+                options={POKEMON_LANGUAGE_OPTIONS}
+                value={pokemonForm.language}
+                onChange={updatePokemon('language')}
+              />
+              <OptionWithOtherField
+                label="Edition"
+                options={POKEMON_EDITION_OPTIONS}
+                value={pokemonForm.edition}
+                onChange={updatePokemon('edition')}
+              />
               {pokemonField('Holo Type', 'holoType', pokemonForm, updatePokemon)}
 
               {/* Grading */}
@@ -937,6 +1059,53 @@ export default function AddItemScreen() {
                   style={[fieldStyles.input, styles.multiline]}
                   value={pokemonForm.description}
                   onChangeText={updatePokemon('description')}
+                  placeholder="Description"
+                  placeholderTextColor={PV2.textTertiary}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </>
+          ) : isTradingCard ? (
+            <>
+              {/* Trading Card (Other) Details */}
+              <Text style={styles.sectionHeader}>Trading Card Details</Text>
+              <OptionWithOtherField
+                label="Card Game / Franchise"
+                options={TRADING_CARD_FRANCHISE_OPTIONS}
+                value={tradingCardForm.franchise}
+                onChange={updateTradingCard('franchise')}
+                customPlaceholder="Specify franchise"
+              />
+              {tradingCardField('Card Name', 'cardName', tradingCardForm, updateTradingCard)}
+              {tradingCardField('Set', 'setName', tradingCardForm, updateTradingCard)}
+              {tradingCardField('Card Number', 'cardNumber', tradingCardForm, updateTradingCard)}
+              {tradingCardField('Rarity', 'rarity', tradingCardForm, updateTradingCard)}
+              {tradingCardField('Language', 'language', tradingCardForm, updateTradingCard)}
+              {tradingCardField('Edition / Variation (optional)', 'edition', tradingCardForm, updateTradingCard)}
+
+              {/* Grading */}
+              <Text style={styles.sectionHeader}>Grading</Text>
+              <GradedToggle graded={tradingCardGraded} onChange={changeTradingCardGraded}>
+                <GradingCompanyField
+                  companies={TRADING_CARD_GRADING_COMPANIES}
+                  value={tradingCardForm.gradingCompany}
+                  onChange={updateTradingCard('gradingCompany')}
+                />
+                {tradingCardField('Grade', 'grade', tradingCardForm, updateTradingCard, { autoCapitalize: 'characters' })}
+              </GradedToggle>
+
+              {/* Same common fields as the other card forms. */}
+              {tradingCardField('Estimated Value ($)', 'estimatedValue', tradingCardForm, updateTradingCard, {
+                keyboardType: 'decimal-pad',
+              })}
+              <View style={fieldStyles.wrap}>
+                <Text style={fieldStyles.label}>Description</Text>
+                <TextInput
+                  style={[fieldStyles.input, styles.multiline]}
+                  value={tradingCardForm.description}
+                  onChangeText={updateTradingCard('description')}
                   placeholder="Description"
                   placeholderTextColor={PV2.textTertiary}
                   multiline

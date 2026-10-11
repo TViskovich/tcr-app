@@ -8,3 +8,6 @@
 export const SPORTS_CARD_GRADING_COMPANIES = ['PSA', 'BGS', 'SGC', 'CGC', 'TAG', 'Arena Club', 'Other'];
 
 export const POKEMON_GRADING_COMPANIES = ['PSA', 'BGS', 'CGC', 'TAG', 'ACE', 'Other'];
+
+// Trading Card (Other) — the same graders as Pokémon (the TCG graders).
+export const TRADING_CARD_GRADING_COMPANIES = POKEMON_GRADING_COMPANIES;

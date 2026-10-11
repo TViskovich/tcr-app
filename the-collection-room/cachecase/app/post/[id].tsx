@@ -123,6 +123,12 @@ type PostDetail = {
   post_type: 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share' | 'quote';
   // 'item' posts only — see post-card.tsx's own FeedPost.item_id comment.
   item_id: string | null;
+  // 'item' posts only: whether this viewer can open item_id, from the load's
+  // own RLS-scoped collection_items lookup (the same visibility Item Detail
+  // loads under). 'unavailable' = deleted (item_id null) or not visible to
+  // this viewer (e.g. now private); 'unknown' = that lookup failed (the
+  // action then stays enabled; Item Detail has its own not-found state).
+  itemAccess: 'visible' | 'unavailable' | 'unknown';
   image_url: string | null;
   content: string | null;
   caption: string | null;
@@ -301,6 +307,91 @@ function ImmersiveMedia({
   );
 }
 
+// Share Card posts: the row beneath the carousel — the visible card's name
+// and "View item details ›", laid out like a folder share's "View
+// collection ›" row (same styles). Opens the card's ORIGINAL item
+// (card_share_items.item_id, never the snapshot). A card whose item was
+// deleted (item_id null) or that the viewer can't see (RLS lookup — e.g.
+// now private) shows "Item unavailable" instead of the link; while that
+// lookup is in flight the link is simply not shown yet.
+function CardShareItemAction({
+  cards,
+  activeIndex,
+  visibleItemIds,
+  onOpenItem,
+}: {
+  cards: CardShareItem[];
+  activeIndex: number;
+  visibleItemIds: Set<string> | 'unknown' | null;
+  onOpenItem: (itemId: string) => void;
+}) {
+  const card = cards[activeIndex];
+  if (!card) return null;
+  const itemId = card.item_id;
+  const available = !!itemId && (visibleItemIds === 'unknown' || (visibleItemIds !== null && visibleItemIds.has(itemId)));
+  const checking = !!itemId && visibleItemIds === null;
+  return (
+    <View style={[styles.folderShareMeta, styles.cardShareMeta]}>
+      <View style={styles.folderShareMetaText}>
+        <Text style={styles.folderShareName} numberOfLines={1}>
+          {card.snapshot_title || `Card ${activeIndex + 1}`}
+        </Text>
+        {cards.length > 1 ? (
+          <Text style={styles.folderShareCount}>
+            Card {activeIndex + 1} of {cards.length}
+          </Text>
+        ) : null}
+      </View>
+      {available ? (
+        <TouchableOpacity
+          onPress={() => onOpenItem(itemId!)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`View item details${card.snapshot_title ? ` for ${card.snapshot_title}` : ''}`}>
+          <Text style={styles.folderShareLink}>View item details ›</Text>
+        </TouchableOpacity>
+      ) : checking ? null : (
+        <Text style={styles.cardShareItemUnavailable}>Item unavailable</Text>
+      )}
+    </View>
+  );
+}
+
+// Regular item posts: the same row as CardShareItemAction above, beneath
+// the post's image — the item's name and "View item details ›", opening the
+// ORIGINAL collection item (posts.item_id). Deleted or no-longer-visible
+// items show "Item unavailable" instead (see PostDetail.itemAccess).
+function ItemPostAction({
+  itemName,
+  itemAccess,
+  onOpenItem,
+}: {
+  itemName: string | null;
+  itemAccess: PostDetail['itemAccess'];
+  onOpenItem: () => void;
+}) {
+  return (
+    <View style={[styles.folderShareMeta, styles.cardShareMeta]}>
+      <View style={styles.folderShareMetaText}>
+        <Text style={styles.folderShareName} numberOfLines={1}>
+          {itemName || 'Collection item'}
+        </Text>
+      </View>
+      {itemAccess === 'unavailable' ? (
+        <Text style={styles.cardShareItemUnavailable}>Item unavailable</Text>
+      ) : (
+        <TouchableOpacity
+          onPress={onOpenItem}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`View item details${itemName ? ` for ${itemName}` : ''}`}>
+          <Text style={styles.folderShareLink}>View item details ›</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 // Defined outside the screen so FlatList ListHeaderComponent doesn't remount on re-renders
 function PostHeader({
   post,
@@ -320,6 +411,10 @@ function PostHeader({
   onOpenSourceOwnerProfile,
   onOpenSourceItem,
   cardShareInitialIndex,
+  cardShareActiveIndex,
+  onCardShareActiveIndexChange,
+  cardShareVisibleItemIds,
+  onOpenCardShareItem,
   onRepostTap,
   onOpenReposterProfile,
   onOpenQuoted,
@@ -353,6 +448,16 @@ function PostHeader({
   // card_share only: the card its carousel opens on (the feed card that was
   // tapped — see the screen's cardIndex param).
   cardShareInitialIndex: number;
+  // card_share only: the card currently visible in the carousel (already
+  // clamped to the card list) and its swipe updates — "View Item Details"
+  // opens THAT card's original item.
+  cardShareActiveIndex: number;
+  onCardShareActiveIndexChange: (index: number) => void;
+  // Which original items (collection_items ids) this viewer can open, from
+  // an RLS-scoped lookup: null while it's in flight, 'unknown' if it failed
+  // (the action then stays enabled; Item Detail has its own not-found state).
+  cardShareVisibleItemIds: Set<string> | 'unknown' | null;
+  onOpenCardShareItem: (itemId: string) => void;
   // The Repost control — opens the Repost / Quote menu for the ORIGINAL
   // post (post.contentPostId). And, for a repost, its "@username reposted"
   // line opens the reposter.
@@ -523,19 +628,34 @@ function PostHeader({
         // Image. An empty cardShareItems list (query returned zero rows
         // for this post, distinct from the whole fetch failing) gets a
         // controlled fallback instead of silently rendering nothing.
-        <View style={styles.imageWrap}>
+        <>
+          <View style={styles.imageWrap}>
+            {post.cardShareItems.length > 0 ? (
+              // Default card tap here: opens that card's ORIGINAL item
+              // (item_id), Back returns to this screen. A card whose item was
+              // deleted (item_id null) isn't tappable; one the viewer can't
+              // see opens Item Detail's own "Item not found" state.
+              <CardSharePostBody
+                key={post.id}
+                cards={post.cardShareItems}
+                initialIndex={cardShareInitialIndex}
+                onActiveIndexChange={onCardShareActiveIndexChange}
+              />
+            ) : (
+              <View style={styles.cardShareUnavailable}>
+                <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
+              </View>
+            )}
+          </View>
           {post.cardShareItems.length > 0 ? (
-            // Default card tap here: opens that card's ORIGINAL item
-            // (item_id), Back returns to this screen. A card whose item was
-            // deleted (item_id null) isn't tappable; one the viewer can't
-            // see opens Item Detail's own "Item not found" state.
-            <CardSharePostBody cards={post.cardShareItems} initialIndex={cardShareInitialIndex} />
-          ) : (
-            <View style={styles.cardShareUnavailable}>
-              <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
-            </View>
-          )}
-        </View>
+            <CardShareItemAction
+              cards={post.cardShareItems}
+              activeIndex={cardShareActiveIndex}
+              visibleItemIds={cardShareVisibleItemIds}
+              onOpenItem={onOpenCardShareItem}
+            />
+          ) : null}
+        </>
       ) : isForeignRepost ? (
         // Foreign repost: the media stays non-navigation content here too
         // (same as the plain-image sibling branch below) — this screen IS
@@ -564,9 +684,18 @@ function PostHeader({
           )}
         </>
       ) : (
-        <View style={styles.imageWrap}>
-          <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
-        </View>
+        <>
+          <View style={styles.imageWrap}>
+            <Image source={{ uri: post.image_url! }} style={StyleSheet.absoluteFill} contentFit="cover" transition={200} />
+          </View>
+          {post.post_type === 'item' ? (
+            <ItemPostAction
+              itemName={post.item_name}
+              itemAccess={post.itemAccess}
+              onOpenItem={onOpenSourceItem}
+            />
+          ) : null}
+        </>
       )}
 
       {/* Caption only for item posts (Rate My Grails renders its own caption
@@ -760,6 +889,55 @@ export default function PostDetailScreen() {
     setActiveMediaIndex(0);
   }, [post?.id]);
 
+  // Share Card: the visible carousel card — starts on the cardIndex param
+  // (same clamp as CardSharePostBody's own startIndex), then follows swipes.
+  // Keyed by post id, like the carousel itself (key={post.id}), so a swipe
+  // on one post never carries over to another.
+  const [cardShareSwiped, setCardShareSwiped] = useState<{ postId: string; index: number } | null>(null);
+  const cardShareCount = post?.post_type === 'card_share' ? post.cardShareItems.length : 0;
+  const cardShareInitialIndex = Math.min(Math.max(0, Math.floor(Number(cardIndex) || 0)), Math.max(0, cardShareCount - 1));
+  const cardShareSwipedIndex = cardShareSwiped && cardShareSwiped.postId === post?.id ? cardShareSwiped.index : null;
+  const cardShareActiveIndex = Math.min(cardShareSwipedIndex ?? cardShareInitialIndex, Math.max(0, cardShareCount - 1));
+  const postIdForCardShare = post?.id;
+  const handleCardShareActiveIndexChange = useCallback(
+    (index: number) => {
+      if (postIdForCardShare) setCardShareSwiped({ postId: postIdForCardShare, index });
+    },
+    [postIdForCardShare],
+  );
+
+  // Share Card: which original items this viewer can actually open. A plain
+  // RLS-scoped read of the ids — the same visibility Item Detail itself
+  // loads under — so a deleted, private or hidden item reads as unavailable
+  // instead of leading to "Item not found". Nothing is cached.
+  const [cardShareAccess, setCardShareAccess] = useState<{ postId: string; ids: Set<string> | 'unknown' } | null>(null);
+  const cardShareItems = post?.post_type === 'card_share' ? post.cardShareItems : null;
+  useEffect(() => {
+    if (!post?.id || !cardShareItems) return;
+    const postId = post.id;
+    const ids = [...new Set(cardShareItems.map((c) => c.item_id).filter((id): id is string => !!id))];
+    const controller = new AbortController();
+    (ids.length === 0
+      ? Promise.resolve({ data: [] as { id: string }[], error: null })
+      : supabase.from('collection_items').select('id').in('id', ids).abortSignal(controller.signal)
+    ).then(
+      ({ data, error }) => {
+        if (controller.signal.aborted) return;
+        if (error) {
+          if (__DEV__) console.warn('[PostDetail] card share item access check failed:', error.message);
+          setCardShareAccess({ postId, ids: 'unknown' });
+          return;
+        }
+        setCardShareAccess({ postId, ids: new Set((data ?? []).map((r) => r.id)) });
+      },
+      () => {
+        if (!controller.signal.aborted) setCardShareAccess({ postId, ids: 'unknown' });
+      },
+    );
+    return () => controller.abort();
+  }, [post?.id, cardShareItems]);
+  const cardShareVisibleItemIds = cardShareAccess && cardShareAccess.postId === post?.id ? cardShareAccess.ids : null;
+
   // Owns the mount/postId-change load's request batch only — the
   // Retry-comments and post-a-comment refresh paths below are user-
   // triggered actions (not a mount/route effect), same classification as
@@ -797,6 +975,8 @@ export default function PostDetailScreen() {
   // already uses, and the same /item/[id] route Item Detail itself lives
   // at. No-ops if either is somehow missing (defensive only; PostHeader
   // never calls these unless post.sourceOwner/post.item_id are set).
+  // handleOpenSourceItem is also a regular item post's "View item details ›"
+  // (ItemPostAction) — a push, so Back returns here.
   function handleOpenSourceOwnerProfile() {
     if (!post?.sourceOwner) return;
     navigateToProfile(router, currentUserId, post.sourceOwner.id, post.sourceOwner.username);
@@ -1164,6 +1344,7 @@ export default function PostDetailScreen() {
           quoted: quotedPost,
           post_type: (row.post_type ?? 'item') as 'item' | 'text' | 'rate_my_grails' | 'card_share' | 'folder_share' | 'quote',
           item_id: row.item_id ?? null,
+          itemAccess: !row.item_id ? 'unavailable' : (itemRes as any).error ? 'unknown' : item ? 'visible' : 'unavailable',
           image_url: row.image_url ?? null,
           content: row.content ?? null,
           caption: row.caption ?? null,
@@ -1510,7 +1691,11 @@ export default function PostDetailScreen() {
           ListHeaderComponent={
             <PostHeader
               post={post}
-              cardShareInitialIndex={Number(cardIndex) || 0}
+              cardShareInitialIndex={cardShareInitialIndex}
+              cardShareActiveIndex={cardShareActiveIndex}
+              onCardShareActiveIndexChange={handleCardShareActiveIndexChange}
+              cardShareVisibleItemIds={cardShareVisibleItemIds}
+              onOpenCardShareItem={(itemId) => router.push({ pathname: '/item/[id]', params: { id: itemId } })}
               commentCount={comments.length}
               likeScaleAnim={likeScaleAnim}
               onLikeTap={handleLikeTap}
@@ -1780,6 +1965,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: PV2.link,
+  },
+  // The Share Card row sits under a full-bleed carousel, so it carries the
+  // horizontal inset folderShareWrap gives the folder row.
+  cardShareMeta: {
+    paddingHorizontal: 12,
+  },
+  cardShareItemUnavailable: {
+    fontSize: 13,
+    color: PV2.textTertiary,
   },
   // Post header
   imageWrap: {

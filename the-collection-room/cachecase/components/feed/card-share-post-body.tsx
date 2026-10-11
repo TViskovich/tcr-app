@@ -44,6 +44,10 @@ type Props = {
   // Page to open on (Post Detail opened from a specific feed card).
   // Clamped to the card list; defaults to the first card.
   initialIndex?: number;
+  // Post Detail: told whenever a swipe settles on a different card, so its
+  // "View Item Details" action follows the visible card. Not called for the
+  // initial page — the caller already knows initialIndex (and clamps it).
+  onActiveIndexChange?: (index: number) => void;
 };
 
 // Renders a "Share Card" carousel post's body — a true swipeable carousel
@@ -98,6 +102,7 @@ export function CardSharePostBody({
   onFirstImageLoad,
   onCardPress,
   initialIndex = 0,
+  onActiveIndexChange,
 }: Props) {
   const router = useRouter();
   const [pageWidth, setPageWidth] = useState(0);
@@ -126,7 +131,10 @@ export function CardSharePostBody({
     if (!pageWidth) return;
     const index = Math.round(e.nativeEvent.contentOffset.x / pageWidth);
     const clamped = Math.min(cards.length - 1, Math.max(0, index));
-    if (clamped !== activeIndex) setActiveIndex(clamped);
+    if (clamped !== activeIndex) {
+      setActiveIndex(clamped);
+      onActiveIndexChange?.(clamped);
+    }
   }
 
   // Callers are responsible for not rendering this component at all when

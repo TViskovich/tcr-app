@@ -62,7 +62,7 @@ export type Folder = {
 // the other three types are UI shells only until their own detail tables
 // and forms are built (see item_type's own architecture note in that
 // migration).
-export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book';
+export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book' | 'trading_card';
 
 export type CollectionItem = {
   id: string;
@@ -147,6 +147,23 @@ export type PokemonCardDetails = {
   language: string | null;
   edition: string | null;
   holo_type: string | null;
+  grading_company: string | null;
+  grade: string | null;
+};
+
+// "Trading Card (Other)" metadata (supabase/migrations/
+// 20261017120000_add_trading_card_items.sql) — strictly 1:1 with a
+// trading_card collection_items row. franchise is the displayed game/
+// franchise (a listed one, or the collector's own).
+export type TradingCardDetails = {
+  item_id: string;
+  franchise: string | null;
+  card_name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  rarity: string | null;
+  language: string | null;
+  edition: string | null;
   grading_company: string | null;
   grade: string | null;
 };

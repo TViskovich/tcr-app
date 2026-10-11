@@ -61,7 +61,7 @@ const COLUMN_GAP = 10;
 const GRID_HORIZONTAL_PADDING = 12;
 
 // Real categories only — this app's collection_items.item_type has exactly
-// these four values (supabase/migrations/20260916120000_add_collection_
+// these values (supabase/migrations/20260916120000_add_collection_
 // item_type.sql's own CHECK constraint). There is no "games/consoles"
 // category anywhere in the schema, so none is invented here despite one
 // appearing in the design reference mockup.
@@ -70,6 +70,7 @@ const ITEM_TYPE_LABEL: Record<CollectibleItemType, string> = {
   pokemon: 'Pokémon',
   figurine: 'Figures',
   comic_book: 'Comics',
+  trading_card: 'TCG',
 };
 
 // Default aspect ratio (width / height) per category — the SOLE source of a
@@ -86,6 +87,7 @@ const TYPE_DEFAULT_ASPECT_RATIO: Record<CollectibleItemType, number> = {
   pokemon: 0.7,
   comic_book: 0.64,
   figurine: 0.82,
+  trading_card: 0.7,
 };
 
 const MIN_TILE_ASPECT_RATIO = 0.45;
