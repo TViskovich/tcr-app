@@ -5,9 +5,15 @@ BEGIN;
 -- No signup can slip in between the renumber and the setval.
 LOCK TABLE public.profiles IN SHARE ROW EXCLUSIVE MODE;
 
--- Abort unless the database is exactly in the audited state.
+-- Abort unless the database is exactly in the audited state — or is a fresh
+-- (local) database with no profiles yet, where the UPDATEs below match no
+-- rows and only the sequence is set, keeping 1–100 reserved there too.
 DO $$
 BEGIN
+  IF (SELECT count(*) FROM public.profiles) = 0 THEN
+    RETURN;
+  END IF;
+
   IF (SELECT count(*) FROM public.profiles) <> 2
      OR NOT EXISTS (SELECT 1 FROM public.profiles WHERE username = 'moebryan')
      OR NOT EXISTS (SELECT 1 FROM public.profiles WHERE username = 'tviskovich')
