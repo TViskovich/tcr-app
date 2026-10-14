@@ -30,6 +30,13 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 const SKELETON_ROWS = 7;
 
+// Floating New Message button (embedded inbox only) — about the scale of
+// Expo's dev-tools floating button, and the gap kept above the floating
+// bottom navbar.
+const FAB_SIZE = 52;
+const FAB_NAVBAR_CLEARANCE = 14;
+
+
 // Compact inbox timestamp: "now", "5m", "3h", "Yesterday", "Sep 30", and
 // "Sep 30, 2025" outside the current year.
 function formatTime(iso: string) {
@@ -402,7 +409,10 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
-  const listBottomPadding = TAB_BAR_HEIGHT + insets.bottom + 24;
+  // Embedded: extra room so the last card can scroll above the floating New
+  // Message button.
+  const listBottomPadding =
+    TAB_BAR_HEIGHT + insets.bottom + 24 + (embedded ? FAB_SIZE + FAB_NAVBAR_CLEARANCE : 0);
 
   const composeButton = (
     <Pressable
@@ -436,10 +446,9 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
   const content = (
     <>
       {embedded ? (
-        <View style={styles.embeddedToolbar}>
-          {searchField}
-          {composeButton}
-        </View>
+        // Full-width search — New Message is the floating button instead
+        // (see composeFab below).
+        searchField
       ) : (
         <>
           <View style={styles.header}>
@@ -455,13 +464,16 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
       {loading && conversations.length === 0 ? (
         <View style={styles.skeletonList} accessibilityLabel="Loading conversations">
           {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <View key={i} style={styles.row}>
-              <View style={styles.skeletonAvatar} />
-              <View style={styles.rowBody}>
-                <View style={[styles.skeletonLine, { width: '45%' }]} />
-                <View style={[styles.skeletonLine, { width: '70%' }]} />
+            // Same card frame as ConversationRow, so loading → loaded
+            // doesn't change the list's shape.
+            <View key={i} style={[styles.cardSwipeContainer, styles.card]}>
+              <View style={styles.row}>
+                <View style={styles.skeletonAvatar} />
+                <View style={styles.rowBody}>
+                  <View style={[styles.skeletonLine, { width: '45%' }]} />
+                  <View style={[styles.skeletonLine, { width: '70%' }]} />
+                </View>
               </View>
-              <View style={[styles.skeletonLine, styles.skeletonTime]} />
             </View>
           ))}
         </View>
@@ -525,6 +537,27 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
           setTimeout(() => openConversation(conversationId, recipient.username, recipient.displayName), 300);
         }}
       />
+
+      {embedded && (
+        // Fixed (not draggable) lower-right, just above the floating bottom
+        // navbar: that bar sits insets.bottom + 4 up and is TAB_BAR_HEIGHT
+        // tall, so this clears it by FAB_NAVBAR_CLEARANCE. Laid out in this
+        // container (which reaches the screen bottom), so it never covers
+        // the bar; the list's extra bottom padding lets the last card
+        // scroll clear of it.
+        <Pressable
+          onPress={() => setNewMessageOpen(true)}
+          style={({ pressed }) => [
+            styles.composeFab,
+            { bottom: insets.bottom + 4 + TAB_BAR_HEIGHT + FAB_NAVBAR_CLEARANCE },
+            pressed && styles.pressed,
+          ]}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="New message">
+          <IconSymbol name="square.and.pencil" size={22} color={PV2.textPrimary} />
+        </Pressable>
+      )}
     </>
   );
 
@@ -557,9 +590,15 @@ function ConversationRow({
     onDeletePress();
   }
 
+  // Compact framed card: avatar, then name with the time in the top-right
+  // corner (plus a NEW tag when unread), then an up-to-two-line preview.
+  // Unread = brighter accent border, NEW tag and stronger text; read stays
+  // subdued. The Swipeable container carries the card's outer
+  // spacing/rounding so Delete is revealed inside it.
   return (
     <Swipeable
       ref={swipeableRef}
+      containerStyle={styles.cardSwipeContainer}
       renderRightActions={() => (
         <TouchableOpacity style={styles.deleteAction} onPress={handleDeleteTap} activeOpacity={0.85}>
           <Text style={styles.deleteActionText}>Delete</Text>
@@ -569,25 +608,28 @@ function ConversationRow({
       rightThreshold={40}>
       <Pressable
         onPress={onPress}
-        style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+        style={({ pressed }) => [styles.card, item.unread && styles.cardUnread, pressed && styles.cardPressed]}
         accessibilityRole="button"
         accessibilityLabel={`${displayName}${item.unread ? ', unread' : ''}. ${previewText(item)}`}>
-        <ChatAvatar uri={item.otherAvatarUrl} name={displayName} size={48} />
-
-        <View style={styles.rowBody}>
-          <View style={styles.rowTop}>
-            <Text style={[styles.rowName, item.unread && styles.rowNameUnread]} numberOfLines={1}>
-              {displayName}
-            </Text>
-            <Text style={[styles.rowTime, item.unread && styles.rowTimeUnread]}>
-              {formatTime(item.lastMessageAt)}
-            </Text>
-          </View>
-          <View style={styles.rowBottom}>
-            <Text style={[styles.rowPreview, item.unread && styles.rowPreviewUnread]} numberOfLines={1}>
+        <View style={styles.row}>
+          <ChatAvatar uri={item.otherAvatarUrl} name={displayName} size={40} />
+          <View style={styles.rowBody}>
+            <View style={styles.rowTop}>
+              <Text style={[styles.rowName, item.unread && styles.rowNameUnread]} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {item.unread ? (
+                <View style={styles.unreadTag}>
+                  <Text style={styles.unreadTagText}>NEW</Text>
+                </View>
+              ) : null}
+              <Text style={[styles.rowTime, item.unread && styles.rowTimeUnread]}>
+                {formatTime(item.lastMessageAt)}
+              </Text>
+            </View>
+            <Text style={[styles.rowPreview, item.unread && styles.rowPreviewUnread]} numberOfLines={2}>
               {previewText(item)}
             </Text>
-            {item.unread ? <View style={styles.unreadDot} /> : null}
           </View>
         </View>
       </Pressable>
@@ -645,20 +687,28 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     paddingVertical: 10,
   },
-  // Embedded (Home's Messages tab): search field + New Message button on
-  // one row, in place of the standalone title header.
-  embeddedToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    marginBottom: 6,
-  },
+  // Embedded (Home's Messages tab): the search field alone, full width, in
+  // place of the standalone title header.
   searchWrapEmbedded: {
-    flex: 1,
-    marginHorizontal: 0,
-    marginBottom: 0,
+    marginTop: 10,
+  },
+  // Circular, elevated, dark surface with a visible outer ring.
+  composeFab: {
+    position: 'absolute',
+    right: 16,
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: PV2.panel,
+    borderWidth: 1.5,
+    borderColor: PV2.borderStrong,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    elevation: 8,
   },
   listContent: {
     paddingTop: 10,
@@ -679,60 +729,83 @@ const styles = StyleSheet.create({
     paddingTop: 32,
     paddingHorizontal: 24,
   },
+  // Outer spacing + rounding for each conversation card (and its swipe
+  // Delete action, clipped to the same rounded shape).
+  cardSwipeContainer: {
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  // Framed card, lifted slightly off PV2.bg; read cards keep the subdued
+  // default border.
+  card: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    backgroundColor: PV2.panel,
+  },
+  cardUnread: {
+    borderColor: CHAT.accentBorder,
+  },
+  cardPressed: {
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  unreadTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: CHAT.accentSoft,
+    borderWidth: 1,
+    borderColor: CHAT.accentBorder,
+  },
+  unreadTagText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: CHAT.accent,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 11,
-    backgroundColor: PV2.bg,
-  },
-  rowPressed: {
-    backgroundColor: PV2.panel,
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
   rowBody: {
     flex: 1,
-    gap: 3,
+    gap: 2,
   },
+  // Name on the left, time pinned to the card's top-right corner.
   rowTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  rowBottom: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   rowName: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: PV2.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+    color: PV2.textSecondary,
   },
   rowNameUnread: {
     fontWeight: '800',
+    color: PV2.textPrimary,
   },
   rowTime: {
-    fontSize: 12,
+    fontSize: 11,
     color: PV2.textTertiary,
   },
   rowTimeUnread: {
     color: PV2.textSecondary,
   },
   rowPreview: {
-    flex: 1,
     fontSize: 14,
+    lineHeight: 19,
     color: PV2.textTertiary,
   },
   rowPreviewUnread: {
     color: PV2.textPrimary,
-  },
-  unreadDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 4.5,
-    backgroundColor: CHAT.accent,
   },
   deleteAction: {
     width: 88,
@@ -749,9 +822,9 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   skeletonAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: PV2.collectorPanelBg,
   },
   skeletonLine: {
@@ -759,11 +832,6 @@ const styles = StyleSheet.create({
     borderRadius: 5.5,
     backgroundColor: PV2.collectorPanelBg,
     marginVertical: 3,
-  },
-  skeletonTime: {
-    width: 28,
-    alignSelf: 'flex-start',
-    marginTop: 4,
   },
   stateWrap: {
     alignItems: 'center',
