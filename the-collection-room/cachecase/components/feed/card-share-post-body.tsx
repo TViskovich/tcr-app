@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   FlatList,
   LayoutChangeEvent,
@@ -112,13 +112,12 @@ export function CardSharePostBody({
 
   // If the card list ever shrinks (or is replaced) such that activeIndex
   // points past the end, clamp it back into range rather than leaving the
-  // dot indicator pointing at a nonexistent slide.
-  useEffect(() => {
-    if (cards.length === 0) return;
-    if (activeIndex > cards.length - 1) {
-      setActiveIndex(cards.length - 1);
-    }
-  }, [cards.length, activeIndex]);
+  // dot indicator pointing at a nonexistent slide. Applied during render
+  // (guarded, so it settles in one pass) rather than in an effect, so an
+  // out-of-range dot is never painted.
+  if (cards.length > 0 && activeIndex > cards.length - 1) {
+    setActiveIndex(cards.length - 1);
+  }
 
   function handleLayout(e: LayoutChangeEvent) {
     const nextWidth = e.nativeEvent.layout.width;

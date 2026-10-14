@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
@@ -66,9 +66,13 @@ export function PostItemsPicker({ visible, onClose, currentUserId, remainingSlot
   // Fresh selection every time the sheet is (re)opened — a leftover
   // selection from a previous open (e.g. the user backed out without
   // confirming) must never silently resurface next time.
-  useEffect(() => {
+  // Cleared on each closed → open transition, during render (so a
+  // reopened sheet never paints the previous selection first).
+  const [wasVisible, setWasVisible] = useState(visible);
+  if (visible !== wasVisible) {
+    setWasVisible(visible);
     if (visible) setSelectedIds([]);
-  }, [visible]);
+  }
 
   const shareableItems = items.filter((i) => !!i.image_url?.trim());
   // Picker grid cells are small — 'preview' tier.

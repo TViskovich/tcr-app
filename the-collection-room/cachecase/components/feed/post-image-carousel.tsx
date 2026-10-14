@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   FlatList,
   LayoutChangeEvent,
@@ -78,14 +78,13 @@ export function PostImageCarousel({
 
   // If the image list ever shrinks such that activeIndex points past the
   // end, clamp back into range rather than leaving the dot indicator
-  // pointing at a nonexistent slide — same defensive effect as
-  // CardSharePostBody's own.
-  useEffect(() => {
-    if (images.length === 0) return;
-    if (activeIndex > images.length - 1) {
-      setActiveIndex(images.length - 1);
-    }
-  }, [images.length, activeIndex]);
+  // pointing at a nonexistent slide — same defensive clamp as
+  // CardSharePostBody's own. Applied during render (guarded, so it settles
+  // in one pass) rather than in an effect, so an out-of-range dot is never
+  // painted.
+  if (images.length > 0 && activeIndex > images.length - 1) {
+    setActiveIndex(images.length - 1);
+  }
 
   function handleLayout(e: LayoutChangeEvent) {
     const nextWidth = e.nativeEvent.layout.width;
