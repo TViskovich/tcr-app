@@ -155,7 +155,14 @@ export default function ShareCardScreen() {
   // again here. Absent (undefined) for every other entry point (the
   // Create menu's own "Share Card" option), which is exactly today's
   // behavior — nothing seeded, picker starts empty.
-  const { itemId } = useLocalSearchParams<{ itemId?: string }>();
+  //
+  // source: 'item' is the explicit direct Share Item mode (Item Detail →
+  // Share → Feed): the item is already chosen, so this screen shows only
+  // caption + preview and never mounts the collection picker or its
+  // folder/card queries. Without it (the Create menu), the folder-first
+  // 1-5 card picker is unchanged.
+  const { itemId, source } = useLocalSearchParams<{ itemId?: string; source?: string }>();
+  const isDirectItemShare = source === 'item' && !!itemId;
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { session } = useAuth();
@@ -211,6 +218,10 @@ export default function ShareCardScreen() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [caption, setCaption] = useState('');
   const [posting, setPosting] = useState(false);
+  // Synchronous double-tap guard for Post — `posting` only blocks the
+  // header button after a re-render, so two fast taps could otherwise both
+  // start a post.
+  const postingRef = useRef(false);
 
   // Own cards with an image (see hasShareableImage), from every scope
   // loaded so far.
@@ -382,8 +393,10 @@ export default function ShareCardScreen() {
   // Collection order (useFolders: the Collection tab's own name order),
   // with resolved covers and direct item counts, each fetched in one batch
   // (never per folder) — no card rows at all until a scope is opened. Not
-  // loaded for a foreign repost, which never shows the picker.
-  const pickerUserId = itemId && (sourceLoading || isForeignRepost) ? undefined : currentUserId;
+  // loaded for a direct Share Item or a foreign repost, neither of which
+  // ever shows the picker.
+  const pickerUserId =
+    isDirectItemShare || (itemId && (sourceLoading || isForeignRepost)) ? undefined : currentUserId;
   const {
     folders: rootFolders,
     itemCounts,
@@ -595,7 +608,7 @@ export default function ShareCardScreen() {
   }
 
   async function handlePost() {
-    if (!canPost || !currentUserId) return;
+    if (!canPost || !currentUserId || postingRef.current) return;
 
     // Handler-level guard, immediately before any feed-post insert — not
     // just relying on toggleSelect/the disabled grid state having kept
@@ -609,6 +622,7 @@ export default function ShareCardScreen() {
       return;
     }
 
+    postingRef.current = true;
     setPosting(true);
 
     try {
@@ -670,6 +684,7 @@ export default function ShareCardScreen() {
       Alert.alert('Post failed', 'Something went wrong. Please try again.');
       // Stay on screen — selection/caption preserved so the user can retry.
     } finally {
+      postingRef.current = false;
       setPosting(false);
     }
   }
@@ -684,7 +699,7 @@ export default function ShareCardScreen() {
     <>
       <Stack.Screen
         options={{
-          title: isForeignRepost ? 'Repost' : 'Share Card',
+          title: isForeignRepost ? 'Repost' : isDirectItemShare ? 'Share Item' : 'Share Card',
           headerLeft: () => (
             <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
               <Text style={styles.headerCancel}>Cancel</Text>
@@ -723,12 +738,14 @@ export default function ShareCardScreen() {
             <Text style={styles.emptyButtonText}>Go Back</Text>
           </TouchableOpacity>
         </View>
-      ) : isForeignRepost ? (
-        // Foreign-repost restrictions — a repost of someone else's public
-        // card stays a fixed single item: no own-item grid, no arrange/
-        // reorder UI, no 1-5 selection. Just the (real, WYSIWYG) preview,
-        // an optional caption, and Post — see SharePostPreview's own
-        // itemPost prop.
+      ) : isForeignRepost || isDirectItemShare ? (
+        // Fixed single item — a direct Share Item from Item Detail, or a
+        // repost of someone else's public card: no collection picker, no
+        // own-item grid, no arrange/reorder UI, no 1-5 selection. Just an
+        // optional caption, then the real preview of the already-chosen
+        // item, and Post. A repost keeps its attribution notice and the
+        // single-item repost preview (SharePostPreview's itemPost prop);
+        // an own item keeps the same card preview the picker flow shows.
         <KeyboardAvoidingView
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -736,10 +753,12 @@ export default function ShareCardScreen() {
             contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
-            <Text style={styles.repostNotice}>
-              This card belongs to {sourceOwnerProfile?.display_name || sourceOwnerProfile?.username || 'another collector'}.
-              Sharing it reposts their card to your followers — it doesn&apos;t add it to your own collection.
-            </Text>
+            {isForeignRepost && (
+              <Text style={styles.repostNotice}>
+                This card belongs to {sourceOwnerProfile?.display_name || sourceOwnerProfile?.username || 'another collector'}.
+                Sharing it reposts their card to your followers — it doesn&apos;t add it to your own collection.
+              </Text>
+            )}
 
             <Text style={styles.sectionLabel}>Caption</Text>
             <TextInput
@@ -757,25 +776,35 @@ export default function ShareCardScreen() {
             </Text>
 
             <Text style={styles.sectionLabel}>Preview</Text>
-            <SharePostPreview
-              avatarUrl={currentProfile?.avatar_url ?? null}
-              displayName={currentProfile?.display_name || currentProfile?.username || ''}
-              username={currentProfile?.username ?? ''}
-              caption={caption}
-              cards={[]}
-              itemPost={{
-                imageUrl: foreignRepostPreviewImageUrl,
-                title: sourceItem!.title,
-                sourceOwner: sourceOwnerProfile
-                  ? {
-                      id: sourceItem!.user_id,
-                      username: sourceOwnerProfile.username,
-                      displayName: sourceOwnerProfile.display_name,
-                      avatarUrl: sourceOwnerProfile.avatar_url,
-                    }
-                  : null,
-              }}
-            />
+            {isForeignRepost ? (
+              <SharePostPreview
+                avatarUrl={currentProfile?.avatar_url ?? null}
+                displayName={currentProfile?.display_name || currentProfile?.username || ''}
+                username={currentProfile?.username ?? ''}
+                caption={caption}
+                cards={[]}
+                itemPost={{
+                  imageUrl: foreignRepostPreviewImageUrl,
+                  title: sourceItem!.title,
+                  sourceOwner: sourceOwnerProfile
+                    ? {
+                        id: sourceItem!.user_id,
+                        username: sourceOwnerProfile.username,
+                        displayName: sourceOwnerProfile.display_name,
+                        avatarUrl: sourceOwnerProfile.avatar_url,
+                      }
+                    : null,
+                }}
+              />
+            ) : (
+              <SharePostPreview
+                avatarUrl={currentProfile?.avatar_url ?? null}
+                displayName={currentProfile?.display_name || currentProfile?.username || ''}
+                username={currentProfile?.username ?? ''}
+                caption={caption}
+                cards={previewCards}
+              />
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       ) : (

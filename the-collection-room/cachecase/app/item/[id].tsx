@@ -1585,12 +1585,14 @@ export default function ItemDetailScreen() {
 
   // Post to Feed — closes the Share Item sheet then hands off to the
   // existing Share Card composer (app/share-card/new.tsx), preselecting
-  // this item via itemId so the user never has to pick it again there. See
-  // shareNavigatingRef's own comment above for the rapid-tap guard.
+  // this item via itemId. source: 'item' puts that composer in its direct
+  // Share Item mode (caption + preview only, no collection picker), since
+  // the item has already been chosen here. See shareNavigatingRef's own
+  // comment above for the rapid-tap guard.
   function handleShareToFeed() {
     if (!item || shareNavigatingRef.current) return;
     shareNavigatingRef.current = true;
-    router.push({ pathname: '/share-card/new', params: { itemId: item.id } });
+    router.push({ pathname: '/share-card/new', params: { itemId: item.id, source: 'item' } });
     // Released on next tick rather than immediately — this screen isn't
     // unmounted by the push (Share Card is a separate stacked route), so
     // the ref would otherwise stay permanently latched.
@@ -2465,7 +2467,7 @@ export default function ItemDetailScreen() {
         imageUri={carouselImages[0]?.uri}
         title={identity.title}
         subtitle={identity.subtitleLines.filter(Boolean).join(' · ') || null}
-        feed={{ kind: 'available', subtitle: 'Create a CacheCase post with this item', onPress: handleShareToFeed }}
+        feed={{ kind: 'available', subtitle: 'Post with this item.', onPress: handleShareToFeed }}
         dm={
           dmShareKnownBlocked
             ? {
@@ -2475,7 +2477,7 @@ export default function ItemDetailScreen() {
                 noticeText: 'Change the item’s visibility and try again.',
                 ...(isOwner && !isTransferredOut ? { fixLabel: 'Edit Item', onFix: enterEdit } : {}),
               }
-            : { kind: 'available', subtitle: 'Send this item to someone on CacheCase', onPress: handleSendInDM }
+            : { kind: 'available', subtitle: 'Send to user', onPress: handleSendInDM }
         }
         onShareElsewhere={handleShareOutside}
       />

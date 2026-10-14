@@ -50,12 +50,15 @@ type Props = {
 
 // The CacheCase Share sheet — every in-app Share button opens this (Item
 // Detail, folders, profiles) instead of jumping straight to the native share
-// sheet, so the same three choices appear everywhere: Share to Feed, Share
-// to DM, Share Elsewhere. What each one does is target-specific and lives
+// sheet, so the same three choices appear everywhere: Feed, Direct Message,
+// Elsewhere. What each one does is target-specific and lives
 // with the caller (see lib/share/share-target.ts for the shared target
 // model and Share Elsewhere). Structurally modeled on
 // components/create/create-menu.tsx (dark rounded sheet / drag handle /
 // icon+title+subtitle+chevron rows, slide-up Modal, tap-outside-to-dismiss).
+// Icon colors: the two in-app destinations (Feed, Direct Message) share the
+// blue link token; Elsewhere (leaving CacheCase) is neutral gray — never the
+// red accent, which reads as destructive on an ordinary share action.
 export function ShareSheet({
   visible,
   onClose,
@@ -182,11 +185,11 @@ export function ShareSheet({
           </View>
 
           <View style={styles.optionsGroup}>
-            {renderRow('feed', feed, 'Share to Feed', 'plus', styles.iconWrapFeed)}
+            {renderRow('feed', feed, 'Feed', 'plus', styles.iconWrapFeed)}
 
             <View style={styles.divider} />
 
-            {renderRow('dm', dm, 'Share to DM', 'message.fill', styles.iconWrapDM)}
+            {renderRow('dm', dm, 'Direct Message', 'message.fill', styles.iconWrapDM)}
 
             <View style={styles.divider} />
 
@@ -199,7 +202,7 @@ export function ShareSheet({
                 <IconSymbol name="square.and.arrow.up" size={20} color="#FFFFFF" />
               </View>
               <View style={styles.rowText}>
-                <Text style={styles.rowTitle}>Share Elsewhere</Text>
+                <Text style={styles.rowTitle}>Elsewhere</Text>
                 <Text style={styles.rowSubtitle}>Messages, Mail, AirDrop, etc.</Text>
               </View>
               <IconSymbol name="chevron.right" size={14} color="rgba(255,255,255,0.28)" />
@@ -304,10 +307,10 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   iconWrapFeed: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.link,
   },
   iconWrapDM: {
-    backgroundColor: '#3B7CE8',
+    backgroundColor: PV2.link,
   },
   iconWrapMuted: {
     opacity: 0.45,
@@ -352,7 +355,7 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   iconWrapExternal: {
-    backgroundColor: '#3CA36B',
+    backgroundColor: PV2.borderStrong,
   },
   rowText: {
     flex: 1,
