@@ -602,7 +602,15 @@ export function PostCard({
   // For every other post, entry and post are the same object.
   const post = entry.repostOf ?? entry;
   const isRepost = post !== entry;
-  const [imageError, setImageError] = useState(false);
+  // The item photo URL whose last load failed — tracked per URL (not a
+  // boolean) so a different image_url for this post is tried on its own
+  // without any reset step. post.image_url is already the effective URL the
+  // item photo renders (the feed loader resolves its collection-item
+  // fallback when building FeedPost).
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+  // Bumped only by an explicit retry tap — re-keys the item <Image> so it
+  // makes a fresh load attempt. Nothing retries automatically.
+  const [imageAttempt, setImageAttempt] = useState(0);
   const [scaleAnim] = useState(() => new Animated.Value(1));
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
@@ -726,8 +734,17 @@ export function PostCard({
     );
   }
 
-  // Only hide on image error for item posts — text posts have no image to fail.
-  if (imageError && !isTextPost) return null;
+  // A failed item photo never hides the post — the media frame shows an
+  // "Image unavailable" placeholder instead (see the item image below).
+  const itemImageFailed = !!post.image_url && failedImageUrl === post.image_url;
+
+  // Only reachable from the placeholder, which isn't rendered while a
+  // retry is loading — so taps can't overlap, and a retry that fails again
+  // just shows the placeholder again rather than looping.
+  function handleImageRetry() {
+    setFailedImageUrl(null);
+    setImageAttempt((n) => n + 1);
+  }
 
   const displayName = post.display_name || post.username;
 
@@ -1103,15 +1120,35 @@ export function PostCard({
                   activeOpacity={0.95}>
                   {isTextPost ? (
                     // Text-post photo: same photo-rectangle rounding as the
-                    // single-image branch above. (imageError only ever hides
-                    // non-text posts — see the early return — so no onError
-                    // is needed here.)
+                    // single-image branch above. (Failure tracking below is
+                    // item-photo only.)
                     <FittedRoundedImage uri={post.image_url} radius={MEDIA_CORNER_RADIUS} />
+                  ) : itemImageFailed ? (
+                    // Fills the same frame the photo would have, so the
+                    // card's height doesn't change. Tapping anywhere else in
+                    // the frame still opens Post Detail (outer onPress).
+                    <View style={[StyleSheet.absoluteFill, styles.cardShareUnavailable]}>
+                      <IconSymbol name="photo" size={28} color={PV2.textSecondary} />
+                      <Text style={[styles.cardShareUnavailableText, styles.imageUnavailableText]}>
+                        Image unavailable
+                      </Text>
+                      <Pressable
+                        onPress={handleImageRetry}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel="Retry loading image">
+                        <Text style={styles.imageRetryText}>Tap to retry</Text>
+                      </Pressable>
+                    </View>
                   ) : (
                     // Same gate as card-share: mounted (so it loads) but
                     // invisible until the frame above has its final aspect
                     // ratio; its own load can settle that ratio.
                     <Image
+                      // Changes only on a retry tap, forcing a fresh load;
+                      // a changed image_url updates the source in place as
+                      // before.
+                      key={imageAttempt}
                       source={{ uri: post.image_url }}
                       style={[StyleSheet.absoluteFill, !leadMediaSettled && styles.mediaHidden]}
                       // 'contain' (never crops — an aspect mismatch against
@@ -1125,8 +1162,12 @@ export function PostCard({
                       cachePolicy="memory-disk"
                       onLoad={(e) => {
                         if (post.image_url) rememberMediaSize(post.image_url, e.source.width, e.source.height);
+                        // A successful load clears any older failure, so an
+                        // image_url that failed earlier is tried again if
+                        // this post ever switches back to it.
+                        setFailedImageUrl(null);
                       }}
-                      onError={() => setImageError(true)}
+                      onError={() => setFailedImageUrl(post.image_url)}
                     />
                   )}
                 </TouchableOpacity>
@@ -1516,6 +1557,15 @@ const styles = StyleSheet.create({
   cardShareUnavailableText: {
     fontSize: 13,
     color: PV2.textSecondary,
+  },
+  imageUnavailableText: {
+    marginTop: 8,
+  },
+  imageRetryText: {
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.link,
   },
   // Standard image path only (Piece 3) — caption/hashtag text directly
   // above a large, edge-forward image, indented to MEDIA_CONTENT_LEFT_INSET
