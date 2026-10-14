@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -78,13 +78,19 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
 
   // Re-seed the form from the current folder every time the modal opens —
   // mirrors the legacy screen's openEditFolder(), just triggered by the
-  // visible prop instead of an imperative opener.
-  useEffect(() => {
-    if (!visible) return;
-    setEditName(folder.name);
-    setEditIsPublic(folder.is_public);
-    setEditMeta(folderMetadataFormFrom(folder));
-  }, [visible, folder]);
+  // visible prop instead of an imperative opener. Also re-seeds if `folder`
+  // changes while open. Done during render against the last-seen
+  // visible/folder pair (guarded, so it settles in one pass) rather than in
+  // an effect, so the modal never paints a stale form first.
+  const [seededFor, setSeededFor] = useState<{ visible: boolean; folder: Folder }>({ visible: false, folder });
+  if (visible !== seededFor.visible || folder !== seededFor.folder) {
+    setSeededFor({ visible, folder });
+    if (visible) {
+      setEditName(folder.name);
+      setEditIsPublic(folder.is_public);
+      setEditMeta(folderMetadataFormFrom(folder));
+    }
+  }
 
   // No cover or color fields in this payload at all (see this component's
   // own module comment) — an UPDATE only ever touches the columns it

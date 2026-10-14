@@ -234,12 +234,12 @@ export default function RegistryDetailScreen() {
 
   // Guards against the modal staying open if the public URL becomes
   // unavailable out from under it (e.g. the record reloads for a
-  // different id while the modal happened to still be open).
-  useEffect(() => {
-    if (!registryPublicUrl && isQrModalVisible) {
-      setIsQrModalVisible(false);
-    }
-  }, [registryPublicUrl, isQrModalVisible]);
+  // different id while the modal happened to still be open). Applied
+  // during render (guarded, so it settles in one pass) rather than in an
+  // effect.
+  if (!registryPublicUrl && isQrModalVisible) {
+    setIsQrModalVisible(false);
+  }
 
   // Extracted as a stable callback (not a plain useEffect body) so it can
   // be re-run from useFocusEffect below, not just on mount/id-change —
