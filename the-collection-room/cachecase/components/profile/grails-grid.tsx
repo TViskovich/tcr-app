@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
@@ -59,7 +59,7 @@ const GRAIL_PARTICLES: ParticleSpec[] = Array.from({ length: PARTICLE_COUNT }, (
 // t=0 each loop, but opacity is 0 at both ends so the reset itself is
 // invisible — the classic "rising ember" loop trick.
 function GrailParticle({ spec }: { spec: ParticleSpec }) {
-  const progress = useRef(new Animated.Value(0)).current;
+  const [progress] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     const animation = Animated.loop(
@@ -133,8 +133,8 @@ export function GrailsGrid({
   const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id), COMPACT_IMAGE_TIER);
 
   // Press animation — declared before early return to satisfy Rules of Hooks.
-  const pressScale = useRef(new Animated.Value(1)).current;
-  const pressOpacity = useRef(new Animated.Value(1)).current;
+  const [pressScale] = useState(() => new Animated.Value(1));
+  const [pressOpacity] = useState(() => new Animated.Value(1));
 
   function handlePressIn() {
     Animated.parallel([
@@ -153,7 +153,7 @@ export function GrailsGrid({
   // Slow, subtle breathing pulse for the featured center card (index 4)
   // only — scale only, nothing else animates. Declared before the early
   // return to satisfy Rules of Hooks.
-  const featuredPulse = useRef(new Animated.Value(0)).current;
+  const [featuredPulse] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     const animation = Animated.loop(

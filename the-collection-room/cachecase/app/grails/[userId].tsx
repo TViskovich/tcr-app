@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Animated, ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -29,7 +29,7 @@ export default function GrailsShowcaseScreen() {
     currentUserId,
   );
 
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [fadeAnim] = useState(() => new Animated.Value(0));
   const hasAnimated = useRef(false);
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 

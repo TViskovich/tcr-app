@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   Alert,
   Animated,
@@ -603,7 +603,7 @@ export function PostCard({
   const post = entry.repostOf ?? entry;
   const isRepost = post !== entry;
   const [imageError, setImageError] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const [scaleAnim] = useState(() => new Animated.Value(1));
   const isTextPost = post.post_type === 'text';
   const isRateMyGrails = post.post_type === 'rate_my_grails';
   const isCardShare = post.post_type === 'card_share';

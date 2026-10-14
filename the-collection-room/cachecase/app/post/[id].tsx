@@ -820,7 +820,7 @@ export default function PostDetailScreen() {
   // so a failed refresh can't wipe comments that are already on screen.
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [deletingPost, setDeletingPost] = useState(false);
-  const likeScaleAnim = useRef(new Animated.Value(1)).current;
+  const [likeScaleAnim] = useState(() => new Animated.Value(1));
   const flatListRef = useRef<FlatList<Comment>>(null);
 
   // Which page of a multi-image carousel is currently showing — surfaced by

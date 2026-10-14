@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Animated,
   FlatList,
@@ -85,7 +85,7 @@ type Props = {
 export function ProfileV2Selector({ active, onChange, isOwnProfile }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const sidePadding = (windowWidth - SLOT_WIDTH) / 2;
-  const scrollX = useRef(new Animated.Value(0)).current;
+  const [scrollX] = useState(() => new Animated.Value(0));
   const listRef = useRef<FlatList<ProfileV2Section>>(null);
 
   // cachecase is the carousel's default/starting selection — its position

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -77,7 +77,7 @@ const RAIL_SHIMMER_DURATION = 2600;
 // what actually makes 'rtl' start from the right edge instead of the left.
 function RailLine({ direction = 'ltr' }: { direction?: 'ltr' | 'rtl' }) {
   const { width } = useWindowDimensions();
-  const progress = useRef(new Animated.Value(0)).current;
+  const [progress] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     progress.setValue(0);
