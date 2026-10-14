@@ -107,10 +107,10 @@ export function ItemPhotoViewerModal({ visible, uri, onClose }: Props) {
   function handleClose() {
     // Reset so the next open always starts at rest, never picking up a
     // previous session's zoom/pan.
-    scale.value = 1;
+    scale.set(1);
     savedScale.value = 1;
-    translateX.value = 0;
-    translateY.value = 0;
+    translateX.set(0);
+    translateY.set(0);
     savedTranslateX.value = 0;
     savedTranslateY.value = 0;
     onClose();

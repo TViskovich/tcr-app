@@ -351,7 +351,7 @@ export function GrailSlotPreview({
     pendingRevealUriRef.current = null;
     setIncomingUri(null);
     cancelAnimation(topOpacity);
-    topOpacity.value = 0;
+    topOpacity.set(0);
     scheduleTickRef.current?.(HOLD_DURATION_MS);
   }, [topOpacity]);
 
@@ -366,11 +366,11 @@ export function GrailSlotPreview({
       if (incomingUriRef.current !== uri) return; // superseded by a newer/cleared incoming image
       if (!usableImagesRef.current.includes(uri)) return; // gone broken/removed since it started loading
       incomingLoadTriggeredRef.current = true;
-      topOpacity.value = withTiming(1, { duration: FADE_DURATION_MS }, (finished) => {
+      topOpacity.set(withTiming(1, { duration: FADE_DURATION_MS }, (finished) => {
         if (finished) {
           runOnJS(beginReveal)(uri);
         }
-      });
+      }));
     },
     [beginReveal, topOpacity],
   );
@@ -382,7 +382,7 @@ export function GrailSlotPreview({
         setIncomingUri(null);
       }
       cancelAnimation(topOpacity);
-      topOpacity.value = 0;
+      topOpacity.set(0);
       // No manual reschedule here — markBroken updates brokenUrls, which
       // usableImages (and therefore the scheduling effect above) depends
       // on, so that effect tears down and reschedules a fresh attempt on
@@ -408,7 +408,7 @@ export function GrailSlotPreview({
         pendingRevealUriRef.current = null;
         setIncomingUri(null);
         cancelAnimation(topOpacity);
-        topOpacity.value = 0;
+        topOpacity.set(0);
       }
     },
     [markBroken, topOpacity],

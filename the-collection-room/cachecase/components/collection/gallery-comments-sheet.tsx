@@ -157,20 +157,20 @@ export function GalleryCommentsSheet({ visible, onClose, folderId, playerKey, ga
   }, [visible]);
 
   function dismiss() {
-    translateY.value = withTiming(sheetHeight, { duration: 220 }, (finished) => {
+    translateY.set(withTiming(sheetHeight, { duration: 220 }, (finished) => {
       if (finished) runOnJS(handleClosed)();
-    });
+    }));
   }
 
   const pan = Gesture.Pan()
     .onUpdate((e) => {
-      translateY.value = Math.max(0, e.translationY);
+      translateY.set(Math.max(0, e.translationY));
     })
     .onEnd((e) => {
       if (e.translationY > DISMISS_DISTANCE || e.velocityY > DISMISS_VELOCITY) {
         runOnJS(dismiss)();
       } else {
-        translateY.value = withSpring(0, { damping: 32, stiffness: 260 });
+        translateY.set(withSpring(0, { damping: 32, stiffness: 260 }));
       }
     });
 

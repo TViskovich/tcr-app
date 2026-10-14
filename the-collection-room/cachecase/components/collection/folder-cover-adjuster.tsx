@@ -110,14 +110,14 @@ export function FolderCoverAdjuster({ visible, uri, onSave, onCancel }: Props) {
     })
     .onUpdate((e) => {
       const S = Math.min(Math.max(savedScale.value * e.scale, minScale.value), MAX_SCALE);
-      scale.value = S;
-      tx.value = clampAxisTranslation(S, tx.value, 0, containerW, imgOffX.value, dispW.value, containerW);
-      ty.value = clampAxisTranslation(S, ty.value, 0, containerH, imgOffY.value, dispH.value, containerH);
+      scale.set(S);
+      tx.set(clampAxisTranslation(S, tx.value, 0, containerW, imgOffX.value, dispW.value, containerW));
+      ty.set(clampAxisTranslation(S, ty.value, 0, containerH, imgOffY.value, dispH.value, containerH));
     })
     .onEnd(() => {
-      savedScale.value = scale.value;
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
+      savedScale.set(scale.value);
+      savedTx.set(tx.value);
+      savedTy.set(ty.value);
     })
     .onFinalize(() => {
       activeTouches.value = Math.max(0, activeTouches.value - 1);
@@ -133,12 +133,12 @@ export function FolderCoverAdjuster({ visible, uri, onSave, onCancel }: Props) {
     })
     .onUpdate((e) => {
       const S = scale.value;
-      tx.value = clampAxisTranslation(S, savedTx.value + e.translationX, 0, containerW, imgOffX.value, dispW.value, containerW);
-      ty.value = clampAxisTranslation(S, savedTy.value + e.translationY, 0, containerH, imgOffY.value, dispH.value, containerH);
+      tx.set(clampAxisTranslation(S, savedTx.value + e.translationX, 0, containerW, imgOffX.value, dispW.value, containerW));
+      ty.set(clampAxisTranslation(S, savedTy.value + e.translationY, 0, containerH, imgOffY.value, dispH.value, containerH));
     })
     .onEnd(() => {
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
+      savedTx.set(tx.value);
+      savedTy.set(ty.value);
     })
     .onFinalize(() => {
       activeTouches.value = Math.max(0, activeTouches.value - 1);

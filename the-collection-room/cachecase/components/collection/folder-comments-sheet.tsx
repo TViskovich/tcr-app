@@ -163,20 +163,20 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
   }, [visible]);
 
   function dismiss() {
-    translateY.value = withTiming(sheetHeight, { duration: 220 }, (finished) => {
+    translateY.set(withTiming(sheetHeight, { duration: 220 }, (finished) => {
       if (finished) runOnJS(handleClosed)();
-    });
+    }));
   }
 
   const pan = Gesture.Pan()
     .onUpdate((e) => {
-      translateY.value = Math.max(0, e.translationY);
+      translateY.set(Math.max(0, e.translationY));
     })
     .onEnd((e) => {
       if (e.translationY > DISMISS_DISTANCE || e.velocityY > DISMISS_VELOCITY) {
         runOnJS(dismiss)();
       } else {
-        translateY.value = withTiming(0, { duration: SHEET_OPEN_DURATION, easing: SHEET_OPEN_EASING });
+        translateY.set(withTiming(0, { duration: SHEET_OPEN_DURATION, easing: SHEET_OPEN_EASING }));
       }
     });
 

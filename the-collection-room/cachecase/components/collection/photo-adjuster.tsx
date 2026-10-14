@@ -241,16 +241,16 @@ export function PhotoAdjuster({
     })
     .onUpdate((e) => {
       const S = Math.min(Math.max(savedScale.value * e.scale, minScale.value), MAX_SCALE);
-      scale.value = S;
+      scale.set(S);
       // Zooming out can un-cover the frame even without a pan gesture in
       // flight — re-clamp translation against the new scale every update.
-      tx.value = clampAxisTranslation(S, tx.value, frameLeft.value, frameW.value, imgOffX.value, dispW.value, containerW.value);
-      ty.value = clampAxisTranslation(S, ty.value, frameTop.value, frameH.value, imgOffY.value, dispH.value, containerH.value);
+      tx.set(clampAxisTranslation(S, tx.value, frameLeft.value, frameW.value, imgOffX.value, dispW.value, containerW.value));
+      ty.set(clampAxisTranslation(S, ty.value, frameTop.value, frameH.value, imgOffY.value, dispH.value, containerH.value));
     })
     .onEnd(() => {
-      savedScale.value = scale.value;
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
+      savedScale.set(scale.value);
+      savedTx.set(tx.value);
+      savedTy.set(ty.value);
     })
     .onFinalize(() => {
       activeTouches.value = Math.max(0, activeTouches.value - 1);
@@ -266,7 +266,7 @@ export function PhotoAdjuster({
     })
     .onUpdate((e) => {
       const S = scale.value;
-      tx.value = clampAxisTranslation(
+      tx.set(clampAxisTranslation(
         S,
         savedTx.value + e.translationX,
         frameLeft.value,
@@ -274,8 +274,8 @@ export function PhotoAdjuster({
         imgOffX.value,
         dispW.value,
         containerW.value,
-      );
-      ty.value = clampAxisTranslation(
+      ));
+      ty.set(clampAxisTranslation(
         S,
         savedTy.value + e.translationY,
         frameTop.value,
@@ -283,11 +283,11 @@ export function PhotoAdjuster({
         imgOffY.value,
         dispH.value,
         containerH.value,
-      );
+      ));
     })
     .onEnd(() => {
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
+      savedTx.set(tx.value);
+      savedTy.set(ty.value);
     })
     .onFinalize(() => {
       activeTouches.value = Math.max(0, activeTouches.value - 1);
