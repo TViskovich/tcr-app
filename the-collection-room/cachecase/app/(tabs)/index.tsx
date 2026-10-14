@@ -19,6 +19,7 @@ import { useBadgeRefresh } from '@/lib/badge-context';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
+import { registerTabReselect } from '@/lib/scroll-to-top';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -126,6 +127,22 @@ export default function HomeScreen() {
   const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
   const repostMenuOriginal = repostMenuFor ? (repostMenuFor.repostOf ?? repostMenuFor) : null;
   const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
+  // Tapping the Home icon while already on Home switches Following back to
+  // For You (app/(tabs)/_layout.tsx -> requestTabReselect('home')). Only
+  // that explicit tap reaches this — coming back to Home from an item,
+  // profile or the background never does, so Following stays put then.
+  // Same plain feedMode switch as the tab buttons: neither feed reloads.
+  useFocusEffect(
+    useCallback(
+      () =>
+        registerTabReselect('home', () => {
+          if (feedMode !== 'following') return false;
+          setFeedMode('for-you');
+          return true;
+        }),
+      [feedMode],
+    ),
+  );
   // Piece 6 — measured label widths for the active-tab underline below, so
   // it's sized to each tab's own text ("tab-local") instead of one fixed
   // width that only roughly fit both "For You" and "Following." Purely
@@ -794,7 +811,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     height: 2,
     borderRadius: 1,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimary,
   },
   composeBtn: {
     position: 'absolute',

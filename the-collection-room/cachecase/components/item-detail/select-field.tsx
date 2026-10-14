@@ -231,12 +231,12 @@ const fieldStyles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   menuItemLabelSelected: {
-    color: PV2.accent,
+    color: PV2.actionPrimary,
     fontWeight: '600',
   },
   checkmark: {
     fontSize: 14,
-    color: PV2.accent,
+    color: PV2.actionPrimary,
     fontWeight: '700',
   },
   doneItem: {

@@ -576,7 +576,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   actionPrimary: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
   },
   actionSecondary: {
     borderWidth: StyleSheet.hairlineWidth,

@@ -43,6 +43,14 @@ export type Folder = {
   // Privacy is inherited recursively up the chain — also enforced entirely
   // server-side (folder_is_effectively_visible), never duplicated here.
   parent_folder_id: string | null;
+  // Optional descriptive metadata (supabase/migrations/
+  // 20261021120000_add_folder_metadata.sql; helpers in
+  // lib/folder-metadata.ts). NULL = not provided. Optional here because
+  // folder rows cached before these columns existed won't carry them.
+  description?: string | null;
+  collection_year?: number | null;
+  collection_type?: FolderCollectionType | null;
+  genre?: string | null;
   // Client-derived, NOT a folders column — only set on child-folder rows
   // loaded for display inside a parent collection (hooks/use-collection.ts's
   // child-folder loaders). The collection_item_images.id of this folder's
@@ -63,6 +71,11 @@ export type Folder = {
 // and forms are built (see item_type's own architecture note in that
 // migration).
 export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book' | 'trading_card';
+
+// A folder's descriptive subject category (folders.collection_type) — the
+// item-type slugs plus 'mixed'/'other'. Descriptive only; never changes
+// how a folder behaves.
+export type FolderCollectionType = CollectibleItemType | 'mixed' | 'other';
 
 export type CollectionItem = {
   id: string;

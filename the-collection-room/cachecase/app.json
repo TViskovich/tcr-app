@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "CacheCase",
+    "name": "cachecase",
     "slug": "cachecase",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/brand/cachecase-app-icon.png",
+    "icon": "./assets/brand/cachecase-app-icon-v2.png",
     "scheme": "cachecase",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -17,10 +17,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#C2C0BD",
+        "foregroundImage": "./assets/brand/cachecase-android-icon-foreground-v2.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [

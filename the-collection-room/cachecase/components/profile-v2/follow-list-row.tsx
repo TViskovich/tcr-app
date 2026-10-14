@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 7,
     borderRadius: 16,
-    backgroundColor: '#e8181a',
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
     minWidth: 92,
@@ -146,7 +146,7 @@ const styles = StyleSheet.create({
     borderColor: PV2.border,
   },
   // Neutral placeholder while the relationship is still unknown — same
-  // footprint as followBtn/followBtnActive, deliberately neither the red
+  // footprint as followBtn/followBtnActive, deliberately neither the blue
   // Follow fill nor the outlined Following look.
   followBtnUnknown: {
     backgroundColor: PV2.emptyCardBg,

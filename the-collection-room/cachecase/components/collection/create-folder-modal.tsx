@@ -1,20 +1,33 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { FolderMetadataFields } from '@/components/collection/folder-metadata-fields';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import {
+  changedFolderMetadata,
+  EMPTY_FOLDER_METADATA_FORM,
+  folderMetadataPatch,
+  type FolderMetadataForm,
+} from '@/lib/folder-metadata';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { supabase } from '@/lib/supabase';
 
@@ -62,15 +75,53 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
   // this" read as contradictory. ON now unambiguously means private.
   const isPrivate = !isPublic;
   const [loading, setLoading] = useState(false);
+  // Optional Description/Year/Type/Genre (lib/folder-metadata.ts). Collapsed
+  // behind "Add details" so the default sheet stays name + privacy only.
+  const [meta, setMeta] = useState<FolderMetadataForm>(EMPTY_FOLDER_METADATA_FORM);
+  const [showDetails, setShowDetails] = useState(false);
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  // iOS: KeyboardAvoidingView lifts the sheet by the keyboard's height, so
+  // the sheet must also fit in what's left above the keyboard, or its top
+  // ends up under the status bar. Android resizes the window for the
+  // keyboard instead (windowHeight already shrinks), so nothing to subtract.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillShow', (e) => setKeyboardHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  // Whole sheet stays below the status bar with a small gap; its content
+  // scrolls inside when it doesn't fit.
+  const sheetMaxHeight = windowHeight - keyboardHeight - insets.top - 12;
+
+  function resetForm() {
+    setName('');
+    setIsPublic(true);
+    setMeta(EMPTY_FOLDER_METADATA_FORM);
+    setShowDetails(false);
+  }
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    if (!name.trim() || loading) return;
+    const metadata = folderMetadataPatch(meta);
+    if (!metadata.ok) {
+      setShowDetails(true);
+      Alert.alert('Check details', metadata.message);
+      return;
+    }
     setLoading(true);
     const { error } = await supabase.from('folders').insert({
       user_id: userId,
       name: name.trim(),
       is_public: isPublic,
       parent_folder_id: parentFolderId ?? null,
+      // Filled-in details only; empty ones are left to the columns' NULL.
+      ...changedFolderMetadata(metadata.patch),
       // folders.cover_source is `NOT NULL DEFAULT 'upload'` at the DB level
       // (a pre-existing default, not one this app ever intended — see
       // folder-edit-modal.tsx/[folderId].tsx's own handleRemoveCover, which
@@ -89,8 +140,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
     if (error) {
       Alert.alert('Error', error.message);
     } else {
-      setName('');
-      setIsPublic(true);
+      resetForm();
       // Mark the own-profile cache stale — one wiring point covers every
       // caller of this shared modal (Collections tab, folder detail's Add
       // Folder, and Profile's own inline "+"). userId here is always the
@@ -103,8 +153,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
   }
 
   function handleClose() {
-    setName('');
-    setIsPublic(true);
+    resetForm();
     onClose();
   }
 
@@ -118,52 +167,74 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.sheetWrap}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { maxHeight: sheetMaxHeight }, keyboardHeight > 0 && styles.sheetKeyboardUp]}>
           <View style={styles.handle} />
           <Text style={styles.title}>New Folder</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Folder name"
-            placeholderTextColor={PV2.textTertiary}
-            value={name}
-            onChangeText={setName}
-            autoFocus
-            returnKeyType="done"
-            onSubmitEditing={handleCreate}
-          />
-
-          {/* Private toggle — same wording/behavior as folder-edit-modal.tsx's
-              own Private Collection control, just styled for this sheet. */}
-          <View style={styles.toggleRow}>
-            <View style={styles.toggleLabel}>
-              <Text style={styles.toggleTitle}>{isPrivate ? 'Private Collection' : 'Public Collection'}</Text>
-              <Text style={styles.toggleHint}>
-                {isPrivate
-                  ? 'Only you can view this collection.'
-                  : 'Anyone can view this collection.'}
-              </Text>
-            </View>
-            <Switch
-              value={isPrivate}
-              onValueChange={(value) => setIsPublic(!value)}
-              trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
-              thumbColor="#fff"
+          {/* Shrinks to whatever the capped sheet (sheetMaxHeight) leaves
+              after the handle and title, then scrolls; the default name +
+              privacy sheet fits as before. */}
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetBody}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            showsVerticalScrollIndicator={false}>
+            <TextInput
+              style={styles.input}
+              placeholder="Folder name"
+              placeholderTextColor={PV2.textTertiary}
+              value={name}
+              onChangeText={setName}
+              returnKeyType="done"
+              onSubmitEditing={handleCreate}
             />
-          </View>
 
-          <TouchableOpacity
-            style={[styles.button, !name.trim() && styles.buttonDisabled]}
-            onPress={handleCreate}
-            disabled={loading || !name.trim()}>
-            {loading ? (
-              <ActivityIndicator color={PV2.textPrimary} />
-            ) : (
-              <Text style={styles.buttonText}>Create Folder</Text>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelButton} onPress={handleClose}>
-            <Text style={styles.cancelText}>Cancel</Text>
-          </TouchableOpacity>
+            {/* Expands/collapses the optional details. Collapsing only hides
+                the fields — anything already typed is kept and still saved. */}
+            <TouchableOpacity
+              style={styles.detailsToggle}
+              onPress={() => setShowDetails((open) => !open)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showDetails }}>
+              <IconSymbol name={showDetails ? 'chevron.up' : 'plus'} size={14} color={PV2.actionPrimary} />
+              <Text style={styles.detailsToggleText}>{showDetails ? 'Hide details' : 'Add details'}</Text>
+            </TouchableOpacity>
+            {showDetails && <FolderMetadataFields value={meta} onChange={setMeta} />}
+
+            {/* Private toggle — same wording/behavior as folder-edit-modal.tsx's
+                own Private Collection control, just styled for this sheet. */}
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleLabel}>
+                <Text style={styles.toggleTitle}>{isPrivate ? 'Private Collection' : 'Public Collection'}</Text>
+                <Text style={styles.toggleHint}>
+                  {isPrivate
+                    ? 'Only you can view this collection.'
+                    : 'Anyone can view this collection.'}
+                </Text>
+              </View>
+              <Switch
+                value={isPrivate}
+                onValueChange={(value) => setIsPublic(!value)}
+                trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
+                thumbColor="#fff"
+              />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.button, !name.trim() && styles.buttonDisabled]}
+              onPress={handleCreate}
+              disabled={loading || !name.trim()}>
+              {loading ? (
+                <ActivityIndicator color={PV2.textPrimary} />
+              ) : (
+                <Text style={styles.buttonText}>Create Folder</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelButton} onPress={handleClose}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -186,6 +257,15 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 12,
   },
+  // The home-indicator padding isn't needed while the keyboard covers it —
+  // gives that space back to the fields.
+  sheetKeyboardUp: {
+    paddingBottom: 12,
+  },
+  sheetScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
   handle: {
     width: 40,
     height: 4,
@@ -193,6 +273,20 @@ const styles = StyleSheet.create({
     backgroundColor: PV2.border,
     alignSelf: 'center',
     marginBottom: 8,
+  },
+  sheetBody: {
+    gap: 12,
+  },
+  detailsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+  },
+  detailsToggleText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PV2.actionPrimary,
   },
   toggleRow: {
     flexDirection: 'row',
@@ -231,14 +325,14 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   button: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 4,
   },
   buttonDisabled: {
-    backgroundColor: PV2.accentSoft,
+    backgroundColor: PV2.actionDisabled,
   },
   buttonText: {
     color: '#fff',

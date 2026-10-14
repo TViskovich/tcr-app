@@ -11,6 +11,7 @@ import {
   formatTransferStatus,
   type OwnershipTransferView,
 } from '@/lib/ownership-transfer';
+import type { OwnershipTransferStatus } from '@/types';
 
 function formatTransferDate(iso: string): string {
   const date = new Date(iso);
@@ -131,8 +132,8 @@ export function TransactionRow({
         </View>
       </View>
 
-      <View style={[styles.statusPill, !isPending && styles.statusPillResolved]}>
-        <Text style={[styles.statusPillText, !isPending && styles.statusPillTextResolved]}>
+      <View style={[styles.statusPill, STATUS_PILL_STYLES[transfer.status].pill]}>
+        <Text style={[styles.statusPillText, STATUS_PILL_STYLES[transfer.status].text]}>
           {formatTransferStatus(transfer.status)}
         </Text>
       </View>
@@ -282,20 +283,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
-    backgroundColor: PV2.accentSoft,
-  },
-  statusPillResolved: {
-    backgroundColor: PV2.emptyCardBg,
   },
   statusPillText: {
-    color: PV2.accent,
     fontSize: 10,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  statusPillTextResolved: {
-    color: PV2.textTertiary,
+  statusPillPending: {
+    backgroundColor: PV2.actionPrimarySoft,
+  },
+  statusPillTextPending: {
+    color: PV2.actionPrimary,
+  },
+  statusPillAccepted: {
+    backgroundColor: PV2.statusPositiveSoft,
+  },
+  statusPillTextAccepted: {
+    color: PV2.statusPositive,
+  },
+  statusPillUnsuccessful: {
+    backgroundColor: PV2.accentSoft,
+  },
+  statusPillTextUnsuccessful: {
+    color: PV2.statusNegative,
   },
   actionsRow: {
     flexDirection: 'row',
@@ -310,7 +321,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   acceptBtn: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
   },
   acceptBtnText: {
     color: '#fff',
@@ -328,3 +339,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+// Status pill colors, keyed by every real OwnershipTransferStatus (the
+// Record type makes a newly added status a compile error here rather than
+// an unstyled pill): pending is a normal in-progress state (blue), accepted
+// a completed transfer (green), and declined/cancelled an unsuccessful one
+// (red). Labels are unchanged — see formatTransferStatus.
+const STATUS_PILL_STYLES: Record<OwnershipTransferStatus, { pill: object; text: object }> = {
+  pending: { pill: styles.statusPillPending, text: styles.statusPillTextPending },
+  accepted: { pill: styles.statusPillAccepted, text: styles.statusPillTextAccepted },
+  declined: { pill: styles.statusPillUnsuccessful, text: styles.statusPillTextUnsuccessful },
+  cancelled: { pill: styles.statusPillUnsuccessful, text: styles.statusPillTextUnsuccessful },
+};

@@ -41,7 +41,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useItemGrailMembership } from '@/hooks/use-item-grail-membership';
 import { useItemImages } from '@/hooks/use-item-images';
 import { useItemLikes } from '@/hooks/use-item-likes';
-import { peekCachedSignedItemImage, useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
@@ -69,7 +69,7 @@ import {
   TRADING_CARD_FRANCHISE_OPTIONS,
   UNSPECIFIED_FRANCHISE_MESSAGE,
 } from '@/lib/trading-card-options';
-import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { shareElsewhere } from '@/lib/share/share-target';
@@ -1681,29 +1681,17 @@ export default function ItemDetailScreen() {
   // as "not loading" (i.e. genuinely unavailable, never a fake spinner).
   const carouselImages: CarouselImage[] = useMemo(() => {
     if (galleryImages.length > 0) {
-      return galleryImages.map((img) => {
-        // A 'preview'-tier URL the previous screen's grid already signed
-        // (memory cache only — no request). Shown immediately while the
-        // 'detail' tier signs, then held as the placeholder until it loads.
-        const preview = peekCachedSignedItemImage(cacheIdentity, img.id, COMPACT_IMAGE_TIER);
-        return {
-          id: img.id,
-          uri: signedGalleryUrls.get(img.id),
-          status: signedGalleryStatuses.get(img.id),
-          cacheKey: itemImageCacheKey(cacheIdentity, img.id, DETAIL_IMAGE_TIER, galleryServedTiers),
-          zoomUri: img.id === zoomedImageId ? zoomOriginalUrls.get(img.id) : undefined,
-          zoomCacheKey: img.id === zoomedImageId ? itemImageCacheKey(cacheIdentity, img.id, 'original') : undefined,
-          previewUri: preview?.url,
-          previewCacheKey: preview
-            ? itemImageCacheKey(
-                cacheIdentity,
-                img.id,
-                COMPACT_IMAGE_TIER,
-                preview.servedTier ? new Map([[img.id, preview.servedTier]]) : undefined,
-              )
-            : undefined,
-        };
-      });
+      // 'detail' tier only — the previous screen's ~500px 'preview' is no
+      // longer shown stretched across the hero while this signs/downloads
+      // (see ItemImageCarousel's ZoomableItemImage for the loading state).
+      return galleryImages.map((img) => ({
+        id: img.id,
+        uri: signedGalleryUrls.get(img.id),
+        status: signedGalleryStatuses.get(img.id),
+        cacheKey: itemImageCacheKey(cacheIdentity, img.id, DETAIL_IMAGE_TIER, galleryServedTiers),
+        zoomUri: img.id === zoomedImageId ? zoomOriginalUrls.get(img.id) : undefined,
+        zoomCacheKey: img.id === zoomedImageId ? itemImageCacheKey(cacheIdentity, img.id, 'original') : undefined,
+      }));
     }
     return buildItemImageList([item?.image_url]).map((uri, i) => ({
       id: `legacy-${item?.id ?? 'unknown'}-${i}`,
@@ -2262,7 +2250,7 @@ export default function ItemDetailScreen() {
 
               <ItemDescription description={item.description} />
 
-              <ItemMetadataSection rows={metadataRows} />
+              <ItemMetadataSection key={item.id} rows={metadataRows} />
 
               {isOwner && (
                 <View style={styles.ownerActions}>
@@ -2350,7 +2338,7 @@ export default function ItemDetailScreen() {
 
               <ItemDescription description={item.description} />
 
-              <ItemMetadataSection rows={metadataRows} />
+              <ItemMetadataSection key={item.id} rows={metadataRows} />
 
               <RelatedItemsGrid />
 

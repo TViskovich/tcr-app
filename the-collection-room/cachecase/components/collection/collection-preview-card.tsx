@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { type ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
@@ -25,6 +25,13 @@ type Props = {
   subtitle?: string | null;
   tileWidth: number;
   onPress: () => void;
+  // A bundled artwork (e.g. the CacheCase CC logo for Share Item's "All
+  // Cards" tile) shown centered and uncropped on the tile's own dark
+  // surface — for a tile that stands for something other than one folder,
+  // so it has no cover photo. Ignored when imageUrl is set.
+  logo?: ImageSourcePropType;
+  // logo's width / height, so it keeps its proportions at any tile size.
+  logoAspectRatio?: number;
   // "compact" shrinks the caption typography AND squares off the tile's
   // corners (see compactSquareCorners below) while keeping its border —
   // border, gradients/scrim, and the placeholder treatment are otherwise
@@ -56,6 +63,8 @@ export function CollectionPreviewCard({
   subtitle,
   tileWidth,
   onPress,
+  logo,
+  logoAspectRatio = 1,
   variant = 'full',
   squareEdges = false,
   testID,
@@ -87,6 +96,11 @@ export function CollectionPreviewCard({
             transition={150}
             cachePolicy="memory-disk"
           />
+        )}
+        {!imageUrl && logo && (
+          <View style={styles.logoWrap} pointerEvents="none">
+            <Image source={logo} style={[styles.logo, { aspectRatio: logoAspectRatio }]} contentFit="contain" />
+          </View>
         )}
         {/* Overlaid on the photo itself (clipped by the tile's own
             rounded corners/overflow:hidden), not a separate block below
@@ -140,6 +154,16 @@ const styles = StyleSheet.create({
   // only other real caller of this component — are entirely unaffected.
   compactSquareCorners: {
     borderRadius: 0,
+  },
+  // Centers the logo in the whole tile (the same area a cover photo fills);
+  // at 62% of the tile's width it stays clear of the caption bar below.
+  logoWrap: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logo: {
+    width: '62%',
   },
   captionBar: {
     position: 'absolute',

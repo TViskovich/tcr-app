@@ -56,9 +56,12 @@ type Props = {
 // model and Share Elsewhere). Structurally modeled on
 // components/create/create-menu.tsx (dark rounded sheet / drag handle /
 // icon+title+subtitle+chevron rows, slide-up Modal, tap-outside-to-dismiss).
-// Icon colors: the two in-app destinations (Feed, Direct Message) share the
-// blue link token; Elsewhere (leaving CacheCase) is neutral gray — never the
-// red accent, which reads as destructive on an ordinary share action.
+// Icon colors: Feed is the bottom navigation's own Feed icon ('house', see
+// components/navigation/global-floating-tab-bar.tsx) lit in the nav's
+// active Feed tint on a black tile, so the destination reads the same
+// everywhere; Direct Message is the blue action fill; Elsewhere (leaving
+// CacheCase) is green — never the red accent, which reads as destructive
+// on an ordinary share action.
 export function ShareSheet({
   visible,
   onClose,
@@ -102,6 +105,10 @@ export function ShareSheet({
     label: string,
     icon: IconName,
     iconStyle: object,
+    // Glyph color — white on a colored tile by default; Feed passes the
+    // nav bar's active Feed tint and gets the same glow (glyphLit).
+    iconColor = '#FFFFFF',
+    glyphStyle?: object,
   ) {
     const muted = action.kind !== 'available';
     const disabled = action.kind === 'unsupported';
@@ -116,7 +123,9 @@ export function ShareSheet({
           accessibilityState={{ disabled }}
           accessibilityHint={action.kind === 'blocked' ? `Explains why this can’t be shared yet` : undefined}>
           <View style={[styles.iconWrap, iconStyle, muted && styles.iconWrapMuted]}>
-            <IconSymbol name={icon} size={20} color="#FFFFFF" />
+            <View style={glyphStyle}>
+              <IconSymbol name={icon} size={20} color={iconColor} />
+            </View>
           </View>
           <View style={styles.rowText}>
             <Text style={[styles.rowTitle, muted && styles.rowTitleMuted]}>{label}</Text>
@@ -185,7 +194,7 @@ export function ShareSheet({
           </View>
 
           <View style={styles.optionsGroup}>
-            {renderRow('feed', feed, 'Feed', 'plus', styles.iconWrapFeed)}
+            {renderRow('feed', feed, 'Feed', 'house', styles.iconWrapFeed, PV2.feedActive, styles.glyphLit)}
 
             <View style={styles.divider} />
 
@@ -306,11 +315,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexShrink: 0,
   },
+  // Black tile with the nav bar's lit Feed icon — same tint and glow as the
+  // selected Feed tab (iconLitWrap/iconLit in app/(tabs)/_layout.tsx).
   iconWrapFeed: {
-    backgroundColor: PV2.link,
+    backgroundColor: '#000000',
+  },
+  glyphLit: {
+    shadowColor: PV2.feedActive,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 8,
+    shadowOpacity: 0.85,
   },
   iconWrapDM: {
-    backgroundColor: PV2.link,
+    backgroundColor: PV2.actionPrimaryFill,
   },
   iconWrapMuted: {
     opacity: 0.45,
@@ -355,7 +372,7 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   iconWrapExternal: {
-    backgroundColor: PV2.borderStrong,
+    backgroundColor: PV2.actionExternalFill,
   },
   rowText: {
     flex: 1,

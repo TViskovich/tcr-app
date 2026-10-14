@@ -55,7 +55,7 @@ export function CreateMenu({ visible, onClose }: Props) {
     {
       id: 'card',
       icon: 'rectangle.stack.fill',
-      title: 'Share Card',
+      title: 'Share Item',
       subtitle: 'Post one collectible from your collection',
       onSelect: handleShareCard,
     },

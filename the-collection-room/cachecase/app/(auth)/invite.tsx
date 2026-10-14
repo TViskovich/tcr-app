@@ -159,7 +159,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   button: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',

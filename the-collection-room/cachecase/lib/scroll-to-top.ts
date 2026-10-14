@@ -19,3 +19,21 @@ export function requestScrollToTop(key: string): boolean {
   handler();
   return true;
 }
+
+// Tab RESELECT — the user tapped the bottom-nav icon of the tab they're
+// already on (its root screen). Same register-while-focused shape as
+// scroll-to-top above, but the handler decides whether it acted (returns
+// true) so the nav can fall back to its normal behavior when it didn't.
+// Home uses it to switch Following back to For You.
+const reselectHandlers = new Map<string, () => boolean>();
+
+export function registerTabReselect(key: string, handler: () => boolean): () => void {
+  reselectHandlers.set(key, handler);
+  return () => {
+    if (reselectHandlers.get(key) === handler) reselectHandlers.delete(key);
+  };
+}
+
+export function requestTabReselect(key: string): boolean {
+  return reselectHandlers.get(key)?.() ?? false;
+}

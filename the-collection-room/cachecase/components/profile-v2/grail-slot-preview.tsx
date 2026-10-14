@@ -579,7 +579,7 @@ const styles = StyleSheet.create({
   },
   slotRanked: {
     borderWidth: 2,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   rankBadge: {
     position: 'absolute',
@@ -589,7 +589,7 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 11,
     paddingHorizontal: 5,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderWidth: 1.5,
     borderColor: '#fff',
     alignItems: 'center',

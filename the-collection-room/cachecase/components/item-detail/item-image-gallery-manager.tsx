@@ -219,7 +219,7 @@ export function ItemImageGalleryManager({
               <IconSymbol
                 name={activeImage?.is_primary ? 'star.fill' : 'star'}
                 size={15}
-                color={activeImage?.is_primary ? PV2.accent : PV2.textSecondary}
+                color={activeImage?.is_primary ? PV2.actionPrimary : PV2.textSecondary}
               />
               <Text style={[styles.coverToggleText, activeImage?.is_primary && styles.coverToggleTextActive]}>
                 {activeImage?.is_primary ? 'Cover' : 'Set as Cover'}
@@ -355,7 +355,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 7,
-    backgroundColor: 'rgba(232,24,26,0.92)',
+    backgroundColor: PV2.actionPrimaryFill,
   },
   coverBadgeText: {
     color: '#fff',
@@ -424,7 +424,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   thumbActive: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   thumbImage: {
     width: '100%',
@@ -437,7 +437,7 @@ const styles = StyleSheet.create({
     width: 15,
     height: 15,
     borderRadius: 7.5,
-    backgroundColor: 'rgba(232,24,26,0.92)',
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

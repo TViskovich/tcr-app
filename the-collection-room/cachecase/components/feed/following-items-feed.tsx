@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   View,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -21,7 +22,7 @@ import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
-import type { ImageTier } from '@/lib/image-tiers';
+import { DETAIL_IMAGE_TIER, type ImageTier } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
@@ -104,6 +105,22 @@ const MAX_TILE_ASPECT_RATIO = 1.6;
 // slices them, so this approximates "what's on screen before any
 // scrolling" without real viewport measurement.
 const INITIAL_VISIBLE_ITEM_COUNT = 4;
+
+// Item Detail warmup: the 'detail'-tier hero image (signed URL + bytes,
+// under the exact cacheKey Item Detail reads) for the items the user is
+// likely to tap, so opening one shows its sharp image at once instead of a
+// loading panel. The first DETAIL_WARM_INITIAL items warm on entry; as the
+// user scrolls, everything on screen plus the next row
+// (DETAIL_WARM_AHEAD, one row of this 2-column grid) is kept warm. Only the
+// most recent DETAIL_WARM_WINDOW are kept mounted/renewed — bytes already
+// downloaded stay on disk after their warmer unmounts.
+const DETAIL_WARM_INITIAL = 6;
+const DETAIL_WARM_AHEAD = 2;
+const DETAIL_WARM_WINDOW = 8;
+// Estimated non-image height of one tile (owner row + text block + bottom
+// margin — see styles.tileOwnerRow/tileTextBlock/tile), used only to work
+// out roughly which tiles are on screen for the warmup above.
+const TILE_CHROME_ESTIMATE = 90;
 
 // Following tiles are small (roughly half-screen-wide) previews, so they
 // request the ~500px 'preview' representation (see lib/image-tiers.ts)
@@ -838,23 +855,82 @@ export function FollowingItemsFeed({
     return items.filter((i) => new Date(i.created_at) >= startOfToday).length;
   }, [items]);
 
-  const { left, right } = useMemo(() => {
+  const { left, right, itemTops } = useMemo(() => {
     const left: FollowingItem[] = [];
     const right: FollowingItem[] = [];
     let leftHeight = 0;
     let rightHeight = 0;
+    // Estimated top (px, within the grid) of each tile, by display index —
+    // for the detail warmup's "what's on screen" only; never affects layout.
+    const itemTops: number[] = [];
+    let leftPx = 0;
+    let rightPx = 0;
     for (const item of mountedDisplayItems) {
       const estimatedHeight = 1 / TYPE_DEFAULT_ASPECT_RATIO[item.item_type];
+      const estimatedPx = columnWidth * estimatedHeight + TILE_CHROME_ESTIMATE;
       if (leftHeight <= rightHeight) {
         left.push(item);
         leftHeight += estimatedHeight;
+        itemTops.push(leftPx);
+        leftPx += estimatedPx;
       } else {
         right.push(item);
         rightHeight += estimatedHeight;
+        itemTops.push(rightPx);
+        rightPx += estimatedPx;
       }
     }
-    return { left, right };
-  }, [mountedDisplayItems]);
+    return { left, right, itemTops };
+  }, [mountedDisplayItems, columnWidth]);
+
+  // Detail warmup window (see DETAIL_WARM_* above). warmUntil only ever
+  // grows: the first DETAIL_WARM_INITIAL on entry, then "everything on
+  // screen + the next row" as the user scrolls (updateWarmUntil, from the
+  // scroll handler). Only the newest DETAIL_WARM_WINDOW of those are signed
+  // and mounted at a time.
+  const [warmUntil, setWarmUntil] = useState(DETAIL_WARM_INITIAL);
+  const warmUntilRef = useRef(DETAIL_WARM_INITIAL);
+  const gridTopRef = useRef(0);
+  const viewportHeightRef = useRef(0);
+  const updateWarmUntil = useCallback(
+    (scrollY: number) => {
+      const visibleBottom = scrollY + viewportHeightRef.current - gridTopRef.current;
+      let lastVisible = -1;
+      itemTops.forEach((top, index) => {
+        if (top < visibleBottom) lastVisible = index;
+      });
+      const target = lastVisible + 1 + DETAIL_WARM_AHEAD;
+      if (target > warmUntilRef.current) {
+        warmUntilRef.current = target;
+        setWarmUntil(target);
+      }
+    },
+    [itemTops],
+  );
+  const detailWarmImageIds = useMemo(
+    () =>
+      displayItems
+        .slice(Math.max(0, warmUntil - DETAIL_WARM_WINDOW), warmUntil)
+        .map((i) => i.primary_image_id)
+        .filter((id): id is string => !!id),
+    [displayItems, warmUntil],
+  );
+  // Same identity, tier and cache as Item Detail's own hero request, so
+  // opening a warmed item reuses this signed URL instead of signing again.
+  const { urls: detailWarmUrls, servedTiers: detailWarmServedTiers } = useSignedItemImages(
+    detailWarmImageIds,
+    DETAIL_IMAGE_TIER,
+  );
+  const detailWarmupEntries = useMemo(
+    () =>
+      detailWarmImageIds.map((imageId) => ({
+        id: imageId,
+        uri: detailWarmUrls.get(imageId),
+        // Exactly the key Item Detail's hero uses (app/item/[id].tsx).
+        cacheKey: itemImageCacheKey(identity, imageId, DETAIL_IMAGE_TIER, detailWarmServedTiers),
+      })),
+    [detailWarmImageIds, detailWarmUrls, detailWarmServedTiers, identity],
+  );
 
   function handleSortPress() {
     Alert.alert('Sort by', undefined, [
@@ -885,11 +961,13 @@ export function FollowingItemsFeed({
       if (currentUserId) {
         updateSessionSnapshot(currentUserId, { scrollOffsetY: event.nativeEvent.contentOffset.y });
       }
+      updateWarmUntil(event.nativeEvent.contentOffset.y);
     },
-    [onScroll, currentUserId],
+    [onScroll, currentUserId, updateWarmUntil],
   );
 
-  function handleScrollViewLayout() {
+  function handleScrollViewLayout(event: LayoutChangeEvent) {
+    viewportHeightRef.current = event.nativeEvent.layout.height;
     if (!didRestoreScrollRef.current && cachedScrollOffsetRef.current > 0) {
       didRestoreScrollRef.current = true;
       scrollViewRef.current?.scrollTo({ y: cachedScrollOffsetRef.current, animated: false });
@@ -986,10 +1064,16 @@ export function FollowingItemsFeed({
           <Text style={styles.emptyBody}>New items from collectors you follow will show up here.</Text>
         </View>
       ) : (
-        <View style={styles.gridRow}>
+        <View
+          style={styles.gridRow}
+          onLayout={(event) => {
+            gridTopRef.current = event.nativeEvent.layout.y;
+          }}>
           {/* Absolutely positioned/invisible (see PrivateImageWarmup itself) —
               never participates in this View's own layout. */}
           <PrivateImageWarmup entries={priorityWarmupEntries} />
+          {/* Item Detail hero warmup — see DETAIL_WARM_* above. */}
+          <PrivateImageWarmup entries={detailWarmupEntries} />
           {renderColumn(left, columnWidth)}
           {renderColumn(right, columnWidth)}
         </View>

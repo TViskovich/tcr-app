@@ -115,7 +115,7 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   button: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',

@@ -2050,7 +2050,7 @@ export function ProfileV2Screen({ userId }: Props) {
       <SafeAreaView style={styles.container} edges={['top']}>
         {grailImagesWarmup}
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={PV2.accent} />
+          <ActivityIndicator size="large" color={PV2.actionPrimary} />
         </View>
       </SafeAreaView>
     );
@@ -2233,7 +2233,7 @@ export function ProfileV2Screen({ userId }: Props) {
                         accessibilityRole="button"
                         accessibilityLabel="Save Grail order">
                         {savingGrailReorder ? (
-                          <ActivityIndicator size="small" color={PV2.accent} />
+                          <ActivityIndicator size="small" color={PV2.actionPrimary} />
                         ) : (
                           <Text style={[styles.grailReorderText, styles.grailReorderDone]}>Save</Text>
                         )}
@@ -2709,7 +2709,7 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   grailReorderDone: {
-    color: PV2.accent,
+    color: PV2.actionPrimary,
     fontWeight: '700',
   },
   container: {
@@ -2897,7 +2897,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   themeSwatchSelected: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   themeSwatchFill: {
     width: 52,

@@ -228,7 +228,7 @@ export function ItemCommentsSheet({ visible, onClose, itemId, itemTitle, current
               <View style={styles.fill}>
                 {loading ? (
                   <View style={styles.center}>
-                    <ActivityIndicator size="large" color={PV2.accent} />
+                    <ActivityIndicator size="large" color={PV2.actionPrimary} />
                   </View>
                 ) : (
                   <FlatList
@@ -271,7 +271,7 @@ export function ItemCommentsSheet({ visible, onClose, itemId, itemTitle, current
                   />
                   <TouchableOpacity onPress={handleSend} disabled={!draft.trim() || sending} style={styles.sendBtn}>
                     {sending ? (
-                      <ActivityIndicator size="small" color={PV2.accent} />
+                      <ActivityIndicator size="small" color={PV2.actionPrimary} />
                     ) : (
                       <Text style={[styles.sendText, !draft.trim() && styles.sendTextDisabled]}>Post</Text>
                     )}
@@ -438,7 +438,7 @@ const styles = StyleSheet.create({
   sendText: {
     fontSize: 15,
     fontWeight: '600',
-    color: PV2.accent,
+    color: PV2.actionPrimary,
   },
   sendTextDisabled: {
     color: PV2.textTertiary,

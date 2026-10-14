@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { useAuth } from '@/lib/auth';
+import { useForegroundGeneration } from '@/lib/app-foreground';
 import { DEFAULT_IMAGE_TIER, DETAIL_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 import {
   isActiveSignedUrlIdentity,
@@ -114,11 +115,17 @@ export type SignedImageStatus = 'loading' | 'ready' | 'unavailable';
 // renders, never persisted, and always treated as not-fresh (see isFresh) so
 // a later request for the requested tier retries the real transform instead
 // of trusting the fallback.
+// lastUrl/lastServedTier: on a transient-failure entry only — the last
+// successfully signed URL (and its served tier) this entry replaced, kept so
+// a renewal that fails (e.g. offline) never takes an image that was already
+// on screen away. Display-only, memory-only, same identity-scoped key.
 type CacheEntry = {
   url: string | null;
   expiresAt: number;
   isTransientFailure?: boolean;
   servedTier?: ImageTier;
+  lastUrl?: string;
+  lastServedTier?: ImageTier;
 };
 
 // Module-level, in-memory first-level cache, shared across every hook
@@ -183,6 +190,53 @@ function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
 // one that's genuinely gone or never existed.
 function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
   return !!entry && entry.expiresAt > Date.now();
+}
+
+// The last successfully signed URL an entry carries — its own url when it
+// was a success, or the one a transient failure preserved — for keeping an
+// image on screen while it's being renewed. A server 'unavailable' answer
+// (url null, not transient) carries none, so a revoked image is never
+// re-served.
+function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier'> {
+  if (entry?.url) return { lastUrl: entry.url, ...(entry.servedTier ? { lastServedTier: entry.servedTier } : {}) };
+  if (entry?.lastUrl) return { lastUrl: entry.lastUrl, ...(entry.lastServedTier ? { lastServedTier: entry.lastServedTier } : {}) };
+  return {};
+}
+
+// Lifecycle renewal (the long-mounted-screen fix): when a hook instance's
+// next entry falls due for a refresh — REFRESH_SKEW_MS before a signed URL
+// expires, or when a transient-failure placeholder lapses — its fetch
+// effect re-runs on its own. Without this, the effect only re-ran when the
+// requested ids/identity/tier changed, so a screen that stayed mounted
+// (Profile, a tab left in the background) kept rendering until its URLs
+// expired and then dropped them with nothing ever asking for new ones.
+// Ids currently in flight are skipped (their settling pass re-renders and
+// re-schedules). The floor keeps a still-failing entry from spinning.
+const MIN_RENEW_DELAY_MS = 1_000;
+
+function nextRenewDelay(cacheKeys: string[]): number | null {
+  let due: number | null = null;
+  for (const key of cacheKeys) {
+    if (inFlight.has(key)) continue;
+    const entry = cache.get(key);
+    const at = !entry ? 0 : entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
+    if (due === null || at < due) due = at;
+  }
+  return due === null ? null : Math.max(due - Date.now(), MIN_RENEW_DELAY_MS);
+}
+
+// True when some entry is already past its refresh time and not in flight —
+// checked after every render, so a screen that re-renders after its renewal
+// timer was delayed (device asleep, a stalled JS thread) renews right away
+// instead of waiting for that timer.
+function isRenewalOverdue(cacheKeys: string[]): boolean {
+  const now = Date.now();
+  return cacheKeys.some((key) => {
+    if (inFlight.has(key)) return false;
+    const entry = cache.get(key);
+    if (!entry) return false;
+    return (entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
+  });
 }
 
 // Read-only peek at the in-memory cache for one image at one tier — never
@@ -452,10 +506,12 @@ async function signItemImageIds(
           // future fetch for up to FAILURE_TTL_MS after every cold
           // launch, which defeats the whole point of that short TTL.
           for (const id of batch) {
+            const previous = cache.get(`${identity}:${cacheIdOf(id)}`);
             cache.set(`${identity}:${cacheIdOf(id)}`, {
               url: null,
               expiresAt: now + FAILURE_TTL_MS,
               isTransientFailure: true,
+              ...lastGoodOf(previous),
             });
           }
         }
@@ -605,16 +661,33 @@ export function useSignedItemImages(
   // outside React state (see `cache` above) so multiple hook instances
   // share it, but each instance still needs to know when to re-read it.
   const [, bump] = useState(0);
+  // Re-run triggers for a screen that stays mounted with the same ids: a
+  // renewal timer (scheduled at the end of every pass — see nextRenewDelay)
+  // and each return to the foreground (JS timers don't run while the app is
+  // backgrounded, so this is what catches URLs that expired meanwhile).
+  const [renewTick, setRenewTick] = useState(0);
+  const foregroundGeneration = useForegroundGeneration();
 
   useEffect(() => {
     if (!ids.length) return;
 
     let cancelled = false;
     const isCancelled = () => cancelled;
+    let renewTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRenewal = () => {
+      if (cancelled) return;
+      const wait = nextRenewDelay(ids.map((id) => `${identity}:${cacheIdOf(id)}`));
+      if (wait !== null) renewTimer = setTimeout(() => setRenewTick((n) => n + 1), wait);
+    };
 
     const runPass = (idsToTry: string[]) => signItemImageIds(idsToTry, tier, identity, accessToken, isCancelled);
 
     (async () => {
+      await signAndSettle();
+      scheduleRenewal();
+    })();
+
+    async function signAndSettle() {
       // Layer 1, step 2: hydrate the in-memory cache from the persisted
       // AsyncStorage layer for any id this hook instance doesn't already
       // have in memory — before deciding what's actually missing. Only
@@ -666,10 +739,11 @@ export function useSignedItemImages(
       if (cancelled) return;
       await runPass(stillMissing);
       if (!cancelled) bump((n) => n + 1);
-    })();
+    }
 
     return () => {
       cancelled = true;
+      clearTimeout(renewTimer);
     };
     // `key` (a sorted/joined snapshot of `ids`) and `identity` are the
     // intentional, stable dependencies — depending on `imageIds`/`ids`
@@ -677,9 +751,20 @@ export function useSignedItemImages(
     // array is passed in each time; `accessToken` is deliberately excluded
     // since it can rotate without `identity` changing, and any request that
     // actually fires after such a rotation already reads the latest token
-    // via this closure once `key`/`identity` next change.
+    // via this closure once `key`/`identity` next change. renewTick and
+    // foregroundGeneration only re-run it — every pass re-signs only what
+    // isn't fresh, so a re-run with nothing due makes no request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, identity, tier]);
+  }, [key, identity, tier, renewTick, foregroundGeneration]);
+
+  // After every render: renew now if something is already overdue (see
+  // isRenewalOverdue). Deferred a tick so it never sets state during the
+  // effect itself; in-flight ids are excluded, so this can't loop.
+  useEffect(() => {
+    if (!ids.length || !isRenewalOverdue(ids.map((id) => `${identity}:${cacheIdOf(id)}`))) return;
+    const t = setTimeout(() => setRenewTick((n) => n + 1), 0);
+    return () => clearTimeout(t);
+  });
 
   const urls = new Map<string, string>();
   const statuses = new Map<string, SignedImageStatus>();
@@ -687,7 +772,18 @@ export function useSignedItemImages(
   for (const id of ids) {
     const cacheKey = `${identity}:${cacheIdOf(id)}`;
     const entry = cache.get(cacheKey);
-    if (isUsable(entry)) {
+    // Last successfully signed URL for an entry that has expired or whose
+    // renewal just failed — kept on screen (with its served tier, so the
+    // stable byte-cache key still matches) while the renewal above runs,
+    // instead of blanking an image the user was already looking at. A dead
+    // token only matters if the bytes aren't cached yet, and that image is
+    // replaced as soon as the fresh URL lands.
+    const lastGood = !isUsable(entry) || entry.isTransientFailure ? lastGoodOf(entry) : {};
+    if (lastGood.lastUrl) {
+      urls.set(id, lastGood.lastUrl);
+      statuses.set(id, 'ready');
+      if (lastGood.lastServedTier) servedTiers.set(id, lastGood.lastServedTier);
+    } else if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
         statuses.set(id, 'ready');

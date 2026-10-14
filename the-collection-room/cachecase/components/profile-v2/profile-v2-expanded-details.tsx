@@ -259,7 +259,7 @@ const styles = StyleSheet.create({
   },
   inboxBtnPressed: {
     borderColor: PV2.borderStrong,
-    backgroundColor: PV2.accentSoft,
+    backgroundColor: PV2.actionPrimarySoft,
   },
   inboxBtnLabel: {
     color: PV2.textPrimary,

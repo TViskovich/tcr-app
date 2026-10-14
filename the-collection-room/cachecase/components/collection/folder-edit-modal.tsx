@@ -3,6 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Platform,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -13,8 +15,16 @@ import {
 
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { FolderMetadataFields } from '@/components/collection/folder-metadata-fields';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import {
+  changedFolderMetadata,
+  EMPTY_FOLDER_METADATA_FORM,
+  folderMetadataFormFrom,
+  folderMetadataPatch,
+  type FolderMetadataForm,
+} from '@/lib/folder-metadata';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deleteFolderCover } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
@@ -62,6 +72,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
   // create-folder-modal.tsx's identical correction. ON now unambiguously
   // means private.
   const editIsPrivate = !editIsPublic;
+  const [editMeta, setEditMeta] = useState<FolderMetadataForm>(EMPTY_FOLDER_METADATA_FORM);
   const [editSaving, setEditSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -72,6 +83,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
     if (!visible) return;
     setEditName(folder.name);
     setEditIsPublic(folder.is_public);
+    setEditMeta(folderMetadataFormFrom(folder));
   }, [visible, folder]);
 
   // No cover or color fields in this payload at all (see this component's
@@ -79,8 +91,16 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
   // names, so whatever cover_source/cover_image_url/cover_storage_path/
   // color a folder already has is left completely untouched by every
   // save, regardless of what it was.
+  // Description/Year/Type/Genre ride along in the same UPDATE — only the
+  // ones the user actually changed (changedFolderMetadata), so untouched
+  // values are never rewritten and a cleared one saves NULL.
   async function saveEditFolder() {
-    if (!editName.trim()) return;
+    if (!editName.trim() || editSaving) return;
+    const metadata = folderMetadataPatch(editMeta);
+    if (!metadata.ok) {
+      Alert.alert('Check details', metadata.message);
+      return;
+    }
     setEditSaving(true);
     try {
       const { data, error } = await supabase
@@ -88,6 +108,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
         .update({
           name: editName.trim(),
           is_public: editIsPublic,
+          ...changedFolderMetadata(metadata.patch, folder),
         })
         .eq('id', folder.id)
         .select()
@@ -166,7 +187,14 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           </TouchableOpacity>
         </View>
 
-        <View style={styles.modalBody}>
+        {/* Scrollable now that the optional metadata makes the form longer
+            than a small phone's sheet; iOS keyboard insets keep the focused
+            field visible. */}
+        <ScrollView
+          contentContainerStyle={styles.modalBody}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          automaticallyAdjustKeyboardInsets>
           {/* Folder name */}
           <View>
             <Text style={styles.modalLabel}>Folder Name</Text>
@@ -180,6 +208,9 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               maxLength={80}
             />
           </View>
+
+          {/* Optional Description / Year / Type / Genre */}
+          <FolderMetadataFields value={editMeta} onChange={setEditMeta} />
 
           {/* Change Cover — hands off to the parent screen's FolderCoverMenu
               (Choose from Folder / Choose from Photo Library / Remove
@@ -219,7 +250,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               }
             </TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </Modal>
   );

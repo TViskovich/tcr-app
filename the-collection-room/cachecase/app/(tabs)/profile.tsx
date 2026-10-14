@@ -18,7 +18,7 @@ export default function ProfileScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={PV2.accent} />
+          <ActivityIndicator size="large" color={PV2.actionPrimary} />
         </View>
       </SafeAreaView>
     );

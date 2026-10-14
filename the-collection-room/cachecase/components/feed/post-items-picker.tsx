@@ -326,7 +326,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   slotSelected: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   slotDim: {
     opacity: 0.4,
@@ -358,7 +358,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

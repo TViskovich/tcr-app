@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { useForegroundGeneration } from '@/lib/app-foreground';
 import { useAuth } from '@/lib/auth';
 import { DETAIL_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
 import { folderCoverCacheKey } from '@/lib/private-image-cache-key';
@@ -101,12 +102,19 @@ export type SignedCoverStatus = 'loading' | 'ready' | 'unavailable';
 // new value when the resolved image changes). Persisted alongside the URL,
 // and used by folderCoverCacheKey to give 'first_card' covers a stable
 // expo-image cacheKey. Absent from older entries / an older Edge Function.
+// lastUrl/lastServedTier/lastToken: on a transient-failure entry only — the
+// last successfully signed cover this entry replaced, so a renewal that
+// fails (e.g. offline) never takes a cover that was already on screen away.
+// See use-signed-item-images.ts's matching CacheEntry fields.
 type CacheEntry = {
   url: string | null;
   expiresAt: number;
   isTransientFailure?: boolean;
   servedTier?: ImageTier;
   token?: string;
+  lastUrl?: string;
+  lastServedTier?: ImageTier;
+  lastToken?: string;
 };
 
 const ALL_TIERS: readonly ImageTier[] = ['original', 'preview', 'detail'];
@@ -152,6 +160,45 @@ function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
 // use-signed-item-images.ts's matching isUsable comment.
 function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
   return !!entry && entry.expiresAt > Date.now();
+}
+
+// The last successfully signed cover an entry carries (its own when it was
+// a success, or the one a transient failure preserved) — see
+// use-signed-item-images.ts's lastGoodOf. A server 'unavailable' carries
+// none; invalidateSignedFolderCover deletes the entry outright, so a
+// just-changed cover is never shadowed by the previous one.
+function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier' | 'lastToken'> {
+  const url = entry?.url ?? entry?.lastUrl;
+  if (!entry || !url) return {};
+  const servedTier = entry.url ? entry.servedTier : entry.lastServedTier;
+  const token = entry.url ? entry.token : entry.lastToken;
+  return { lastUrl: url, ...(servedTier ? { lastServedTier: servedTier } : {}), ...(token ? { lastToken: token } : {}) };
+}
+
+// Lifecycle renewal for a long-mounted screen — see use-signed-item-images.ts's
+// nextRenewDelay for the full rationale (same rule, same floor).
+const MIN_RENEW_DELAY_MS = 1_000;
+
+function nextRenewDelay(cacheKeys: string[]): number | null {
+  let due: number | null = null;
+  for (const key of cacheKeys) {
+    if (inFlight.has(key)) continue;
+    const entry = cache.get(key);
+    const at = !entry ? 0 : entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
+    if (due === null || at < due) due = at;
+  }
+  return due === null ? null : Math.max(due - Date.now(), MIN_RENEW_DELAY_MS);
+}
+
+// See use-signed-item-images.ts's isRenewalOverdue.
+function isRenewalOverdue(cacheKeys: string[]): boolean {
+  const now = Date.now();
+  return cacheKeys.some((key) => {
+    if (inFlight.has(key)) return false;
+    const entry = cache.get(key);
+    if (!entry) return false;
+    return (entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
+  });
 }
 
 // Read-only peek at the in-memory cache for one folder's cover at one tier
@@ -393,10 +440,12 @@ async function signCoverIds(
           // most likely a brief outage — and, per the type's own
           // comment, NEVER persisted to AsyncStorage.
           for (const id of batch) {
+            const previous = cache.get(`${identity}:${cacheIdOf(id)}`);
             cache.set(`${identity}:${cacheIdOf(id)}`, {
               url: null,
               expiresAt: now + FAILURE_TTL_MS,
               isTransientFailure: true,
+              ...lastGoodOf(previous),
             });
           }
         }
@@ -532,11 +581,22 @@ export function useSignedFolderCovers(
     };
   }, []);
 
+  // Re-run triggers for a screen that stays mounted with the same ids — see
+  // use-signed-item-images.ts's matching renewTick/foregroundGeneration.
+  const [renewTick, setRenewTick] = useState(0);
+  const foregroundGeneration = useForegroundGeneration();
+
   useEffect(() => {
     if (!ids.length) return;
 
     let cancelled = false;
     const isCancelled = () => cancelled;
+    let renewTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRenewal = () => {
+      if (cancelled) return;
+      const wait = nextRenewDelay(ids.map((id) => `${identity}:${cacheIdOf(id)}`));
+      if (wait !== null) renewTimer = setTimeout(() => setRenewTick((n) => n + 1), wait);
+    };
 
     // One pass over `idsToTry`: ids already being fetched by another
     // in-flight call just await that shared promise (no new request); the
@@ -553,6 +613,11 @@ export function useSignedFolderCovers(
     }
 
     (async () => {
+      await signAndSettle();
+      scheduleRenewal();
+    })();
+
+    async function signAndSettle() {
       // Layer 1, step 2: hydrate the in-memory cache from the persisted
       // AsyncStorage layer for any id this hook instance doesn't already
       // have in memory — before deciding what's actually missing. See
@@ -597,10 +662,11 @@ export function useSignedFolderCovers(
       if (cancelled) return;
       await runPass(stillMissing);
       if (!cancelled) bump((n) => n + 1);
-    })();
+    }
 
     return () => {
       cancelled = true;
+      clearTimeout(renewTimer);
     };
     // `key` (a sorted/joined snapshot of `ids`) and `identity` are the
     // original stable dependencies (same rationale as
@@ -610,9 +676,19 @@ export function useSignedFolderCovers(
     // neither `key` nor `identity` — still causes this effect to actually
     // re-run and refetch the now-missing entry, instead of only updating
     // the *status* React reads on the next render while no new request
-    // ever goes out.
+    // ever goes out. renewTick/foregroundGeneration only re-run it (see
+    // use-signed-item-images.ts) — a re-run with nothing due makes no
+    // request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, identity, version, tier]);
+  }, [key, identity, version, tier, renewTick, foregroundGeneration]);
+
+  // After every render: renew now if something is already overdue — see
+  // use-signed-item-images.ts's matching effect.
+  useEffect(() => {
+    if (!ids.length || !isRenewalOverdue(ids.map((id) => `${identity}:${cacheIdOf(id)}`))) return;
+    const t = setTimeout(() => setRenewTick((n) => n + 1), 0);
+    return () => clearTimeout(t);
+  });
 
   const urls = new Map<string, string>();
   const statuses = new Map<string, SignedCoverStatus>();
@@ -620,7 +696,16 @@ export function useSignedFolderCovers(
   const tokens = new Map<string, string>();
   for (const id of ids) {
     const entry = cache.get(`${identity}:${cacheIdOf(id)}`);
-    if (isUsable(entry)) {
+    // Keep the last signed cover on screen while an expired one is renewed
+    // or a renewal has just failed — its served tier and token travel with
+    // it so coverSource builds the same stable cacheKey as before.
+    const lastGood = !isUsable(entry) || entry.isTransientFailure ? lastGoodOf(entry) : {};
+    if (lastGood.lastUrl) {
+      urls.set(id, lastGood.lastUrl);
+      statuses.set(id, 'ready');
+      if (lastGood.lastServedTier) servedTiers.set(id, lastGood.lastServedTier);
+      if (lastGood.lastToken) tokens.set(id, lastGood.lastToken);
+    } else if (isUsable(entry)) {
       if (entry.url) {
         urls.set(id, entry.url);
         statuses.set(id, 'ready');

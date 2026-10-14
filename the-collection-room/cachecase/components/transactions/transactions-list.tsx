@@ -325,7 +325,7 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
   if (loading) {
     return (
       <View style={styles.centerState}>
-        <ActivityIndicator size="large" color={PV2.accent} />
+        <ActivityIndicator size="large" color={PV2.actionPrimary} />
       </View>
     );
   }
@@ -513,8 +513,8 @@ const styles = StyleSheet.create({
     borderColor: PV2.border,
   },
   filterPillActive: {
-    backgroundColor: PV2.accent,
-    borderColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
+    borderColor: PV2.actionPrimaryFill,
   },
   filterPillText: {
     color: PV2.textSecondary,

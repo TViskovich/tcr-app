@@ -123,7 +123,7 @@ export default function QuoteComposerScreen() {
             hitSlop={8}
             style={[styles.headerSideBtn, styles.headerSideBtnRight]}>
             {submitting ? (
-              <ActivityIndicator size="small" color={PV2.accent} />
+              <ActivityIndicator size="small" color={PV2.actionPrimary} />
             ) : (
               <Text style={[styles.headerPost, !canSubmit && styles.headerPostDisabled]}>Post</Text>
             )}
@@ -132,7 +132,7 @@ export default function QuoteComposerScreen() {
 
         {loading ? (
           <View style={styles.centerWrap}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         ) : loadError || !quoted ? (
           <View style={styles.centerWrap}>
@@ -219,7 +219,7 @@ const styles = StyleSheet.create({
   headerPost: {
     fontSize: 16,
     fontWeight: '700',
-    color: PV2.accent,
+    color: PV2.actionPrimary,
   },
   headerPostDisabled: {
     color: PV2.textTertiary,

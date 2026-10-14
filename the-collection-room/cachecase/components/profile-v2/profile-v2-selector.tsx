@@ -265,6 +265,6 @@ const styles = StyleSheet.create({
   },
   dotActive: {
     width: 16,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimary,
   },
 });

@@ -327,7 +327,7 @@ export default function CollectionScreen() {
           folder screen's showInitialLoading. */}
       {loading && folders.length === 0 ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={PV2.accent} />
+          <ActivityIndicator size="large" color={PV2.actionPrimary} />
         </View>
       ) : folders.length === 0 && error ? (
         // Initial-load failure — a real query/network error with nothing
@@ -627,9 +627,9 @@ const styles = StyleSheet.create({
     height: 46,
     paddingHorizontal: 26,
     borderRadius: 23,
-    backgroundColor: PV2.accentSoft,
+    backgroundColor: PV2.actionPrimarySoft,
     borderWidth: 1,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
     alignItems: 'center',
     justifyContent: 'center',
   },

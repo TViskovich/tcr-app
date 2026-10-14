@@ -140,7 +140,7 @@ export function PendingItemGalleryManager({ photos, coverId, maxImages, onAdd, o
               <IconSymbol
                 name={activePhoto?.id === coverId ? 'star.fill' : 'star'}
                 size={15}
-                color={activePhoto?.id === coverId ? PV2.accent : PV2.textSecondary}
+                color={activePhoto?.id === coverId ? PV2.actionPrimary : PV2.textSecondary}
               />
               <Text style={[styles.coverToggleText, activePhoto?.id === coverId && styles.coverToggleTextActive]}>
                 {activePhoto?.id === coverId ? 'Cover' : 'Set as Cover'}
@@ -248,7 +248,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 7,
-    backgroundColor: 'rgba(232,24,26,0.92)',
+    backgroundColor: PV2.actionPrimaryFill,
   },
   coverBadgeText: {
     color: '#fff',
@@ -317,7 +317,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   thumbActive: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   thumbImage: {
     width: '100%',
@@ -330,7 +330,7 @@ const styles = StyleSheet.create({
     width: 15,
     height: 15,
     borderRadius: 7.5,
-    backgroundColor: 'rgba(232,24,26,0.92)',
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

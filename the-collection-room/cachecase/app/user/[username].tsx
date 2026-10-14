@@ -67,7 +67,7 @@ export default function UserProfileScreen() {
       <>
         <Stack.Screen options={{ title: username ? `@${username}` : 'Profile' }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={PV2.accent} />
+          <ActivityIndicator size="large" color={PV2.actionPrimary} />
         </View>
       </>
     );

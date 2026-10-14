@@ -113,13 +113,6 @@ export type CarouselImage = {
   // 'detail'-tier resolution the resting slide uses.
   zoomUri?: string;
   zoomCacheKey?: string;
-  // An already-signed, already-cached lower-tier URL for this slide (the
-  // 'preview' tier a grid on the previous screen rendered), shown at once
-  // while `uri` (the 'detail' tier) is still signing, then kept as
-  // expo-image's placeholder until the detail image has loaded — so the
-  // slide goes preview -> detail with no spinner and no blank in between.
-  previewUri?: string;
-  previewCacheKey?: string;
 };
 
 type ZoomableItemImageProps = {
@@ -134,8 +127,6 @@ type ZoomableItemImageProps = {
   cacheKey?: string;
   zoomUri?: string;
   zoomCacheKey?: string;
-  previewUri?: string;
-  previewCacheKey?: string;
   pageWidth: number;
   index: number;
   totalImages: number;
@@ -173,8 +164,6 @@ function ZoomableItemImage({
   cacheKey,
   zoomUri,
   zoomCacheKey,
-  previewUri,
-  previewCacheKey,
   pageWidth,
   index,
   totalImages,
@@ -183,6 +172,19 @@ function ZoomableItemImage({
   imageId,
 }: ZoomableItemImageProps) {
   const pageHeight = pageWidth / IMAGE_ASPECT_RATIO;
+
+  // Sharp-only hero. The slide shows its 'detail' image (~1400px) or the
+  // panel's own loading state — never a lower-tier thumbnail stretched to
+  // full width in the meantime (the grid's ~500px 'preview' blown up ~2.5x
+  // on a phone read as a blurry image snapping sharp a moment later).
+  // Tracked against the stable cacheKey, so a signed-URL renewal for the
+  // same image never brings the spinner back; a cached image loads almost
+  // at once, so the spinner is only seen when bytes really are downloading.
+  const sourceId = cacheKey ?? uri;
+  const [loadedSourceId, setLoadedSourceId] = useState<string | undefined>(undefined);
+  const [failedUri, setFailedUri] = useState<string | undefined>(undefined);
+  const loaded = !!sourceId && loadedSourceId === sourceId;
+  const showLoading = !!uri && !loaded && failedUri !== uri;
 
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
@@ -298,16 +300,25 @@ function ZoomableItemImage({
             disabled={!onPress}
             accessibilityRole={onPress ? 'imagebutton' : undefined}
             accessibilityLabel={accessibilityLabel}>
-            {uri || previewUri ? (
-              <Image
-                source={uri ? { uri, cacheKey } : { uri: previewUri, cacheKey: previewCacheKey }}
-                placeholder={uri && previewUri ? { uri: previewUri, cacheKey: previewCacheKey } : undefined}
-                placeholderContentFit="cover"
-                style={styles.image}
-                contentFit="cover"
-                transition={200}
-                cachePolicy="memory-disk"
-              />
+            {uri ? (
+              <>
+                {/* Under the image: the fixed panel's spinner, covered by
+                    the photo the moment it's drawn. */}
+                {showLoading && (
+                  <View style={[StyleSheet.absoluteFill, styles.placeholder]} pointerEvents="none">
+                    <ActivityIndicator size="small" color={PV2.textTertiary} />
+                  </View>
+                )}
+                <Image
+                  source={{ uri, cacheKey }}
+                  style={styles.image}
+                  contentFit="cover"
+                  transition={200}
+                  cachePolicy="memory-disk"
+                  onLoad={() => setLoadedSourceId(sourceId)}
+                  onError={() => setFailedUri(uri)}
+                />
+              </>
             ) : status === 'loading' ? (
               <View style={[styles.image, styles.placeholder]}>
                 <ActivityIndicator size="small" color={PV2.textTertiary} />
@@ -396,8 +407,6 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0, onZoomedI
           cacheKey={images[0]?.cacheKey}
           zoomUri={images[0]?.zoomUri}
           zoomCacheKey={images[0]?.zoomCacheKey}
-          previewUri={images[0]?.previewUri}
-          previewCacheKey={images[0]?.previewCacheKey}
           pageWidth={pageWidth}
           index={0}
           totalImages={images.length}
@@ -451,8 +460,6 @@ export function ItemImageCarousel({ images, onPress, initialIndex = 0, onZoomedI
             cacheKey={item.cacheKey}
             zoomUri={item.zoomUri}
             zoomCacheKey={item.zoomCacheKey}
-            previewUri={item.previewUri}
-            previewCacheKey={item.previewCacheKey}
             pageWidth={pageWidth}
             index={index}
             totalImages={images.length}
@@ -534,7 +541,7 @@ const styles = StyleSheet.create({
   },
   dotActive: {
     width: 16,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimary,
   },
   // Short decorative strip immediately below the hero — reads as the image
   // gently fading into the page rather than ending on a hard edge.

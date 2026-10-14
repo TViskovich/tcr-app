@@ -234,7 +234,7 @@ export function MoveItemModal(props: Props) {
 
         {loading ? (
           <View style={styles.centerWrap}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         ) : error ? (
           <View style={styles.centerWrap}>
@@ -283,7 +283,7 @@ export function MoveItemModal(props: Props) {
                     <ActivityIndicator size="small" color={PV2.textSecondary} />
                   ) : isCurrent ? (
                     <View style={styles.currentBadge}>
-                      <IconSymbol name="checkmark.circle.fill" size={15} color={PV2.accent} />
+                      <IconSymbol name="checkmark.circle.fill" size={15} color={PV2.actionPrimary} />
                       <Text style={styles.currentBadgeText}>Current</Text>
                     </View>
                   ) : null}
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   rowCurrent: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
     opacity: 0.75,
   },
   cover: {
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
   currentBadgeText: {
     fontSize: 13,
     fontWeight: '600',
-    color: PV2.accent,
+    color: PV2.actionPrimary,
   },
   centerWrap: {
     flex: 1,

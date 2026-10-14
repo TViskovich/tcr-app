@@ -12,7 +12,7 @@ import { useUnreadCount } from '@/hooks/use-unread-count';
 import { useAuth } from '@/lib/auth';
 import { BadgeRefreshContext } from '@/lib/badge-context';
 import { useMessageBadgeCount, useMessageBadgeRefresh } from '@/lib/message-badge-context';
-import { requestScrollToTop } from '@/lib/scroll-to-top';
+import { requestScrollToTop, requestTabReselect } from '@/lib/scroll-to-top';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
 // Routes that have href:null — don't render a visible tab button for these.
@@ -252,7 +252,12 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     }
     if (!isFocused) {
       navigation.navigate(route.name, route.params);
+      return;
     }
+    // Home icon tapped while already on Home's own screen: let Home react
+    // (Following -> For You). Only this explicit reselect reaches it —
+    // returning to Home from anywhere else is the !isFocused path above.
+    if (route.name === 'index' && pathname === '/') requestTabReselect('home');
   };
 
   // Looked up by name rather than closed over route/index, since this is

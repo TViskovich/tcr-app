@@ -250,7 +250,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 5,
     borderRadius: 20,
-    backgroundColor: '#e8181a',
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -233,7 +233,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   emptyButton: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 28,

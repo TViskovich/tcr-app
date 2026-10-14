@@ -206,7 +206,7 @@ export default function PickGrailItemScreen() {
           <Text style={styles.headerTitle}>{target?.mode === 'replace' ? 'Replace Item' : 'Choose Item'}</Text>
           <TouchableOpacity onPress={handleConfirm} disabled={!canConfirm} hitSlop={12}>
             {saving ? (
-              <ActivityIndicator size="small" color={PV2.accent} />
+              <ActivityIndicator size="small" color={PV2.actionPrimary} />
             ) : (
               <Text style={[styles.headerSave, !canConfirm && styles.headerSaveDisabled]}>Save</Text>
             )}
@@ -215,7 +215,7 @@ export default function PickGrailItemScreen() {
 
         {!target ? null : authLoading ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         ) : !currentUserId ? (
           <View style={styles.center}>
@@ -224,7 +224,7 @@ export default function PickGrailItemScreen() {
           </View>
         ) : dataLoading ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         ) : dataError ? (
           <View style={styles.center}>
@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
   headerSave: {
     fontSize: 16,
     fontWeight: '600',
-    color: PV2.accent,
+    color: PV2.actionPrimary,
   },
   headerSaveDisabled: {
     color: PV2.textTertiary,
@@ -336,6 +336,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
     borderRadius: 12,
     borderWidth: 3,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
 });

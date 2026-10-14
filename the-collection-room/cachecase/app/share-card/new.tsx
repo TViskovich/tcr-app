@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   BackHandler,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -45,11 +46,26 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CardShareItem, CollectionItem, Folder } from '@/types';
 
 const MAX_CHARS = 280;
+// The floating tab bar sits this far above the bottom safe-area inset
+// (BAR_BOTTOM_GAP in components/navigation/global-floating-tab-bar.tsx).
+const FLOATING_NAV_BOTTOM_GAP = 4;
+// Gap kept between the caption box and the top of that bar — see
+// settleCaptionAboveNavbar.
+const CAPTION_NAV_CLEARANCE = 10;
 const MAX_CARDS = 5;
 // Folder picker tiles — same 3-across layout as the Grails collection
 // picker (app/grail-slot/pick-collection.tsx), inside this screen's own
 // 16pt scroll padding.
 const FOLDER_COLUMNS = 3;
+// "All Cards" tile artwork — the silver CC logo. Transparent PNG whose
+// visible logo already fills its canvas edge to edge (858x801, centred to
+// within 1px), so it's used as-is; the aspect ratio keeps it undistorted.
+// A byte-identical copy of "CC-Silver-Mono (1).png" under a URL-safe name:
+// in development React Native loads bundled images from the Metro server
+// by raw filename, and the space/parentheses made that URL invalid on iOS,
+// so the image silently never loaded.
+const ALL_CARDS_LOGO = require('@/assets/brand/cc-silver-mono.png');
+const ALL_CARDS_LOGO_ASPECT_RATIO = 858 / 801;
 const FOLDER_GAP = 10;
 const SCROLL_PADDING = 16;
 // Card tiles in a scope's first screenful (3 per row): signed in their own
@@ -133,7 +149,7 @@ function ScopedCards({
   return <>{children({ items, loading, error, refresh, imageUrls, servedTiers })}</>;
 }
 
-// Card picker for the Create menu's "Share Card" option — lets the
+// Card picker for the Create menu's "Share Item" option — lets the
 // signed-in user pick 1-5 of their own collection_items and post them to
 // the feed. Folder-first: it opens on a collection picker ("All Cards" =
 // every card, as before, then the user's root folders in Collection order),
@@ -148,12 +164,73 @@ function ScopedCards({
 // share-snapshots and creates the post + card_share_items rows together,
 // server-side, as one all-or-nothing unit — see that function's own
 // module comment for the full invariant.
+// The composer's caption field (both the direct/repost layout and the
+// multi-card layout use it, below the preview). Auto-sizing: a multiline
+// TextInput with no fixed height and its own scrolling off grows natively
+// one line at a time as text wraps or a line break is typed, and shrinks
+// again as text is deleted — starting at a single line (styles.captionInput).
+// onContentSizeChange only tells the screen it grew, so the screen can keep
+// the active line above the keyboard; the height itself is never set from
+// JS, which is what avoids a resize loop/flicker while typing.
+function CaptionInput({
+  value,
+  onChangeText,
+  onFocus,
+  onBlur,
+  onGrow,
+  boxRef,
+  onBoxLayout,
+}: {
+  value: string;
+  onChangeText: (text: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  onGrow: () => void;
+  // Lets the screen measure where the box sits on screen (see
+  // settleCaptionAboveNavbar).
+  boxRef?: React.RefObject<View | null>;
+  onBoxLayout?: () => void;
+}) {
+  const lastHeightRef = useRef(0);
+  return (
+    <>
+      {/* No "Caption" label — the placeholder inside the box says it. The
+          box and its counter are one unit (measured together for the
+          navbar clearance), so the counter rides directly under the box as
+          it grows. */}
+      <View ref={boxRef} onLayout={onBoxLayout} collapsable={false} style={styles.captionUnit}>
+        <TextInput
+          style={styles.captionInput}
+          placeholder="Add a caption (optional)"
+          placeholderTextColor={PV2.textTertiary}
+          multiline
+          scrollEnabled={false}
+          value={value}
+          onChangeText={onChangeText}
+          maxLength={MAX_CHARS}
+          textAlignVertical="top"
+          onFocus={onFocus}
+          onBlur={onBlur}
+          onContentSizeChange={(e) => {
+            const height = e.nativeEvent.contentSize.height;
+            if (height > lastHeightRef.current) onGrow();
+            lastHeightRef.current = height;
+          }}
+        />
+        <Text style={styles.counter}>
+          {value.length}/{MAX_CHARS}
+        </Text>
+      </View>
+    </>
+  );
+}
+
 export default function ShareCardScreen() {
   // Optional preselection — set when this screen is opened from Item
   // Detail's Share Item sheet ("Post to Feed") via
   // /share-card/new?itemId=<id>, so the user never has to pick that card
   // again here. Absent (undefined) for every other entry point (the
-  // Create menu's own "Share Card" option), which is exactly today's
+  // Create menu's own "Share Item" option), which is exactly today's
   // behavior — nothing seeded, picker starts empty.
   //
   // source: 'item' is the explicit direct Share Item mode (Item Detail →
@@ -204,9 +281,46 @@ export default function ShareCardScreen() {
     const cached = folderId ? ownCache.items.filter((i) => i.folder_id === folderId) : ownCache.items;
     return cached.length ? cached : null;
   }
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const folderTileWidth = (windowWidth - SCROLL_PADDING * 2 - FOLDER_GAP * (FOLDER_COLUMNS - 1)) / FOLDER_COLUMNS;
   const scrollRef = useRef<ScrollView>(null);
+  // The caption sits below the (tall) preview and is the last thing in
+  // either composer layout, so "keep it visible" = scroll to the end: once
+  // the keyboard has finished opening (KeyboardAvoidingView has shrunk the
+  // scroll area by then), and again whenever the caption grows a line while
+  // focused.
+  const captionFocusedRef = useRef(false);
+  const scrollCaptionIntoView = useCallback(() => {
+    if (captionFocusedRef.current) scrollRef.current?.scrollToEnd({ animated: true });
+  }, []);
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', scrollCaptionIntoView);
+    return () => sub.remove();
+  }, [scrollCaptionIntoView]);
+
+  // Direct Share Item / repost layout only: the caption box + its counter
+  // (one unit) rest just above the floating tab bar (its top edge sits at
+  // window height - bottom inset - FLOATING_NAV_BOTTOM_GAP - TAB_BAR_HEIGHT;
+  // see components/navigation/global-floating-tab-bar.tsx), never behind or
+  // touching it. The preview above is image-sized, so this is measured, not
+  // a fixed margin: whenever the box's layout settles (e.g. the preview
+  // image arriving), scroll just enough to lift its bottom
+  // CAPTION_NAV_CLEARANCE above the bar. Stops once the user scrolls or
+  // focuses the caption, so it never fights them.
+  const captionBoxRef = useRef<View>(null);
+  const scrollYRef = useRef(0);
+  const userMovedRef = useRef(false);
+  const settleCaptionAboveNavbar = useCallback(() => {
+    if (userMovedRef.current || captionFocusedRef.current) return;
+    captionBoxRef.current?.measureInWindow((_x, y, _w, h) => {
+      if (userMovedRef.current || captionFocusedRef.current || !h) return;
+      const navbarTop = windowHeight - insets.bottom - FLOATING_NAV_BOTTOM_GAP - TAB_BAR_HEIGHT;
+      const overlap = y + h - (navbarTop - CAPTION_NAV_CLEARANCE);
+      if (overlap > 0.5) {
+        scrollRef.current?.scrollTo({ y: scrollYRef.current + overlap, animated: false });
+      }
+    });
+  }, [windowHeight, insets.bottom]);
   // Own profile only — the "current user's avatar/username" the preview
   // (below) needs, same hook every other screen in this app already uses
   // for that. Not used for anything else on this screen.
@@ -217,6 +331,18 @@ export default function ShareCardScreen() {
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [caption, setCaption] = useState('');
+  // Shared by both composer layouts' CaptionInput (see scrollCaptionIntoView).
+  const captionInputProps = {
+    value: caption,
+    onChangeText: setCaption,
+    onFocus: () => {
+      captionFocusedRef.current = true;
+    },
+    onBlur: () => {
+      captionFocusedRef.current = false;
+    },
+    onGrow: scrollCaptionIntoView,
+  };
   const [posting, setPosting] = useState(false);
   // Synchronous double-tap guard for Post — `posting` only blocks the
   // header button after a re-render, so two fast taps could otherwise both
@@ -699,7 +825,7 @@ export default function ShareCardScreen() {
     <>
       <Stack.Screen
         options={{
-          title: isForeignRepost ? 'Repost' : isDirectItemShare ? 'Share Item' : 'Share Card',
+          title: isForeignRepost ? 'Repost' : 'Share Item',
           headerLeft: () => (
             <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
               <Text style={styles.headerCancel}>Cancel</Text>
@@ -750,30 +876,23 @@ export default function ShareCardScreen() {
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView
+            ref={scrollRef}
             contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
             keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            onScroll={(e) => {
+              scrollYRef.current = e.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
+            onScrollBeginDrag={() => {
+              userMovedRef.current = true;
+            }}>
             {isForeignRepost && (
               <Text style={styles.repostNotice}>
                 This card belongs to {sourceOwnerProfile?.display_name || sourceOwnerProfile?.username || 'another collector'}.
                 Sharing it reposts their card to your followers — it doesn&apos;t add it to your own collection.
               </Text>
             )}
-
-            <Text style={styles.sectionLabel}>Caption</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Add a caption (optional)"
-              placeholderTextColor={PV2.textTertiary}
-              multiline
-              value={caption}
-              onChangeText={setCaption}
-              maxLength={MAX_CHARS}
-              textAlignVertical="top"
-            />
-            <Text style={styles.counter}>
-              {caption.length}/{MAX_CHARS}
-            </Text>
 
             <Text style={styles.sectionLabel}>Preview</Text>
             {isForeignRepost ? (
@@ -805,6 +924,8 @@ export default function ShareCardScreen() {
                 cards={previewCards}
               />
             )}
+
+            <CaptionInput {...captionInputProps} boxRef={captionBoxRef} onBoxLayout={settleCaptionAboveNavbar} />
           </ScrollView>
         </KeyboardAvoidingView>
       ) : (
@@ -819,18 +940,19 @@ export default function ShareCardScreen() {
             {browse === null ? (
               <>
                 {/* Step 1 — choose where to browse. All Cards first (the
-                    original single grid), then the user's root folders. */}
-                <View style={styles.selectRow}>
-                  <Text style={styles.sectionLabel}>Choose a collection</Text>
-                  {selectedIds.length > 0 && (
-                    <Text style={styles.selectedCount}>
-                      {selectedIds.length}/{MAX_CARDS} selected
-                    </Text>
-                  )}
-                </View>
+                    original single grid), then the user's root folders. No
+                    heading; the selection count only appears (right-aligned)
+                    once something is selected, so it adds no empty row. */}
+                {selectedIds.length > 0 && (
+                  <Text style={[styles.selectedCount, styles.selectedCountAlone]}>
+                    {selectedIds.length}/{MAX_CARDS} selected
+                  </Text>
+                )}
                 <View style={styles.folderGrid}>
                   <CollectionPreviewCard
                     imageUrl={null}
+                    logo={ALL_CARDS_LOGO}
+                    logoAspectRatio={ALL_CARDS_LOGO_ASPECT_RATIO}
                     title="All Cards"
                     tileWidth={folderTileWidth}
                     onPress={openAllCards}
@@ -1099,21 +1221,6 @@ export default function ShareCardScreen() {
                   })}
                 </ScrollView>
 
-                <Text style={styles.sectionLabel}>Caption</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Add a caption (optional)"
-                  placeholderTextColor={PV2.textTertiary}
-                  multiline
-                  value={caption}
-                  onChangeText={setCaption}
-                  maxLength={MAX_CHARS}
-                  textAlignVertical="top"
-                />
-                <Text style={styles.counter}>
-                  {caption.length}/{MAX_CHARS}
-                </Text>
-
                 <Text style={styles.sectionLabel}>Preview</Text>
                 <SharePostPreview
                   avatarUrl={currentProfile?.avatar_url ?? null}
@@ -1122,6 +1229,8 @@ export default function ShareCardScreen() {
                   caption={caption}
                   cards={previewCards}
                 />
+
+                <CaptionInput {...captionInputProps} />
               </View>
             )}
           </ScrollView>
@@ -1168,6 +1277,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  selectedCountAlone: {
+    alignSelf: 'flex-end',
   },
   maxHint: {
     fontSize: 12,
@@ -1233,7 +1345,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   slotSelected: {
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   // Private, ineligible-to-share card — dimmed and non-interactive
   // (Pressable disabled), not removed from the grid entirely, so the user
@@ -1268,7 +1380,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1324,14 +1436,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  input: {
+  // One line tall to start (20 line height + 12 top/bottom padding = 44),
+  // then grows with its content — see CaptionInput. No fixed/min multi-line
+  // height. Explicit top/bottom padding overrides iOS's default multiline
+  // inset so the single line sits evenly in the box.
+  captionInput: {
     fontSize: 16,
+    lineHeight: 20,
     color: PV2.textPrimary,
-    minHeight: 80,
+    minHeight: 44,
     borderWidth: 1,
     borderColor: PV2.border,
     borderRadius: 10,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  // Caption box + counter, with the counter tucked just under the box.
+  captionUnit: {
+    gap: 4,
   },
   counter: {
     fontSize: 13,
@@ -1359,7 +1482,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   emptyButton: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 28,

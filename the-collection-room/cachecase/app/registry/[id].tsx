@@ -1315,7 +1315,7 @@ const styles = StyleSheet.create({
   claimButton: {
     minHeight: 44,
     borderRadius: 10,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1550,8 +1550,8 @@ const styles = StyleSheet.create({
     borderColor: PV2.border,
   },
   reasonPillActive: {
-    backgroundColor: PV2.accent,
-    borderColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
+    borderColor: PV2.actionPrimaryFill,
   },
   reasonPillText: {
     fontSize: 13,
@@ -1564,7 +1564,7 @@ const styles = StyleSheet.create({
   sendTransferBtn: {
     minHeight: 48,
     borderRadius: 12,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,

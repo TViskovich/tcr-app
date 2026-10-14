@@ -366,7 +366,7 @@ function comicToggleRow(label: string, sublabel: string, value: boolean, onValue
       <Switch
         value={value}
         onValueChange={onValueChange}
-        trackColor={{ false: PV2.collectorPanelBg, true: PV2.accent }}
+        trackColor={{ false: PV2.collectorPanelBg, true: PV2.actionPrimary }}
         thumbColor="#fff"
       />
     </View>
@@ -967,7 +967,7 @@ export default function AddItemScreen() {
                   accessibilityRole="menuitem"
                   accessibilityState={{ selected }}>
                   <Text style={[menuStyles.itemLabel, styles.typeMenuItemLabel]}>{option.label}</Text>
-                  {selected && <IconSymbol name="checkmark.circle.fill" size={16} color={PV2.accent} />}
+                  {selected && <IconSymbol name="checkmark.circle.fill" size={16} color={PV2.actionPrimary} />}
                 </Pressable>
               );
             })}
@@ -1489,13 +1489,13 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   submitButton: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 16,
     alignItems: 'center',
   },
   submitDisabled: {
-    backgroundColor: PV2.accentSoft,
+    backgroundColor: PV2.actionDisabled,
   },
   submitText: {
     color: '#fff',

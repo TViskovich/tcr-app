@@ -63,6 +63,7 @@ import {
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { folderMetadataLine } from '@/lib/folder-metadata';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
@@ -150,6 +151,11 @@ const BULK_BAR_RESERVED_HEIGHT = 96;
 // reorderPositions); child folders aren't reorderable and aren't listed.
 type FolderGridRow =
   | { kind: 'sticky' }
+  // The folder's optional Description + "Year · Type · Genre" line, right
+  // under the sticky panel — a normal scrolling row (never part of the
+  // pinned panel, which stays compact), only present when the folder has
+  // any metadata and only in the plain grid/empty views.
+  | { kind: 'about' }
   | { kind: 'row'; entries: CollectionGridEntry[]; isLast: boolean }
   | { kind: 'empty' }
   | { kind: 'reorderHint' }
@@ -622,6 +628,18 @@ export default function CollectionFolderScreen() {
   }
 
   const folderTitle = folder?.name || passedTitle || 'Collection';
+  // Optional Collection/Gallery metadata (lib/folder-metadata.ts) — read
+  // straight off the folder row this screen already loads (select('*')),
+  // so no extra query. Only populated parts render; a folder with none
+  // shows no 'about' row at all.
+  const folderDescription = folder?.description?.trim() || null;
+  const folderMetaLine = folder ? folderMetadataLine(folder) : null;
+  const hasFolderAbout = !!(folderDescription || folderMetaLine);
+  // Long descriptions start clamped; tracked per folder id so a new folder
+  // (same screen instance, new route id) never opens pre-expanded.
+  const [expandedDescriptionFor, setExpandedDescriptionFor] = useState<string | null>(null);
+  const descriptionExpanded = !!folder && expandedDescriptionFor === folder.id;
+  const descriptionClampable = !!folderDescription && (folderDescription.length > 160 || folderDescription.split('\n').length > 3);
   const cardThumbWidth =
     (windowWidth - GRID_PAGE_PADDING * 2 - GRID_GAP * (CARD_NUM_COLUMNS - 1)) / CARD_NUM_COLUMNS;
 
@@ -1266,12 +1284,14 @@ export default function CollectionFolderScreen() {
         })),
       ];
     }
-    if (gridRows.length === 0) return [{ kind: 'sticky' }, { kind: 'empty' }];
+    const about: FolderGridRow[] = hasFolderAbout ? [{ kind: 'about' }] : [];
+    if (gridRows.length === 0) return [{ kind: 'sticky' }, ...about, { kind: 'empty' }];
     return [
       { kind: 'sticky' },
+      ...about,
       ...gridRows.map((entries, index) => ({ kind: 'row' as const, entries, isLast: index === gridRows.length - 1 })),
     ];
-  }, [gridRows, reorderMode, moveListMode, filteredCardItems, reorderPositions]);
+  }, [gridRows, reorderMode, moveListMode, filteredCardItems, reorderPositions, hasFolderAbout]);
 
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
@@ -1284,7 +1304,7 @@ export default function CollectionFolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.container} edges={['bottom']}>
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         </SafeAreaView>
       </>
@@ -1541,6 +1561,35 @@ export default function CollectionFolderScreen() {
     );
   }
 
+  // Description (clamped to 3 lines when long, tap to expand/collapse) and
+  // the populated parts of "Year · Type · Genre" — see FolderGridRow's
+  // 'about' comment. Never renders empty labels or placeholders.
+  function renderFolderAbout() {
+    return (
+      <View style={styles.folderAbout}>
+        {folderDescription && (
+          <Pressable
+            disabled={!descriptionClampable}
+            onPress={() => setExpandedDescriptionFor(descriptionExpanded ? null : (folder?.id ?? null))}
+            accessibilityRole={descriptionClampable ? 'button' : 'text'}
+            accessibilityHint={descriptionClampable ? (descriptionExpanded ? 'Shows less' : 'Shows the full description') : undefined}>
+            <Text style={styles.folderDescription} numberOfLines={descriptionClampable && !descriptionExpanded ? 3 : undefined}>
+              {folderDescription}
+            </Text>
+            {descriptionClampable && (
+              <Text style={styles.folderDescriptionToggle}>{descriptionExpanded ? 'Show less' : 'Show more'}</Text>
+            )}
+          </Pressable>
+        )}
+        {folderMetaLine && (
+          <Text style={styles.folderMetaLine} numberOfLines={1}>
+            {folderMetaLine}
+          </Text>
+        )}
+      </View>
+    );
+  }
+
   // Single-tile renderer shared by BOTH grids below — card mode's original
   // numColumns-based FlatList (key supplied by its own keyExtractor, this
   // component's key prop is simply unused/harmless there) and the default
@@ -1668,7 +1717,7 @@ export default function CollectionFolderScreen() {
             badge, never just one). */}
         {isSelected && (
           <View style={styles.selectionBadge} pointerEvents="none">
-            <IconSymbol name="checkmark.circle.fill" size={22} color={PV2.accent} />
+            <IconSymbol name="checkmark.circle.fill" size={22} color={PV2.actionPrimary} />
           </View>
         )}
         {/* Rank badge — the prominent numbered circle tap-to-rank replaces
@@ -1787,7 +1836,7 @@ export default function CollectionFolderScreen() {
       onPress: () => toggleItemSelected(item.id),
       accessibilityLabel: selected ? `${title}, selected, tap to deselect` : `${title}, tap to select`,
       trailing: selected ? (
-        <IconSymbol name="checkmark.circle.fill" size={24} color={PV2.accent} />
+        <IconSymbol name="checkmark.circle.fill" size={24} color={PV2.actionPrimary} />
       ) : (
         <View style={styles.moveCheckEmpty} />
       ),
@@ -1985,7 +2034,7 @@ export default function CollectionFolderScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="Done reordering">
                     {savingReorder ? (
-                      <ActivityIndicator size="small" color={PV2.accent} />
+                      <ActivityIndicator size="small" color={PV2.actionPrimary} />
                     ) : (
                       <Text style={styles.reorderDoneText}>Done</Text>
                     )}
@@ -2024,7 +2073,7 @@ export default function CollectionFolderScreen() {
                       <IconSymbol
                         name="magnifyingglass"
                         size={22}
-                        color={searchVisible ? PV2.accent : PV2.textPrimary}
+                        color={searchVisible ? PV2.actionPrimary : PV2.textPrimary}
                       />
                     </Pressable>
                   )}
@@ -2061,7 +2110,7 @@ export default function CollectionFolderScreen() {
 
         {showInitialLoading ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={PV2.accent} />
+            <ActivityIndicator size="large" color={PV2.actionPrimary} />
           </View>
         ) : itemsError && items.length === 0 ? (
           // Real query/network failure with nothing already on screen —
@@ -2113,17 +2162,19 @@ export default function CollectionFolderScreen() {
               keyExtractor={(row, index) =>
                 row.kind === 'sticky'
                   ? 'sticky-header'
-                  : row.kind === 'empty'
-                    ? 'empty-state'
-                    : row.kind === 'reorderHint'
-                      ? 'reorder-hint'
-                      : row.kind === 'reorderItem'
-                        ? `reorder-${row.item.id}`
-                        : row.kind === 'moveHint'
-                          ? 'move-hint'
-                          : row.kind === 'moveItem'
-                            ? `move-${row.item.id}`
-                            : `row-${index}`
+                  : row.kind === 'about'
+                    ? 'folder-about'
+                    : row.kind === 'empty'
+                      ? 'empty-state'
+                      : row.kind === 'reorderHint'
+                        ? 'reorder-hint'
+                        : row.kind === 'reorderItem'
+                          ? `reorder-${row.item.id}`
+                          : row.kind === 'moveHint'
+                            ? 'move-hint'
+                            : row.kind === 'moveItem'
+                              ? `move-${row.item.id}`
+                              : `row-${index}`
               }
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
@@ -2159,6 +2210,7 @@ export default function CollectionFolderScreen() {
               scrollEventThrottle={scrollEventThrottle}
               renderItem={({ item: row }) => {
                 if (row.kind === 'sticky') return renderFolderStickyBar();
+                if (row.kind === 'about') return renderFolderAbout();
                 if (row.kind === 'empty') return emptyStateContent;
                 if (row.kind === 'reorderHint') {
                   return (
@@ -2418,7 +2470,7 @@ const styles = StyleSheet.create({
   reorderDoneText: {
     fontSize: 16,
     fontWeight: '700',
-    color: PV2.accent,
+    color: PV2.actionPrimary,
   },
   // Phase 2 bulk action bar — see its own render-site comment for why this
   // is absolutely positioned as a sibling of the SafeAreaView rather than
@@ -2465,7 +2517,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   bulkBarMoveBtn: {
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 22,
@@ -2696,6 +2748,29 @@ const styles = StyleSheet.create({
     backgroundColor: PV2.bg,
     marginBottom: 10,
   },
+  // Same horizontal inset as titleRow/metaActionsRow, so the text lines up
+  // under the title in the sticky panel above.
+  folderAbout: {
+    paddingHorizontal: 12,
+    marginBottom: 14,
+    gap: 6,
+  },
+  folderDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: PV2.textPrimary,
+  },
+  folderDescriptionToggle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.actionPrimary,
+    marginTop: 2,
+  },
+  folderMetaLine: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PV2.textSecondary,
+  },
   center: {
     flex: 1,
     alignItems: 'center',
@@ -2792,7 +2867,7 @@ const styles = StyleSheet.create({
   // together, always both.
   thumbSelected: {
     borderWidth: 3,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   selectionBadge: {
     position: 'absolute',
@@ -2812,7 +2887,7 @@ const styles = StyleSheet.create({
   // and never render at the same time anyway.
   thumbRanked: {
     borderWidth: 2,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   // The prominent numbered badge tap-to-rank relies on — deliberately
   // larger and higher-contrast than selectionBadge (Select mode's plain
@@ -2826,7 +2901,7 @@ const styles = StyleSheet.create({
     height: 26,
     borderRadius: 13,
     paddingHorizontal: 6,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderWidth: 1.5,
     borderColor: '#fff',
     alignItems: 'center',
@@ -2863,8 +2938,8 @@ const styles = StyleSheet.create({
   // Ranked = picked: a faint accent wash plus a thin accent bar on the left
   // edge, alongside the numbered badge on the right.
   reorderRowRanked: {
-    backgroundColor: PV2.accentSoft,
-    borderLeftColor: PV2.accent,
+    backgroundColor: PV2.actionPrimarySoft,
+    borderLeftColor: PV2.actionPrimary,
   },
   reorderRowPressed: {
     opacity: 0.7,
@@ -2894,7 +2969,7 @@ const styles = StyleSheet.create({
     height: 26,
     borderRadius: 13,
     paddingHorizontal: 6,
-    backgroundColor: PV2.accent,
+    backgroundColor: PV2.actionPrimaryFill,
     borderWidth: 1.5,
     borderColor: '#fff',
     alignItems: 'center',
@@ -2913,7 +2988,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   moveSelectAllText: {
-    color: PV2.accent,
+    color: PV2.actionPrimary,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -2960,9 +3035,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingVertical: 12,
     borderRadius: 22,
-    backgroundColor: PV2.accentSoft,
+    backgroundColor: PV2.actionPrimarySoft,
     borderWidth: 1,
-    borderColor: PV2.accent,
+    borderColor: PV2.actionPrimary,
   },
   emptyButtonText: {
     fontSize: 14,
