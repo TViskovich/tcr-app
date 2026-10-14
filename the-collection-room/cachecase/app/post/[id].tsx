@@ -884,10 +884,14 @@ export default function PostDetailScreen() {
   // Resets the carousel page back to the first image whenever the post
   // itself changes (e.g. a cold deep link straight into a different postId
   // while this screen instance is somehow reused) — never carries a stale
-  // index from a previously-viewed post into a new one.
-  useEffect(() => {
+  // index from a previously-viewed post into a new one. Tracked against the
+  // last-seen post id during render (guarded, so it settles in one pass)
+  // rather than in an effect.
+  const [mediaIndexPostId, setMediaIndexPostId] = useState(post?.id);
+  if (post?.id !== mediaIndexPostId) {
+    setMediaIndexPostId(post?.id);
     setActiveMediaIndex(0);
-  }, [post?.id]);
+  }
 
   // Share Card: the visible carousel card — starts on the cardIndex param
   // (same clamp as CardSharePostBody's own startIndex), then follows swipes.

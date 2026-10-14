@@ -111,14 +111,12 @@ export default function PickGrailItemScreen() {
   // item could vanish from the list (deleted elsewhere) or become
   // assigned to a different slot (a concurrent write) while this screen
   // sits open. Clears it rather than letting Save act on a choice that no
-  // longer reflects reality.
-  useEffect(() => {
-    if (!selectedId) return;
-    const stillExists = items.some((i) => i.id === selectedId);
-    if (!stillExists || assignedElsewhere.has(selectedId)) {
-      setSelectedId(null);
-    }
-  }, [items, assignedElsewhere, selectedId]);
+  // longer reflects reality. Applied during render (guarded — once cleared
+  // the condition is false) rather than in an effect, so Save is never
+  // briefly enabled for a stale choice.
+  if (selectedId && (!items.some((i) => i.id === selectedId) || assignedElsewhere.has(selectedId))) {
+    setSelectedId(null);
+  }
 
   function toggleSelect(id: string) {
     if (assignedElsewhere.has(id)) return;

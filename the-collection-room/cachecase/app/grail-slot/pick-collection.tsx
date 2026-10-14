@@ -200,14 +200,10 @@ export default function PickGrailCollectionScreen() {
 
   // Same staleness guard as the item picker — clears the selection if the
   // folder disappears or becomes assigned to a different slot while this
-  // screen sits open.
-  useEffect(() => {
-    if (!selectedId) return;
-    const stillExists = folders.some((f) => f.id === selectedId);
-    if (!stillExists || assignedElsewhere.has(selectedId)) {
-      setSelectedId(null);
-    }
-  }, [folders, assignedElsewhere, selectedId]);
+  // screen sits open. Applied during render, same as the item picker's.
+  if (selectedId && (!folders.some((f) => f.id === selectedId) || assignedElsewhere.has(selectedId))) {
+    setSelectedId(null);
+  }
 
   function toggleSelect(id: string) {
     if (assignedElsewhere.has(id)) return;
