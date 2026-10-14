@@ -26,6 +26,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { CreateMenu } from '@/components/create/create-menu';
 import { FindUserDropdown } from '@/components/feed/find-user-dropdown';
 import { FollowingItemsFeed, prefetchFollowingFeed } from '@/components/feed/following-items-feed';
+import { MessagesInbox } from '@/components/messages/messages-inbox';
 import { RepostMenu } from '@/components/feed/repost-menu';
 import {
   FEED_POST_SELECT,
@@ -91,6 +92,17 @@ async function queryFeed(currentUserId: string | undefined, page: number, signal
   return sortPostsByCreatedAtDesc(posts);
 }
 
+// Home's three tabs. The internal keys predate the current labels and are
+// kept as-is so every existing feedMode check keeps working: 'for-you' is
+// the Stack (social posts) feed, 'following' the Arrivals (recently added
+// items) grid, and 'messages' the DM inbox.
+type FeedMode = 'for-you' | 'following' | 'messages';
+const HOME_TABS: { key: FeedMode; label: string }[] = [
+  { key: 'for-you', label: 'Stack' },
+  { key: 'following', label: 'Arrivals' },
+  { key: 'messages', label: 'Messages' },
+];
+
 export default function HomeScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -126,17 +138,18 @@ export default function HomeScreen() {
   // closed). The menu acts on its ORIGINAL (a repost's repostOf).
   const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
   const repostMenuOriginal = repostMenuFor ? (repostMenuFor.repostOf ?? repostMenuFor) : null;
-  const [feedMode, setFeedMode] = useState<'for-you' | 'following'>('for-you');
-  // Tapping the Home icon while already on Home switches Following back to
-  // For You (app/(tabs)/_layout.tsx -> requestTabReselect('home')). Only
-  // that explicit tap reaches this — coming back to Home from an item,
-  // profile or the background never does, so Following stays put then.
-  // Same plain feedMode switch as the tab buttons: neither feed reloads.
+  const [feedMode, setFeedMode] = useState<FeedMode>('for-you');
+  // Tapping the Home icon while already on Home switches Arrivals or
+  // Messages back to Stack (app/(tabs)/_layout.tsx ->
+  // requestTabReselect('home')). Only that explicit tap reaches this —
+  // coming back to Home from an item, profile, conversation or the
+  // background never does, so the selected tab stays put then. Same plain
+  // feedMode switch as the tab buttons: no feed reloads.
   useFocusEffect(
     useCallback(
       () =>
         registerTabReselect('home', () => {
-          if (feedMode !== 'following') return false;
+          if (feedMode === 'for-you') return false;
           setFeedMode('for-you');
           return true;
         }),
@@ -145,11 +158,11 @@ export default function HomeScreen() {
   );
   // Piece 6 — measured label widths for the active-tab underline below, so
   // it's sized to each tab's own text ("tab-local") instead of one fixed
-  // width that only roughly fit both "For You" and "Following." Purely
-  // visual; feedMode/query behavior is untouched.
-  const [tabLabelWidths, setTabLabelWidths] = useState<{ forYou: number; following: number }>({
-    forYou: 0,
+  // width. Purely visual; feedMode/query behavior is untouched.
+  const [tabLabelWidths, setTabLabelWidths] = useState<Record<FeedMode, number>>({
+    'for-you': 0,
     following: 0,
+    messages: 0,
   });
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -550,57 +563,43 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* For You / Following — same feedMode state/query behavior as
-          before, restyled from the old pill/card segment to a restrained
-          underline treatment. */}
+      {/* Stack / Arrivals / Messages — same feedMode state/query behavior
+          as before, in the restrained underline treatment; tabBtn's flex: 1
+          spaces the three evenly. */}
       <View style={styles.tabRow}>
-        <TouchableOpacity
-          style={styles.tabBtn}
-          onPress={() => setFeedMode('for-you')}
-          accessibilityRole="button"
-          accessibilityState={{ selected: feedMode === 'for-you' }}>
-          <Text
-            style={[styles.tabText, feedMode === 'for-you' && styles.tabTextActive]}
-            onLayout={(e) => {
-              // Width extracted synchronously, before setState — the
-              // updater below must never touch `e`/`e.nativeEvent`
-              // itself, since the synthetic event can already be
-              // released/pooled by the time a functional updater actually
-              // runs (this was the crash: "Cannot read property 'layout'
-              // of null").
-              const width = e.nativeEvent.layout.width;
-              setTabLabelWidths((prev) => (prev.forYou === width ? prev : { ...prev, forYou: width }));
-            }}>
-            For You
-          </Text>
-          {feedMode === 'for-you' && tabLabelWidths.forYou > 0 && (
-            <View style={[styles.tabUnderline, { width: tabLabelWidths.forYou }]} />
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.tabBtn}
-          onPress={() => setFeedMode('following')}
-          accessibilityRole="button"
-          accessibilityState={{ selected: feedMode === 'following' }}>
-          <Text
-            style={[styles.tabText, feedMode === 'following' && styles.tabTextActive]}
-            onLayout={(e) => {
-              const width = e.nativeEvent.layout.width;
-              setTabLabelWidths((prev) => (prev.following === width ? prev : { ...prev, following: width }));
-            }}>
-            Following
-          </Text>
-          {feedMode === 'following' && tabLabelWidths.following > 0 && (
-            <View style={[styles.tabUnderline, { width: tabLabelWidths.following }]} />
-          )}
-        </TouchableOpacity>
+        {HOME_TABS.map(({ key, label }) => (
+          <TouchableOpacity
+            key={key}
+            style={styles.tabBtn}
+            onPress={() => setFeedMode(key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: feedMode === key }}>
+            <Text
+              style={[styles.tabText, feedMode === key && styles.tabTextActive]}
+              onLayout={(e) => {
+                // Width extracted synchronously, before setState — the
+                // updater below must never touch `e`/`e.nativeEvent`
+                // itself, since the synthetic event can already be
+                // released/pooled by the time a functional updater actually
+                // runs (this was the crash: "Cannot read property 'layout'
+                // of null").
+                const width = e.nativeEvent.layout.width;
+                setTabLabelWidths((prev) => (prev[key] === width ? prev : { ...prev, [key]: width }));
+              }}>
+              {label}
+            </Text>
+            {feedMode === key && tabLabelWidths[key] > 0 && (
+              <View style={[styles.tabUnderline, { width: tabLabelWidths[key] }]} />
+            )}
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* Both feeds share this body, so the hidden For You pane can sit
+      {/* All three tabs share this body, so the hidden Stack pane can sit
           over the exact area it normally fills (see forYouPaneHidden). */}
       <View style={styles.feedBody}>
       {feedMode === 'following' && (
-        // Entirely separate data model/layout — recently uploaded
+        // Arrivals: entirely separate data model/layout — recently uploaded
         // collection items from followed collectors, not posts. Owns its
         // own loading/error/empty states and data fetching; nothing below
         // (posts/loading/loadError/FlatList) applies to it.
@@ -611,7 +610,15 @@ export default function HomeScreen() {
         />
       )}
 
-      {/* For You pane stays mounted (just hidden) while Following is shown,
+      {feedMode === 'messages' && (
+        // The same inbox the /(tabs)/messages route renders. Mounted only
+        // while this tab is selected, so its focus-driven load and 5s
+        // polling run only while the inbox is actually on screen (and stop
+        // when a conversation is pushed over Home, resuming on return).
+        <MessagesInbox embedded />
+      )}
+
+      {/* Stack pane stays mounted (just hidden) while another tab is shown,
           so switching back is instant and keeps the list's scroll position
           instead of remounting the FlatList. Hidden WITHOUT collapsing its
           layout (forYouPaneHidden): display:'none' laid the list out at
@@ -619,10 +626,10 @@ export default function HomeScreen() {
           cells — every post (and its images) then remounted on return,
           redrawing from disk with a fresh fade-in. */}
       <View
-        style={[styles.forYouPane, feedMode === 'following' && styles.forYouPaneHidden]}
-        pointerEvents={feedMode === 'following' ? 'none' : 'auto'}
-        accessibilityElementsHidden={feedMode === 'following'}
-        importantForAccessibility={feedMode === 'following' ? 'no-hide-descendants' : 'auto'}>
+        style={[styles.forYouPane, feedMode !== 'for-you' && styles.forYouPaneHidden]}
+        pointerEvents={feedMode !== 'for-you' ? 'none' : 'auto'}
+        accessibilityElementsHidden={feedMode !== 'for-you'}
+        importantForAccessibility={feedMode !== 'for-you' ? 'no-hide-descendants' : 'auto'}>
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#0a7ea4" />
