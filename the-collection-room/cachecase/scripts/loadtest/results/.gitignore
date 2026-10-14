@@ -1,0 +1,3 @@
+# k6 result summaries (k6-read-<VUS>vu-<timestamp>.json) stay local.
+*
+!.gitignore
