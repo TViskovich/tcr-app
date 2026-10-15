@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 import { useAuth } from '@/lib/auth';
 import { DM_ATTACHMENTS_BUCKET } from '@/lib/dm-images';
@@ -36,6 +36,21 @@ type Entry = { url: string | null; expiresAt: number };
 const memory = new Map<string, Entry>(); // `${identity}:${path}`
 const inFlight = new Map<string, Promise<void>>();
 const hydrated = new Set<string>(); // identities whose persisted map was loaded
+// Mounted consumers per memory key. Every write to `memory` goes through
+// setEntry, which notifies them, so a hook instance re-renders (via
+// useSyncExternalStore) the moment its URL is signed, fails, or is
+// hydrated from the persisted cache — however that write happened.
+const listeners = new Map<string, Set<() => void>>();
+
+function setEntry(key: string, entry: Entry) {
+  memory.set(key, entry);
+  // Notified on a microtask, never synchronously, so a write can never
+  // re-render a subscriber mid-render (same as lib/feed-media-dimensions).
+  queueMicrotask(() => {
+    const subs = listeners.get(key);
+    if (subs) for (const notify of [...subs]) notify();
+  });
+}
 
 let pending: { identity: string; paths: Set<string>; waiters: (() => void)[] } | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -54,7 +69,7 @@ async function hydrate(identity: string) {
   const persisted = await readPersistedSignedUrlMap(DM_ATTACHMENTS_CACHE_DOMAIN, identity);
   for (const [path, entry] of Object.entries(persisted)) {
     const key = `${identity}:${path}`;
-    if (!memory.has(key)) memory.set(key, entry);
+    if (!memory.has(key)) setEntry(key, entry);
   }
 }
 
@@ -66,7 +81,7 @@ async function flush(batch: { identity: string; paths: Set<string>; waiters: (()
       .createSignedUrls(paths, SIGNED_URL_TTL_S);
     const now = Date.now();
     if (error || !data) {
-      for (const p of paths) memory.set(`${batch.identity}:${p}`, { url: null, expiresAt: now + FAILURE_TTL_MS });
+      for (const p of paths) setEntry(`${batch.identity}:${p}`, { url: null, expiresAt: now + FAILURE_TTL_MS });
     } else {
       const toPersist: Record<string, Entry> = {};
       const byPath = new Map(data.map((d) => [d.path, d]));
@@ -76,14 +91,14 @@ async function flush(batch: { identity: string; paths: Set<string>; waiters: (()
           r && !r.error && r.signedUrl
             ? { url: r.signedUrl, expiresAt: now + SIGNED_URL_TTL_S * 1000 }
             : { url: null, expiresAt: now + SIGNED_URL_TTL_S * 1000 };
-        memory.set(`${batch.identity}:${p}`, entry);
+        setEntry(`${batch.identity}:${p}`, entry);
         toPersist[p] = entry;
       }
       mergePersistedSignedUrlEntries(DM_ATTACHMENTS_CACHE_DOMAIN, batch.identity, toPersist).catch(() => {});
     }
   } catch {
     const now = Date.now();
-    for (const p of paths) memory.set(`${batch.identity}:${p}`, { url: null, expiresAt: now + FAILURE_TTL_MS });
+    for (const p of paths) setEntry(`${batch.identity}:${p}`, { url: null, expiresAt: now + FAILURE_TTL_MS });
   } finally {
     for (const p of paths) inFlight.delete(`${batch.identity}:${p}`);
     batch.waiters.forEach((w) => w());
@@ -129,7 +144,29 @@ export function useDmImageUrl(path: string | null): DmImageUrlState {
   const { session } = useAuth();
   const identity = session?.user?.id ?? 'anon';
   const key = path ? `${identity}:${path}` : null;
-  const [, bump] = useState(0);
+  // The cache entry is read through useSyncExternalStore, not directly from
+  // `memory` during render: React Compiler treats module state as constant,
+  // so a direct read was memoized on `key` alone and the first render's
+  // { status: 'loading' } stuck after signing succeeded (the black DM photo
+  // frame). As a store snapshot the entry is a real render input, and
+  // setEntry's notification re-renders this instance when it changes.
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      if (!key) return () => {};
+      let subs = listeners.get(key);
+      if (!subs) {
+        subs = new Set();
+        listeners.set(key, subs);
+      }
+      subs.add(onChange);
+      return () => {
+        subs.delete(onChange);
+        if (!subs.size && listeners.get(key) === subs) listeners.delete(key);
+      };
+    },
+    [key],
+  );
+  const entry = useSyncExternalStore(subscribe, () => (key ? memory.get(key) : undefined));
 
   useEffect(() => {
     if (!path) return;
@@ -138,7 +175,6 @@ export function useDmImageUrl(path: string | null): DmImageUrlState {
       await hydrate(identity);
       if (cancelled) return;
       if (!usable(memory.get(`${identity}:${path}`))) await request(identity, path);
-      if (!cancelled) bump((n) => n + 1);
     })();
     return () => {
       cancelled = true;
@@ -146,5 +182,5 @@ export function useDmImageUrl(path: string | null): DmImageUrlState {
   }, [identity, path]);
 
   if (!key) return { status: 'unavailable' };
-  return stateFor(memory.get(key));
+  return stateFor(entry);
 }
