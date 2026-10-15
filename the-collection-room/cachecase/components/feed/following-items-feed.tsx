@@ -74,25 +74,14 @@ const ITEM_TYPE_LABEL: Record<CollectibleItemType, string> = {
   trading_card: 'TCG',
 };
 
-// Default aspect ratio (width / height) per category — the SOLE source of a
-// tile's outer height, both (a) the masonry column-assignment heuristic and
-// (b) the image box's own `aspectRatio` style. Deliberately never replaced
-// by a real measurement (e.g. RNImage.getSize) once the photo loads: this
-// screen's masonry columns lay out every tile immediately from these fixed
-// values, so an outer height that later changed post-measurement would
-// reflow the column underneath it after first paint. The photo itself is
-// center-cropped to fill this fixed box via `contentFit="cover"` (see
-// FollowingItemTile) rather than being letterboxed inside it.
-const TYPE_DEFAULT_ASPECT_RATIO: Record<CollectibleItemType, number> = {
-  sports_card: 0.7,
-  pokemon: 0.7,
-  comic_book: 0.64,
-  figurine: 0.82,
-  trading_card: 0.7,
-};
-
-const MIN_TILE_ASPECT_RATIO = 0.45;
-const MAX_TILE_ASPECT_RATIO = 1.6;
+// One media-frame aspect ratio (width / height) for EVERY tile, whatever the
+// category or the photo's own proportions — so every tile in the grid has
+// the same media height, and rows line up. 3:4 sits between a trading card
+// (~0.71) and a figure/game box (~0.8); the photo is letterboxed inside it
+// via `contentFit="contain"` (see FollowingItemTile), never cropped. Never
+// replaced by a real measurement, so layout is fixed from first render and
+// never reflows when a photo loads.
+const TILE_MEDIA_ASPECT_RATIO = 3 / 4;
 
 // What's actually visible in the viewport on first entry to this 2-column
 // masonry, confirmed on-device (~4 cards) — NOT a "roughly one screenful"
@@ -128,10 +117,6 @@ const TILE_CHROME_ESTIMATE = 90;
 // requests and every cacheKey below so a preview never shares an identity
 // with the same image's original.
 const FOLLOWING_IMAGE_TIER: ImageTier = 'preview';
-
-function clampTileAspectRatio(ratio: number): number {
-  return Math.min(MAX_TILE_ASPECT_RATIO, Math.max(MIN_TILE_ASPECT_RATIO, ratio));
-}
 
 type FollowingItem = {
   id: string;
@@ -361,11 +346,6 @@ function FollowingItemTile({
   onPress: () => void;
   onOwnerPress: () => void;
 }) {
-  // Fixed at mount from the category table — never reassigned from a real
-  // image measurement (see TYPE_DEFAULT_ASPECT_RATIO's own comment) so the
-  // outer tile height, and therefore the column layout underneath it, is
-  // stable from first render instead of jumping once the image resolves.
-  const ratio = clampTileAspectRatio(TYPE_DEFAULT_ASPECT_RATIO[item.item_type]);
   const ownerName = item.owner_display_name || item.owner_username;
   // Player name leads; the item title (set/product) sits below it. Either
   // field may be missing — a lone value takes the lead line.
@@ -379,13 +359,14 @@ function FollowingItemTile({
       style={[styles.tile, { width: columnWidth }, isNewest && styles.tileNewest]}
       onPress={onPress}
       activeOpacity={0.9}>
-      <View style={[styles.tileImageBox, { aspectRatio: ratio }]}>
+      <View style={styles.tileImageBox}>
         {imageUrl ? (
-          // contentFit="cover", not "contain": the shell's aspectRatio is a
-          // fixed category default rather than this photo's real ratio, so a
-          // mismatched photo is center-cropped to fill the stable box rather
-          // than letterboxed inside it — the box itself never resizes to
-          // accommodate the photo either way. cacheKey (not the rotating
+          // contentFit="contain", centered: the frame is the same fixed 3:4
+          // box for every tile (TILE_MEDIA_ASPECT_RATIO), so the whole
+          // collectible is always visible — a portrait card or comic fills
+          // its height, a landscape photo or game box its width — with the
+          // frame's own dark background showing in any leftover space. The
+          // box never resizes to the photo. cacheKey (not the rotating
           // signed `imageUrl` alone) is what expo-image's own byte cache
           // keys on, per lib/private-image-cache-key.ts — keeps this image
           // stable across a background signed-URL re-sign, and lets it reuse
@@ -393,7 +374,8 @@ function FollowingItemTile({
           <Image
             source={{ uri: imageUrl, cacheKey: imageCacheKey }}
             style={StyleSheet.absoluteFill}
-            contentFit="cover"
+            contentFit="contain"
+            contentPosition="center"
             transition={200}
             cachePolicy="memory-disk"
           />
@@ -435,41 +417,42 @@ function FollowingItemTile({
         </View>
       </View>
 
+      {/* Fixed height (tileTextBlock) whatever the text: player + title on
+          one line each, or — when there is no player — the title alone,
+          wrapping to at most two lines in the same space. */}
       <View style={styles.tileTextBlock}>
-        <Text style={styles.tileTitle} numberOfLines={1}>
-          {primaryLine}
-        </Text>
-        {/* Always rendered so every tile reserves the same two text lines;
-            empty (no placeholder text) when there is no set/title. */}
-        <Text style={styles.tileSubtitle} numberOfLines={1}>
-          {secondaryLine ?? ''}
-        </Text>
+        {secondaryLine ? (
+          <>
+            <Text style={styles.tileTitle} numberOfLines={1}>
+              {primaryLine}
+            </Text>
+            <Text style={styles.tileSubtitle} numberOfLines={1}>
+              {secondaryLine}
+            </Text>
+          </>
+        ) : (
+          <Text style={[styles.tileTitle, styles.tileTitleTwoLine]} numberOfLines={2}>
+            {primaryLine}
+          </Text>
+        )}
       </View>
 
-      {item.commentCount > 0 && (
-        <View style={[styles.engagementRow, styles.engagementRowBelow]}>
+      {/* Always rendered (fixed height) so a tile with no comments is the
+          same height as one with comments; the count only shows when > 0. */}
+      <View style={[styles.engagementRow, styles.engagementRowBelow]}>
+        {item.commentCount > 0 && (
           <View style={styles.engagementStat}>
             <IconSymbol name="message" size={12} color={PV2.textTertiary} />
             <Text style={styles.engagementText}>{item.commentCount}</Text>
           </View>
-        </View>
-      )}
+        )}
+      </View>
     </TouchableOpacity>
   );
 }
 
-// Cycled (not chosen per-item — no real items exist yet) through this
-// screen's actual category aspect ratios rather than arbitrary numbers, so
-// the skeleton's own masonry hinting already matches what real tiles will
-// render at.
-const SKELETON_ASPECT_RATIOS = [
-  TYPE_DEFAULT_ASPECT_RATIO.sports_card,
-  TYPE_DEFAULT_ASPECT_RATIO.figurine,
-  TYPE_DEFAULT_ASPECT_RATIO.comic_book,
-  TYPE_DEFAULT_ASPECT_RATIO.pokemon,
-  TYPE_DEFAULT_ASPECT_RATIO.figurine,
-  TYPE_DEFAULT_ASPECT_RATIO.sports_card,
-];
+// Rows of placeholder tiles the skeleton shows while the first load runs.
+const SKELETON_ROW_COUNT = 6;
 
 // Approximate combined height of everything a real tile (FollowingItemTile)
 // renders BELOW its image box — owner row, age, title, footer row, plus the
@@ -481,46 +464,31 @@ const SKELETON_ASPECT_RATIOS = [
 // not pixel parity.
 const SKELETON_META_HEIGHT = 118;
 
-// Same per-tile height estimate the skeleton itself uses (aspect-ratio-driven
-// image box + SKELETON_META_HEIGHT's fixed footer) — reused here for a
-// different purpose: figuring out how many items (in display order) a
-// warm-cache remount needs to MOUNT UP FRONT to cover a previously-saved
-// deep scroll position before `scrollTo` is called, so restoring scroll
-// never snaps/jumps over a gap of not-yet-mounted content. Mirrors the real
-// left/right masonry-assignment algorithm below (shortest-column-first) so
-// the estimate reflects how tall the shorter column actually gets, not just
-// a flat per-item average. Returns 0 for a non-positive target (nothing to
-// cover — the ordinary top-of-feed case).
+// Same per-row height estimate the skeleton itself uses (fixed media frame +
+// SKELETON_META_HEIGHT's fixed footer) — reused here for a different
+// purpose: figuring out how many items (in display order) a warm-cache
+// remount needs to MOUNT UP FRONT to cover a previously-saved deep scroll
+// position before `scrollTo` is called, so restoring scroll never
+// snaps/jumps over a gap of not-yet-mounted content. Every row is the same
+// height and holds two items, so this is whole rows × 2. Returns 0 for a
+// non-positive target (nothing to cover — the ordinary top-of-feed case).
 function countItemsToCoverOffset(items: FollowingItem[], columnWidth: number, targetHeight: number): number {
   if (targetHeight <= 0 || columnWidth <= 0) return 0;
-  let leftHeight = 0;
-  let rightHeight = 0;
-  let count = 0;
-  for (const item of items) {
-    if (Math.min(leftHeight, rightHeight) >= targetHeight) break;
-    const ratio = clampTileAspectRatio(TYPE_DEFAULT_ASPECT_RATIO[item.item_type]);
-    const tileHeight = columnWidth / ratio + SKELETON_META_HEIGHT;
-    if (leftHeight <= rightHeight) leftHeight += tileHeight;
-    else rightHeight += tileHeight;
-    count++;
-  }
-  return count;
+  const rowHeight = columnWidth / TILE_MEDIA_ASPECT_RATIO + SKELETON_META_HEIGHT;
+  return Math.min(items.length, Math.ceil(targetHeight / rowHeight) * 2);
 }
 
 function GridSkeleton({ columnWidth }: { columnWidth: number }) {
+  const tileStyle = [
+    styles.skeletonTile,
+    { width: columnWidth, height: columnWidth / TILE_MEDIA_ASPECT_RATIO + SKELETON_META_HEIGHT },
+  ];
   return (
-    <View style={styles.gridRow}>
-      {[0, 1].map((col) => (
-        <View key={col} style={{ width: columnWidth }}>
-          {SKELETON_ASPECT_RATIOS.map((ratio, i) => (
-            <View
-              key={i}
-              style={[
-                styles.skeletonTile,
-                { width: columnWidth, height: columnWidth / ratio + SKELETON_META_HEIGHT },
-              ]}
-            />
-          ))}
+    <View style={styles.grid}>
+      {Array.from({ length: SKELETON_ROW_COUNT }, (_, row) => (
+        <View key={row} style={styles.gridRow}>
+          <View style={tileStyle} />
+          <View style={tileStyle} />
         </View>
       ))}
     </View>
@@ -855,32 +823,23 @@ export function FollowingItemsFeed({
     return items.filter((i) => new Date(i.created_at) >= startOfToday).length;
   }, [items]);
 
-  const { left, right, itemTops } = useMemo(() => {
-    const left: FollowingItem[] = [];
-    const right: FollowingItem[] = [];
-    let leftHeight = 0;
-    let rightHeight = 0;
+  // Two tiles per row, in display order (left, right, left, right…) — the
+  // same order the old shortest-column-first split produced once every tile
+  // is the same height, but laid out as real rows so tiles always line up
+  // horizontally.
+  const { rows, itemTops } = useMemo(() => {
+    const rows: FollowingItem[][] = [];
     // Estimated top (px, within the grid) of each tile, by display index —
     // for the detail warmup's "what's on screen" only; never affects layout.
     const itemTops: number[] = [];
-    let leftPx = 0;
-    let rightPx = 0;
-    for (const item of mountedDisplayItems) {
-      const estimatedHeight = 1 / TYPE_DEFAULT_ASPECT_RATIO[item.item_type];
-      const estimatedPx = columnWidth * estimatedHeight + TILE_CHROME_ESTIMATE;
-      if (leftHeight <= rightHeight) {
-        left.push(item);
-        leftHeight += estimatedHeight;
-        itemTops.push(leftPx);
-        leftPx += estimatedPx;
-      } else {
-        right.push(item);
-        rightHeight += estimatedHeight;
-        itemTops.push(rightPx);
-        rightPx += estimatedPx;
-      }
-    }
-    return { left, right, itemTops };
+    const rowPx = columnWidth / TILE_MEDIA_ASPECT_RATIO + TILE_CHROME_ESTIMATE;
+    mountedDisplayItems.forEach((item, index) => {
+      const rowIndex = Math.floor(index / 2);
+      if (index % 2 === 0) rows.push([item]);
+      else rows[rowIndex].push(item);
+      itemTops.push(rowIndex * rowPx);
+    });
+    return { rows, itemTops };
   }, [mountedDisplayItems, columnWidth]);
 
   // Detail warmup window (see DETAIL_WARM_* above). warmUntil only ever
@@ -948,7 +907,7 @@ export function FollowingItemsFeed({
   // relayout. Restoring on the ScrollView's own onLayout (not a plain
   // useEffect) because content height here is fully deterministic from
   // already-hydrated item data at first render (tile heights never depend
-  // on image load — see TYPE_DEFAULT_ASPECT_RATIO), so by the time the
+  // on image load — see TILE_MEDIA_ASPECT_RATIO), so by the time the
   // native layout pass completes, the content is already tall enough to
   // scroll to the cached offset.
   const scrollViewRef = useRef<ScrollView>(null);
@@ -974,33 +933,27 @@ export function FollowingItemsFeed({
     }
   }
 
-  function renderColumn(column: FollowingItem[], width: number) {
+  function renderTile(item: FollowingItem) {
+    const imageId = item.primary_image_id;
+    const imageUrl = imageId ? (priorityUrls.get(imageId) ?? backgroundUrls.get(imageId)) : undefined;
     return (
-      <View style={{ width }}>
-        {column.map((item) => {
-          const imageId = item.primary_image_id;
-          const imageUrl = imageId ? (priorityUrls.get(imageId) ?? backgroundUrls.get(imageId)) : undefined;
-          return (
-            <FollowingItemTile
-              key={item.id}
-              item={item}
-              imageUrl={imageUrl}
-              imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
-              columnWidth={width}
-              isNewest={item.id === newestItemId}
-              onPress={() =>
-                navigateOnce(() => {
-                  prefetchItemDetailImages([item.primary_image_id]);
-                  router.push({ pathname: '/item/[id]', params: { id: item.id } });
-                })
-              }
-              onOwnerPress={() =>
-                navigateOnce(() => navigateToProfile(router, currentUserId, item.user_id, item.owner_username))
-              }
-            />
-          );
-        })}
-      </View>
+      <FollowingItemTile
+        key={item.id}
+        item={item}
+        imageUrl={imageUrl}
+        imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
+        columnWidth={columnWidth}
+        isNewest={item.id === newestItemId}
+        onPress={() =>
+          navigateOnce(() => {
+            prefetchItemDetailImages([item.primary_image_id]);
+            router.push({ pathname: '/item/[id]', params: { id: item.id } });
+          })
+        }
+        onOwnerPress={() =>
+          navigateOnce(() => navigateToProfile(router, currentUserId, item.user_id, item.owner_username))
+        }
+      />
     );
   }
 
@@ -1065,7 +1018,7 @@ export function FollowingItemsFeed({
         </View>
       ) : (
         <View
-          style={styles.gridRow}
+          style={styles.grid}
           onLayout={(event) => {
             gridTopRef.current = event.nativeEvent.layout.y;
           }}>
@@ -1074,8 +1027,11 @@ export function FollowingItemsFeed({
           <PrivateImageWarmup entries={priorityWarmupEntries} />
           {/* Item Detail hero warmup — see DETAIL_WARM_* above. */}
           <PrivateImageWarmup entries={detailWarmupEntries} />
-          {renderColumn(left, columnWidth)}
-          {renderColumn(right, columnWidth)}
+          {rows.map((row, rowIndex) => (
+            <View key={rowIndex} style={styles.gridRow}>
+              {row.map((item) => renderTile(item))}
+            </View>
+          ))}
         </View>
       )}
     </ScrollView>
@@ -1141,10 +1097,13 @@ const styles = StyleSheet.create({
   sortChevron: {
     transform: [{ rotate: '90deg' }],
   },
+  grid: {
+    paddingHorizontal: GRID_HORIZONTAL_PADDING,
+  },
+  // One row of two equal tiles. Default alignItems 'stretch' keeps both
+  // tiles in a row the same height even if text scaling ever differs.
   gridRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: GRID_HORIZONTAL_PADDING,
     gap: COLUMN_GAP,
   },
   tile: {
@@ -1167,6 +1126,7 @@ const styles = StyleSheet.create({
   },
   tileImageBox: {
     width: '100%',
+    aspectRatio: TILE_MEDIA_ASPECT_RATIO,
     backgroundColor: PV2.collectorPanelBg,
   },
   justAddedBadge: {
@@ -1245,6 +1205,11 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
     marginTop: 3,
   },
+  // Title alone (no player line): up to two lines in the same space the
+  // title + subtitle pair occupies (18 + 2 + 16 + 3px margin = 39 = 36 + 3).
+  tileTitleTwoLine: {
+    height: 36,
+  },
   categoryPill: {
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -1262,10 +1227,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingBottom: 8,
   },
+  // Fixed height: reserved on every tile, comments or not.
   engagementRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    height: 14,
   },
   engagementStat: {
     flexDirection: 'row',
