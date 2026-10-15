@@ -129,3 +129,61 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
       (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
     );
 }
+
+// --- Session inbox snapshot (Messages tab warm-up) ---
+//
+// The signed-in user's most recent inbox, in memory only (never persisted),
+// so Home's Messages tab can show the list on its first frame instead of a
+// skeleton while loadInbox's three round trips run. Filled once in the
+// background by prefetchInbox (Home schedules it after Stack's first load,
+// at an idle moment) and kept current by every successful inbox refresh
+// (rememberInbox). Keyed by user id — a lookup for any other user returns
+// nothing — and cleared on any identity change (lib/auth.tsx). It is only a
+// first-frame head start: the inbox still refreshes from the server when it
+// opens, so ordering and unread state always end up authoritative.
+
+let snapshot: { userId: string; items: ConversationItem[] } | null = null;
+let prefetch: { userId: string; promise: Promise<ConversationItem[] | null> } | null = null;
+// Bumped by clearInboxSnapshot, so a prefetch that resolves after a
+// sign-out / account switch can never write the old user's inbox back.
+let generation = 0;
+
+export function peekInboxSnapshot(userId: string): ConversationItem[] | null {
+  return snapshot && snapshot.userId === userId ? snapshot.items : null;
+}
+
+export function rememberInbox(userId: string, items: ConversationItem[]) {
+  snapshot = { userId, items };
+}
+
+export function clearInboxSnapshot() {
+  generation++;
+  snapshot = null;
+  prefetch = null;
+}
+
+// The in-flight prefetch for this user, if any — the inbox joins it rather
+// than starting an identical request of its own.
+export function joinInboxPrefetch(userId: string): Promise<ConversationItem[] | null> | null {
+  return prefetch && prefetch.userId === userId ? prefetch.promise : null;
+}
+
+// One background load per user per session: skipped when a snapshot already
+// exists or a prefetch is already running. Failures are silent — the inbox
+// simply loads normally when opened.
+export function prefetchInbox(userId: string) {
+  if (peekInboxSnapshot(userId) || joinInboxPrefetch(userId)) return;
+  const startedAt = generation;
+  const promise = loadInbox(userId, new AbortController().signal)
+    .then((items) => {
+      if (generation !== startedAt) return null;
+      // Never overwrite a fresher snapshot an open inbox already recorded.
+      if (!peekInboxSnapshot(userId)) rememberInbox(userId, items);
+      return items;
+    })
+    .catch(() => null)
+    .finally(() => {
+      if (prefetch?.promise === promise) prefetch = null;
+    });
+  prefetch = { userId, promise };
+}

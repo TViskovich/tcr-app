@@ -11,6 +11,7 @@ import {
 } from './persisted-signed-url-cache';
 import { purgeOwnProfileCache, readOwnProfileCache } from './own-profile-cache';
 import { supabase } from './supabase';
+import { clearInboxSnapshot } from './dm-inbox';
 import { clearRecentProfilesMemory } from './recent-profiles';
 import { clearVisitedProfiles } from './visited-profile-cache';
 
@@ -92,6 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Find User's recent collectors — in-memory mirror only; each
       // account's persisted list stays keyed to that account.
       clearRecentProfilesMemory();
+      // Messages tab warm-up snapshot (memory only, keyed by user id).
+      clearInboxSnapshot();
     }
 
     supabase.auth.getSession().then(({ data }) => {

@@ -23,7 +23,13 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
-import { type ConversationItem, loadInbox } from '@/lib/dm-inbox';
+import {
+  type ConversationItem,
+  joinInboxPrefetch,
+  loadInbox,
+  peekInboxSnapshot,
+  rememberInbox,
+} from '@/lib/dm-inbox';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -75,8 +81,14 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
   const refreshMessageBadge = useMessageBadgeRefresh();
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
 
-  const [conversations, setConversations] = useState<ConversationItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Starts from the session inbox snapshot when there is one (see
+  // peekInboxSnapshot in lib/dm-inbox.ts — warmed in the background from
+  // Home, and kept current by every refresh below), so the list is on
+  // screen from the first frame; the focus load below still refreshes it.
+  const [conversations, setConversations] = useState<ConversationItem[]>(
+    () => (currentUserId ? peekInboxSnapshot(currentUserId) : null) ?? [],
+  );
+  const [loading, setLoading] = useState(() => !(currentUserId && peekInboxSnapshot(currentUserId)));
   const [refreshing, setRefreshing] = useState(false);
   // Last authoritative refresh failed. Only surfaced while there's nothing
   // to show — a failed background poll never replaces a loaded inbox.
@@ -88,7 +100,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
   // compare logic below, which can be re-entered (via the coalesced-pending
   // path) sooner than a passive effect is guaranteed to have flushed — same
   // pattern/reasoning as app/conversation/[id].tsx's messagesRef.
-  const conversationsRef = useRef<ConversationItem[]>([]);
+  const conversationsRef = useRef<ConversationItem[]>(conversations);
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
@@ -149,9 +161,15 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
     }
     fetchInFlightRef.current = true;
     try {
-      const data = await loadInbox(currentUserId, signal);
+      // Joins Home's background warm-up if it's still in flight (same
+      // query — never two at once); otherwise loads normally.
+      const prefetched = await (joinInboxPrefetch(currentUserId) ?? Promise.resolve(null));
+      const data = prefetched ?? (await loadInbox(currentUserId, signal));
       if (signal.aborted) return;
       setLoadError(false);
+      // Keeps the session snapshot current, so the next time this tab
+      // mounts it shows the latest inbox immediately.
+      rememberInbox(currentUserId, data);
 
       const prev = conversationsRef.current;
       // Compare only the fields that actually determine what's rendered

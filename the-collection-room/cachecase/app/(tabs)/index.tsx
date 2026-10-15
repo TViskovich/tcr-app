@@ -27,6 +27,7 @@ import { CreateMenu } from '@/components/create/create-menu';
 import { FindUserDropdown } from '@/components/feed/find-user-dropdown';
 import { FollowingItemsFeed, prefetchFollowingFeed } from '@/components/feed/following-items-feed';
 import { MessagesInbox } from '@/components/messages/messages-inbox';
+import { prefetchInbox } from '@/lib/dm-inbox';
 import { RepostMenu } from '@/components/feed/repost-menu';
 import {
   FEED_POST_SELECT,
@@ -379,6 +380,11 @@ export default function HomeScreen() {
   // per session (the function itself also skips when Following already has
   // data or a preparation running). Following opened earlier still loads on
   // its own, or joins this if it's in flight.
+  //
+  // The Messages tab's inbox is warmed in the same idle slot
+  // (prefetchInbox, lib/dm-inbox.ts): one inbox query in the background, so
+  // opening Messages shows the list immediately instead of a skeleton. Same
+  // once-per-user-per-session rule; never conversation histories or photos.
   const followingPrefetchedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!currentUserId || loading || followingPrefetchedForRef.current === currentUserId) return;
@@ -386,6 +392,7 @@ export default function HomeScreen() {
     const handle = requestIdleCallback(() => {
       followingPrefetchedForRef.current = userId;
       prefetchFollowingFeed(userId);
+      prefetchInbox(userId);
     });
     return () => cancelIdleCallback(handle);
   }, [currentUserId, loading]);
