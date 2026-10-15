@@ -220,6 +220,26 @@ export default function ConversationScreen() {
   // every send scroll to bottom.
   const isNearBottomRef = useRef(true);
 
+  // Opening position. The list isn't inverted, so it renders and measures
+  // the OLDEST rows first: a single scrollToEnd lands on an end estimated
+  // from those rows' average height, and stops short (≈2 messages above the
+  // newest) once the real newest rows — photo frames, status lines, day
+  // separators — are measured. Instead, while opening, every content-size
+  // or viewport change re-pins to the true end (pinToBottomIfOpening) until
+  // the user first drags; and the list stays invisible until it is actually
+  // settled at the bottom, so the jump from the top is never seen.
+  const pinToBottomRef = useRef(true);
+  const listHeightRef = useRef(0);
+  const [listRevealed, setListRevealed] = useState(false);
+  // Safety net only — the list is normally revealed by settling at the
+  // bottom (handleMessagesScroll / pinToBottomIfOpening). This guarantees
+  // it can never stay invisible if no qualifying scroll/size event arrives.
+  useEffect(() => {
+    if (loading || listRevealed) return;
+    const timer = setTimeout(() => setListRevealed(true), 400);
+    return () => clearTimeout(timer);
+  }, [loading, listRevealed]);
+
   // Ephemeral typing state over Realtime Broadcast (see the hook) —
   // independent of the polling/read-state logic in this file.
   const { peerTyping, notifyLocalInput, stopLocalTyping } = useConversationTyping({
@@ -496,9 +516,10 @@ export default function ConversationScreen() {
         }
 
         const loadedMessages = (messagesRes.data ?? []) as Message[];
+        // Opens at the bottom via pinToBottomIfOpening (FlatList's
+        // onContentSizeChange/onLayout), not a timed scrollToEnd.
+        pinToBottomRef.current = true;
         setMessages(loadedMessages);
-
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
 
         // Mark this conversation as read and update the tab badge — tied
         // to the same controller as the load itself: if the user
@@ -862,6 +883,19 @@ export default function ConversationScreen() {
     const { contentSize, layoutMeasurement, contentOffset } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
     isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD;
+    if (!listRevealed && distanceFromBottom <= 2) setListRevealed(true);
+  }
+
+  // While opening (until the user's first drag), keep the list pinned to its
+  // true end as rows are measured, attachment cards resolve, or the viewport
+  // changes (composer, banner, keyboard). Content that already fits the
+  // viewport needs no scroll, so it's revealed directly.
+  function pinToBottomIfOpening(contentHeight?: number) {
+    if (!pinToBottomRef.current) return;
+    flatListRef.current?.scrollToEnd({ animated: false });
+    if (!listRevealed && contentHeight !== undefined && contentHeight <= listHeightRef.current) {
+      setListRevealed(true);
+    }
   }
 
   const displayTitle =
@@ -941,7 +975,7 @@ export default function ConversationScreen() {
         {header}
         <FlatList
           ref={flatListRef}
-          style={styles.flex}
+          style={[styles.flex, !listRevealed && styles.listSettling]}
           data={displayMessages}
           extraData={`${peerReadAt ?? ''}|${sendingId ?? ''}|${itemPreviews.size}`}
           keyExtractor={(item) => item.id}
@@ -1027,6 +1061,16 @@ export default function ConversationScreen() {
           }
           onScroll={handleMessagesScroll}
           scrollEventThrottle={100}
+          onContentSizeChange={(_, contentHeight) => pinToBottomIfOpening(contentHeight)}
+          onLayout={(e) => {
+            listHeightRef.current = e.nativeEvent.layout.height;
+            pinToBottomIfOpening();
+          }}
+          onScrollBeginDrag={() => {
+            // The user has taken over scrolling — stop pinning.
+            pinToBottomRef.current = false;
+            setListRevealed(true);
+          }}
         />
 
         {/* Pending-send banner — shown only while an ambiguous write's
@@ -1130,6 +1174,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Invisible (still laid out, so it measures and scrolls normally) only
+  // while settling at the bottom on open — see pinToBottomRef.
+  listSettling: {
+    opacity: 0,
   },
   messageList: {
     flexGrow: 1,
