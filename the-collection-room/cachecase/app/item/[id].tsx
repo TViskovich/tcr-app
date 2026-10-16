@@ -32,7 +32,9 @@ import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
 import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
+import { OTHER_CATEGORY_ENTRIES } from '@/components/item-detail/other-category-forms';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
+import { AnchoredMenuHost, AnchoredMenuLayer } from '@/components/profile-v2/profile-v2-anchored-menu';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { ShareSheet } from '@/components/share/share-sheet';
 import { SendItemDmSheet } from '@/components/share/send-item-dm-sheet';
@@ -62,6 +64,13 @@ import {
 } from '@/lib/comic-book-options';
 import { cleanupOrphanedItemImages, materializeLegacyItemImage, MAX_ITEM_IMAGES } from '@/lib/item-images';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
+import {
+  fetchItemPrivateDetails,
+  fetchOtherItemDetails,
+  formatMoney,
+  otherCategoryDisplayName,
+  updateOtherItem,
+} from '@/lib/other-items';
 import { updatePokemonItem } from '@/lib/pokemon-items';
 import { updateTradingCardItem } from '@/lib/trading-card-items';
 import {
@@ -79,6 +88,8 @@ import type {
   ComicBookDetails,
   ComicConditionType,
   CollectionItem,
+  CollectionItemPrivateDetails,
+  OtherItemDetails,
   PokemonCardDetails,
   TradingCardDetails,
 } from '@/types';
@@ -371,6 +382,29 @@ function buildTradingCardMetadataRows(item: CollectionItem, details: TradingCard
   ];
 }
 
+// Other items whose category has no adapter here yet (or whose details row
+// couldn't be loaded): the shared collection_items fields only.
+function buildOtherIdentity(
+  item: CollectionItem,
+  details: OtherItemDetails | null,
+): { title: string; subtitleLines: (string | null)[] } {
+  const brandYear = [item.brand, item.year != null ? String(item.year) : null].filter(Boolean).join(' · ') || null;
+  return {
+    title: item.title?.trim() || 'Untitled Item',
+    subtitleLines: [details ? otherCategoryDisplayName(details) : null, brandYear],
+  };
+}
+
+function buildOtherMetadataRows(item: CollectionItem, details: OtherItemDetails | null): MetadataRow[] {
+  return [
+    { label: 'Category', value: details ? otherCategoryDisplayName(details) : null },
+    { label: 'Brand', value: item.brand },
+    { label: 'Year', value: item.year != null ? String(item.year) : null },
+    { label: 'Identifier', value: details?.search_identifier ?? null },
+    { label: 'Estimated Value', value: formatMoney(item.estimated_value) },
+  ];
+}
+
 function buildPokemonMetadataRows(item: CollectionItem, details: PokemonCardDetails | null): MetadataRow[] {
   return [
     { label: 'Pokémon', value: details?.pokemon_name ?? null },
@@ -615,6 +649,19 @@ export default function ItemDetailScreen() {
   const [tradingForm, setTradingForm] = useState<TradingCardEditForm | null>(null);
   const [tradingGraded, setTradingGraded] = useState(false);
   const isTradingCardItem = item?.item_type === 'trading_card';
+  // Other (supabase/migrations/20261024120000_add_other_item_details.sql) —
+  // its details row is fetched separately, only for 'other' items (see
+  // fetchItem), with the owner's private row (purchase price) for the owner
+  // only. otherDetailsFailed blocks editing when either couldn't be loaded,
+  // so a save can never overwrite data it never saw. otherForm holds the
+  // category's own form state (components/item-detail/other-category-forms.ts
+  // pairs it with the right form and adapter).
+  const [otherDetails, setOtherDetails] = useState<OtherItemDetails | null>(null);
+  const [otherPrivate, setOtherPrivate] = useState<CollectionItemPrivateDetails | null>(null);
+  const [otherDetailsFailed, setOtherDetailsFailed] = useState(false);
+  const [otherForm, setOtherForm] = useState<unknown>(null);
+  const isOtherItem = item?.item_type === 'other';
+  const otherEntry = isOtherItem && otherDetails ? (OTHER_CATEGORY_ENTRIES[otherDetails.category] ?? null) : null;
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Kept separate from `form`/EditForm (same convention as
@@ -771,6 +818,24 @@ export default function ItemDetailScreen() {
           setTradingDetails(details);
           setTradingForm(tradingCardItemToForm(data, details));
         }
+        if (data.item_type === 'other') {
+          try {
+            // The private row is owner-only (RLS) — only the owner asks.
+            const [details, privateDetails] = await Promise.all([
+              fetchOtherItemDetails(data.id),
+              data.user_id === currentUserId ? fetchItemPrivateDetails(data.id) : Promise.resolve(null),
+            ]);
+            const entry = details ? (OTHER_CATEGORY_ENTRIES[details.category] ?? null) : null;
+            setOtherDetails(details);
+            setOtherPrivate(privateDetails);
+            setOtherDetailsFailed(false);
+            setOtherForm(entry ? entry.adapter.fromItem(data, details, privateDetails) : null);
+          } catch {
+            setOtherDetails(null);
+            setOtherPrivate(null);
+            setOtherDetailsFailed(true);
+          }
+        }
       }
       setFetching(false);
     }
@@ -800,6 +865,9 @@ export default function ItemDetailScreen() {
       if (item.item_type === 'trading_card') {
         setTradingForm(tradingCardItemToForm(item, tradingDetails));
       }
+      if (item.item_type === 'other' && otherEntry) {
+        setOtherForm(otherEntry.adapter.fromItem(item, otherDetails, otherPrivate));
+      }
     }
     if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
       try {
@@ -825,6 +893,9 @@ export default function ItemDetailScreen() {
       }
       if (item.item_type === 'trading_card') {
         setTradingForm(tradingCardItemToForm(item, tradingDetails));
+      }
+      if (item.item_type === 'other' && otherEntry) {
+        setOtherForm(otherEntry.adapter.fromItem(item, otherDetails, otherPrivate));
       }
     }
     setEditMode(false);
@@ -1095,6 +1166,52 @@ export default function ItemDetailScreen() {
     }
   }
 
+  // Other edit-save — update_other_item (lib/other-items.ts). Item type and
+  // category are fixed. Never saves when the details or private row failed
+  // to load (the update writes every field, so it would clear what it
+  // never saw).
+  async function handleSaveOther() {
+    if (!item || !currentUserId) return;
+    if (!otherEntry || otherDetailsFailed || !otherDetails) {
+      Alert.alert('Can\u2019t save', 'This item\u2019s details couldn\u2019t be loaded. Please go back and try again.');
+      return;
+    }
+    const issue = otherEntry.adapter.validate(otherForm);
+    if (issue) {
+      Alert.alert(issue.title, issue.message);
+      return;
+    }
+    setSaving(true);
+    try {
+      const fields = otherEntry.adapter.toFields(otherForm);
+      const updated = await updateOtherItem(item.id, {
+        ...fields,
+        customCategoryName: otherDetails.custom_category_name,
+        isPublic: editItemIsPublic,
+      });
+      // Rebuilt locally from exactly what was sent (the RPC applies the same
+      // trim/NULLIF rules), same as handleSavePokemon.
+      const updatedDetails: OtherItemDetails = {
+        ...otherDetails,
+        search_identifier: fields.searchIdentifier,
+        details: fields.details,
+      };
+      const updatedPrivate: CollectionItemPrivateDetails | null =
+        fields.purchasePrice != null ? { item_id: item.id, purchase_price: fields.purchasePrice } : null;
+      setItem(updated);
+      setEditItemIsPublic(updated.is_public);
+      setOtherDetails(updatedDetails);
+      setOtherPrivate(updatedPrivate);
+      setOtherForm(otherEntry.adapter.fromItem(updated, updatedDetails, updatedPrivate));
+      setEditMode(false);
+      invalidateOwnProfileCache(currentUserId);
+    } catch (e: unknown) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // Comic edit-save — routes through update_comic_book_item (lib/comic-book-items.ts)
   // instead of a plain client update, same atomic-write reasoning as
   // handleSavePokemon above. item_type itself is never part of the payload —
@@ -1212,6 +1329,11 @@ export default function ItemDetailScreen() {
     }
     if (item.item_type === 'trading_card') {
       await handleSaveTradingCard();
+      return;
+    }
+    // Never falls through to the Sports Card update below.
+    if (item.item_type === 'other') {
+      await handleSaveOther();
       return;
     }
     if (!form) return;
@@ -1749,7 +1871,11 @@ export default function ItemDetailScreen() {
       ? buildComicIdentity(item, comicDetails)
       : isTradingCardItem
         ? buildTradingCardIdentity(item, tradingDetails)
-        : buildIdentity(item);
+        : otherEntry
+          ? otherEntry.adapter.identity(item, otherDetails)
+          : isOtherItem
+            ? buildOtherIdentity(item, otherDetails)
+            : buildIdentity(item);
   // Send in DM client PRE-CHECK — blocks only what this screen already knows
   // for certain, with no extra query: the viewer's OWN item with
   // is_public = false. Excluded: an item in one of the owner's Grail slots
@@ -1766,11 +1892,18 @@ export default function ItemDetailScreen() {
       ? buildComicMetadataRows(item, comicDetails)
       : isTradingCardItem
         ? buildTradingCardMetadataRows(item, tradingDetails)
-        : buildMetadataRows(item);
+        : otherEntry
+          ? otherEntry.adapter.metadataRows(item, otherDetails, otherPrivate)
+          : isOtherItem
+            ? buildOtherMetadataRows(item, otherDetails)
+            : buildMetadataRows(item);
   const transferredOutDateLabel = formatTransferredOutDate(item.transferred_out_at);
 
   return (
-    <View style={styles.screen}>
+    // Dropdowns open as part of the page here (AnchoredMenuHost +
+    // AnchoredMenuLayer): the page keeps scrolling with a menu open, and the
+    // menu moves with it.
+    <AnchoredMenuHost style={styles.screen}>
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* Non-owner viewers get no header-right control — unchanged from
@@ -1926,7 +2059,7 @@ export default function ItemDetailScreen() {
               ) : isTradingCardItem ? (
                 tradingForm && (
                   <>
-                    {/* Trading Card (Other) Details */}
+                    {/* Trading Card Details */}
                     <Text style={editStyles.sectionHeader}>Trading Card Details</Text>
                     <OptionWithOtherField
                       label="Card Game / Franchise"
@@ -2142,6 +2275,16 @@ export default function ItemDetailScreen() {
                       />
                     </View>
                   </>
+                )
+              ) : isOtherItem ? (
+                /* Other — the same form Add Item uses for the category.
+                   Category itself is fixed and not shown as editable. */
+                otherEntry && !otherDetailsFailed ? (
+                  <otherEntry.Form value={otherForm} onChange={setOtherForm} />
+                ) : (
+                  <Text style={editStyles.label}>
+                    This item&apos;s details couldn&apos;t be loaded. Go back and try again to edit them.
+                  </Text>
                 )
               ) : (
                 <>
@@ -2413,6 +2556,8 @@ export default function ItemDetailScreen() {
             </>
           )}
 
+          {/* Open dropdowns draw here — part of the scrolling page. */}
+          <AnchoredMenuLayer />
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -2479,7 +2624,7 @@ export default function ItemDetailScreen() {
         title={identity.title}
         subtitleLines={identity.subtitleLines}
       />
-    </View>
+    </AnchoredMenuHost>
   );
 }
 

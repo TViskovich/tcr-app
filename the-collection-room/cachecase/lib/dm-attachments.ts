@@ -38,6 +38,7 @@ export const ITEM_TYPE_LABEL: Record<CollectibleItemType, string> = {
   figurine: 'Figurine',
   comic_book: 'Comic book',
   trading_card: 'Trading card',
+  other: 'Other',
 };
 
 type ItemIdentityFields = {
