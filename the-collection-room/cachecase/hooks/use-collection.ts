@@ -463,6 +463,67 @@ export function useChildFolders(parentFolderId: string | undefined) {
   return { folders, loading, error, refresh: load };
 }
 
+// Collection-header tally from one aggregate RPC (folder_tally, SECURITY
+// INVOKER so the viewer's own RLS decides which galleries/items count):
+// totalItems = active items in the folder AND every nested gallery at any
+// depth; childCollections = direct child folders. Only two numbers come
+// back — no item rows, no images, no per-gallery queries.
+//
+// Does NOT load on its own: the caller triggers every load via refresh(),
+// normally from its useFocusEffect (which also fires on the initial focus),
+// so opening a screen makes exactly one request instead of a mount load
+// plus a focus load.
+//
+// `status`:
+//   'loading' — no answer yet for this folder (show nothing, never a 0).
+//   'ready'   — `tally` is complete. A refresh in flight keeps showing it
+//               (no flicker) until the new answer replaces it.
+//   'failed'  — the latest request failed; `tally` is null. A previous
+//               success is deliberately dropped so stale numbers are never
+//               shown as current, and nothing is substituted for it.
+export type FolderTally = { totalItems: number; childCollections: number };
+export type FolderTallyStatus = 'loading' | 'ready' | 'failed';
+
+export function useFolderTally(folderId: string | undefined) {
+  // Keyed by folder, so navigating to another folder never shows the
+  // previous folder's numbers (or failure) while its own are loading.
+  const [result, setResult] = useState<
+    { folderId: string; tally: FolderTally; failed: false } | { folderId: string; tally: null; failed: true } | null
+  >(null);
+  const generationRef = useRef(0);
+
+  // Plain promise callbacks (not async/await) so every setState here is
+  // visibly asynchronous to the react-hooks set-state-in-effect rule.
+  const load = useCallback((): Promise<void> => {
+    const generation = ++generationRef.current;
+    if (!folderId) return Promise.resolve();
+    const markFailed = () => setResult({ folderId, tally: null, failed: true });
+    return Promise.resolve(supabase.rpc('folder_tally', { p_folder_id: folderId })).then(
+      ({ data, error }) => {
+        if (generation !== generationRef.current) return;
+        const row = (data as { total_items: number | string; child_collections: number | string }[] | null)?.[0];
+        const totalItems = Number(row?.total_items);
+        const childCollections = Number(row?.child_collections);
+        if (error || !row || !Number.isFinite(totalItems) || !Number.isFinite(childCollections)) {
+          console.error('[useFolderTally] rpc failed:', error?.message ?? 'no usable row', error);
+          markFailed();
+          return;
+        }
+        setResult({ folderId, tally: { totalItems, childCollections }, failed: false });
+      },
+      (e) => {
+        if (generation !== generationRef.current) return;
+        console.error('[useFolderTally] load failed:', e);
+        markFailed();
+      },
+    );
+  }, [folderId]);
+
+  const current = result?.folderId === folderId ? result : null;
+  const status: FolderTallyStatus = !current ? 'loading' : current.failed ? 'failed' : 'ready';
+  return { tally: current?.tally ?? null, status, refresh: load };
+}
+
 // Route-param sentinel for "no player set" — never shown to the user (mapped
 // to the "Other" label everywhere it's displayed).
 export const NO_PLAYER_KEY = '__none__';

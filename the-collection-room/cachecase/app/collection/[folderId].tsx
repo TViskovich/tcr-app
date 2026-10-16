@@ -50,6 +50,7 @@ import {
   NO_PLAYER_KEY,
   itemMatchesSearch,
   useChildFolders,
+  useFolderTally,
   useItems,
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
@@ -223,6 +224,14 @@ export default function CollectionFolderScreen() {
   // hook does no privacy filtering of its own; see hooks/use-collection.ts.
   const { folders: childFolders, refresh: refreshChildFolders } = useChildFolders(folderId);
 
+  // Header tally ("69 items | 3 collections") — total active items across
+  // this folder AND every nested gallery, plus its direct child galleries,
+  // from one aggregate RPC (never item rows). Both numbers arrive together,
+  // so the label never shows a half-loaded pair. The hook never loads on
+  // its own — the focus effect below is its single trigger (it also fires
+  // on the initial focus), so opening the screen makes one request.
+  const { tally, status: tallyStatus, refresh: refreshTally } = useFolderTally(folderId);
+
   // Legacy app/folder/[id].tsx refreshed on focus so returning here after
   // adding a card (or from any other entry point) shows it immediately —
   // preserved since Profile/Saved/public-profile now land on this screen.
@@ -231,7 +240,8 @@ export default function CollectionFolderScreen() {
     useCallback(() => {
       refreshItems();
       refreshChildFolders();
-    }, [refreshItems, refreshChildFolders]),
+      refreshTally();
+    }, [refreshItems, refreshChildFolders, refreshTally]),
   );
 
   // Folder record itself (name, owner, visibility, cover) — this screen used
@@ -513,9 +523,10 @@ export default function CollectionFolderScreen() {
   // confirmed the RPC committed (all-or-nothing — see
   // move_collection_items), so this only owns reacting to that confirmed
   // result, never re-validating it. refreshItems() re-fetches this folder's
-  // items from the DB, which both drops the moved items from the grid AND
-  // corrects this screen's own displayed count (folderStickyBar's
-  // items.length label) in one call — no local splicing needed. The
+  // items from the DB, which drops the moved items from the grid, and
+  // refreshTally() re-reads the header tally (a move into one of this
+  // folder's own galleries keeps the total; a move elsewhere lowers it) —
+  // no local splicing needed. The
   // destination folder's own count/preview (Collections tab, its own
   // folder-detail screen) isn't touched from here; both already refresh via
   // their own useFocusEffect on next visit, same as Phase 1.
@@ -524,6 +535,7 @@ export default function CollectionFolderScreen() {
     setShowBulkMoveModal(false);
     cancelSelectMode();
     refreshItems();
+    refreshTally();
     Alert.alert('Moved', `Moved ${movedCount} ${movedCount === 1 ? 'item' : 'items'} to ${folderName}`);
     // Mark the own-profile cache stale — both the source and destination
     // folder's item counts/previews on Profile's Collection tab are now
@@ -1197,6 +1209,12 @@ export default function CollectionFolderScreen() {
   }
 
   const showInitialLoading = loading && items.length === 0;
+  // Retry after a failed load re-requests the header tally too, so one tap
+  // recovers both the grid and the count.
+  function retryLoad() {
+    refreshItems();
+    refreshTally();
+  }
 
   // Failed refresh with items already on screen — kept visible below (never
   // cleared/replaced), just flagged with this lightweight inline row above
@@ -1209,7 +1227,7 @@ export default function CollectionFolderScreen() {
         <Text style={styles.refreshErrorText} numberOfLines={1}>
           Couldn&apos;t refresh cards
         </Text>
-        <Pressable onPress={refreshItems} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Pressable onPress={retryLoad} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Text style={styles.refreshErrorRetry}>Retry</Text>
         </Pressable>
       </View>
@@ -1518,26 +1536,30 @@ export default function CollectionFolderScreen() {
           </Text>
         </View>
 
-        {/* Item count (left) + Comment/Like/Share (right) now share one row
+        {/* Tally (left) + Comment/Like/Share (right) now share one row
             — was a stacked item-count line above a separate full-width
-            actions row. `items` is this folder's full, unpaginated
-            collection_items result (hooks/use-collection.ts useItems), not
-            a capped preview, so items.length is already the real total and
-            needs no separate count query. The count is hidden during the
-            initial load (never flashes "0 items" before the first fetch
-            resolves) but an empty View still holds its slot so
+            actions row. "N items | M collections": items include every
+            nested gallery, collections are direct children (useFolderTally).
+            Only ever the RPC's complete answer — never a direct-only count
+            standing in for it: while loading, an empty View holds the slot
+            (no "0 items" flash); if the latest request failed, a plain
+            "Collection count unavailable" replaces it (no stale numbers).
+            The empty View still holds its slot so
             justifyContent: 'space-between' keeps the action group pinned
             right even then, rather than it re-centering/left-aligning with
             no sibling. Bookmark stays removed from this row (per the
             collection/item bookmark-removal pass) — saved_folders/
             useSavedFolder/the Saved screen are untouched. */}
         <View style={styles.metaActionsRow}>
-          {showInitialLoading ? (
+          {showInitialLoading || tallyStatus === 'loading' ? (
             <View />
-          ) : (
+          ) : tally ? (
             <Text style={styles.itemCountLabel}>
-              {items.length} {items.length === 1 ? 'item' : 'items'}
+              {tally.totalItems} {tally.totalItems === 1 ? 'item' : 'items'} |{' '}
+              {tally.childCollections} {tally.childCollections === 1 ? 'collection' : 'collections'}
             </Text>
+          ) : (
+            <Text style={styles.itemCountLabel}>Collection count unavailable</Text>
           )}
 
           <View style={styles.galleryActionsGroup}>
@@ -2115,11 +2137,11 @@ export default function CollectionFolderScreen() {
         ) : itemsError && items.length === 0 ? (
           // Real query/network failure with nothing already on screen —
           // distinct from the legitimate "No cards yet" empty state further
-          // down. Retry calls the same refreshItems() the focus effect uses.
+          // down. Retry re-runs the items and tally loads the focus effect uses.
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>Couldn&apos;t load cards</Text>
             <Text style={styles.emptyBody}>Check your connection and try again.</Text>
-            <Pressable style={styles.emptyButton} onPress={refreshItems}>
+            <Pressable style={styles.emptyButton} onPress={retryLoad}>
               <Text style={styles.emptyButtonText}>Retry</Text>
             </Pressable>
           </View>
@@ -2307,6 +2329,7 @@ export default function CollectionFolderScreen() {
           onCreated={() => {
             setShowCreateFolderModal(false);
             refreshChildFolders();
+            refreshTally();
           }}
         />
       )}
