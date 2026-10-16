@@ -228,7 +228,7 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
   // Shared by both a normal tap (via each TabBarItem's onPress below) and
   // the drag/scrub gesture — same tabPress-event/featured/isFocused logic
   // either way, so dragging onto a tab behaves identically to tapping it.
-  const selectRoute = (route: any, featured: boolean, isFocused: boolean) => {
+  const selectRoute = (route: any, featured: boolean, isFocused: boolean, fromDrag = false) => {
     if (process.env.EXPO_OS === 'ios') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -254,10 +254,13 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
       navigation.navigate(route.name, route.params);
       return;
     }
-    // Home icon tapped while already on Home's own screen: let Home react
-    // (Following -> For You). Only this explicit reselect reaches it —
-    // returning to Home from anywhere else is the !isFocused path above.
-    if (route.name === 'index' && pathname === '/') requestTabReselect('home');
+    // Home icon tapped while already on Home's own screen: let Home scroll
+    // its visible feed to the top (see app/(tabs)/index.tsx). Only this
+    // explicit reselect reaches it — returning to Home from anywhere else
+    // is the !isFocused path above, which leaves its scroll position
+    // alone. Taps only: a drag/scrub that merely starts over Home is on its
+    // way to another tab, not a reselect.
+    if (!fromDrag && route.name === 'index' && pathname === '/') requestTabReselect('home');
   };
 
   // Looked up by name rather than closed over route/index, since this is
@@ -269,7 +272,7 @@ function AnimatedTabBar({ state, descriptors, navigation }: any) {
     const route = state.routes[idx];
     const featured = route.name === FEATURED_TAB;
     const isFocused = state.index === idx;
-    selectRoute(route, featured, isFocused);
+    selectRoute(route, featured, isFocused, true);
   };
 
   // Left-to-right names of the tabs actually rendered below (Feed,

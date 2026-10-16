@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import {
   Alert,
   AppState,
   FlatList,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -31,6 +33,7 @@ import {
   rememberInbox,
 } from '@/lib/dm-inbox';
 import { useMessageBadgeRefresh } from '@/lib/message-badge-context';
+import { AT_TOP_THRESHOLD, type ScrollToTopHandle } from '@/lib/scroll-to-top';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -73,13 +76,46 @@ function previewText(item: ConversationItem) {
 // wrapper or title — just the search field with the New Message button
 // beside it). Its focus-driven load/polling lifecycle is the same either
 // way: useFocusEffect follows whichever screen it's mounted in.
-export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
+export function MessagesInbox({
+  embedded = false,
+  active = true,
+  ref,
+}: {
+  embedded?: boolean;
+  // Embedded in Home's section pager, the inbox stays mounted while another
+  // section is on screen; false there pauses the focus load and polling
+  // below exactly as if the screen had lost focus.
+  active?: boolean;
+  // Lets Home's tab-reselect send the embedded inbox back to the top.
+  ref?: Ref<ScrollToTopHandle>;
+}) {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const refreshMessageBadge = useMessageBadgeRefresh();
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
+
+  const listRef = useRef<FlatList<ConversationItem>>(null);
+  const scrollOffsetRef = useRef(0);
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+      navbarOnScroll(event);
+    },
+    [navbarOnScroll],
+  );
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToTop: () => {
+        if (!listRef.current || scrollOffsetRef.current <= AT_TOP_THRESHOLD) return false;
+        listRef.current.scrollToOffset({ offset: 0, animated: true });
+        return true;
+      },
+    }),
+    [],
+  );
 
   // Starts from the session inbox snapshot when there is one (see
   // peekInboxSnapshot in lib/dm-inbox.ts — warmed in the background from
@@ -283,6 +319,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
 
   useFocusEffect(
     useCallback(() => {
+      if (!active) return;
       load();
       return () => {
         // Authoritative place that both aborts AND clears the focus-load
@@ -300,7 +337,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
         refreshControllerRef.current?.abort();
         refreshControllerRef.current = null;
       };
-    }, [load]),
+    }, [active, load]),
   );
 
   // Beta freshness: while the Messages tab is focused AND the app is
@@ -314,7 +351,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
   // copied since messages.tsx already owns its own focus-load mechanism.
   useFocusEffect(
     useCallback(() => {
-      if (!currentUserId) return;
+      if (!currentUserId || !active) return;
 
       const controller = new AbortController();
       let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -367,7 +404,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
         // refreshInbox's `finally` will see it as aborted and skip firing.
         controller.abort();
       };
-    }, [currentUserId, refreshInbox]),
+    }, [active, currentUserId, refreshInbox]),
   );
 
   function openConversation(conversationId: string, otherUsername: string, otherDisplayName: string | null) {
@@ -522,12 +559,13 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
         </View>
       ) : (
         <FlatList
+          ref={listRef}
           data={filteredConversations}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           contentContainerStyle={[styles.listContent, { paddingBottom: listBottomPadding }]}
-          onScroll={navbarOnScroll}
+          onScroll={handleScroll}
           scrollEventThrottle={scrollEventThrottle}
           ListHeaderComponent={<Text style={styles.sectionLabel}>Recent</Text>}
           ListEmptyComponent={
@@ -538,6 +576,7 @@ export function MessagesInbox({ embedded = false }: { embedded?: boolean }) {
               item={item}
               onPress={() => openConversation(item.id, item.otherUsername, item.otherDisplayName)}
               onDeletePress={() => handleDeletePress(item)}
+              leaveRightSwipes={embedded}
             />
           )}
           refreshControl={
@@ -593,10 +632,15 @@ function ConversationRow({
   item,
   onPress,
   onDeletePress,
+  leaveRightSwipes = false,
 }: {
   item: ConversationItem;
   onPress: () => void;
   onDeletePress: () => void;
+  // Embedded in Home's section pager: a rightward swipe on a row never
+  // starts the row's own pan (it only has right-side actions anyway), so it
+  // pages back to Arrivals instead. An open row still closes on tap.
+  leaveRightSwipes?: boolean;
 }) {
   const swipeableRef = useRef<Swipeable>(null);
   const displayName = item.otherDisplayName || item.otherUsername;
@@ -623,7 +667,8 @@ function ConversationRow({
         </TouchableOpacity>
       )}
       overshootRight={false}
-      rightThreshold={40}>
+      rightThreshold={40}
+      dragOffsetFromLeftEdge={leaveRightSwipes ? Number.MAX_SAFE_INTEGER : undefined}>
       <Pressable
         onPress={onPress}
         style={({ pressed }) => [styles.card, item.unread && styles.cardUnread, pressed && styles.cardPressed]}

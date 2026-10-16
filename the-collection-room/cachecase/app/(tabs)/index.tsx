@@ -7,8 +7,18 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import Animated, {
+  Extrapolation,
+  interpolate,
+  runOnJS,
+  useAnimatedRef,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+} from 'react-native-reanimated';
 
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -19,7 +29,7 @@ import { useBadgeRefresh } from '@/lib/badge-context';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { navigateToProfile } from '@/lib/profile-navigation';
-import { registerTabReselect } from '@/lib/scroll-to-top';
+import { registerTabReselect, type ScrollToTopHandle } from '@/lib/scroll-to-top';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
@@ -103,6 +113,15 @@ const HOME_TABS: { key: FeedMode; label: string }[] = [
   { key: 'following', label: 'Arrivals' },
   { key: 'messages', label: 'Messages' },
 ];
+// Left-to-right page order of the horizontal Home pager — same order as
+// the top tabs above.
+const HOME_PAGES = HOME_TABS.map((t) => t.key);
+const LAST_PAGE = HOME_PAGES.length - 1;
+
+function clampPage(index: number) {
+  'worklet';
+  return Math.min(Math.max(index, 0), LAST_PAGE);
+}
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -113,10 +132,6 @@ export default function HomeScreen() {
   const { onScroll: navbarOnScroll, scrollEventThrottle } = useScrollResponsiveNavbar();
   const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<FeedPost>>(null);
-
-  function scrollToTop() {
-    listRef.current?.scrollToOffset({ offset: 0, animated: true });
-  }
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   // Find User (long-press the logo): where the logo's bottom-center sits on
@@ -140,23 +155,126 @@ export default function HomeScreen() {
   const [repostMenuFor, setRepostMenuFor] = useState<FeedPost | null>(null);
   const repostMenuOriginal = repostMenuFor ? (repostMenuFor.repostOf ?? repostMenuFor) : null;
   const [feedMode, setFeedMode] = useState<FeedMode>('for-you');
-  // Tapping the Home icon while already on Home switches Arrivals or
-  // Messages back to Stack (app/(tabs)/_layout.tsx ->
-  // requestTabReselect('home')). Only that explicit tap reaches this —
-  // coming back to Home from an item, profile, conversation or the
-  // background never does, so the selected tab stays put then. Same plain
-  // feedMode switch as the tab buttons: no feed reloads.
+  const followingFeedRef = useRef<ScrollToTopHandle>(null);
+  const messagesInboxRef = useRef<ScrollToTopHandle>(null);
+
+  // Scrolls whichever section is on screen back to its top — never changes
+  // the selected section. Pure scroll: no reload, no pull-to-refresh.
+  const scrollActivePaneToTop = useCallback(() => {
+    if (feedMode === 'for-you') listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    else if (feedMode === 'following') followingFeedRef.current?.scrollToTop();
+    else messagesInboxRef.current?.scrollToTop();
+  }, [feedMode]);
+
+  // Tapping the Home icon while already on Home (app/(tabs)/_layout.tsx ->
+  // requestTabReselect('home')) scrolls the visible section to the top and
+  // stays on it, however many times it's tapped. Only that explicit tap
+  // reaches this — coming back to Home from another tab, an item, profile,
+  // conversation or the background never does, so the selected section and
+  // every section's scroll position stay put then.
   useFocusEffect(
     useCallback(
       () =>
         registerTabReselect('home', () => {
-          if (feedMode === 'for-you') return false;
-          setFeedMode('for-you');
+          scrollActivePaneToTop();
           return true;
         }),
-      [feedMode],
+      [scrollActivePaneToTop],
     ),
   );
+
+  // ── Horizontal section pager (Stack ⇄ Arrivals ⇄ Messages) ──
+  // A native paging ScrollView, one screen-wide page per section. feedMode
+  // is the SETTLED section: it changes on a tab tap or once a swipe comes
+  // to rest, and it is what gates Stack's focus reload, Messages' polling
+  // (via `active`) and the Home reselect above. highlightedMode is only the
+  // label tint, which follows the finger and flips at the halfway point.
+  // The underline tracks the pager offset continuously on the UI thread.
+  const { width: pageWidth } = useWindowDimensions();
+  const pagerRef = useAnimatedRef<Animated.ScrollView>();
+  const pagerX = useSharedValue(0);
+  const userPaging = useSharedValue(false);
+  const highlightedPage = useSharedValue(0);
+  const [highlightedMode, setHighlightedMode] = useState<FeedMode>('for-you');
+
+  // Sections mount the first time they are visited (tapped, or revealed by
+  // a swipe) and then stay mounted, so each keeps its own vertical scroll
+  // position and nothing refetches on the way back. Lazy so opening Home
+  // never starts Arrivals' or Messages' requests on its own.
+  const mountedMask = useSharedValue(1);
+  const [mountedPages, setMountedPages] = useState<ReadonlySet<FeedMode>>(() => new Set(['for-you']));
+  const mountPageAt = useCallback(
+    (index: number) => {
+      const mode = HOME_PAGES[clampPage(index)];
+      mountedMask.set((m) => m | (1 << clampPage(index)));
+      setMountedPages((prev) => (prev.has(mode) ? prev : new Set(prev).add(mode)));
+    },
+    [mountedMask],
+  );
+  const highlightPageAt = useCallback((index: number) => {
+    setHighlightedMode(HOME_PAGES[clampPage(index)]);
+  }, []);
+  const settlePageAt = useCallback(
+    (index: number) => {
+      const mode = HOME_PAGES[clampPage(index)];
+      mountPageAt(index);
+      setHighlightedMode(mode);
+      setFeedMode(mode);
+    },
+    [mountPageAt],
+  );
+
+  function selectFeedMode(mode: FeedMode) {
+    const index = HOME_PAGES.indexOf(mode);
+    highlightedPage.set(index);
+    settlePageAt(index);
+    pagerRef.current?.scrollTo({ x: index * pageWidth, animated: true });
+  }
+
+  const pagerScrollHandler = useAnimatedScrollHandler({
+    onBeginDrag: () => {
+      userPaging.set(true);
+    },
+    onScroll: (e) => {
+      pagerX.set(e.contentOffset.x);
+      // Label tint / lazy mounting follow the user's own swipe only — a tab
+      // tap's programmatic scroll (selectFeedMode) has already settled both
+      // and shouldn't flash the sections it passes over.
+      if (!userPaging.get() || pageWidth <= 0) return;
+      const position = e.contentOffset.x / pageWidth;
+      const nearest = clampPage(Math.round(position));
+      if (nearest !== highlightedPage.get()) {
+        highlightedPage.set(nearest);
+        runOnJS(highlightPageAt)(nearest);
+      }
+      // Mount a section as soon as the swipe starts revealing it.
+      const left = clampPage(Math.floor(position));
+      const right = clampPage(Math.ceil(position));
+      if (!(mountedMask.get() & (1 << left))) runOnJS(mountPageAt)(left);
+      if (!(mountedMask.get() & (1 << right))) runOnJS(mountPageAt)(right);
+    },
+    onEndDrag: (e) => {
+      // Released exactly on a page boundary: paging produces no momentum
+      // phase, so settle here.
+      if (pageWidth <= 0) return;
+      const page = Math.round(e.contentOffset.x / pageWidth);
+      if (Math.abs(e.contentOffset.x - page * pageWidth) < 1) {
+        userPaging.set(false);
+        runOnJS(settlePageAt)(page);
+      }
+    },
+    onMomentumEnd: (e) => {
+      userPaging.set(false);
+      if (pageWidth <= 0) return;
+      const page = clampPage(Math.round(e.contentOffset.x / pageWidth));
+      highlightedPage.set(page);
+      runOnJS(settlePageAt)(page);
+    },
+  });
+
+  // Each tab button's frame within tabRow (the underline's positioning
+  // parent) — with tabLabelWidths below, gives each tab's underline span.
+  const [tabFrames, setTabFrames] = useState<Partial<Record<FeedMode, { x: number; width: number }>>>({});
   // Piece 6 — measured label widths for the active-tab underline below, so
   // it's sized to each tab's own text ("tab-local") instead of one fixed
   // width. Purely visual; feedMode/query behavior is untouched.
@@ -164,6 +282,22 @@ export default function HomeScreen() {
     'for-you': 0,
     following: 0,
     messages: 0,
+  });
+  const underlineStops = HOME_TABS.every(({ key }) => tabFrames[key] && tabLabelWidths[key] > 0)
+    ? HOME_TABS.map(({ key }) => {
+        const frame = tabFrames[key]!;
+        return { left: frame.x + (frame.width - tabLabelWidths[key]) / 2, width: tabLabelWidths[key] };
+      })
+    : null;
+  const underlineStyle = useAnimatedStyle(() => {
+    if (!underlineStops || pageWidth <= 0) return { opacity: 0 };
+    const input = underlineStops.map((_, i) => i * pageWidth);
+    const x = pagerX.get();
+    return {
+      opacity: 1,
+      width: interpolate(x, input, underlineStops.map((u) => u.width), Extrapolation.CLAMP),
+      transform: [{ translateX: interpolate(x, input, underlineStops.map((u) => u.left), Extrapolation.CLAMP) }],
+    };
   });
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -534,10 +668,10 @@ export default function HomeScreen() {
             slightly small on-device versus the mockup's visual weight;
             header paddingVertical/height untouched, so this is the only
             change. */}
-        {/* Tap: scroll to top (unchanged). Long press: Find User. A press
+        {/* Tap: scroll the visible section to top. Long press: Find User. A press
             that becomes a long press never also fires onPress. */}
         <TouchableOpacity
-          onPress={scrollToTop}
+          onPress={scrollActivePaneToTop}
           onLongPress={openFindUser}
           delayLongPress={350}
           hitSlop={12}
@@ -572,17 +706,24 @@ export default function HomeScreen() {
 
       {/* Stack / Arrivals / Messages — same feedMode state/query behavior
           as before, in the restrained underline treatment; tabBtn's flex: 1
-          spaces the three evenly. */}
+          spaces the three evenly. Tapping pages the pager below; the single
+          underline slides with it (underlineStyle). */}
       <View style={styles.tabRow}>
         {HOME_TABS.map(({ key, label }) => (
           <TouchableOpacity
             key={key}
             style={styles.tabBtn}
-            onPress={() => setFeedMode(key)}
+            onPress={() => selectFeedMode(key)}
+            onLayout={(e) => {
+              const { x, width } = e.nativeEvent.layout;
+              setTabFrames((prev) =>
+                prev[key]?.x === x && prev[key]?.width === width ? prev : { ...prev, [key]: { x, width } },
+              );
+            }}
             accessibilityRole="button"
             accessibilityState={{ selected: feedMode === key }}>
             <Text
-              style={[styles.tabText, feedMode === key && styles.tabTextActive]}
+              style={[styles.tabText, highlightedMode === key && styles.tabTextActive]}
               onLayout={(e) => {
                 // Width extracted synchronously, before setState — the
                 // updater below must never touch `e`/`e.nativeEvent`
@@ -595,46 +736,32 @@ export default function HomeScreen() {
               }}>
               {label}
             </Text>
-            {feedMode === key && tabLabelWidths[key] > 0 && (
-              <View style={[styles.tabUnderline, { width: tabLabelWidths[key] }]} />
-            )}
           </TouchableOpacity>
         ))}
+        <Animated.View style={[styles.tabUnderline, underlineStyle]} pointerEvents="none" />
       </View>
 
-      {/* All three tabs share this body, so the hidden Stack pane can sit
-          over the exact area it normally fills (see forYouPaneHidden). */}
-      <View style={styles.feedBody}>
-      {feedMode === 'following' && (
-        // Arrivals: entirely separate data model/layout — recently uploaded
-        // collection items from followed collectors, not posts. Owns its
-        // own loading/error/empty states and data fetching; nothing below
-        // (posts/loading/loadError/FlatList) applies to it.
-        <FollowingItemsFeed
-          currentUserId={currentUserId}
-          onScroll={navbarOnScroll}
-          scrollEventThrottle={scrollEventThrottle}
-        />
-      )}
-
-      {feedMode === 'messages' && (
-        // The same inbox the /(tabs)/messages route renders. Mounted only
-        // while this tab is selected, so its focus-driven load and 5s
-        // polling run only while the inbox is actually on screen (and stop
-        // when a conversation is pushed over Home, resuming on return).
-        <MessagesInbox embedded />
-      )}
-
-      {/* Stack pane stays mounted (just hidden) while another tab is shown,
-          so switching back is instant and keeps the list's scroll position
-          instead of remounting the FlatList. Hidden WITHOUT collapsing its
-          layout (forYouPaneHidden): display:'none' laid the list out at
-          0x0, which shrank the FlatList's render window and unmounted its
-          cells — every post (and its images) then remounted on return,
-          redrawing from disk with a fresh fade-in. */}
+      {/* Horizontal pager — one full-width page per section, Stack ⇄
+          Arrivals ⇄ Messages. Native iOS paging physics; vertical lists
+          inside each page scroll independently (UIScrollView direction
+          locking). No bounce at the ends, so a left swipe on the last page
+          (Messages) is left to its rows' swipe-to-delete. Every visited
+          section stays mounted, so its scroll position survives both
+          swiping away and leaving Home for another tab. */}
+      <Animated.ScrollView
+        ref={pagerRef}
+        style={styles.feedBody}
+        horizontal
+        pagingEnabled
+        bounces={false}
+        showsHorizontalScrollIndicator={false}
+        scrollsToTop={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        onScroll={pagerScrollHandler}
+        scrollEventThrottle={16}>
       <View
-        style={[styles.forYouPane, feedMode !== 'for-you' && styles.forYouPaneHidden]}
-        pointerEvents={feedMode !== 'for-you' ? 'none' : 'auto'}
+        style={[styles.page, { width: pageWidth }]}
         accessibilityElementsHidden={feedMode !== 'for-you'}
         importantForAccessibility={feedMode !== 'for-you' ? 'no-hide-descendants' : 'auto'}>
       {loading ? (
@@ -738,7 +865,39 @@ export default function HomeScreen() {
         </View>
       )}
       </View>
+
+      <View
+        style={[styles.page, { width: pageWidth }]}
+        accessibilityElementsHidden={feedMode !== 'following'}
+        importantForAccessibility={feedMode !== 'following' ? 'no-hide-descendants' : 'auto'}>
+        {mountedPages.has('following') && (
+          // Arrivals: entirely separate data model/layout — recently
+          // uploaded collection items from followed collectors, not posts.
+          // Owns its own loading/error/empty states and data fetching;
+          // nothing in the Stack page (posts/loading/loadError/FlatList)
+          // applies to it.
+          <FollowingItemsFeed
+            ref={followingFeedRef}
+            currentUserId={currentUserId}
+            onScroll={navbarOnScroll}
+            scrollEventThrottle={scrollEventThrottle}
+          />
+        )}
       </View>
+
+      <View
+        style={[styles.page, { width: pageWidth }]}
+        accessibilityElementsHidden={feedMode !== 'messages'}
+        importantForAccessibility={feedMode !== 'messages' ? 'no-hide-descendants' : 'auto'}>
+        {mountedPages.has('messages') && (
+          // The same inbox the /(tabs)/messages route renders. Stays
+          // mounted once visited, but its focus-driven load and 5s polling
+          // run only while it is the settled section (`active`) — and, as
+          // before, stop when a conversation is pushed over Home.
+          <MessagesInbox ref={messagesInboxRef} embedded active={feedMode === 'messages'} />
+        )}
+      </View>
+      </Animated.ScrollView>
 
       <RepostMenu
         visible={!!repostMenuOriginal}
@@ -823,6 +982,7 @@ const styles = StyleSheet.create({
   tabUnderline: {
     position: 'absolute',
     bottom: 0,
+    left: 0,
     height: 2,
     borderRadius: 1,
     backgroundColor: PV2.actionPrimary,
@@ -888,24 +1048,14 @@ const styles = StyleSheet.create({
   listWrap: {
     flex: 1,
   },
-  // Holds both feeds; the hidden For You pane is positioned against it.
+  // The horizontal section pager under the tabs.
   feedBody: {
     flex: 1,
   },
-  forYouPane: {
-    flex: 1,
-  },
-  // Hidden but laid out at its normal size — over the same area, invisible,
-  // untouchable (pointerEvents) and hidden from screen readers — so the
-  // list's layout, render window and mounted cells survive the Following
-  // tab exactly as they were.
-  forYouPaneHidden: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    opacity: 0,
+  // One pager page (width set inline to the screen width); stretches to
+  // the pager's full height.
+  page: {
+    alignSelf: 'stretch',
   },
   // Piece 3 of the X-style redesign — posts are flat/dark/borderless now
   // (see PostCard's own card style), each separated by its own bottom

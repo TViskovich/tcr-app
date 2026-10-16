@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import {
   Alert,
   RefreshControl,
@@ -25,6 +25,7 @@ import { useAuth } from '@/lib/auth';
 import { DETAIL_IMAGE_TIER, type ImageTier } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
+import { AT_TOP_THRESHOLD, type ScrollToTopHandle } from '@/lib/scroll-to-top';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import {
@@ -500,10 +501,13 @@ export function FollowingItemsFeed({
   currentUserId,
   onScroll,
   scrollEventThrottle,
+  ref,
 }: {
   currentUserId: string | undefined;
   onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   scrollEventThrottle?: number;
+  // Lets Home's tab-reselect send this grid back to the top.
+  ref?: Ref<ScrollToTopHandle>;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -914,9 +918,25 @@ export function FollowingItemsFeed({
   const scrollViewRef = useRef<ScrollView>(null);
   const cachedScrollOffsetRef = useRef(cachedSession?.scrollOffsetY ?? 0);
   const didRestoreScrollRef = useRef(false);
+  // Live offset for the reselect handle below — starts at the restored
+  // offset, then tracks every scroll event.
+  const scrollOffsetRef = useRef(cachedSession?.scrollOffsetY ?? 0);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToTop: () => {
+        if (scrollOffsetRef.current <= AT_TOP_THRESHOLD) return false;
+        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+        return true;
+      },
+    }),
+    [],
+  );
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
       onScroll?.(event);
       if (currentUserId) {
         updateSessionSnapshot(currentUserId, { scrollOffsetY: event.nativeEvent.contentOffset.y });
