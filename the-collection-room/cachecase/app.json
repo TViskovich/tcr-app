@@ -4,7 +4,7 @@
     "slug": "cachecase",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/brand/cachecase-app-icon-v2.png",
+    "icon": "./assets/brand/cachecase-app-icon-v3.png",
     "scheme": "cachecase",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -17,8 +17,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#C2C0BD",
-        "foregroundImage": "./assets/brand/cachecase-android-icon-foreground-v2.png"
+        "backgroundColor": "#28557C",
+        "foregroundImage": "./assets/brand/cachecase-android-icon-foreground-v3.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
