@@ -69,8 +69,10 @@ export type Folder = {
 // Card fields on CollectionItem below remain the only ones with real forms;
 // the other three types are UI shells only until their own detail tables
 // and forms are built (see item_type's own architecture note in that
-// migration).
-export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book' | 'trading_card';
+// migration). 'other' (supabase/migrations/
+// 20261024120000_add_other_item_details.sql) covers every Other category —
+// its category-specific fields live in OtherItemDetails below.
+export type CollectibleItemType = 'sports_card' | 'pokemon' | 'figurine' | 'comic_book' | 'trading_card' | 'other';
 
 // A folder's descriptive subject category (folders.collection_type) — the
 // item-type slugs plus 'mixed'/'other'. Descriptive only; never changes
@@ -179,6 +181,34 @@ export type TradingCardDetails = {
   edition: string | null;
   grading_company: string | null;
   grade: string | null;
+};
+
+// "Other" metadata (supabase/migrations/
+// 20261024120000_add_other_item_details.sql) — strictly 1:1 with an 'other'
+// collection_items row. category is fixed at creation; details holds the
+// category's own fields (snake_case keys, validated by the database against
+// the category's spec — see lib/other-items.ts). Shared fields (title,
+// brand, year, estimated value, notes) stay on the CollectionItem.
+export type OtherItemCategory = 'sneakers' | 'watches' | 'art_prints' | 'toys' | 'books' | 'pins' | 'custom';
+
+export type OtherItemDetailValue = string | number | boolean | string[];
+
+export type OtherItemDetails = {
+  item_id: string;
+  category: OtherItemCategory;
+  custom_category_name: string | null;
+  search_identifier: string | null;
+  details: Record<string, OtherItemDetailValue>;
+  created_at: string;
+  updated_at: string;
+};
+
+// Owner-only fields of an item (collection_item_private_details, same
+// migration) — every RLS policy is owner-only, so this is only ever
+// returned to the item's owner. No row = nothing set.
+export type CollectionItemPrivateDetails = {
+  item_id: string;
+  purchase_price: number | null;
 };
 
 // Comic Book-specific metadata (supabase/migrations/

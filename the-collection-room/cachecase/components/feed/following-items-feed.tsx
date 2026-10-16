@@ -72,6 +72,7 @@ const ITEM_TYPE_LABEL: Record<CollectibleItemType, string> = {
   figurine: 'Figures',
   comic_book: 'Comics',
   trading_card: 'TCG',
+  other: 'Other',
 };
 
 // One media-frame aspect ratio (width / height) for EVERY tile, whatever the

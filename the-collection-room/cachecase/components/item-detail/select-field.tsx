@@ -22,9 +22,10 @@ type SelectFieldProps = {
   // Compact row: label on the left, a narrower trigger on the right (e.g.
   // the Sports Card/Pokémon "Graded" control) instead of label-above.
   inline?: boolean;
-  // Long lists (e.g. Pokémon Rarity): the menu is capped to the screen and
-  // scrolls (see AnchoredMenu's scrollable). Off by default — every
-  // existing dropdown renders exactly as before.
+  // Long lists (e.g. Pokémon Rarity): the menu may also open above the
+  // trigger when there's more room there (see AnchoredMenu's scrollable).
+  // On the item screens (AnchoredMenuHost) the page scrolls underneath an
+  // open menu, and a menu taller than its space scrolls inside itself.
   scrollable?: boolean;
 };
 
