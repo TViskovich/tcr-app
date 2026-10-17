@@ -1130,7 +1130,7 @@ export function ProfileV2Screen({ userId }: Props) {
       const originalId = removed.repostOf.id;
       setProfilePosts((prev) => setRepostState(prev, originalId, false));
     }
-    // Real mutation succeeded — same reasoning as handleGrailReorderDone
+    // Real mutation succeeded — same reasoning as handleGrailDragReorder
     // above. Only meaningful when this IS the signed-in user's own
     // profile (the Posts tab this screen shows always belongs to `userId`,
     // which only equals the cache's own key when isOwnProfile) — deleting
@@ -1172,56 +1172,36 @@ export function ProfileV2Screen({ userId }: Props) {
     ]);
   }
 
-  // Grail reorder (owner only, tap-to-rank — same model as a folder's item
-  // reorder in app/collection/[folderId].tsx): rankedGrailSlotIds is the ONLY
-  // reorder state, the slot ids in tap order; a slot's rank is its index + 1.
-  // `grailSlots` isn't touched until Done persists, so Cancel just discards
-  // the ranking. Ranked slots take the front of the order in tap order and
-  // unranked ones follow in their current order, all placed into the
-  // already-occupied slot indexes (gaps stay put).
+  // Grail reorder (owner only): drag-to-reorder in Profile's reorder mode
+  // (entered by long-pressing a Grail). Long-press a Grail again to lift it,
+  // drag, release — GrailDragGrid hands back the full new order, saved here
+  // once per drop through reorder_grail_slots (the occupied slot indexes
+  // stay occupied; the dragged Grail moves and the ones between shift). On
+  // failure the grid animates back to the previous order. Done just exits.
   const [grailReorderMode, setGrailReorderMode] = useState(false);
-  const [rankedGrailSlotIds, setRankedGrailSlotIds] = useState<string[]>([]);
   const [savingGrailReorder, setSavingGrailReorder] = useState(false);
-  const savingGrailReorderRef = useRef(false);
+  // While a Grail is lifted the page itself stops scrolling, so a vertical
+  // drag moves the card rather than the profile.
+  const [grailDragActive, setGrailDragActive] = useState(false);
 
-  function toggleGrailRank(slotId: string) {
-    setRankedGrailSlotIds((prev) => (prev.includes(slotId) ? prev.filter((id) => id !== slotId) : [...prev, slotId]));
-  }
-
-  function cancelGrailReorder() {
-    setGrailReorderMode(false);
-    setRankedGrailSlotIds([]);
-  }
-
-  // Leaving the screen mid-reorder discards the unsaved ranking.
+  // Leaving the screen exits reorder mode (every completed drop is
+  // already saved).
   useFocusEffect(
     useCallback(() => {
       return () => {
         setGrailReorderMode(false);
-        setRankedGrailSlotIds([]);
+        setGrailDragActive(false);
       };
     }, []),
   );
 
-  async function handleGrailReorderDone() {
-    if (savingGrailReorderRef.current) return;
-    if (rankedGrailSlotIds.length === 0) {
-      cancelGrailReorder();
-      return;
-    }
-    savingGrailReorderRef.current = true;
+  async function handleGrailDragReorder(orderedSlotIds: string[]): Promise<boolean> {
     setSavingGrailReorder(true);
     try {
-      const rankedSet = new Set(rankedGrailSlotIds);
-      const unranked = [...grailSlots]
-        .sort((a, b) => a.slot_index - b.slot_index)
-        .filter((s) => !rankedSet.has(s.id))
-        .map((s) => s.id);
-      const { error } = await reorderGrailSlots([...rankedGrailSlotIds, ...unranked]);
+      const { error } = await reorderGrailSlots(orderedSlotIds);
       if (error) {
-        // Stays in reorder mode with the ranking intact so Done can be retried.
-        Alert.alert('Reorder failed', 'Could not save your Grail order. Please try again.');
-        return;
+        Alert.alert('Reorder failed', 'Couldn’t save your Grail order, so it’s been put back. Please try again.');
+        return false;
       }
       // Real mutation succeeded — see handleEditProfileSave's finishSuccess
       // for why both of these are needed: hasRealSettleOccurredRef lets the
@@ -1232,10 +1212,8 @@ export function ProfileV2Screen({ userId }: Props) {
       // queried (e.g. another loading pipeline is still in flight).
       hasRealSettleOccurredRef.current = true;
       invalidateOwnProfileCache(userId);
-      setGrailReorderMode(false);
-      setRankedGrailSlotIds([]);
+      return true;
     } finally {
-      savingGrailReorderRef.current = false;
       setSavingGrailReorder(false);
     }
   }
@@ -2094,7 +2072,8 @@ export function ProfileV2Screen({ userId }: Props) {
           showsVerticalScrollIndicator={false}
           onScroll={navbarOnScroll}
           scrollEventThrottle={scrollEventThrottle}
-          stickyHeaderIndices={[1]}>
+          stickyHeaderIndices={[1]}
+          scrollEnabled={!grailDragActive}>
 
           {/* index 0 — shared profile showcase: identity card, Grails, and
               the owner/public action row. Grails renders here now — above
@@ -2222,28 +2201,26 @@ export function ProfileV2Screen({ userId }: Props) {
                     <>
                   {isOwnProfile && grailReorderMode && (
                     <View style={styles.grailReorderBar}>
-                      <TouchableOpacity onPress={cancelGrailReorder} disabled={savingGrailReorder} hitSlop={10}>
-                        <Text style={styles.grailReorderText}>Cancel</Text>
-                      </TouchableOpacity>
+                      <Text style={styles.grailReorderText}>Hold and drag</Text>
                       <Text style={styles.grailReorderTitle}>Reorder Grails</Text>
                       <TouchableOpacity
-                        onPress={handleGrailReorderDone}
+                        onPress={() => setGrailReorderMode(false)}
                         disabled={savingGrailReorder}
                         hitSlop={10}
                         accessibilityRole="button"
-                        accessibilityLabel="Save Grail order">
+                        accessibilityLabel="Done reordering Grails">
                         {savingGrailReorder ? (
                           <ActivityIndicator size="small" color={PV2.actionPrimary} />
                         ) : (
-                          <Text style={[styles.grailReorderText, styles.grailReorderDone]}>Save</Text>
+                          <Text style={[styles.grailReorderText, styles.grailReorderDone]}>Done</Text>
                         )}
                       </TouchableOpacity>
                     </View>
                   )}
                   <ProfileV2Grid
                       reorderMode={grailReorderMode}
-                      rankedSlotIds={rankedGrailSlotIds}
-                      onToggleRank={toggleGrailRank}
+                      onDragReorder={isOwnProfile ? handleGrailDragReorder : undefined}
+                      onDragActiveChange={setGrailDragActive}
                       onEnterReorder={
                         isOwnProfile && grailSlots.length >= 2 ? () => setGrailReorderMode(true) : undefined
                       }

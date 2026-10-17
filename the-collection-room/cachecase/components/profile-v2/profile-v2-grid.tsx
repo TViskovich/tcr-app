@@ -7,6 +7,7 @@ import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
+import { GrailDragGrid } from './grail-drag-grid';
 import { GrailSlotPreview } from './grail-slot-preview';
 import { PV2 } from './profile-v2-theme';
 
@@ -131,6 +132,11 @@ type Props = {
   rankedSlotIds?: string[];
   onToggleRank?: (slotId: string) => void;
   onEnterReorder?: () => void;
+  // Owner's drag-to-reorder (Profile). When given, reorder mode renders
+  // GrailDragGrid instead of tap-to-select tiles; omitted (e.g. Item
+  // Detail's Replace a Grail picker), reorder mode stays tap-to-select.
+  onDragReorder?: (orderedSlotIds: string[]) => Promise<boolean>;
+  onDragActiveChange?: (active: boolean) => void;
 };
 
 export function ProfileV2Grid({
@@ -148,6 +154,8 @@ export function ProfileV2Grid({
   rankedSlotIds,
   onToggleRank,
   onEnterReorder,
+  onDragReorder,
+  onDragActiveChange,
 }: Props) {
   // Same batched, preview-tier call as GrailImagesWarmup (above), which the
   // profile screen mounts before this grid can render — so by the time the
@@ -165,6 +173,23 @@ export function ProfileV2Grid({
         <TouchableOpacity style={styles.retryButton} onPress={onRetry} activeOpacity={0.8}>
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (reorderMode && onDragReorder && isOwnProfile && !loading) {
+    return (
+      <View style={styles.dragGridWrap}>
+        <GrailDragGrid
+          slots={slots}
+          signedImageUrls={signedImageUrls}
+          servedTiers={servedTiers}
+          onReorder={onDragReorder}
+          onDragActiveChange={onDragActiveChange}
+          cellWidth={GRID_CELL_WIDTH}
+          cellHeight={GRID_CELL_HEIGHT}
+          gap={GRID_GAP}
+        />
       </View>
     );
   }
@@ -230,6 +255,11 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: GRID_GAP,
+  },
+  // Same outer placement as `grid` above, for the drag-to-reorder grid.
+  dragGridWrap: {
+    marginHorizontal: GRID_HORIZONTAL_MARGIN,
+    marginTop: 2,
   },
   // borderRadius: 0 — kept in sync with grail-slot-preview.tsx's own
   // styles.slot (square, 90°-cornered tiles, matching this file's own

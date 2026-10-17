@@ -31,7 +31,9 @@ import { ItemImageGalleryManager } from '@/components/item-detail/item-image-gal
 import { ItemMetadataSection, type MetadataRow } from '@/components/item-detail/item-metadata-section';
 import { ItemOwnerRow } from '@/components/item-detail/item-owner-row';
 import { MoveItemModal } from '@/components/item-detail/move-item-modal';
+import { ItemFeaturedIn } from '@/components/item-detail/item-featured-in';
 import { RelatedItemsGrid } from '@/components/item-detail/related-items-grid';
+import { ReplaceGrailSheet } from '@/components/item-detail/replace-grail-sheet';
 import { OTHER_CATEGORY_ENTRIES } from '@/components/item-detail/other-category-forms';
 import { MultiSelectField, SelectField } from '@/components/item-detail/select-field';
 import { AnchoredMenuHost, AnchoredMenuLayer } from '@/components/profile-v2/profile-v2-anchored-menu';
@@ -734,8 +736,11 @@ export default function ItemDetailScreen() {
     isInGrails,
     addToGrails,
     removeFromGrails,
+    replaceGrail,
     refresh: refreshGrailMembership,
   } = useItemGrailMembership(currentUserId);
+  // "Replace a Grail" picker (all 9 slots full) — see ReplaceGrailSheet.
+  const [replaceGrailOpen, setReplaceGrailOpen] = useState(false);
   // Re-check on returning to this screen (e.g. the item was added to or
   // removed from Grails elsewhere while this screen was underneath). The
   // first focus is skipped — the hook already loads on mount. Removals made
@@ -2483,6 +2488,11 @@ export default function ItemDetailScreen() {
 
               <ItemMetadataSection key={item.id} rows={metadataRows} />
 
+              {/* The collection path this item lives in, each level linking
+                  to that collection. Not shown for transferred-out items
+                  (separate branch above) — they're no longer in it. */}
+              <ItemFeaturedIn folderId={item.folder_id} />
+
               <RelatedItemsGrid />
 
               {isOwner && (
@@ -2525,27 +2535,21 @@ export default function ItemDetailScreen() {
 
                   {(() => {
                     const inGrails = isInGrails(item.id);
-                    const disabled = !inGrails && isFull;
+                    // All 9 full and this item isn't one of them: offer to
+                    // swap it into a chosen slot (was a disabled "Grails
+                    // Full"). Already a Grail keeps Remove; otherwise Add.
+                    const replaceMode = !inGrails && isFull;
                     return (
                       <TouchableOpacity
-                        style={[
-                          styles.grailsButton,
-                          inGrails && styles.grailsButtonRemove,
-                          disabled && styles.grailsButtonDisabled,
-                        ]}
-                        onPress={handleGrailsToggle}
-                        disabled={grailsLoading || grailsRemoving || disabled}
+                        style={[styles.grailsButton, inGrails && styles.grailsButtonRemove]}
+                        onPress={replaceMode ? () => setReplaceGrailOpen(true) : handleGrailsToggle}
+                        disabled={grailsLoading || grailsRemoving}
                         activeOpacity={0.8}>
                         {grailsLoading ? (
                           <ActivityIndicator color={inGrails ? '#C9952C' : '#fff'} />
                         ) : (
-                          <Text
-                            style={[
-                              styles.grailsText,
-                              inGrails && styles.grailsTextRemove,
-                              disabled && styles.grailsTextDisabled,
-                            ]}>
-                            {inGrails ? 'Remove from Grails' : disabled ? 'Grails Full' : 'Add to Grails'}
+                          <Text style={[styles.grailsText, inGrails && styles.grailsTextRemove]}>
+                            {inGrails ? 'Remove from Grails' : replaceMode ? 'Replace a Grail' : 'Add to Grails'}
                           </Text>
                         )}
                       </TouchableOpacity>
@@ -2569,6 +2573,16 @@ export default function ItemDetailScreen() {
           currentUserId={currentUserId}
           onClose={() => setShowMoveModal(false)}
           onMoved={handleItemMoved}
+        />
+      )}
+
+      {isOwner && currentUserId && (
+        <ReplaceGrailSheet
+          visible={replaceGrailOpen}
+          userId={currentUserId}
+          itemLabel={identity.title ? `“${identity.title}”` : 'this item'}
+          onClose={() => setReplaceGrailOpen(false)}
+          onReplace={(expected) => replaceGrail(item.id, expected)}
         />
       )}
 
@@ -2872,9 +2886,6 @@ registryViewButtonText: {
     borderWidth: 1,
     borderColor: '#C9952C',
   },
-  grailsButtonDisabled: {
-    backgroundColor: 'rgba(255,255,255,0.10)',
-  },
   grailsText: {
     color: '#fff',
     fontSize: 16,
@@ -2882,9 +2893,6 @@ registryViewButtonText: {
   },
   grailsTextRemove: {
     color: '#C9952C',
-  },
-  grailsTextDisabled: {
-    color: '#999',
   },
   deleteButton: {
     borderWidth: 1,

@@ -7,9 +7,12 @@ import { supabase } from '@/lib/supabase';
 import type { GrailSlot } from '@/types';
 
 import {
+  type ExpectedGrailSlot,
   insertGrailSlot,
   isGrailSlotRemoved,
   removeGrailSlotOptimistically,
+  replaceGrailSlot,
+  requestGrailSlotsReload,
   subscribeGrailSlotsEvents,
 } from './use-grail-slots';
 
@@ -198,5 +201,53 @@ export function useItemGrailMembership(userId: string | undefined) {
     [userId, load, commit, currentRows],
   );
 
-  return { loading, isFull, isInGrails, addToGrails, removeFromGrails, refresh: load };
+  // "Replace a Grail" (all 9 full): points the chosen slot at `itemId`
+  // through the existing replaceGrailSlot — one conditional UPDATE of that
+  // one row, matched on the exact slot id/index/source the picker showed, so
+  // the other eight rows are never touched and a slot that changed
+  // meanwhile is never overwritten. The replaced item/collection itself is
+  // untouched (the slot row only points at it), so it stays in its own
+  // collection. The table's unique (user_id, item_id) index rules out the
+  // item ending up in two slots; RLS (profile_grail_slots_update_own)
+  // requires the caller to own both the slot and the item.
+  //
+  // Local state changes only after the server confirms — a failure leaves
+  // the button and every Grails view exactly as they were. Resolves true on
+  // success.
+  const replaceGrail = useCallback(
+    async (itemId: string, expected: ExpectedGrailSlot): Promise<boolean> => {
+      if (!userId) return false;
+      if (currentRows().some((r) => r.entry_type === 'item' && r.item_id === itemId)) {
+        Alert.alert('Already in Grails', 'This item is already in your Grails.');
+        return false;
+      }
+      const { error, conflict } = await replaceGrailSlot(userId, expected, 'item', itemId);
+      if (error) {
+        if (conflict === 'duplicate_source') {
+          Alert.alert('Already in Grails', 'This item is already in another Grail slot.');
+        } else if (conflict === 'slot_conflict') {
+          Alert.alert('Try Again', 'That Grail slot changed. Please choose again.');
+        } else {
+          Alert.alert('Couldn’t Replace', 'Your Grails weren’t changed. Please try again.');
+        }
+        // A conflict means what's on screen is out of date — re-read it
+        // everywhere (including the open picker). A plain failure changed
+        // nothing, so there's nothing to re-read.
+        if (conflict) requestGrailSlotsReload(userId);
+        return false;
+      }
+      // Same row id and slot_index — only its source changed.
+      commit(
+        currentRows().map((r) =>
+          r.id === expected.expectedSlotId ? { ...r, entry_type: 'item', item_id: itemId, collection_id: null } : r,
+        ),
+      );
+      invalidateOwnProfileCache(userId);
+      requestGrailSlotsReload(userId);
+      return true;
+    },
+    [userId, commit, currentRows],
+  );
+
+  return { loading, isFull, isInGrails, addToGrails, removeFromGrails, replaceGrail, refresh: load };
 }

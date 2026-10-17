@@ -287,6 +287,13 @@ export function subscribeGrailSlotsEvents(listener: (event: GrailSlotsEvent) => 
   };
 }
 
+// After a write that changes a slot's source in place (replaceGrailSlot from
+// a surface that isn't a full useGrailSlots instance — Item Detail's
+// "Replace a Grail"), tells every open Grails view for this user to re-read.
+export function requestGrailSlotsReload(userId: string): void {
+  emitGrailSlotsEvent({ type: 'reload', userId });
+}
+
 export function isGrailSlotRemoved(slotId: string): boolean {
   return removedSlotIds.has(slotId);
 }
