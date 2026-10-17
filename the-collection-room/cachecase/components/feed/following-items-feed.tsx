@@ -281,9 +281,13 @@ const pendingPrefetches = new Map<string, Promise<void>>();
 // INITIAL_VISIBLE_ITEM_COUNT images at the feed's preview tier, through the
 // shared signed-URL cache, and downloads those few into expo-image's cache
 // under the tiles' own stable cacheKeys — never the rest of the feed.
-// Never throws.
-export function prefetchFollowingFeed(userId: string): void {
-  if (followingFeedSessions.has(userId) || pendingPrefetches.has(userId)) return;
+// Never throws; the returned promise settles once the preparation is done
+// (immediately when it was skipped), so Home can pre-mount the Arrivals page
+// on top of a ready snapshot.
+export function prefetchFollowingFeed(userId: string): Promise<void> {
+  if (followingFeedSessions.has(userId)) return Promise.resolve();
+  const inFlight = pendingPrefetches.get(userId);
+  if (inFlight) return inFlight;
   const controller = new AbortController();
   const run = (async () => {
     try {
@@ -329,6 +333,7 @@ export function prefetchFollowingFeed(userId: string): void {
     }
   })();
   pendingPrefetches.set(userId, run);
+  return run;
 }
 
 function FollowingItemTile({
@@ -501,11 +506,21 @@ export function FollowingItemsFeed({
   currentUserId,
   onScroll,
   scrollEventThrottle,
+  active = true,
   ref,
 }: {
   currentUserId: string | undefined;
   onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   scrollEventThrottle?: number;
+  // False while Home keeps this page pre-mounted but it isn't the settled
+  // section. The view renders from the session cache (first
+  // INITIAL_VISIBLE_ITEM_COUNT tiles, whose images the prefetch already
+  // signed and downloaded) so the first swipe onto it has nothing left to
+  // build — but everything costly waits until it first becomes active,
+  // i.e. after that swipe has settled: the network load (including a
+  // stale-cache background refresh), the expansion to the full grid (and
+  // its signed-URL requests), and the detail-image warmup.
+  active?: boolean;
   // Lets Home's tab-reselect send this grid back to the top.
   ref?: Ref<ScrollToTopHandle>;
 }) {
@@ -591,15 +606,19 @@ export function FollowingItemsFeed({
   // setTimeout/setInterval, which cancelIdleCallback takes to cancel a
   // still-pending callback — mirrored below exactly like this file's other
   // effects already cancel their own pending work on cleanup.
+  // Waits for `active` (see the prop's comment): a pre-mounted, not-yet-
+  // visited page keeps just its first tiles. Once expanded it stays
+  // expanded (mountCount never shrinks), so this only ever fires once per
+  // mount; if the user leaves before the idle callback runs, it's cancelled
+  // and retried on the next visit.
+  const expanded = mountCount === Number.POSITIVE_INFINITY;
   useEffect(() => {
+    if (!active || expanded) return;
     const handle = requestIdleCallback(() => {
       setMountCount(Number.POSITIVE_INFINITY);
     });
     return () => cancelIdleCallback(handle);
-    // Deliberately mount-once ([]) — this screen fully remounts on every
-    // feedMode toggle (see FollowingFeedSession's own comment), so "once per
-    // mount" already means "once per tab switch back to Following."
-  }, []);
+  }, [active, expanded]);
 
   const controllerRef = useRef<AbortController | null>(null);
   // Mirrors `items` without forcing `load` to depend on it (which would
@@ -707,24 +726,38 @@ export function FollowingItemsFeed({
     [currentUserId],
   );
 
+  // Runs once per user, on the first render where this page is `active`
+  // (immediately for a normally-mounted feed; after the first settled swipe
+  // for Home's pre-mounted page) — never while it's only pre-mounted.
+  const initialLoadForRef = useRef<string | undefined | null>(null);
   useEffect(() => {
-    // cachedSession is fresh: state above was already hydrated synchronously
+    if (!active || initialLoadForRef.current === currentUserId) return;
+    initialLoadForRef.current = currentUserId;
+    // Session cache fresh: state above was already hydrated synchronously
     // from it via the useState initializers — nothing to fetch, no network
     // activity, no skeleton. Stale (or no cache at all): fetch, but only
     // show the full-screen skeleton when there was truly nothing cached to
     // show in the meantime ('initial'); a stale cache still renders
-    // immediately and refreshes quietly behind it ('background').
-    const isFresh = cachedSession && Date.now() - cachedSession.fetchedAt < FOLLOWING_FEED_FRESHNESS_MS;
+    // immediately and refreshes quietly behind it ('background'). Read at
+    // activation time (not first render), since a pre-mounted page can sit
+    // unvisited past the freshness window.
+    const session = currentUserId ? followingFeedSessions.get(currentUserId) : undefined;
+    const isFresh = session && Date.now() - session.fetchedAt < FOLLOWING_FEED_FRESHNESS_MS;
     if (!isFresh) {
-      // Mount/user-change data fetch — load's synchronous loading-flag
+      // Activation/user-change data fetch — load's synchronous loading-flag
       // setState is the intended "start fetching" transition, not a derived
       // state sync, so the set-state-in-effect rule doesn't apply here.
+      // `loading` is still true only if nothing was hydrated from a cache
+      // (this instance writes its own snapshot entry on mount, so the
+      // session map alone can't tell).
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      load(cachedSession ? 'background' : 'initial');
+      load(loading ? 'initial' : 'background');
     }
-    return () => controllerRef.current?.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId]);
+  }, [active, currentUserId, load, loading]);
+
+  // Abort an in-flight load on unmount / user change only — not when the
+  // page merely stops being the active section mid-load.
+  useEffect(() => () => controllerRef.current?.abort(), [currentUserId]);
 
   // Keeps the session cache's items/followedCount/sort in sync with every
   // state change (including a mid-pipeline partial update, so even an
@@ -871,13 +904,19 @@ export function FollowingItemsFeed({
     },
     [itemTops],
   );
+  // Not while only pre-mounted (see `active`): 'detail'-tier signing and
+  // full-size downloads start on the first visit. `expanded` keeps it on
+  // after that, even while another section is showing.
+  const detailWarmEnabled = active || expanded;
   const detailWarmImageIds = useMemo(
     () =>
-      displayItems
-        .slice(Math.max(0, warmUntil - DETAIL_WARM_WINDOW), warmUntil)
-        .map((i) => i.primary_image_id)
-        .filter((id): id is string => !!id),
-    [displayItems, warmUntil],
+      detailWarmEnabled
+        ? displayItems
+            .slice(Math.max(0, warmUntil - DETAIL_WARM_WINDOW), warmUntil)
+            .map((i) => i.primary_image_id)
+            .filter((id): id is string => !!id)
+        : [],
+    [detailWarmEnabled, displayItems, warmUntil],
   );
   // Same identity, tier and cache as Item Detail's own hero request, so
   // opening a warmed item reuses this signed URL instead of signing again.

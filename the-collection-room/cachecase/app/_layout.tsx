@@ -53,10 +53,10 @@ function RootLayoutNav() {
   // <GlobalFloatingTabBar>) so the Tabs-group badge and the floating bar's
   // own badge, rendered outside the tabs subtree, share one query/poll
   // lifecycle and one count instead of each owning a private instance.
-  const { unreadCount, refresh: refreshMessageBadge } = useUnreadMessages(session?.user?.id);
+  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(session?.user?.id);
   const messageBadgeContextValue = useMemo(
-    () => ({ unreadCount, refreshMessageBadge }),
-    [unreadCount, refreshMessageBadge],
+    () => ({ unreadCount, latestUnreadAt, refreshMessageBadge }),
+    [unreadCount, latestUnreadAt, refreshMessageBadge],
   );
 
   useEffect(() => {

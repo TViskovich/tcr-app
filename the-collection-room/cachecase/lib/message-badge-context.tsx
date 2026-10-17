@@ -2,11 +2,15 @@ import { createContext, useContext } from 'react';
 
 type MessageBadgeContextValue = {
   unreadCount: number;
+  // Newest last_message_at among unread conversations, or null (see
+  // hooks/use-unread-messages.ts).
+  latestUnreadAt: string | null;
   refreshMessageBadge: () => void;
 };
 
 export const MessageBadgeContext = createContext<MessageBadgeContextValue>({
   unreadCount: 0,
+  latestUnreadAt: null,
   refreshMessageBadge: () => {},
 });
 
@@ -17,3 +21,5 @@ export const MessageBadgeContext = createContext<MessageBadgeContextValue>({
 export const useMessageBadgeRefresh = () => useContext(MessageBadgeContext).refreshMessageBadge;
 
 export const useMessageBadgeCount = () => useContext(MessageBadgeContext).unreadCount;
+
+export const useLatestUnreadMessageAt = () => useContext(MessageBadgeContext).latestUnreadAt;

@@ -7,6 +7,11 @@ const POLL_INTERVAL_MS = 30000;
 
 export function useUnreadMessages(userId: string | undefined) {
   const [unreadCount, setUnreadCount] = useState(0);
+  // Newest last_message_at among the unread conversations (null when none
+  // are unread) — derived from the same two queries as unreadCount, no
+  // extra request. Home's Messages tab dot compares it with when the user
+  // last viewed Messages (hooks/use-home-tab-activity.ts).
+  const [latestUnreadAt, setLatestUnreadAt] = useState<string | null>(null);
 
   // Updated synchronously in the render body (not inside a useEffect) so
   // that a query response resolving between render and effect commit still
@@ -38,6 +43,7 @@ export function useUnreadMessages(userId: string | undefined) {
     try {
       if (!requestUserId) {
         setUnreadCount((prev) => (prev === 0 ? prev : 0));
+        setLatestUnreadAt(null);
         return;
       }
 
@@ -61,6 +67,7 @@ export function useUnreadMessages(userId: string | undefined) {
 
       if (!participations?.length) {
         setUnreadCount((prev) => (prev === 0 ? prev : 0));
+        setLatestUnreadAt(null);
         return;
       }
 
@@ -83,15 +90,18 @@ export function useUnreadMessages(userId: string | undefined) {
       );
 
       let count = 0;
+      let latest: string | null = null;
       for (const conv of (conversations ?? []) as any[]) {
         if (!conv.last_message_at) continue;
         const lastRead = lastReadMap.get(conv.id);
         if (!lastRead || new Date(conv.last_message_at) > new Date(lastRead)) {
           count++;
+          if (!latest || Date.parse(conv.last_message_at) > Date.parse(latest)) latest = conv.last_message_at;
         }
       }
 
       setUnreadCount((prev) => (prev === count ? prev : count));
+      setLatestUnreadAt(latest);
     } catch (e) {
       // Thrown/network failure — never zero a real badge over a transient
       // error; last known-good unreadCount is left untouched and the next
@@ -118,6 +128,7 @@ export function useUnreadMessages(userId: string | undefined) {
     if (!userId) {
       // Logout / unauthenticated — reset immediately and never poll.
       setUnreadCount((prev) => (prev === 0 ? prev : 0));
+      setLatestUnreadAt(null);
       return;
     }
 
@@ -164,5 +175,5 @@ export function useUnreadMessages(userId: string | undefined) {
     };
   }, [userId, refresh]);
 
-  return { unreadCount, refresh };
+  return { unreadCount, latestUnreadAt, refresh };
 }

@@ -50,7 +50,9 @@ import {
 } from '@/components/feed/post-card';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useHomeTabActivity } from '@/hooks/use-home-tab-activity';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import type { HomeTabKey } from '@/lib/home-tab-activity';
 
 // Canonical feed chronology — every dataset this screen renders (initial
 // load, refresh, pagination merges) must end up sorted strictly by the post
@@ -113,6 +115,12 @@ const HOME_TABS: { key: FeedMode; label: string }[] = [
   { key: 'following', label: 'Arrivals' },
   { key: 'messages', label: 'Messages' },
 ];
+// Which "new activity" dot (hooks/use-home-tab-activity.ts) each tab shows.
+const FEED_MODE_ACTIVITY: Record<FeedMode, HomeTabKey> = {
+  'for-you': 'stack',
+  following: 'arrivals',
+  messages: 'messages',
+};
 // Left-to-right page order of the horizontal Home pager — same order as
 // the top tabs above.
 const HOME_PAGES = HOME_TABS.map((t) => t.key);
@@ -183,6 +191,22 @@ export default function HomeScreen() {
     ),
   );
 
+  // New-activity dots on the top tabs. Home's own focus gates both the
+  // (focus-triggered, throttled) freshness check and what counts as
+  // "viewing" a section.
+  const [homeFocused, setHomeFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setHomeFocused(true);
+      return () => setHomeFocused(false);
+    }, []),
+  );
+  const tabActivity = useHomeTabActivity({
+    userId: currentUserId,
+    activeTab: FEED_MODE_ACTIVITY[feedMode],
+    homeFocused,
+  });
+
   // ── Horizontal section pager (Stack ⇄ Arrivals ⇄ Messages) ──
   // A native paging ScrollView, one screen-wide page per section. feedMode
   // is the SETTLED section: it changes on a tab tap or once a swipe comes
@@ -224,22 +248,53 @@ export default function HomeScreen() {
     [mountPageAt],
   );
 
+  // Page a tab tap is scrolling to (-1 = none). A tap settles feedMode only
+  // when the pager actually arrives there (see onScroll below) — the same
+  // point a swipe settles at. Settling at tap time instead flipped
+  // feedMode, and with it Arrivals' `active`, at the START of the animation:
+  // the first visit's deferred grid expansion, image signing/warmup and any
+  // stale-data refresh all landed on top of the programmatic scroll, which
+  // is what made the first Stack → Arrivals tap stutter.
+  const pendingTargetPage = useSharedValue(-1);
+
   function selectFeedMode(mode: FeedMode) {
     const index = HOME_PAGES.indexOf(mode);
+    const targetX = index * pageWidth;
+    // Immediate feedback: label tint, and the page mounted so it's there to
+    // scroll onto (Arrivals usually already is — pre-mounted, inactive).
     highlightedPage.set(index);
-    settlePageAt(index);
-    pagerRef.current?.scrollTo({ x: index * pageWidth, animated: true });
+    setHighlightedMode(mode);
+    mountPageAt(index);
+    if (Math.abs(pagerX.get() - targetX) < 1) {
+      // Already there — no scroll will happen to settle on.
+      pendingTargetPage.set(-1);
+      settlePageAt(index);
+      return;
+    }
+    pendingTargetPage.set(index);
+    pagerRef.current?.scrollTo({ x: targetX, animated: true });
   }
 
   const pagerScrollHandler = useAnimatedScrollHandler({
     onBeginDrag: () => {
       userPaging.set(true);
+      // A finger takes over from an in-flight tab-tap scroll: the swipe's
+      // own end decides where it settles.
+      pendingTargetPage.set(-1);
     },
     onScroll: (e) => {
       pagerX.set(e.contentOffset.x);
+      // A tab tap's programmatic scroll has reached its page: settle now,
+      // after the animation, exactly like a swipe does on momentum end.
+      const pending = pendingTargetPage.get();
+      if (pending >= 0 && pageWidth > 0 && Math.abs(e.contentOffset.x - pending * pageWidth) < 1) {
+        pendingTargetPage.set(-1);
+        runOnJS(settlePageAt)(pending);
+        return;
+      }
       // Label tint / lazy mounting follow the user's own swipe only — a tab
-      // tap's programmatic scroll (selectFeedMode) has already settled both
-      // and shouldn't flash the sections it passes over.
+      // tap (selectFeedMode) has already set both for its target and
+      // shouldn't flash the sections it passes over.
       if (!userPaging.get() || pageWidth <= 0) return;
       const position = e.contentOffset.x / pageWidth;
       const nearest = clampPage(Math.round(position));
@@ -265,6 +320,9 @@ export default function HomeScreen() {
     },
     onMomentumEnd: (e) => {
       userPaging.set(false);
+      // Also reached by the end of a tab tap's scroll on platforms that
+      // report it; settling the same page twice is a no-op.
+      pendingTargetPage.set(-1);
       if (pageWidth <= 0) return;
       const page = clampPage(Math.round(e.contentOffset.x / pageWidth));
       highlightedPage.set(page);
@@ -515,21 +573,34 @@ export default function HomeScreen() {
   // data or a preparation running). Following opened earlier still loads on
   // its own, or joins this if it's in flight.
   //
+  // Once that preparation settles, the Arrivals PAGE is pre-mounted too
+  // (still off-screen, `active={false}`): it renders its first tiles from
+  // the snapshot just prepared — images already signed and downloaded — so
+  // the first Stack → Arrivals swipe no longer mounts a whole feed mid-
+  // gesture (which is what made that first transition janky while later
+  // ones were smooth). No extra requests: everything costly inside it waits
+  // for its first visit (see FollowingItemsFeed's `active`).
+  //
   // The Messages tab's inbox is warmed in the same idle slot
   // (prefetchInbox, lib/dm-inbox.ts): one inbox query in the background, so
   // opening Messages shows the list immediately instead of a skeleton. Same
   // once-per-user-per-session rule; never conversation histories or photos.
+  // Messages itself stays lazily mounted.
   const followingPrefetchedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!currentUserId || loading || followingPrefetchedForRef.current === currentUserId) return;
     const userId = currentUserId;
     const handle = requestIdleCallback(() => {
       followingPrefetchedForRef.current = userId;
-      prefetchFollowingFeed(userId);
+      prefetchFollowingFeed(userId).then(() => {
+        // Still at the next idle moment, so the mount never lands on top of
+        // something the user just started.
+        requestIdleCallback(() => mountPageAt(HOME_PAGES.indexOf('following')));
+      });
       prefetchInbox(userId);
     });
     return () => cancelIdleCallback(handle);
-  }, [currentUserId, loading]);
+  }, [currentUserId, loading, mountPageAt]);
 
   // Repost / undo repost of an entry's ORIGINAL (a repost's own repostOf).
   // Optimistic count/state; rolled back if the request fails. A new repost
@@ -721,7 +792,12 @@ export default function HomeScreen() {
               );
             }}
             accessibilityRole="button"
+            accessibilityLabel={tabActivity[FEED_MODE_ACTIVITY[key]] ? `${label}, new activity` : label}
             accessibilityState={{ selected: feedMode === key }}>
+            {/* Shrink-wrapped to the label, so the dot (absolutely placed
+                beside it) never shifts the label off-center or changes the
+                measured width the underline uses. */}
+            <View style={styles.tabLabelWrap}>
             <Text
               style={[styles.tabText, highlightedMode === key && styles.tabTextActive]}
               onLayout={(e) => {
@@ -736,6 +812,8 @@ export default function HomeScreen() {
               }}>
               {label}
             </Text>
+            {tabActivity[FEED_MODE_ACTIVITY[key]] && <View style={styles.tabActivityDot} pointerEvents="none" />}
+            </View>
           </TouchableOpacity>
         ))}
         <Animated.View style={[styles.tabUnderline, underlineStyle]} pointerEvents="none" />
@@ -878,6 +956,7 @@ export default function HomeScreen() {
           // applies to it.
           <FollowingItemsFeed
             ref={followingFeedRef}
+            active={feedMode === 'following'}
             currentUserId={currentUserId}
             onScroll={navbarOnScroll}
             scrollEventThrottle={scrollEventThrottle}
@@ -964,6 +1043,22 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingVertical: 12,
+  },
+  tabLabelWrap: {
+    position: 'relative',
+  },
+  // "New activity" dot beside a tab label — the theme's light-blue
+  // accent, small enough to read as a hint in both the active (white) and
+  // inactive (muted) label states. Absolutely placed past the label's right
+  // edge, roughly at cap height.
+  tabActivityDot: {
+    position: 'absolute',
+    top: 2,
+    right: -9,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: PV2.actionPrimary,
   },
   tabText: {
     fontSize: 15,
