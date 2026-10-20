@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { SharePostPreview } from '@/components/feed/share-post-preview';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { ShareCardDragGrid } from '@/components/share/share-card-drag-grid';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   type CollectionItemWithFolderVisibility,
@@ -72,6 +73,13 @@ const SCROLL_PADDING = 16;
 // small batch, ahead of the rest, and downloaded at expo-image's high
 // priority — the rest follow in a second batch at low priority.
 const PRIORITY_CARD_COUNT = 12;
+// Selected Items bar thumbnails (3:4, like every card tile here) — compact,
+// so the bar stays one short row above the browser.
+const SELECTED_THUMB_WIDTH = 45;
+// Preview's drag-to-arrange thumbnails — the same 84pt 3:4 cards the arrange
+// strip always showed, now wrapping into as many columns as fit.
+const ARRANGE_THUMB_WIDTH = 84;
+const ARRANGE_GAP = 10;
 
 // What the picker is browsing: null = the folder picker itself; 'all' =
 // every card (the original single grid); 'folder' = one folder's direct
@@ -100,7 +108,7 @@ function hasShareableImage(item: CollectionItem) {
 // Keyed by scope at its call site, so every scope mounts fresh: a spinner
 // until ITS rows arrive, never the previous scope's cards. onLoaded hands
 // each result to the screen, which keeps every card it has seen so a
-// selection made in another folder still resolves (reorder strip, preview,
+// selection made in another folder still resolves (Selected Items bar, Preview,
 // Post re-validation).
 //
 // `seed` (rows this scope already showed this session, else the own-profile
@@ -245,6 +253,10 @@ export default function ShareCardScreen() {
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const [browse, setBrowse] = useState<Browse | null>(null);
+  // Picker flow only: Select Items → Preview → Post. One screen, two steps
+  // (not a second route), so the selection, its order and the caption are
+  // the same state on both — Back from Preview can never reset them.
+  const [step, setStep] = useState<'select' | 'preview'>('select');
   const currentFolder = browse?.kind === 'folder' ? browse.trail[browse.trail.length - 1] : null;
   // Every one of the user's own cards loaded in ANY scope so far, by id —
   // what selection resolves against, so a card picked in one folder stays
@@ -283,7 +295,15 @@ export default function ShareCardScreen() {
   }
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const folderTileWidth = (windowWidth - SCROLL_PADDING * 2 - FOLDER_GAP * (FOLDER_COLUMNS - 1)) / FOLDER_COLUMNS;
+  const arrangeColumns = Math.max(
+    1,
+    Math.min(MAX_CARDS, Math.floor((windowWidth - SCROLL_PADDING * 2 + ARRANGE_GAP) / (ARRANGE_THUMB_WIDTH + ARRANGE_GAP))),
+  );
   const scrollRef = useRef<ScrollView>(null);
+  // The selection step's collection browser — its own scroll view, kept
+  // mounted (hidden) during Preview so Back returns to the same folder and
+  // scroll position.
+  const browseScrollRef = useRef<ScrollView>(null);
   // The caption sits below the (tall) preview and is the last thing in
   // either composer layout, so "keep it visible" = scroll to the end: once
   // the keyboard has finished opening (KeyboardAvoidingView has shrunk the
@@ -348,6 +368,9 @@ export default function ShareCardScreen() {
   // header button after a re-render, so two fast taps could otherwise both
   // start a post.
   const postingRef = useRef(false);
+  // A Preview card is lifted (ShareCardDragGrid) — pauses the page's scroll
+  // and holds Post until the drop lands in selectedIds.
+  const [dragActive, setDragActive] = useState(false);
 
   // Own cards with an image (see hasShareableImage), from every scope
   // loaded so far.
@@ -577,19 +600,24 @@ export default function ShareCardScreen() {
 
   // Each level starts at its top.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    browseScrollRef.current?.scrollTo({ y: 0, animated: false });
   }, [browse]);
 
-  // Android's hardware Back steps up a level while browsing, instead of
-  // closing the composer (and its selection) outright.
+  // Android's hardware Back returns from Preview to the selection step, and
+  // steps up a level while browsing, instead of closing the composer (and
+  // its selection) outright.
   useEffect(() => {
-    if (!browse) return;
+    if (step === 'select' && !browse) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      goUp();
+      if (step === 'preview') {
+        if (!postingRef.current) backToSelect();
+      } else {
+        goUp();
+      }
       return true;
     });
     return () => sub.remove();
-  }, [browse, goUp]);
+  }, [step, browse, goUp]);
 
   // Effective (most-restrictive-wins) public visibility — the same rule
   // enforced by items_select_public/collection_item_images_select_public
@@ -603,10 +631,17 @@ export default function ShareCardScreen() {
     return item.folder_is_public && item.is_public;
   }
 
-  const canPost = selectedIds.length >= 1 && !posting;
+  const canPost = selectedIds.length >= 1 && !posting && !dragActive;
+
+  // The Create menu's 1-5 card picker (not a direct Share Item, a foreign
+  // repost, or a preselected item still loading / failed) — the only flow
+  // with the Select Items → Preview steps; the others post from one page.
+  const isPickerFlow = !isDirectItemShare && !isForeignRepost && !(itemId && (sourceLoading || sourceError));
+  const inPreview = isPickerFlow && step === 'preview';
+  const canPreview = selectedIds.length >= 1;
 
   // The compose step's own view of the selection, in FINAL posting order —
-  // selectedIds' own array order IS that order (see moveSelected below and
+  // selectedIds' own array order IS that order (see applyOrder below and
   // handlePost, which passes selectedIds straight through to
   // createSnapshotPost/the single-card insert; display_order on the
   // persisted card_share_items rows is assigned server-side from this same
@@ -676,20 +711,13 @@ export default function ShareCardScreen() {
     display_order: index,
   }));
 
-  // Adjacent swap only — matches the move-left/move-right control pair
-  // rendered per thumbnail below (no drag-and-drop library in this
-  // project; see the reorder strip's own comment). No-ops silently at
-  // either end of the list rather than wrapping around.
-  function moveSelected(id: string, direction: -1 | 1) {
-    setSelectedIds((prev) => {
-      const index = prev.indexOf(id);
-      if (index === -1) return prev;
-      const targetIndex = index + direction;
-      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
-      const next = [...prev];
-      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-      return next;
-    });
+  // A drop in Preview's ShareCardDragGrid — the full new order, applied
+  // locally (Post sends selectedIds as-is). Only ever a reordering: if the
+  // selection changed underneath it, the stale order is ignored.
+  function applyOrder(orderedIds: string[]) {
+    setSelectedIds((prev) =>
+      orderedIds.length === prev.length && orderedIds.every((id) => prev.includes(id)) ? orderedIds : prev,
+    );
   }
 
   // No back history when this screen was deep-linked, reloaded directly, or
@@ -720,7 +748,7 @@ export default function ShareCardScreen() {
       // deliberately doesn't broaden that). Adding a second card while the
       // foreign source item is still selected would only fail confusingly
       // at Post time, so it's blocked here instead, with a clear reason —
-      // removing the foreign card first (via the reorder strip's own X)
+      // removing the foreign card first (via the Selected Items bar's or Preview's X)
       // frees this back up for a normal multi-card, all-own-items post.
       if (sourceItem && sourceItem.user_id !== currentUserId && prev.includes(sourceItem.id)) {
         Alert.alert(
@@ -731,6 +759,20 @@ export default function ShareCardScreen() {
       }
       return [...prev, id];
     });
+  }
+
+  // Every way out of Preview. Also clears the drag flag: leaving mid-drag
+  // unmounts the grid before it can report the release.
+  function backToSelect() {
+    setDragActive(false);
+    setStep('select');
+  }
+
+  // Preview's per-card X. Removing the last card leaves nothing to arrange
+  // or post — back to selection.
+  function removeFromPreview(item: (typeof shareableItems)[number]) {
+    if (selectedIds.length === 1 && selectedIds[0] === item.id) backToSelect();
+    toggleSelect(item);
   }
 
   async function handlePost() {
@@ -826,20 +868,33 @@ export default function ShareCardScreen() {
       <Stack.Screen
         options={{
           title: isForeignRepost ? 'Repost' : 'Share Item',
-          headerLeft: () => (
-            <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
-              <Text style={styles.headerCancel}>Cancel</Text>
-            </TouchableOpacity>
-          ),
-          headerRight: () => (
-            <TouchableOpacity onPress={handlePost} disabled={!canPost} hitSlop={8}>
-              {posting ? (
-                <ActivityIndicator size="small" color={PV2.link} />
-              ) : (
-                <Text style={[styles.headerPost, !canPost && styles.headerPostDisabled]}>Post</Text>
-              )}
-            </TouchableOpacity>
-          ),
+          // Preview's way back is its own Back button (selection kept); an
+          // iOS edge swipe would close the whole composer instead.
+          gestureEnabled: !inPreview,
+          headerLeft: () =>
+            inPreview ? (
+              <TouchableOpacity onPress={backToSelect} disabled={posting || dragActive} hitSlop={8}>
+                <Text style={styles.headerCancel}>Back</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={leaveScreen} hitSlop={8}>
+                <Text style={styles.headerCancel}>Cancel</Text>
+              </TouchableOpacity>
+            ),
+          headerRight: () =>
+            isPickerFlow && !inPreview ? (
+              <TouchableOpacity onPress={() => setStep('preview')} disabled={!canPreview} hitSlop={8}>
+                <Text style={[styles.headerPost, !canPreview && styles.headerPostDisabled]}>Preview</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPress={handlePost} disabled={!canPost} hitSlop={8}>
+                {posting ? (
+                  <ActivityIndicator size="small" color={PV2.link} />
+                ) : (
+                  <Text style={[styles.headerPost, !canPost && styles.headerPostDisabled]}>Post</Text>
+                )}
+              </TouchableOpacity>
+            ),
         }}
       />
 
@@ -932,308 +987,341 @@ export default function ShareCardScreen() {
         <KeyboardAvoidingView
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
-            {browse === null ? (
-              <>
-                {/* Step 1 — choose where to browse. All Cards first (the
-                    original single grid), then the user's root folders. No
-                    heading; the selection count only appears (right-aligned)
-                    once something is selected, so it adds no empty row. */}
-                {selectedIds.length > 0 && (
-                  <Text style={[styles.selectedCount, styles.selectedCountAlone]}>
-                    {selectedIds.length}/{MAX_CARDS} selected
-                  </Text>
-                )}
-                <View style={styles.folderGrid}>
-                  <CollectionPreviewCard
-                    imageUrl={null}
-                    logo={ALL_CARDS_LOGO}
-                    logoAspectRatio={ALL_CARDS_LOGO_ASPECT_RATIO}
-                    title="All Cards"
-                    tileWidth={folderTileWidth}
-                    onPress={openAllCards}
-                  />
-                  {rootFolders.map((folder) => {
-                    const count = itemCounts[folder.id] ?? 0;
-                    return (
-                      <CollectionPreviewCard
-                        key={folder.id}
-                        imageUrl={coverSource(folder)?.uri ?? null}
-                        cacheKey={coverSource(folder)?.cacheKey}
-                        title={folder.name}
-                        subtitle={`${count} ${count === 1 ? 'item' : 'items'}`}
-                        tileWidth={folderTileWidth}
-                        onPress={() => openFolder(folder)}
-                      />
-                    );
-                  })}
-                </View>
-                {foldersLoading && rootFolders.length === 0 ? (
-                  <ActivityIndicator style={styles.scopeState} color={PV2.link} />
-                ) : foldersError && rootFolders.length === 0 ? (
-                  <View style={styles.scopeState}>
-                    <Text style={styles.emptyBody}>Couldn&apos;t load your collections.</Text>
-                    <TouchableOpacity style={styles.emptyButton} onPress={refreshFolders}>
-                      <Text style={styles.emptyButtonText}>Retry</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
-              </>
-            ) : (
-              <>
-                {/* Back up one level (to the parent folder, or the picker) —
-                    never leaves the composer; Cancel does that. */}
-                <TouchableOpacity
-                  style={styles.backRow}
-                  onPress={goUp}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Back to collections">
-                  <IconSymbol name="chevron.left" size={18} color={PV2.textPrimary} />
-                  <Text style={styles.backTitle} numberOfLines={1}>
-                    {currentFolder ? currentFolder.name : 'All Cards'}
-                  </Text>
-                </TouchableOpacity>
-
-                {childFolders.length > 0 && (
-                  <View style={styles.folderGrid}>
-                    {childFolders.map((folder) => (
-                      <CollectionPreviewCard
-                        key={folder.id}
-                        imageUrl={coverSource(folder)?.uri ?? null}
-                        cacheKey={coverSource(folder)?.cacheKey}
-                        title={folder.name}
-                        tileWidth={folderTileWidth}
-                        onPress={() => openFolder(folder)}
-                      />
-                    ))}
-                  </View>
-                )}
-
-                {/* This scope's cards. Keyed by scope, so opening a
-                    different folder (or All Cards) mounts a fresh load. */}
-                <ScopedCards
-                  key={currentFolder?.id ?? 'all'}
-                  scopeKey={currentFolder?.id ?? 'all'}
-                  userId={currentUserId}
-                  folderId={currentFolder?.id}
-                  seed={scopeSeed}
-                  onLoaded={rememberItems}>
-                  {(scope) =>
-                    // Seeded cards stay on screen while they refresh — the
-                    // spinner / error states are only for a scope with
-                    // nothing to show yet.
-                    scope.loading && scope.items.length === 0 ? (
-                      <ActivityIndicator style={styles.scopeState} color={PV2.link} />
-                    ) : scope.error && scope.items.length === 0 ? (
-                      // Distinct from the empty state below — a failed query
-                      // must never look identical to "you have no cards."
-                      // The raw Supabase message is only ever logged (via
-                      // useAllItems's own console.error), never rendered.
-                      <View style={styles.scopeState}>
-                        <Text style={styles.emptyTitle}>Couldn&apos;t load your collection</Text>
-                        <Text style={styles.emptyBody}>Something went wrong. Please try again.</Text>
-                        <TouchableOpacity style={styles.emptyButton} onPress={scope.refresh}>
-                          <Text style={styles.emptyButtonText}>Retry</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : scope.items.length === 0 ? (
-                      currentFolder ? (
-                        <Text style={styles.scopeEmpty}>
-                          {childFolders.length > 0
-                            ? 'No cards with photos directly in this collection.'
-                            : 'No cards with photos in this collection.'}
-                        </Text>
-                      ) : (
-                        <View style={styles.scopeState}>
-                          <Text style={styles.emptyTitle}>No cards to share</Text>
-                          <Text style={styles.emptyBody}>
-                            Add a photo to a card in your collection before sharing it.
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.emptyButton}
-                            onPress={() => router.push('/(tabs)/collection')}>
-                            <Text style={styles.emptyButtonText}>Go to Collection</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )
-                    ) : (
-                      <>
-                        <View style={styles.selectRow}>
-                          <Text style={styles.sectionLabel}>
-                            Choose 1{'–'}{MAX_CARDS} cards
-                          </Text>
-                          <Text style={styles.selectedCount}>
-                            {selectedIds.length}/{MAX_CARDS} selected
-                          </Text>
-                        </View>
-                        {selectedIds.length >= MAX_CARDS && (
-                          <Text style={styles.maxHint}>Maximum {MAX_CARDS} cards</Text>
-                        )}
-                        {scope.items.some((i) => !isPubliclyShareable(i)) && (
-                          <Text style={styles.privateHint}>
-                            Dimmed cards are private — only public cards in public collections can be shared.
-                          </Text>
-                        )}
-
-                        <View style={styles.grid}>
-                          {scope.items.map((item, index) => {
-                            const selectedIndex = selectedIds.indexOf(item.id);
-                            const isSelected = selectedIndex !== -1;
-                            const shareable = isPubliclyShareable(item);
-                            const signedUrl = item.primary_image_id
-                              ? scope.imageUrls.get(item.primary_image_id)
-                              : undefined;
-                            return (
-                              <Pressable
-                                key={item.id}
-                                style={styles.slotShadow}
-                                onPress={() => toggleSelect(item)}
-                                disabled={!shareable}
-                                accessibilityState={{ disabled: !shareable, selected: isSelected }}
-                                accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
-                                <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
-                                  {signedUrl && (
-                                    // Stable cacheKey (same identity every other preview-tier
-                                    // grid uses), so bytes survive signed-URL rotation and are
-                                    // shared with other screens; first screenful first.
-                                    <Image
-                                      source={{
-                                        uri: signedUrl,
-                                        cacheKey: itemImageCacheKey(
-                                          cacheIdentity,
-                                          item.primary_image_id!,
-                                          COMPACT_IMAGE_TIER,
-                                          scope.servedTiers,
-                                        ),
-                                      }}
-                                      style={styles.image}
-                                      contentFit="cover"
-                                      transition={150}
-                                      cachePolicy="memory-disk"
-                                      priority={index < PRIORITY_CARD_COUNT ? 'high' : 'low'}
-                                    />
-                                  )}
-                                  {isSelected && (
-                                    <View style={styles.selectedBadge}>
-                                      <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>
-                                    </View>
-                                  )}
-                                  {!shareable && (
-                                    <View style={styles.privateBadge} pointerEvents="none">
-                                      <Text style={styles.privateBadgeText}>Private</Text>
-                                    </View>
-                                  )}
-                                </View>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      </>
-                    )
-                  }
-                </ScopedCards>
-              </>
-            )}
-
-            {/* Step 2 — only appears once there's something to compose.
-                Reorder strip, caption, and preview all live in this one
-                section/page rather than a separate route (kept as a single
-                scroll so caption text and card order both stay intact
-                while the other is being adjusted — there's no navigation
-                transition between them to lose state across). */}
-            {selectedItems.length > 0 && (
-              <View style={styles.composeSection}>
-                <Text style={styles.sectionLabel}>Arrange your cards</Text>
+          {/* Step 1 — Select Items. Hidden, not unmounted, during Preview:
+              Back returns to the same folder and scroll position. */}
+          <View style={[styles.container, inPreview && styles.hidden]}>
+            {/* Persistent selection, above the browser's scroll — managing
+                it never means scrolling past a large collection. Same
+                order as the post; arranging happens in Preview. */}
+            <View style={styles.selectedBar}>
+              <View style={styles.selectRow}>
+                <Text style={styles.sectionLabel}>Selected Items</Text>
+                <Text style={styles.selectedCount}>
+                  {selectedIds.length}/{MAX_CARDS} selected
+                </Text>
+              </View>
+              {selectedItems.length === 0 ? (
+                <Text style={styles.selectedBarEmpty}>Tap cards below to choose up to {MAX_CARDS}.</Text>
+              ) : (
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.reorderRow}>
-                  {selectedItems.map((item, index) => {
+                  contentContainerStyle={styles.selectedBarRow}>
+                  {selectedItems.map((item) => {
                     const signedUrl = item.primary_image_id
                       ? signedItemImageUrls.get(item.primary_image_id)
                       : undefined;
                     return (
-                      <View key={item.id} style={styles.reorderThumbWrap}>
-                        <View style={styles.reorderThumb}>
-                          {signedUrl && (
-                            <Image
-                              source={{
-                                uri: signedUrl,
-                                cacheKey: itemImageCacheKey(
-                                  cacheIdentity,
-                                  item.primary_image_id!,
-                                  COMPACT_IMAGE_TIER,
-                                  signedItemServedTiers,
-                                ),
-                              }}
-                              style={styles.image}
-                              contentFit="cover"
-                              cachePolicy="memory-disk"
-                            />
-                          )}
-                          <View style={styles.selectedBadge}>
-                            <Text style={styles.selectedBadgeText}>{index + 1}</Text>
-                          </View>
-                          <TouchableOpacity
-                            style={styles.reorderRemoveBtn}
-                            onPress={() => toggleSelect(item)}
-                            hitSlop={6}
-                            accessibilityRole="button"
-                            accessibilityLabel="Remove card from post">
-                            <IconSymbol name="xmark" size={12} color={PV2.textPrimary} />
-                          </TouchableOpacity>
-                        </View>
-                        <View style={styles.reorderControls}>
-                          <TouchableOpacity
-                            onPress={() => moveSelected(item.id, -1)}
-                            disabled={index === 0}
-                            hitSlop={6}
-                            style={styles.reorderArrowBtn}
-                            accessibilityRole="button"
-                            accessibilityLabel="Move card earlier">
-                            <IconSymbol
-                              name="chevron.left"
-                              size={14}
-                              color={index === 0 ? PV2.textTertiary : PV2.textPrimary}
-                            />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => moveSelected(item.id, 1)}
-                            disabled={index === selectedItems.length - 1}
-                            hitSlop={6}
-                            style={styles.reorderArrowBtn}
-                            accessibilityRole="button"
-                            accessibilityLabel="Move card later">
-                            <IconSymbol
-                              name="chevron.right"
-                              size={14}
-                              color={index === selectedItems.length - 1 ? PV2.textTertiary : PV2.textPrimary}
-                            />
-                          </TouchableOpacity>
-                        </View>
+                      <View key={item.id} style={styles.selectedBarThumb}>
+                        {signedUrl && (
+                          <Image
+                            source={{
+                              uri: signedUrl,
+                              cacheKey: itemImageCacheKey(
+                                cacheIdentity,
+                                item.primary_image_id!,
+                                COMPACT_IMAGE_TIER,
+                                signedItemServedTiers,
+                              ),
+                            }}
+                            style={styles.image}
+                            contentFit="cover"
+                            cachePolicy="memory-disk"
+                          />
+                        )}
+                        <TouchableOpacity
+                          style={styles.selectedBarRemoveBtn}
+                          onPress={() => toggleSelect(item)}
+                          hitSlop={8}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove ${item.title} from selection`}>
+                          <IconSymbol name="xmark" size={10} color={PV2.textPrimary} />
+                        </TouchableOpacity>
                       </View>
                     );
                   })}
                 </ScrollView>
+              )}
+            </View>
 
-                <Text style={styles.sectionLabel}>Preview</Text>
-                <SharePostPreview
-                  avatarUrl={currentProfile?.avatar_url ?? null}
-                  displayName={currentProfile?.display_name || currentProfile?.username || ''}
-                  username={currentProfile?.username ?? ''}
-                  caption={caption}
-                  cards={previewCards}
-                />
+            <ScrollView
+              ref={browseScrollRef}
+              contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
+              {browse === null ? (
+                <>
+                  {/* Choose where to browse. All Cards first (the original
+                      single grid), then the user's root folders. */}
+                  <View style={styles.folderGrid}>
+                    <CollectionPreviewCard
+                      imageUrl={null}
+                      logo={ALL_CARDS_LOGO}
+                      logoAspectRatio={ALL_CARDS_LOGO_ASPECT_RATIO}
+                      title="All Cards"
+                      tileWidth={folderTileWidth}
+                      onPress={openAllCards}
+                    />
+                    {rootFolders.map((folder) => {
+                      const count = itemCounts[folder.id] ?? 0;
+                      return (
+                        <CollectionPreviewCard
+                          key={folder.id}
+                          imageUrl={coverSource(folder)?.uri ?? null}
+                          cacheKey={coverSource(folder)?.cacheKey}
+                          title={folder.name}
+                          subtitle={`${count} ${count === 1 ? 'item' : 'items'}`}
+                          tileWidth={folderTileWidth}
+                          onPress={() => openFolder(folder)}
+                        />
+                      );
+                    })}
+                  </View>
+                  {foldersLoading && rootFolders.length === 0 ? (
+                    <ActivityIndicator style={styles.scopeState} color={PV2.link} />
+                  ) : foldersError && rootFolders.length === 0 ? (
+                    <View style={styles.scopeState}>
+                      <Text style={styles.emptyBody}>Couldn&apos;t load your collections.</Text>
+                      <TouchableOpacity style={styles.emptyButton} onPress={refreshFolders}>
+                        <Text style={styles.emptyButtonText}>Retry</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {/* Back up one level (to the parent folder, or the picker) —
+                      never leaves the composer; Cancel does that. */}
+                  <TouchableOpacity
+                    style={styles.backRow}
+                    onPress={goUp}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to collections">
+                    <IconSymbol name="chevron.left" size={18} color={PV2.textPrimary} />
+                    <Text style={styles.backTitle} numberOfLines={1}>
+                      {currentFolder ? currentFolder.name : 'All Cards'}
+                    </Text>
+                  </TouchableOpacity>
 
-                <CaptionInput {...captionInputProps} />
-              </View>
-            )}
-          </ScrollView>
+                  {childFolders.length > 0 && (
+                    <View style={styles.folderGrid}>
+                      {childFolders.map((folder) => (
+                        <CollectionPreviewCard
+                          key={folder.id}
+                          imageUrl={coverSource(folder)?.uri ?? null}
+                          cacheKey={coverSource(folder)?.cacheKey}
+                          title={folder.name}
+                          tileWidth={folderTileWidth}
+                          onPress={() => openFolder(folder)}
+                        />
+                      ))}
+                    </View>
+                  )}
+
+                  {/* This scope's cards. Keyed by scope, so opening a
+                      different folder (or All Cards) mounts a fresh load. */}
+                  <ScopedCards
+                    key={currentFolder?.id ?? 'all'}
+                    scopeKey={currentFolder?.id ?? 'all'}
+                    userId={currentUserId}
+                    folderId={currentFolder?.id}
+                    seed={scopeSeed}
+                    onLoaded={rememberItems}>
+                    {(scope) =>
+                      // Seeded cards stay on screen while they refresh — the
+                      // spinner / error states are only for a scope with
+                      // nothing to show yet.
+                      scope.loading && scope.items.length === 0 ? (
+                        <ActivityIndicator style={styles.scopeState} color={PV2.link} />
+                      ) : scope.error && scope.items.length === 0 ? (
+                        // Distinct from the empty state below — a failed query
+                        // must never look identical to "you have no cards."
+                        // The raw Supabase message is only ever logged (via
+                        // useAllItems's own console.error), never rendered.
+                        <View style={styles.scopeState}>
+                          <Text style={styles.emptyTitle}>Couldn&apos;t load your collection</Text>
+                          <Text style={styles.emptyBody}>Something went wrong. Please try again.</Text>
+                          <TouchableOpacity style={styles.emptyButton} onPress={scope.refresh}>
+                            <Text style={styles.emptyButtonText}>Retry</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : scope.items.length === 0 ? (
+                        currentFolder ? (
+                          <Text style={styles.scopeEmpty}>
+                            {childFolders.length > 0
+                              ? 'No cards with photos directly in this collection.'
+                              : 'No cards with photos in this collection.'}
+                          </Text>
+                        ) : (
+                          <View style={styles.scopeState}>
+                            <Text style={styles.emptyTitle}>No cards to share</Text>
+                            <Text style={styles.emptyBody}>
+                              Add a photo to a card in your collection before sharing it.
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.emptyButton}
+                              onPress={() => router.push('/(tabs)/collection')}>
+                              <Text style={styles.emptyButtonText}>Go to Collection</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )
+                      ) : (
+                        <>
+                          {/* The count lives in the Selected Items bar above. */}
+                          <Text style={styles.sectionLabel}>
+                            Choose 1{'–'}{MAX_CARDS} cards
+                          </Text>
+                          {selectedIds.length >= MAX_CARDS && (
+                            <Text style={styles.maxHint}>Maximum {MAX_CARDS} cards</Text>
+                          )}
+                          {scope.items.some((i) => !isPubliclyShareable(i)) && (
+                            <Text style={styles.privateHint}>
+                              Dimmed cards are private — only public cards in public collections can be shared.
+                            </Text>
+                          )}
+
+                          <View style={styles.grid}>
+                            {scope.items.map((item, index) => {
+                              const selectedIndex = selectedIds.indexOf(item.id);
+                              const isSelected = selectedIndex !== -1;
+                              const shareable = isPubliclyShareable(item);
+                              const signedUrl = item.primary_image_id
+                                ? scope.imageUrls.get(item.primary_image_id)
+                                : undefined;
+                              return (
+                                <Pressable
+                                  key={item.id}
+                                  style={styles.slotShadow}
+                                  onPress={() => toggleSelect(item)}
+                                  disabled={!shareable}
+                                  accessibilityState={{ disabled: !shareable, selected: isSelected }}
+                                  accessibilityLabel={shareable ? undefined : 'Private card — cannot be shared to the feed'}>
+                                  <View style={[styles.slot, isSelected && styles.slotSelected, !shareable && styles.slotPrivate]}>
+                                    {signedUrl && (
+                                      // Stable cacheKey (same identity every other preview-tier
+                                      // grid uses), so bytes survive signed-URL rotation and are
+                                      // shared with other screens; first screenful first.
+                                      <Image
+                                        source={{
+                                          uri: signedUrl,
+                                          cacheKey: itemImageCacheKey(
+                                            cacheIdentity,
+                                            item.primary_image_id!,
+                                            COMPACT_IMAGE_TIER,
+                                            scope.servedTiers,
+                                          ),
+                                        }}
+                                        style={styles.image}
+                                        contentFit="cover"
+                                        transition={150}
+                                        cachePolicy="memory-disk"
+                                        priority={index < PRIORITY_CARD_COUNT ? 'high' : 'low'}
+                                      />
+                                    )}
+                                    {isSelected && (
+                                      <View style={styles.selectedBadge}>
+                                        <Text style={styles.selectedBadgeText}>{selectedIndex + 1}</Text>
+                                      </View>
+                                    )}
+                                    {!shareable && (
+                                      <View style={styles.privateBadge} pointerEvents="none">
+                                        <Text style={styles.privateBadgeText}>Private</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        </>
+                      )
+                    }
+                  </ScopedCards>
+                </>
+              )}
+            </ScrollView>
+          </View>
+
+          {/* Step 2 — Preview: arrange, preview, caption, Post. A step of
+              this screen rather than a separate route, so card order and
+              caption text survive going Back and returning. */}
+          {inPreview && selectedItems.length > 0 && (
+            <ScrollView
+              ref={scrollRef}
+              style={styles.container}
+              contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              // Paused while a card is lifted, so a vertical drag moves the
+              // card rather than the page.
+              scrollEnabled={!dragActive}>
+              <Text style={styles.sectionLabel}>Arrange your cards</Text>
+              {selectedItems.length > 1 && (
+                <Text style={styles.arrangeHint}>Press and hold a card, then drag to reorder. The first card leads the post.</Text>
+              )}
+              {/* Long-press-and-drag (ShareCardDragGrid); a drop reorders
+                  selectedIds locally — nothing is saved until Post. */}
+              <ShareCardDragGrid
+                items={selectedItems}
+                enabled={!posting}
+                onReorder={applyOrder}
+                onDragActiveChange={setDragActive}
+                cellWidth={ARRANGE_THUMB_WIDTH}
+                cellHeight={(ARRANGE_THUMB_WIDTH * 4) / 3}
+                gap={ARRANGE_GAP}
+                columns={arrangeColumns}
+                renderItem={(item, index) => {
+                  const signedUrl = item.primary_image_id
+                    ? signedItemImageUrls.get(item.primary_image_id)
+                    : undefined;
+                  return (
+                    <View style={styles.reorderThumb}>
+                      {signedUrl && (
+                        <Image
+                          source={{
+                            uri: signedUrl,
+                            cacheKey: itemImageCacheKey(
+                              cacheIdentity,
+                              item.primary_image_id!,
+                              COMPACT_IMAGE_TIER,
+                              signedItemServedTiers,
+                            ),
+                          }}
+                          style={styles.image}
+                          contentFit="cover"
+                          cachePolicy="memory-disk"
+                        />
+                      )}
+                      <View style={styles.selectedBadge} pointerEvents="none">
+                        <Text style={styles.selectedBadgeText}>{index + 1}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.reorderRemoveBtn}
+                        onPress={() => removeFromPreview(item)}
+                        disabled={posting}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove card from post">
+                        <IconSymbol name="xmark" size={12} color={PV2.textPrimary} />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                }}
+              />
+
+              <Text style={styles.sectionLabel}>Preview</Text>
+              <SharePostPreview
+                avatarUrl={currentProfile?.avatar_url ?? null}
+                displayName={currentProfile?.display_name || currentProfile?.username || ''}
+                username={currentProfile?.username ?? ''}
+                caption={caption}
+                cards={previewCards}
+              />
+
+              <CaptionInput {...captionInputProps} />
+            </ScrollView>
+          )}
         </KeyboardAvoidingView>
       )}
     </>
@@ -1278,8 +1366,47 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: PV2.textPrimary,
   },
-  selectedCountAlone: {
-    alignSelf: 'flex-end',
+  hidden: {
+    display: 'none',
+  },
+  // Selection step's persistent Selected Items bar — fixed above the
+  // browser's scroll, one row tall whether empty or not (no layout jump).
+  selectedBar: {
+    paddingHorizontal: SCROLL_PADDING,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: PV2.dividerColor,
+    backgroundColor: PV2.bg,
+  },
+  selectedBarRow: {
+    gap: 8,
+  },
+  selectedBarThumb: {
+    width: SELECTED_THUMB_WIDTH,
+    aspectRatio: 3 / 4,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: PV2.collectorPanelBg,
+  },
+  selectedBarEmpty: {
+    height: (SELECTED_THUMB_WIDTH * 4) / 3,
+    fontSize: 13,
+    color: PV2.textTertiary,
+    textAlignVertical: 'center',
+    lineHeight: (SELECTED_THUMB_WIDTH * 4) / 3,
+  },
+  selectedBarRemoveBtn: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   maxHint: {
     fontSize: 12,
@@ -1389,24 +1516,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  composeSection: {
-    gap: 12,
-    marginTop: 4,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: PV2.dividerColor,
-  },
-  reorderRow: {
-    gap: 10,
-    paddingBottom: 2,
-  },
-  reorderThumbWrap: {
-    width: 84,
-    alignItems: 'center',
-    gap: 6,
+  arrangeHint: {
+    fontSize: 12,
+    color: PV2.textTertiary,
+    marginTop: -6,
   },
   reorderThumb: {
-    width: 84,
+    width: ARRANGE_THUMB_WIDTH,
     aspectRatio: 3 / 4,
     borderRadius: 10,
     overflow: 'hidden',
@@ -1420,19 +1536,6 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     backgroundColor: 'rgba(0,0,0,0.55)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  reorderControls: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-  reorderArrowBtn: {
-    width: 30,
-    height: 26,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: PV2.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
