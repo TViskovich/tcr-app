@@ -169,7 +169,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
         style={styles.sheetWrap}>
         <View style={[styles.sheet, { maxHeight: sheetMaxHeight }, keyboardHeight > 0 && styles.sheetKeyboardUp]}>
           <View style={styles.handle} />
-          <Text style={styles.title}>New Folder</Text>
+          <Text style={styles.title}>New Collection</Text>
           {/* Shrinks to whatever the capped sheet (sheetMaxHeight) leaves
               after the handle and title, then scrolls; the default name +
               privacy sheet fits as before. */}
@@ -181,7 +181,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
             showsVerticalScrollIndicator={false}>
             <TextInput
               style={styles.input}
-              placeholder="Folder name"
+              placeholder="Collection Title"
               placeholderTextColor={PV2.textTertiary}
               value={name}
               onChangeText={setName}
@@ -228,7 +228,7 @@ export function CreateFolderModal({ visible, userId, onClose, onCreated, parentF
               {loading ? (
                 <ActivityIndicator color={PV2.textPrimary} />
               ) : (
-                <Text style={styles.buttonText}>Create Folder</Text>
+                <Text style={styles.buttonText}>Create Collection</Text>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelButton} onPress={handleClose}>

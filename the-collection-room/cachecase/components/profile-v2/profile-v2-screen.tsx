@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 
+import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -29,6 +30,7 @@ import { RepostMenu } from '@/components/feed/repost-menu';
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
+import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { ShareSheet } from '@/components/share/share-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -460,6 +462,17 @@ export function ProfileV2Screen({ userId }: Props) {
   // onCreatePress below, which still navigates to the old Collection page
   // and is left untouched).
   const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  // Owner only: long-pressing the tab row's Collection pill opens the same
+  // Add menu (Add Item / Add Collection) as the Collections screen's
+  // "+ Add". Add Collection reuses this screen's own CreateFolderModal
+  // (root level, refreshes folders on create); Add Item opens Add Item in
+  // the same no-folder preview mode that "+ Add" → Add Item does
+  // (app/(tabs)/collection.tsx's addItemPreview) — never picks a folder.
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  function handleCollectionLongPress() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setShowAddMenu(true);
+  }
   // Bookmarking a whole Grails showcase, not any single item — the same
   // saved_grails-backed hook already used by app/grails/[userId].tsx
   // (a route with no live entry point from normal browsing; this profile
@@ -729,6 +742,7 @@ export function ProfileV2Screen({ userId }: Props) {
   }>(() => ({ userId, sections: new Set<ProfileV2Section>(['posts']) }));
 
   function handleSectionChange(next: ProfileV2Section) {
+    if (next !== section) clampAfterSectionChangeRef.current = true;
     setSection(next);
     setVisitedSections((prev) => {
       if (prev.userId === userId && prev.sections.has(next)) return prev;
@@ -743,12 +757,21 @@ export function ProfileV2Screen({ userId }: Props) {
   // mounted-but-inactive ones.
   const isSectionMounted = (s: ProfileV2Section) =>
     s === section || (visitedSections.userId === userId && visitedSections.sections.has(s));
-  // Measured once off the posts section's real rendered height (see
-  // ProfileV2SectionPage below) — posts is now both the default tab and the
-  // tallest reachable one, so this captures a real dimension rather than a
-  // hardcoded guess, with no visible flash since it's measured before the
-  // user can switch to a shorter section.
-  const [sectionMinHeight, setSectionMinHeight] = useState<number | undefined>(undefined);
+  // Every tab's body is its own real height (no shared floor — see
+  // ProfileV2SectionPage below), so switching from a long tab scrolled far
+  // down to a shorter one can leave the offset past the new end. The next
+  // content-size change after a switch (the new tab's layout) clamps it to
+  // the new bottom — once, only after a switch, so it never fights the
+  // user or iOS's keyboard inset in edit mode.
+  const scrollYRef = useRef(0);
+  const viewportHeightRef = useRef(0);
+  const clampAfterSectionChangeRef = useRef(false);
+  function clampScrollToContent(contentHeight: number) {
+    if (!clampAfterSectionChangeRef.current) return;
+    clampAfterSectionChangeRef.current = false;
+    const maxY = Math.max(0, contentHeight - viewportHeightRef.current);
+    if (scrollYRef.current > maxY + 1) scrollRef.current?.scrollTo({ y: maxY, animated: false });
+  }
 
   // ProfileV2IdentityCard's expandable details panel (ProfileV2ExpandedDetails,
   // rendered directly beneath it) — a plain, ephemeral, per-screen-instance
@@ -2070,8 +2093,20 @@ export function ProfileV2Screen({ userId }: Props) {
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           showsVerticalScrollIndicator={false}
-          onScroll={navbarOnScroll}
+          onScroll={(e) => {
+            scrollYRef.current = e.nativeEvent.contentOffset.y;
+            navbarOnScroll(e);
+          }}
           scrollEventThrottle={scrollEventThrottle}
+          onLayout={(e) => {
+            viewportHeightRef.current = e.nativeEvent.layout.height;
+          }}
+          onContentSizeChange={(_w, h) => clampScrollToContent(h)}
+          // The user scrolled first — their position wins over a pending
+          // tab-switch clamp.
+          onScrollBeginDrag={() => {
+            clampAfterSectionChangeRef.current = false;
+          }}
           stickyHeaderIndices={[1]}
           scrollEnabled={!grailDragActive}>
 
@@ -2303,6 +2338,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 active={section}
                 onChange={handleSectionChange}
                 bannerVariant={resolveProfileBannerVariant(profile.banner_variant)}
+                onCollectionLongPress={isOwnProfile && currentUserId ? handleCollectionLongPress : undefined}
               />
             )}
           </View>
@@ -2498,33 +2534,18 @@ export function ProfileV2Screen({ userId }: Props) {
                  section anymore; this block only renders whichever
                  section's content is currently active. */
             <>
-              {/* One shared, fixed-minHeight container for whichever section
-                  is active — measured once off the posts section (now the
-                  default/starting tab). 'posts'/'cachecase'/'transfer'/
-                  'tagged' still hold that same floor instead of shrinking
-                  the page and shifting everything below it. EXEMPT:
-                  'items' and 'collections' — that floor is `posts`'s own
-                  rendered height, which for an active poster can run to
-                  several screens; enforcing that same floor on a short
-                  items grid or a short folder/collection list left a huge
-                  dead gap below the real content, before the ScrollView's
-                  own TAB_BAR_HEIGHT+insets.bottom+24 nav-clearance padding
-                  even started — scrolling had to cross most of `posts`'s
-                  own height before reaching the nav, not just clear it.
-                  This isn't owner-gated code — it's shared logic that
-                  surfaces whenever a given profile's posts/items or posts/
-                  collections ratio is lopsided enough; a profile whose
-                  items or collections tab is already at least as tall as
-                  posts sees no change either way. 'tagged' is left sharing
-                  the floor for now, per instruction, unless its own content
-                  shows the same problem. */}
-              <ProfileV2SectionPage
-                minHeight={section === 'items' || section === 'collections' ? undefined : sectionMinHeight}
-                onLayout={(e) => {
-                  if (section === 'posts' && sectionMinHeight === undefined) {
-                    setSectionMinHeight(e.nativeEvent.layout.height);
-                  }
-                }}>
+              {/* One container for whichever section is active, sized by
+                  that section's own content — no shared height floor. (It
+                  used to hold every tab to the posts section's measured
+                  height, which for an active poster runs to several
+                  screens: a one-item Tagged tab could scroll nearly a whole
+                  screen of empty space. Items and Collections had already
+                  been exempted for the same reason.) The ScrollView's own
+                  TAB_BAR_HEIGHT+insets.bottom+24 padding is the only space
+                  below the content — just enough to lift the last row clear
+                  of the floating nav. A shorter tab's scroll offset is
+                  clamped on switch (clampScrollToContent). */}
+              <ProfileV2SectionPage>
                 {section === 'cachecase' && (
                   <>
                     <ProfileV2Identity
@@ -2643,6 +2664,21 @@ export function ProfileV2Screen({ userId }: Props) {
           feed={{ kind: 'unsupported', subtitle: 'Not available for profiles yet' }}
           dm={{ kind: 'unsupported', subtitle: 'Not available for profiles yet' }}
           onShareElsewhere={handleShareProfileElsewhere}
+        />
+      )}
+
+      {isOwnProfile && currentUserId && (
+        <CollectionAddMenu
+          visible={showAddMenu}
+          onClose={() => setShowAddMenu(false)}
+          onAddFolder={() => {
+            setShowAddMenu(false);
+            setShowCreateFolderModal(true);
+          }}
+          onAddItem={() => {
+            setShowAddMenu(false);
+            router.push({ pathname: '/item/new', params: { mode: 'preview' } });
+          }}
         />
       )}
 

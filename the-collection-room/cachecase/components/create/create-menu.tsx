@@ -90,8 +90,6 @@ export function CreateMenu({ visible, onClose }: Props) {
           {/* Drag handle */}
           <View style={styles.handle} />
 
-          <Text style={styles.title}>Create</Text>
-
           {OPTIONS.map((option, index) => (
             <View key={option.id}>
               {index > 0 && <View style={styles.divider} />}
@@ -142,14 +140,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     alignSelf: 'center',
     marginBottom: 20,
-  },
-  title: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.40)',
-    letterSpacing: 1.0,
-    textTransform: 'uppercase',
-    marginBottom: 6,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

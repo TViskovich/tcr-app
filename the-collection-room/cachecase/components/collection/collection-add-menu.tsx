@@ -1,6 +1,13 @@
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+
+// The floating tab bar's gap above the bottom safe-area inset
+// (BAR_BOTTOM_GAP in components/navigation/global-floating-tab-bar.tsx).
+const FLOATING_NAV_BOTTOM_GAP = 4;
 
 type Props = {
   visible: boolean;
@@ -11,7 +18,7 @@ type Props = {
 
 type MenuOption = {
   id: string;
-  icon: 'folder.fill' | 'camera.fill';
+  icon: 'folder.fill' | 'rectangle.stack.fill';
   title: string;
   subtitle: string;
   onSelect: () => void;
@@ -20,24 +27,30 @@ type MenuOption = {
 // The Collections screen's "+ Add" chooser — same bottom-sheet shell shape
 // (backdrop dismiss, drag handle, divided icon rows) as
 // components/create/create-menu.tsx, kept as its own small component
-// rather than added to that one since these two options (Add Folder / Add
-// Item) are specific to the Collections screen, not general content-create
-// types like Text Post/Share Card.
+// rather than added to that one since these two options (Add Item / Add
+// Collection) are specific to the Collections screen, not general
+// content-create types like Text Post/Share Card. Icons match the Create
+// menu's own item (Share Item) and collection (Share a Collection) icons.
+// "Add Collection" is UI wording only — it still creates a folder.
 export function CollectionAddMenu({ visible, onClose, onAddFolder, onAddItem }: Props) {
+  // The options sit above where the floating tab bar normally is — up in
+  // easy thumb reach — rather than down against the home indicator.
+  const insets = useSafeAreaInsets();
+  const bottomSpace = insets.bottom + FLOATING_NAV_BOTTOM_GAP + TAB_BAR_HEIGHT;
   const OPTIONS: MenuOption[] = [
     {
-      id: 'folder',
-      icon: 'folder.fill',
-      title: 'Add Folder',
-      subtitle: 'Create a new collection',
-      onSelect: onAddFolder,
-    },
-    {
       id: 'item',
-      icon: 'camera.fill',
+      icon: 'rectangle.stack.fill',
       title: 'Add Item',
       subtitle: 'Add a card to a collection',
       onSelect: onAddItem,
+    },
+    {
+      id: 'folder',
+      icon: 'folder.fill',
+      title: 'Add Collection',
+      subtitle: 'Create a new collection',
+      onSelect: onAddFolder,
     },
   ];
 
@@ -55,8 +68,6 @@ export function CollectionAddMenu({ visible, onClose, onAddFolder, onAddItem }: 
         <View style={styles.sheet}>
           {/* Drag handle */}
           <View style={styles.handle} />
-
-          <Text style={styles.title}>Add</Text>
 
           {OPTIONS.map((option, index) => (
             <View key={option.id}>
@@ -80,8 +91,8 @@ export function CollectionAddMenu({ visible, onClose, onAddFolder, onAddItem }: 
             </View>
           ))}
 
-          {/* Bottom safe-area spacer */}
-          <View style={styles.bottomSpacer} />
+          {/* Lifts the options into thumb reach (see bottomSpace) */}
+          <View style={{ height: bottomSpace }} />
         </View>
       </View>
     </Modal>
@@ -108,14 +119,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     alignSelf: 'center',
     marginBottom: 20,
-  },
-  title: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.40)',
-    letterSpacing: 1.0,
-    textTransform: 'uppercase',
-    marginBottom: 6,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
@@ -148,8 +151,5 @@ const styles = StyleSheet.create({
   rowSubtitle: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.50)',
-  },
-  bottomSpacer: {
-    height: 36,
   },
 });

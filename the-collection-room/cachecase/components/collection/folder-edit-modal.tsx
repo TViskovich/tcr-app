@@ -135,8 +135,8 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
 
   function confirmDeleteFolder() {
     Alert.alert(
-      'Delete Folder',
-      `Delete "${folder.name}"? This will permanently remove the folder and everything inside it. This can't be undone.`,
+      'Delete Collection',
+      `Delete "${folder.name}"? This will permanently remove the collection and everything inside it. This can't be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: deleteFolder },
@@ -184,7 +184,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           <TouchableOpacity onPress={onClose} hitSlop={8}>
             <Text style={styles.modalCancel}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.modalTitle}>Edit Folder</Text>
+          <Text style={styles.modalTitle}>Edit Collection</Text>
           <TouchableOpacity onPress={saveEditFolder} disabled={editSaving || !editName.trim()} hitSlop={8}>
             {editSaving
               ? <ActivityIndicator size="small" color={PV2.link} />
@@ -203,12 +203,12 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
           automaticallyAdjustKeyboardInsets>
           {/* Folder name */}
           <View>
-            <Text style={styles.modalLabel}>Folder Name</Text>
+            <Text style={styles.modalLabel}>Collection Name</Text>
             <TextInput
               style={styles.modalInput}
               value={editName}
               onChangeText={setEditName}
-              placeholder="Folder name"
+              placeholder="Collection name"
               placeholderTextColor={PV2.textTertiary}
               autoFocus
               maxLength={80}
@@ -252,7 +252,7 @@ export function FolderEditModal({ visible, folder, currentUserId, onClose, onSav
               disabled={deleting}>
               {deleting
                 ? <ActivityIndicator size="small" color={PV2.accent} />
-                : <Text style={styles.modalDeleteButtonText}>Delete Folder</Text>
+                : <Text style={styles.modalDeleteButtonText}>Delete Collection</Text>
               }
             </TouchableOpacity>
           </View>

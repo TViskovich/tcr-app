@@ -341,7 +341,6 @@ function FollowingItemTile({
   imageUrl,
   imageCacheKey,
   columnWidth,
-  isNewest,
   onPress,
   onOwnerPress,
 }: {
@@ -349,7 +348,6 @@ function FollowingItemTile({
   imageUrl: string | undefined;
   imageCacheKey: string | undefined;
   columnWidth: number;
-  isNewest: boolean;
   onPress: () => void;
   onOwnerPress: () => void;
 }) {
@@ -363,7 +361,7 @@ function FollowingItemTile({
 
   return (
     <TouchableOpacity
-      style={[styles.tile, { width: columnWidth }, isNewest && styles.tileNewest]}
+      style={[styles.tile, { width: columnWidth }]}
       onPress={onPress}
       activeOpacity={0.9}>
       <View style={styles.tileImageBox}>
@@ -395,12 +393,6 @@ function FollowingItemTile({
           // The real <Image> above fades in via `transition` once imageUrl
           // resolves — no separate crossfade needed here.
           <View style={StyleSheet.absoluteFill} />
-        )}
-
-        {isNewest && (
-          <View style={styles.justAddedBadge}>
-            <Text style={styles.justAddedText}>Just added</Text>
-          </View>
         )}
       </View>
 
@@ -777,12 +769,6 @@ export function FollowingItemsFeed({
   const { session } = useAuth();
   const identity = session?.user?.id ?? 'anon';
 
-  // items is always fetched newest-first (see queryFollowingItemRows's own
-  // .order) regardless of the user-facing `sort` toggle below — this is
-  // what "the newest item" means for the Just Added badge, independent of
-  // which order the grid currently displays.
-  const newestItemId = items[0]?.id ?? null;
-
   const displayItems = useMemo(() => (sort === 'oldest' ? [...items].reverse() : items), [items, sort]);
 
   // The actual set of items this render MOUNTS tiles for — see mountCount's
@@ -1003,7 +989,6 @@ export function FollowingItemsFeed({
         imageUrl={imageUrl}
         imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, servedTierOf(imageId)) : undefined}
         columnWidth={columnWidth}
-        isNewest={item.id === newestItemId}
         onPress={() =>
           navigateOnce(() => {
             prefetchItemDetailImages([item.primary_image_id]);
@@ -1098,8 +1083,6 @@ export function FollowingItemsFeed({
   );
 }
 
-const MINT_ACCENT = '#74F5C8'; // app/(tabs)/_layout.tsx's own Home-tab mint/green — not yet a PV2 token.
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1174,36 +1157,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: PV2.border,
   },
-  // Subtle mint outline/glow only — deliberately no gradient border, per
-  // the explicit "not a large purple/pink gradient border" direction.
-  tileNewest: {
-    borderColor: 'rgba(116,245,200,0.55)',
-    shadowColor: MINT_ACCENT,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 3,
-  },
   tileImageBox: {
     width: '100%',
     aspectRatio: TILE_MEDIA_ASPECT_RATIO,
     backgroundColor: PV2.collectorPanelBg,
-  },
-  justAddedBadge: {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    backgroundColor: 'rgba(10,10,15,0.75)',
-    borderWidth: 1,
-    borderColor: MINT_ACCENT,
-  },
-  justAddedText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: MINT_ACCENT,
   },
   tileOwnerRow: {
     flexDirection: 'row',

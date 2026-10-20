@@ -45,28 +45,39 @@ type Props = {
   // The profile OWNER's banner (profiles.banner_variant), so a visitor sees
   // the owner's theme. null = legacy neon, same as the identity card.
   bannerVariant: ProfileBannerVariant | null;
+  // Owner only: long-pressing the Collection pill opens the Add menu (see
+  // profile-v2-screen.tsx). Omitted for a visitor, so that pill is
+  // tap-only. Once a long-press fires, releasing doesn't also select it.
+  onCollectionLongPress?: () => void;
 };
+
+// Hold time on the Collection pill before it opens the Add menu.
+const LONG_PRESS_MS = 400;
 
 // Four evenly-spaced pill tabs directly under ProfileV2IdentityCard —
 // replaces the old snap-to-center carousel (ProfileV2Selector) for Profile
 // V3's shared shell. Static row, no scroll/animation: tapping a pill just
 // sets `active` directly.
-export function ProfileV2TabRow({ active, onChange, bannerVariant }: Props) {
+export function ProfileV2TabRow({ active, onChange, bannerVariant, onCollectionLongPress }: Props) {
   const accent = getProfileBannerAccent(bannerVariant);
 
   return (
     <View style={styles.row}>
       {TABS.map((tab) => {
         const selected = tab.section === active;
+        const onLongPress = tab.section === 'collections' ? onCollectionLongPress : undefined;
         return (
           <TouchableOpacity
             key={tab.section}
             testID={`profile-v3-tab-${tab.section}`}
             style={styles.pill}
             onPress={() => onChange(tab.section)}
+            onLongPress={onLongPress}
+            delayLongPress={onLongPress ? LONG_PRESS_MS : undefined}
             activeOpacity={0.8}
             accessibilityRole="button"
-            accessibilityState={{ selected }}>
+            accessibilityState={{ selected }}
+            accessibilityHint={onLongPress ? 'Long press to add an item or collection' : undefined}>
             {/* Stroke = gradient filling the pill, covered by the opaque
                 surface inset STROKE_WIDTH on every side. */}
             <LinearGradient
