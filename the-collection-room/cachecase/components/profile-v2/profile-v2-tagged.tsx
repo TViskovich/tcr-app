@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ActivityIndicator, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
@@ -32,6 +33,9 @@ type Props = {
   isOwnProfile: boolean;
   onPressItem: (item: CollectionItem) => void;
   onPressFolder: (folder: Folder) => void;
+  // The saved cards this tab is showing, whenever they (re)load — Profile's
+  // Search Tagged Items searches exactly these, never a wider item set.
+  onCardsChange?: (cards: SavedCardEntry[]) => void;
 };
 
 // Profile V3's "Tagged" tab. The visible label stays "Tagged" (see
@@ -52,8 +56,11 @@ type Props = {
 // read in the app (app/saved.tsx, always for the signed-in session's own
 // id) — there is no existing precedent anywhere for showing one user's
 // saved_* rows to a different viewer.
-export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFolder }: Props) {
+export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFolder, onCardsChange }: Props) {
   const { folders, cards, loading } = useSavedAll(isOwnProfile ? userId : undefined);
+  useEffect(() => {
+    onCardsChange?.(cards);
+  }, [cards, onCardsChange]);
   // Same batched-signing convention as every other grid in this codebase —
   // one call for the whole tab, never one request per tile.
   const { urls: signedCardImageUrls } = useSignedItemImages(cards.map((c) => c.primary_image_id), COMPACT_IMAGE_TIER);

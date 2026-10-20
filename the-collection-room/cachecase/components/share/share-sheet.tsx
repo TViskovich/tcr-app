@@ -46,6 +46,10 @@ type Props = {
   feed: ShareSheetAction;
   dm: ShareSheetAction;
   onShareElsewhere: () => void;
+  // Icon tile colors. 'standard' (default — folders, profiles): see the
+  // comment above ShareSheet. 'brand' (Share Item): Feed and Direct Message
+  // on the same CacheCase blue, Elsewhere on neutral gray, every glyph white.
+  iconPalette?: 'standard' | 'brand';
 };
 
 // The CacheCase Share sheet — every in-app Share button opens this (Item
@@ -73,7 +77,9 @@ export function ShareSheet({
   feed,
   dm,
   onShareElsewhere,
+  iconPalette = 'standard',
 }: Props) {
+  const brand = iconPalette === 'brand';
   const [notice, setNotice] = useState<'feed' | 'dm' | null>(null);
   // Synchronous re-entry guard: the sheet stays touchable while its dismiss
   // animation runs, so a fast second tap could otherwise start the same
@@ -194,7 +200,9 @@ export function ShareSheet({
           </View>
 
           <View style={styles.optionsGroup}>
-            {renderRow('feed', feed, 'Feed', 'house', styles.iconWrapFeed, PV2.feedActive, styles.glyphLit)}
+            {brand
+              ? renderRow('feed', feed, 'Feed', 'house', styles.iconWrapDM)
+              : renderRow('feed', feed, 'Feed', 'house', styles.iconWrapFeed, PV2.feedActive, styles.glyphLit)}
 
             <View style={styles.divider} />
 
@@ -207,7 +215,7 @@ export function ShareSheet({
               onPress={() => run(onShareElsewhere)}
               activeOpacity={0.65}
               accessibilityRole="button">
-              <View style={[styles.iconWrap, styles.iconWrapExternal]}>
+              <View style={[styles.iconWrap, brand ? styles.iconWrapNeutral : styles.iconWrapExternal]}>
                 <IconSymbol name="square.and.arrow.up" size={20} color="#FFFFFF" />
               </View>
               <View style={styles.rowText}>
@@ -373,6 +381,10 @@ const styles = StyleSheet.create({
   },
   iconWrapExternal: {
     backgroundColor: PV2.actionExternalFill,
+  },
+  // iconPalette 'brand' (Share Item) only — Elsewhere's neutral gray tile.
+  iconWrapNeutral: {
+    backgroundColor: PV2.actionNeutralFill,
   },
   rowText: {
     flex: 1,

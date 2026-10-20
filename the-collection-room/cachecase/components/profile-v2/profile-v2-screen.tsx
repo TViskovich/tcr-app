@@ -32,6 +32,7 @@ import { TransactionsList } from '@/components/transactions/transactions-list';
 import { BackButton } from '@/components/ui/back-button';
 import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
+import { CreateMenu } from '@/components/create/create-menu';
 import { ShareSheet } from '@/components/share/share-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
@@ -47,7 +48,7 @@ import {
   type ExpectedGrailSlot,
 } from '@/hooks/use-grail-slots';
 import { useProfile } from '@/hooks/use-profile';
-import { useSavedGrails } from '@/hooks/use-saved';
+import { type SavedCardEntry, useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -87,6 +88,9 @@ import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2IdentityCard } from './profile-v2-identity-card';
 import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
+import { ProfileV2CollectionSearchSheet } from './profile-v2-collection-search-sheet';
+import { ProfileV2ItemSearchSheet } from './profile-v2-item-search-sheet';
+import { ProfileV2TaggedSearchSheet } from './profile-v2-tagged-search-sheet';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Stats } from './profile-v2-stats';
 import { ProfileV2TabRow, type ProfileV2Section } from './profile-v2-tab-row';
@@ -462,16 +466,52 @@ export function ProfileV2Screen({ userId }: Props) {
   // onCreatePress below, which still navigates to the old Collection page
   // and is left untouched).
   const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
-  // Owner only: long-pressing the tab row's Collection pill opens the same
-  // Add menu (Add Item / Add Collection) as the Collections screen's
-  // "+ Add". Add Collection reuses this screen's own CreateFolderModal
-  // (root level, refreshes folders on create); Add Item opens Add Item in
-  // the same no-folder preview mode that "+ Add" → Add Item does
-  // (app/(tabs)/collection.tsx's addItemPreview) — never picks a folder.
+  // Long-pressing the tab row's Collection pill, by context:
+  // - Own profile: the same Add menu (Add Item / Add Collection) as the
+  //   Collections screen's "+ Add". Add Collection reuses this screen's own
+  //   CreateFolderModal (root level, refreshes folders on create); Add Item
+  //   opens Add Item in the same no-folder preview mode that "+ Add" → Add
+  //   Item does (app/(tabs)/collection.tsx's addItemPreview) — never picks a
+  //   folder. A Search Collections field sits above those two options
+  //   (CollectionAddMenu's `search`); it only focuses when tapped.
+  // - Another collector's profile: Search Collections
+  //   (ProfileV2CollectionSearchSheet) — never any creation action.
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showCollectionSearch, setShowCollectionSearch] = useState(false);
   function handleCollectionLongPress() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    setShowAddMenu(true);
+    if (isOwnProfile) setShowAddMenu(true);
+    else setShowCollectionSearch(true);
+  }
+  // Own profile only: long-pressing the Posts pill (while Posts is active)
+  // opens the same Create Post menu as Home → Stack's "+" — the existing
+  // CreateMenu component, which owns its actions and navigation.
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  function handlePostsLongPress() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setShowCreateMenu(true);
+  }
+  // Owner and visitor alike: long-pressing the Items pill (while Items is
+  // active) opens Search Items over this profile's Items tab rows
+  // (allItems). A result opens the normal Item Detail screen
+  // (handleGrailItemPress — the Items grid's own tap), which decides the
+  // signed-in viewer's actions from ownership and RLS.
+  const [showItemSearch, setShowItemSearch] = useState(false);
+  function handleItemsLongPress() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setShowItemSearch(true);
+  }
+  // Own profile only: long-pressing the Tagged pill (while Tagged is
+  // active) opens Search Tagged Items over exactly the saved cards the
+  // Tagged tab is showing — ProfileV2Tagged hands them up (onCardsChange),
+  // so there's no second query and no wider item set. A result opens what
+  // tapping it in the Tagged grid opens (handleGrailItemPress). On another
+  // collector's profile the long-press is a no-op (see the tab row props).
+  const [taggedCards, setTaggedCards] = useState<SavedCardEntry[]>([]);
+  const [showTaggedSearch, setShowTaggedSearch] = useState(false);
+  function handleTaggedLongPress() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setShowTaggedSearch(true);
   }
   // Bookmarking a whole Grails showcase, not any single item — the same
   // saved_grails-backed hook already used by app/grails/[userId].tsx
@@ -1170,7 +1210,7 @@ export function ProfileV2Screen({ userId }: Props) {
   // same screen as the main Collection page, not a profile-only route.
   // Folder navigation always works, own profile or public; addFolderItem
   // (below) is owner-only.
-  function openFolder(folder: Folder) {
+  function openFolder(folder: Pick<Folder, 'id' | 'name'>) {
     // Start signing its header cover now, not after the folder screen mounts.
     prefetchFolderHeaderCover(folder.id);
     router.push({ pathname: '/collection/[folderId]', params: { folderId: folder.id, title: folder.name } });
@@ -2338,7 +2378,18 @@ export function ProfileV2Screen({ userId }: Props) {
                 active={section}
                 onChange={handleSectionChange}
                 bannerVariant={resolveProfileBannerVariant(profile.banner_variant)}
-                onCollectionLongPress={isOwnProfile && currentUserId ? handleCollectionLongPress : undefined}
+                onCollectionLongPress={currentUserId ? handleCollectionLongPress : undefined}
+                collectionLongPressHint={
+                  isOwnProfile ? 'Long press to add an item or collection' : 'Long press to search collections'
+                }
+                onPostsLongPress={isOwnProfile && currentUserId ? handlePostsLongPress : undefined}
+                postsLongPressHint="Long press to create a post"
+                onItemsLongPress={handleItemsLongPress}
+                itemsLongPressHint="Long press to search items"
+                // Visitor: a no-op, so a long hold neither opens anything nor
+                // switches tabs on release; no hint, since it does nothing.
+                onTaggedLongPress={isOwnProfile && currentUserId ? handleTaggedLongPress : () => {}}
+                taggedLongPressHint={isOwnProfile ? 'Long press to search tagged items' : undefined}
               />
             )}
           </View>
@@ -2639,6 +2690,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     isOwnProfile={isOwnProfile}
                     onPressItem={handleGrailItemPress}
                     onPressFolder={handleGrailCollectionPress}
+                    onCardsChange={isOwnProfile ? setTaggedCards : undefined}
                   />
                 )}
 
@@ -2668,6 +2720,50 @@ export function ProfileV2Screen({ userId }: Props) {
       )}
 
       {isOwnProfile && currentUserId && (
+        <ProfileV2TaggedSearchSheet
+          visible={showTaggedSearch}
+          items={taggedCards}
+          onClose={() => setShowTaggedSearch(false)}
+          onSelect={(item) => {
+            setShowTaggedSearch(false);
+            handleGrailItemPress(item);
+          }}
+        />
+      )}
+
+      {profile && (
+        <ProfileV2ItemSearchSheet
+          visible={showItemSearch}
+          ownerId={userId}
+          ownerName={displayName}
+          isOwnProfile={isOwnProfile}
+          items={allItems}
+          onClose={() => setShowItemSearch(false)}
+          onSelect={(item) => {
+            setShowItemSearch(false);
+            handleGrailItemPress(item);
+          }}
+        />
+      )}
+
+      {!isOwnProfile && profile && (
+        <ProfileV2CollectionSearchSheet
+          visible={showCollectionSearch}
+          ownerId={userId}
+          ownerName={displayName}
+          onClose={() => setShowCollectionSearch(false)}
+          onSelect={(collection) => {
+            setShowCollectionSearch(false);
+            openFolder(collection);
+          }}
+        />
+      )}
+
+      {isOwnProfile && currentUserId && (
+        <CreateMenu visible={showCreateMenu} onClose={() => setShowCreateMenu(false)} />
+      )}
+
+      {isOwnProfile && currentUserId && (
         <CollectionAddMenu
           visible={showAddMenu}
           onClose={() => setShowAddMenu(false)}
@@ -2678,6 +2774,15 @@ export function ProfileV2Screen({ userId }: Props) {
           onAddItem={() => {
             setShowAddMenu(false);
             router.push({ pathname: '/item/new', params: { mode: 'preview' } });
+          }}
+          // Search Collections at the top of the owner's Add menu — every
+          // one of their own collections, nested ones included.
+          search={{
+            ownerId: currentUserId,
+            onSelect: (collection) => {
+              setShowAddMenu(false);
+              openFolder(collection);
+            },
           }}
         />
       )}

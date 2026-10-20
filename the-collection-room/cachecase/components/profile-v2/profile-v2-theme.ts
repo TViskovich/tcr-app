@@ -29,6 +29,9 @@ export const PV2 = {
   // Share sheet's original green, kept deeper than statusPositive so its
   // white glyph stays legible (3.2:1 vs 2.2:1).
   actionExternalFill: '#3CA36B',
+  // Neutral gray icon tile (opaque) — Share Item's Elsewhere tile. iOS's
+  // dark-mode systemGray3; a white glyph stays clearly legible on it.
+  actionNeutralFill: '#48484A',
   // The bottom navigation's active Feed tint (TAB_ACCENTS.index in
   // app/(tabs)/_layout.tsx) — keep the two in sync.
   feedActive: '#74F5C8',

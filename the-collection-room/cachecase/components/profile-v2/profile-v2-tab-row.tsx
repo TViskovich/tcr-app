@@ -45,27 +45,71 @@ type Props = {
   // The profile OWNER's banner (profiles.banner_variant), so a visitor sees
   // the owner's theme. null = legacy neon, same as the identity card.
   bannerVariant: ProfileBannerVariant | null;
-  // Owner only: long-pressing the Collection pill opens the Add menu (see
-  // profile-v2-screen.tsx). Omitted for a visitor, so that pill is
-  // tap-only. Once a long-press fires, releasing doesn't also select it.
+  // Long-pressing the Collection pill — the Add menu on your own profile,
+  // Search Collections on someone else's (see profile-v2-screen.tsx). Only
+  // while Collection is already the active tab; from Posts/Items/Tagged a
+  // long-press does nothing at all. Omitted = tap-only.
   onCollectionLongPress?: () => void;
+  // Screen-reader hint for that long-press (it differs by context).
+  collectionLongPressHint?: string;
+  // Long-pressing the Posts pill — the Create Post menu, own profile only
+  // (see profile-v2-screen.tsx). Same rule: only while Posts is already the
+  // active tab. Omitted (a visitor) = tap-only.
+  onPostsLongPress?: () => void;
+  postsLongPressHint?: string;
+  // Long-pressing the Items pill — Search Items, owner and visitor alike.
+  // Same rule: only while Items is already the active tab.
+  onItemsLongPress?: () => void;
+  itemsLongPressHint?: string;
+  // Long-pressing the Tagged pill — Search Tagged Items on your own profile.
+  // Same rule: only while Tagged is already the active tab.
+  onTaggedLongPress?: () => void;
+  taggedLongPressHint?: string;
 };
 
-// Hold time on the Collection pill before it opens the Add menu.
+// Hold time on a pill before its long-press action fires.
 const LONG_PRESS_MS = 400;
 
 // Four evenly-spaced pill tabs directly under ProfileV2IdentityCard —
 // replaces the old snap-to-center carousel (ProfileV2Selector) for Profile
 // V3's shared shell. Static row, no scroll/animation: tapping a pill just
 // sets `active` directly.
-export function ProfileV2TabRow({ active, onChange, bannerVariant, onCollectionLongPress }: Props) {
+export function ProfileV2TabRow({
+  active,
+  onChange,
+  bannerVariant,
+  onCollectionLongPress,
+  collectionLongPressHint,
+  onPostsLongPress,
+  postsLongPressHint,
+  onItemsLongPress,
+  itemsLongPressHint,
+  onTaggedLongPress,
+  taggedLongPressHint,
+}: Props) {
   const accent = getProfileBannerAccent(bannerVariant);
+  // Pills with a long-press action.
+  const longPresses: Partial<Record<ProfileV2Section, { action?: () => void; hint?: string }>> = {
+    posts: { action: onPostsLongPress, hint: postsLongPressHint },
+    collections: { action: onCollectionLongPress, hint: collectionLongPressHint },
+    items: { action: onItemsLongPress, hint: itemsLongPressHint },
+    tagged: { action: onTaggedLongPress, hint: taggedLongPressHint },
+  };
 
   return (
     <View style={styles.row}>
       {TABS.map((tab) => {
         const selected = tab.section === active;
-        const onLongPress = tab.section === 'collections' ? onCollectionLongPress : undefined;
+        // Keyed off `active` itself (never a separate, possibly stale flag).
+        // Selected: the pill's long-press action. Not selected: a no-op
+        // that's still attached — without any onLongPress, releasing a long
+        // hold fires onPress and would switch tabs; with one, a fired
+        // long-press swallows the release. So from another tab a long-press
+        // opens nothing and changes nothing, while a normal tap still
+        // switches tabs.
+        const longPress = longPresses[tab.section];
+        const longPressEnabled = !!longPress?.action;
+        const onLongPress = longPressEnabled ? (selected ? longPress!.action : () => {}) : undefined;
         return (
           <TouchableOpacity
             key={tab.section}
@@ -77,7 +121,7 @@ export function ProfileV2TabRow({ active, onChange, bannerVariant, onCollectionL
             activeOpacity={0.8}
             accessibilityRole="button"
             accessibilityState={{ selected }}
-            accessibilityHint={onLongPress ? 'Long press to add an item or collection' : undefined}>
+            accessibilityHint={longPressEnabled && selected ? longPress!.hint : undefined}>
             {/* Stroke = gradient filling the pill, covered by the opaque
                 surface inset STROKE_WIDTH on every side. */}
             <LinearGradient

@@ -2611,6 +2611,8 @@ export default function ItemDetailScreen() {
         visible={shareSheetVisible}
         onClose={() => setShareSheetVisible(false)}
         heading="Share Item"
+        // Feed + Direct Message on CacheCase blue, Elsewhere neutral gray.
+        iconPalette="brand"
         imageUri={carouselImages[0]?.uri}
         title={identity.title}
         subtitle={identity.subtitleLines.filter(Boolean).join(' · ') || null}
