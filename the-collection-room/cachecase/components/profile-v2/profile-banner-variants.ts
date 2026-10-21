@@ -65,6 +65,9 @@ export const LEGACY_PROFILE_BANNER: ProfileBannerDefinition = {
   ...HORIZONTAL,
 };
 
+// Stops were given ~10% more variation (Oct 2026): per theme, each stop's
+// HSL saturation ×1.10 (capped) and its lightness pushed 10% further from
+// the theme's mean lightness (clamped) — hue and mean brightness unchanged.
 export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBannerDefinition> = {
   black: {
     label: 'Black',
@@ -73,13 +76,13 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
     // Pure black disappears on the near-black profile background, so its
     // accent is a charcoal sheen instead — still neutral, still "black".
     accent: {
-      colors: ['#45464C', '#6A6C73', '#45464C'],
+      colors: ['#43454B', '#6C6E76', '#43454B'],
       locations: [0, 0.5, 1],
     },
   },
   blue_gradient: {
     label: 'Blue Gradient',
-    colors: ['#2E8BFF', '#0B4DFF', '#1E90FF', '#0019D6'],
+    colors: ['#318DFF', '#0B4DFF', '#2091FF', '#0018D1'],
     locations: [0, 0.35, 0.6, 1],
     ...HORIZONTAL,
   },
@@ -87,31 +90,31 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
   // cream -> cyan -> blue).
   brand_gradient: {
     label: 'Brand Gradient',
-    colors: ['#D991CB', '#ECCE9D', '#F8F1DC', '#8DD5EE', '#4D7FBF'],
+    colors: ['#DC8CCD', '#F0D09B', '#FBF5E3', '#89D8F3', '#3F79C2'],
     locations: [0, 0.24, 0.57, 0.73, 1],
     ...HORIZONTAL,
   },
   gold: {
     label: 'Gold',
-    colors: ['#FFD94A', '#E08A00', '#F7B54B', '#FFE27A', '#E39A1F'],
+    colors: ['#FFDA4D', '#D88500', '#FFB845', '#FFE482', '#EB9A12'],
     locations: [0, 0.3, 0.55, 0.75, 1],
     ...HORIZONTAL,
   },
   gold_silver: {
     label: 'Gold Silver',
-    colors: ['#FFD54A', '#E3A33A', '#C9CDD3', '#F4F5F7', '#A7ACB3'],
+    colors: ['#FFD446', '#EBA22A', '#CBCFD5', '#FBFBFC', '#A5ABB2'],
     locations: [0, 0.3, 0.6, 0.8, 1],
     ...HORIZONTAL,
   },
   red_gradient: {
     label: 'Red Gradient',
-    colors: ['#8E0000', '#E00000', '#FF2A2A', '#C40000'],
+    colors: ['#870000', '#E10000', '#FF3232', '#C20000'],
     locations: [0, 0.4, 0.7, 1],
     ...HORIZONTAL,
   },
   silver: {
     label: 'Silver',
-    colors: ['#8D9299', '#D8DBDF', '#FFFFFF', '#A3A8AF', '#E6E8EB'],
+    colors: ['#868C94', '#D9DCE1', '#FFFFFF', '#9FA4AC', '#E9EBEE'],
     locations: [0, 0.3, 0.55, 0.8, 1],
     ...HORIZONTAL,
   },
@@ -119,7 +122,7 @@ export const PROFILE_BANNER_VARIANTS: Record<ProfileBannerVariant, ProfileBanner
   // near-white range (no mid-grey dips), so it reads as white, not metal.
   white_gradient: {
     label: 'White Gradient',
-    colors: ['#FFFFFF', '#E6E8EC', '#FFFFFF', '#D9DCE1', '#F7F8FA'],
+    colors: ['#FFFFFF', '#E5E7EB', '#FFFFFF', '#D6DAE0', '#F8F9FB'],
     locations: [0, 0.3, 0.55, 0.8, 1],
     ...HORIZONTAL,
   },

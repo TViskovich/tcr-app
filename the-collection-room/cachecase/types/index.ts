@@ -323,8 +323,15 @@ export type Profile = {
   profile_logo_variant?: string | null;
   // Owner's optional Grails Divider Glow on Profile V2 (profiles.
   // grails_divider_glow, 20261027120000). Optional: older cached rows
-  // predate the column (treated as off).
+  // predate the column (treated as off). Since 20261028120000 a database-
+  // maintained mirror of grails_showcase_effect = 'animated_dividers', kept
+  // for older builds — current code reads grails_showcase_effect instead.
   grails_divider_glow?: boolean;
+  // Owner's Grails showcase appearance mode (profiles.grails_showcase_effect,
+  // 20261028120000): 'off' | 'animated_dividers' | 'static_outlines'. Always
+  // read through resolveGrailsShowcaseEffect (components/profile-v2/grails-
+  // showcase-effects.ts). Optional for the same cache reason as above.
+  grails_showcase_effect?: string;
 };
 
 export type Post = {

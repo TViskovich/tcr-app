@@ -8,7 +8,9 @@ import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { GrailDragGrid } from './grail-drag-grid';
-import { GrailsDividerGlow } from './grails-divider-glow';
+import { GrailsDividerGlow, GrailsPerimeterGlow } from './grails-divider-glow';
+import type { GrailsShowcaseEffect } from './grails-showcase-effects';
+import { GrailsStaticOutlines } from './grails-static-outlines';
 import { GrailSlotPreview } from './grail-slot-preview';
 import { PV2 } from './profile-v2-theme';
 
@@ -138,11 +140,20 @@ type Props = {
   // Detail's Replace a Grail picker), reorder mode stays tap-to-select.
   onDragReorder?: (orderedSlotIds: string[]) => Promise<boolean>;
   onDragActiveChange?: (active: boolean) => void;
-  // Profile V2 only: the owner's optional Grails Divider Glow
-  // (profiles.grails_divider_glow), in the owner's theme colours. Omitted =
-  // the grid exactly as before. Drawn only in the normal (non-reorder,
-  // loaded) grid, behind the tiles.
-  dividerGlow?: { colors: readonly ColorValue[]; active: boolean };
+  // Profile V2 only: the owner's optional Grails showcase effect
+  // (profiles.grails_showcase_effect), in the owner's theme colours.
+  // Omitted = the grid exactly as before. Drawn only in the normal
+  // (non-reorder, loaded) grid: Animated Dividers behind the tiles, Static
+  // Outlines on top of them — both pointerEvents="none". `active` only
+  // matters to Animated Dividers (false = off-screen: no animation runs).
+  showcaseEffect?: {
+    effect: Exclude<GrailsShowcaseEffect, 'off'>;
+    // getGrailsEffectTheme(banner): the theme colours, or silver-white plus
+    // `luminous` for a black / near-black banner.
+    colors: readonly ColorValue[];
+    luminous: boolean;
+    active: boolean;
+  };
 };
 
 export function ProfileV2Grid({
@@ -162,7 +173,7 @@ export function ProfileV2Grid({
   onEnterReorder,
   onDragReorder,
   onDragActiveChange,
-  dividerGlow,
+  showcaseEffect,
 }: Props) {
   // Same batched, preview-tier call as GrailImagesWarmup (above), which the
   // profile screen mounts before this grid can render — so by the time the
@@ -213,13 +224,14 @@ export function ProfileV2Grid({
     <View style={styles.grid}>
       {/* First child = beneath every row; absolutely positioned, so it
           takes no part in the grid's own flex/gap layout. */}
-      {dividerGlow && !loading && !reorderMode && (
+      {showcaseEffect?.effect === 'animated_dividers' && !loading && !reorderMode && (
         <GrailsDividerGlow
           cellWidth={GRID_CELL_WIDTH}
           cellHeight={GRID_CELL_HEIGHT}
           gap={GRID_GAP}
-          colors={dividerGlow.colors}
-          active={dividerGlow.active}
+          colors={showcaseEffect.colors}
+          luminous={showcaseEffect.luminous}
+          active={showcaseEffect.active}
         />
       )}
       {rows.map((row, rowIndex) => (
@@ -260,6 +272,30 @@ export function ProfileV2Grid({
           })}
         </View>
       ))}
+      {/* Last child = above every row, so the tiles' own backgrounds
+          can't hide the outlines; absolutely positioned and
+          non-interactive, like the glow. */}
+      {showcaseEffect?.effect === 'static_outlines' && !loading && !reorderMode && (
+        <GrailsStaticOutlines
+          cellWidth={GRID_CELL_WIDTH}
+          cellHeight={GRID_CELL_HEIGHT}
+          gap={GRID_GAP}
+          columns={COLS}
+          occupiedSlotIndices={grid.flatMap((slot, i) => (slot ? [i] : []))}
+          colors={showcaseEffect.colors}
+          luminous={showcaseEffect.luminous}
+        />
+      )}
+      {/* Animated Dividers' outer light: above the tiles too (the grid's
+          outer edge has no gap to show through), sized from this grid's
+          own measured box. */}
+      {showcaseEffect?.effect === 'animated_dividers' && !loading && !reorderMode && (
+        <GrailsPerimeterGlow
+          colors={showcaseEffect.colors}
+          luminous={showcaseEffect.luminous}
+          active={showcaseEffect.active}
+        />
+      )}
     </View>
   );
 }

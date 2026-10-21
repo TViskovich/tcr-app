@@ -6,10 +6,8 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -82,7 +80,9 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
-import { getProfileBannerAccent, resolveProfileBannerVariant, type ProfileBannerVariant } from './profile-banner-variants';
+import { GrailsEffectPicker } from './grails-effect-picker';
+import { getGrailsEffectTheme, resolveGrailsShowcaseEffect, type GrailsShowcaseEffect } from './grails-showcase-effects';
+import { resolveProfileBannerVariant, type ProfileBannerVariant } from './profile-banner-variants';
 import { resolveProfileLogoVariant, type ProfileLogoVariant } from './profile-logo-variants';
 import { ProfileV2BannerPicker } from './profile-v2-banner-picker';
 import { ProfileV2Collections } from './profile-v2-collections';
@@ -313,7 +313,7 @@ type IntendedProfileFields = Pick<
   | 'hero_theme'
   | 'banner_variant'
   | 'profile_logo_variant'
-  | 'grails_divider_glow'
+  | 'grails_showcase_effect'
 >;
 
 // True only if the row currently holds EXACTLY the state this save attempt
@@ -335,7 +335,7 @@ function intendedProfileMatchesRow(intended: IntendedProfileFields, row: Intende
     intended.hero_theme === row.hero_theme &&
     intended.banner_variant === row.banner_variant &&
     intended.profile_logo_variant === row.profile_logo_variant &&
-    !!intended.grails_divider_glow === !!row.grails_divider_glow &&
+    intended.grails_showcase_effect === row.grails_showcase_effect &&
     arraysEqualOrdered(intended.favorite_sports, row.favorite_sports) &&
     arraysEqualOrdered(intended.favorite_teams, row.favorite_teams) &&
     arraysEqualOrdered(intended.collecting_categories, row.collecting_categories) &&
@@ -1036,10 +1036,13 @@ export function ProfileV2Screen({ userId }: Props) {
   // banner (one combination picker) but stored independently. null = the
   // original wordmark (a pre-logo profile that hasn't chosen yet).
   const [selectedLogo, setSelectedLogo] = useState<ProfileLogoVariant | null>(null);
-  // Edit-mode draft of the owner's Grails Divider Glow (profiles.
-  // grails_divider_glow) — previewed live on the Grails above while editing,
-  // saved with the rest of the profile.
-  const [selectedGrailsGlow, setSelectedGrailsGlow] = useState(false);
+  // Edit-mode draft of the owner's Grails showcase effect (profiles.
+  // grails_showcase_effect: Off / Animated Dividers / Static Outlines) —
+  // previewed live on the Grails above while editing, saved with the rest of
+  // the profile.
+  const [selectedGrailsEffect, setSelectedGrailsEffect] = useState<GrailsShowcaseEffect>('off');
+  // What the Grails show: the draft while editing, otherwise the saved choice.
+  const grailsEffect = editMode ? selectedGrailsEffect : resolveGrailsShowcaseEffect(profile);
   const [saving, setSaving] = useState(false);
   // Synchronous re-entry lock for handleSave — `saving` (React state) only
   // reflects the UI's loading indicator and updates asynchronously, so two
@@ -1560,7 +1563,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
     setSelectedBanner(resolveProfileBannerVariant(profile?.banner_variant));
     setSelectedLogo(resolveProfileLogoVariant(profile?.profile_logo_variant));
-    setSelectedGrailsGlow(!!profile?.grails_divider_glow);
+    setSelectedGrailsEffect(resolveGrailsShowcaseEffect(profile));
     setDetailsExpanded(false);
     setEditMode(true);
   }
@@ -1598,7 +1601,7 @@ export function ProfileV2Screen({ userId }: Props) {
       selectedTheme !== resolveHeroCanvasTheme(profile?.hero_theme) ||
       selectedBanner !== resolveProfileBannerVariant(profile?.banner_variant) ||
       selectedLogo !== resolveProfileLogoVariant(profile?.profile_logo_variant) ||
-      selectedGrailsGlow !== !!profile?.grails_divider_glow ||
+      selectedGrailsEffect !== resolveGrailsShowcaseEffect(profile) ||
       newAvatarUri !== null ||
       removeAvatar ||
       newHeroUri !== null ||
@@ -1992,7 +1995,7 @@ export function ProfileV2Screen({ userId }: Props) {
             hero_theme: resolveHeroCanvasTheme(profile?.hero_theme),
             banner_variant: resolveProfileBannerVariant(profile?.banner_variant),
             profile_logo_variant: resolveProfileLogoVariant(profile?.profile_logo_variant),
-            grails_divider_glow: !!profile?.grails_divider_glow,
+            grails_showcase_effect: resolveGrailsShowcaseEffect(profile),
           }
         : {
             hero_display_name: editForm.heroName.trim() || null,
@@ -2010,7 +2013,7 @@ export function ProfileV2Screen({ userId }: Props) {
             hero_theme: selectedTheme,
             banner_variant: selectedBanner,
             profile_logo_variant: selectedLogo,
-            grails_divider_glow: selectedGrailsGlow,
+            grails_showcase_effect: selectedGrailsEffect,
           };
 
       // Shared by every branch below that has proven (either directly or
@@ -2073,7 +2076,7 @@ export function ProfileV2Screen({ userId }: Props) {
           const { data: reconData, error: reconError } = await supabase
             .from('profiles')
             .select(
-              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, banner_variant, profile_logo_variant, grails_divider_glow'
+              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, banner_variant, profile_logo_variant, grails_showcase_effect'
             )
             .eq('id', userId)
             .maybeSingle();
@@ -2456,17 +2459,19 @@ export function ProfileV2Screen({ userId }: Props) {
                     </View>
                   )}
                   <ProfileV2Grid
-                      // The profile OWNER's Grails Divider Glow (their
+                      // The profile OWNER's Grails showcase effect (their
                       // saved choice — or, while they edit, the draft), in
                       // the owner's banner colours, so a visitor sees
-                      // exactly what the owner chose. Off = omitted = the
-                      // grid exactly as before.
-                      dividerGlow={
-                        (editMode ? selectedGrailsGlow : !!profile?.grails_divider_glow)
+                      // exactly what the owner chose (silver-white for a
+                      // black banner). Off = omitted = the grid exactly as
+                      // before.
+                      showcaseEffect={
+                        grailsEffect !== 'off'
                           ? {
-                              colors: getProfileBannerAccent(
+                              effect: grailsEffect,
+                              ...getGrailsEffectTheme(
                                 editMode ? selectedBanner : resolveProfileBannerVariant(profile?.banner_variant),
-                              ).colors,
+                              ),
                               active: grailsOnScreen,
                             }
                           : undefined
@@ -2681,29 +2686,16 @@ export function ProfileV2Screen({ userId }: Props) {
                 />
               )}
 
-              {/* Owner-only (this whole form is): the Grails Divider Glow,
-                  in the banner's colours — previewed live on the Grails
-                  above, saved with the rest of the profile. Off by
-                  default. */}
-              <Pressable
-                style={styles.glowRow}
-                onPress={() => setSelectedGrailsGlow((on) => !on)}
-                accessibilityRole="switch"
-                accessibilityLabel="Grails Divider Glow"
-                accessibilityState={{ checked: selectedGrailsGlow }}>
-                <View style={styles.glowText}>
-                  <Text style={styles.glowLabel}>Grails Divider Glow</Text>
-                  <Text style={styles.glowHint}>
-                    A soft light in your banner&apos;s colours drifts through the gaps between your Grails.
-                  </Text>
-                </View>
-                <Switch
-                  value={selectedGrailsGlow}
-                  onValueChange={setSelectedGrailsGlow}
-                  trackColor={{ false: PV2.collectorPanelBg, true: PV2.actionPrimary }}
-                  thumbColor="#fff"
-                />
-              </Pressable>
+              {/* Owner-only (this whole form is): the Grails showcase
+                  effect, in the banner's colours — previewed live on the
+                  Grails above, saved with the rest of the profile. Off by
+                  default; one effect at a time. */}
+              <Text style={styles.glowLabel}>Grails Effect</Text>
+              <GrailsEffectPicker
+                value={selectedGrailsEffect}
+                onChange={setSelectedGrailsEffect}
+                colors={getGrailsEffectTheme(selectedBanner).colors}
+              />
 
               {SHOW_HERO_THEME_PICKER && (
                 <>
@@ -3189,26 +3181,13 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 6,
   },
-  // Edit Profile's Grails Divider Glow switch, under the banner picker.
-  glowRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 16,
-  },
-  glowText: {
-    flex: 1,
-    gap: 2,
-  },
+  // Edit Profile's Grails Effect heading, above GrailsEffectPicker (under
+  // the banner picker).
   glowLabel: {
     fontSize: 15,
     fontWeight: '600',
     color: PV2.textPrimary,
-  },
-  glowHint: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: PV2.textTertiary,
+    marginTop: 16,
   },
   sectionHeader: {
     fontSize: 13,
