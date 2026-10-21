@@ -5,6 +5,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -20,6 +21,7 @@ import {
   useKeyboardShown,
 } from '@/components/collection/collection-search';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
@@ -46,6 +48,16 @@ type Props = {
     ownerId: string;
     onSelect: (collection: CollectionSearchResult) => void;
   };
+  // Optional switch row after Add Collection — Profile V2's "List View"
+  // switch (on = List View, off = Grid View). Flipping it doesn't close the
+  // menu. Omitted everywhere else.
+  toggleOption?: {
+    icon: 'list.bullet';
+    title: string;
+    subtitle: string;
+    value: boolean;
+    onChange: (value: boolean) => void;
+  };
 };
 
 type MenuOption = {
@@ -64,7 +76,14 @@ type MenuOption = {
 // content-create types like Text Post/Share Card. Icons match the Create
 // menu's own item (Share Item) and collection (Share a Collection) icons.
 // "Add Collection" is UI wording only — it still creates a folder.
-export function CollectionAddMenu({ visible, onClose, onAddFolder, onAddItem, search: searchConfig }: Props) {
+export function CollectionAddMenu({
+  visible,
+  onClose,
+  onAddFolder,
+  onAddItem,
+  search: searchConfig,
+  toggleOption,
+}: Props) {
   // The options sit above where the floating tab bar normally is — up in
   // easy thumb reach — rather than down against the home indicator. Once
   // the keyboard is up (only possible with the search field) the sheet sits
@@ -175,6 +194,38 @@ export function CollectionAddMenu({ visible, onClose, onAddFolder, onAddItem, se
                 </TouchableOpacity>
               </View>
             ))
+          )}
+
+          {!showingResults && toggleOption && (
+            <View>
+              <View style={styles.divider} />
+              {/* Same row shape as the options above, a switch in place of
+                  the chevron — the app's established switch styling (as in
+                  the item details forms): light-blue track when on, white
+                  thumb. The whole row flips it too. */}
+              <Pressable
+                style={styles.row}
+                onPress={() => toggleOption.onChange(!toggleOption.value)}
+                accessibilityRole="switch"
+                accessibilityLabel={toggleOption.title}
+                accessibilityState={{ checked: toggleOption.value }}>
+                <View style={styles.iconWrap}>
+                  <IconSymbol name={toggleOption.icon} size={20} color="#FFFFFF" />
+                </View>
+
+                <View style={styles.rowText}>
+                  <Text style={styles.rowTitle}>{toggleOption.title}</Text>
+                  <Text style={styles.rowSubtitle}>{toggleOption.subtitle}</Text>
+                </View>
+
+                <Switch
+                  value={toggleOption.value}
+                  onValueChange={toggleOption.onChange}
+                  trackColor={{ false: PV2.collectorPanelBg, true: PV2.actionPrimary }}
+                  thumbColor="#fff"
+                />
+              </Pressable>
+            </View>
           )}
 
           {/* Lifts the options into thumb reach (see bottomSpace) */}

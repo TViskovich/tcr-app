@@ -90,6 +90,30 @@ export async function loadCollectionPaths(ownerId: string, includePrivate: boole
   return paths;
 }
 
+// loadCollectionPaths as a hook, for item rows' "where it lives" line
+// (Search Items, the Items tab's List View). Loads whenever `enabled` turns
+// on (each sheet open / list shown), keeping the last map for the same
+// owner meanwhile. A failure just leaves rows without that line.
+export function useCollectionPathMap(ownerId: string, includePrivate: boolean, enabled: boolean) {
+  const key = `${ownerId}:${includePrivate}`;
+  const [paths, setPaths] = useState<{ key: string; map: Map<string, string[]> } | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    loadCollectionPaths(ownerId, includePrivate)
+      .then((map) => {
+        if (!cancelled) setPaths({ key: `${ownerId}:${includePrivate}`, map });
+      })
+      .catch((e: unknown) => {
+        console.error('[collection-search] collection paths failed:', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, ownerId, includePrivate]);
+  return paths?.key === key ? paths.map : null;
+}
+
 export type CollectionSearch = ReturnType<typeof useCollectionSearch>;
 
 // Query + results state. Nothing loads until load() (the caller decides

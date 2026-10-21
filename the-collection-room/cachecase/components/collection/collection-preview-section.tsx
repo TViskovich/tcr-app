@@ -43,6 +43,9 @@ type Props = {
   // components/profile-v2/profile-v2-collections.tsx). Same structure,
   // same navigation behavior as "full" (the default) otherwise.
   variant?: 'full' | 'compact';
+  // Optional long-press on the title (Profile V2's owner Edit Mode). Once
+  // it fires, the release doesn't also open the collection.
+  onLongPressTitle?: () => void;
 };
 
 // One collection's title/chevron row (CollectionHeaderRow) plus its
@@ -74,6 +77,7 @@ export function CollectionPreviewSection({
   onAddItem,
   itemCount,
   variant = 'full',
+  onLongPressTitle,
 }: Props) {
   return (
     <View style={styles.section}>
@@ -83,6 +87,7 @@ export function CollectionPreviewSection({
         onToggle={onToggle}
         onOpenFolder={onOpenFolder}
         variant={variant}
+        onLongPressTitle={onLongPressTitle}
       />
 
       {isExpanded && (

@@ -11,6 +11,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
@@ -48,6 +49,7 @@ import {
   type ExpectedGrailSlot,
 } from '@/hooks/use-grail-slots';
 import { useProfile } from '@/hooks/use-profile';
+import { type ProfileViewMode, useProfileViewMode } from '@/hooks/use-profile-view-mode';
 import { type SavedCardEntry, useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
@@ -73,6 +75,7 @@ import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { recordRecentProfile } from '@/lib/recent-profiles';
 import { peekVisitedProfile, rememberVisitedProfile } from '@/lib/visited-profile-cache';
+import { saveFolderOrder, saveProfileItemMove } from '@/lib/profile-ordering';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
@@ -90,6 +93,7 @@ import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
 import { ProfileV2CollectionSearchSheet } from './profile-v2-collection-search-sheet';
 import { ProfileV2ItemSearchSheet } from './profile-v2-item-search-sheet';
+import { ProfileV2ReorderCollections, ProfileV2ReorderItems } from './profile-v2-reorder';
 import { ProfileV2TaggedSearchSheet } from './profile-v2-tagged-search-sheet';
 import { ProfileV2SectionPage } from './profile-v2-section-page';
 import { ProfileV2Stats } from './profile-v2-stats';
@@ -97,6 +101,15 @@ import { ProfileV2TabRow, type ProfileV2Section } from './profile-v2-tab-row';
 import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
 import { ProfileV2Tagged } from './profile-v2-tagged';
 import { PV2 } from './profile-v2-theme';
+
+// The floating tab bar's gap above the bottom safe-area inset (BAR_BOTTOM_GAP
+// in components/navigation/global-floating-tab-bar.tsx) — Edit Mode's
+// auto-scroll treats the bar's top edge as the bottom of the visible area.
+const FLOATING_NAV_BOTTOM_GAP = 4;
+// Items tab render window: items mounted per step, and how close (pt) to
+// the end of the page scrolling must get before the next step mounts.
+const ITEMS_WINDOW_STEP = 120;
+const ITEMS_WINDOW_NEAR_END = 1500;
 
 const DISPLAY_NAME_MAX_LENGTH = 18;
 const TAGLINE_MAX_LENGTH = 80;
@@ -497,6 +510,23 @@ export function ProfileV2Screen({ userId }: Props) {
   // (handleGrailItemPress — the Items grid's own tap), which decides the
   // signed-in viewer's actions from ownership and RLS.
   const [showItemSearch, setShowItemSearch] = useState(false);
+  // Grid View / List View for the Collection and Items tabs — the signed-in
+  // viewer's own preference per tab (device-local), applied on every
+  // profile they view. A "List View" switch (on = List View) in the same
+  // long-press menus: the owner's Add menu, a visitor's Search Collections,
+  // and Search Items. It always shows the saved preference, and flipping it
+  // re-lays the tab out immediately, behind the still-open menu.
+  const [collectionsView, setCollectionsView] = useProfileViewMode(currentUserId, 'collections');
+  const [itemsView, setItemsView] = useProfileViewMode(currentUserId, 'items');
+  function listViewSwitch(mode: ProfileViewMode, setMode: (next: ProfileViewMode) => void) {
+    return {
+      icon: 'list.bullet' as const,
+      label: 'List View',
+      subtitle: 'Show as a compact list',
+      value: mode === 'list',
+      onChange: (on: boolean) => setMode(on ? 'list' : 'grid'),
+    };
+  }
   function handleItemsLongPress() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setShowItemSearch(true);
@@ -782,7 +812,10 @@ export function ProfileV2Screen({ userId }: Props) {
   }>(() => ({ userId, sections: new Set<ProfileV2Section>(['posts']) }));
 
   function handleSectionChange(next: ProfileV2Section) {
-    if (next !== section) clampAfterSectionChangeRef.current = true;
+    if (next !== section) {
+      clampAfterSectionChangeRef.current = true;
+      exitReorder(); // Edit Mode belongs to the tab it was opened on
+    }
     setSection(next);
     setVisitedSections((prev) => {
       if (prev.userId === userId && prev.sections.has(next)) return prev;
@@ -812,6 +845,87 @@ export function ProfileV2Screen({ userId }: Props) {
     const maxY = Math.max(0, contentHeight - viewportHeightRef.current);
     if (scrollYRef.current > maxY + 1) scrollRef.current?.scrollTo({ y: maxY, animated: false });
   }
+
+  // ── Owner Edit Mode (drag-and-drop rearranging) ───────────────────────────
+  // Long-pressing a collection or item entry on your own profile opens that
+  // tab's Edit Mode (ProfileV2ReorderCollections / ProfileV2ReorderItems):
+  // entries stop navigating, and long-press-and-drag rearranges them. Each
+  // drop saves through the reorder RPCs (lib/profile-ordering.ts); Done
+  // exits after any in-flight save. Never offered on someone else's
+  // profile. Leaving the tab or the screen also exits; the tab's data is
+  // then refreshed, so it shows the saved order from the server.
+  const [reorder, setReorder] = useState<{ tab: 'collections' | 'items'; activeId: string } | null>(null);
+  // An entry is lifted — the page stops scrolling so a vertical drag moves
+  // the entry, not the profile (same as the Grails drag).
+  const [reorderDragActive, setReorderDragActive] = useState(false);
+  function enterReorder(tab: 'collections' | 'items', activeId: string) {
+    if (!isOwnProfile) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setReorder({ tab, activeId });
+  }
+  function exitReorder() {
+    if (!reorder) return;
+    const tab = reorder.tab;
+    setReorder(null);
+    setReorderDragActive(false);
+    if (tab === 'collections') refreshFolders();
+    else refreshAllItems();
+  }
+  const saveCollectionsOrder = useCallback(
+    async (ids: string[]) => {
+      const result = await saveFolderOrder(null, ids);
+      if (result.ok) invalidateOwnProfileCache(userId);
+      return result;
+    },
+    [userId],
+  );
+  const saveItemsOrder = useCallback(
+    async (next: string[], previous: string[]) => {
+      const result = await saveProfileItemMove(previous, next);
+      if (result.ok) invalidateOwnProfileCache(userId);
+      return result;
+    },
+    [userId],
+  );
+  // Items tab render window: how many items the grid/list (and Edit Mode)
+  // mount and sign images for. Starts at one step and grows by a step each
+  // time the page scrolls near its end, so a large profile never mounts or
+  // signs every tile at once — while every row is still loaded (search,
+  // Edit Mode's neighbours). Per profile: a different profile starts over.
+  const [itemsWindow, setItemsWindow] = useState({ userId, limit: ITEMS_WINDOW_STEP });
+  const itemsRenderLimit = itemsWindow.userId === userId ? itemsWindow.limit : ITEMS_WINDOW_STEP;
+  function growItemsWindowNearEnd(scrollY: number) {
+    if (section !== 'items' || itemsRenderLimit >= allItems.length) return;
+    if (contentHeightRef.current - (scrollY + viewportHeightRef.current) > ITEMS_WINDOW_NEAR_END) return;
+    // Grow once per render, however many scroll events arrive before it.
+    setItemsWindow((prev) => {
+      const current = prev.userId === userId ? prev.limit : ITEMS_WINDOW_STEP;
+      return current === itemsRenderLimit ? { userId, limit: current + ITEMS_WINDOW_STEP } : prev;
+    });
+  }
+  // List View edge auto-scroll: scrolls this screen's ScrollView within its
+  // real range, and reports the visible content area — below the pinned tab
+  // row, above the floating nav — in window coordinates.
+  const { height: windowHeight } = useWindowDimensions();
+  const contentHeightRef = useRef(0);
+  const scrollViewTopRef = useRef(0);
+  const tabRowHeightRef = useRef(0);
+  const reorderAutoScroll = {
+    scrollBy: (dy: number) => {
+      const maxY = Math.max(0, contentHeightRef.current - viewportHeightRef.current);
+      const next = Math.min(maxY, Math.max(0, scrollYRef.current + dy));
+      const moved = next - scrollYRef.current;
+      if (moved !== 0) {
+        scrollRef.current?.scrollTo({ y: next, animated: false });
+        scrollYRef.current = next;
+      }
+      return moved;
+    },
+    getEdges: () => ({
+      top: scrollViewTopRef.current + tabRowHeightRef.current,
+      bottom: windowHeight - insets.bottom - FLOATING_NAV_BOTTOM_GAP - TAB_BAR_HEIGHT,
+    }),
+  };
 
   // ProfileV2IdentityCard's expandable details panel (ProfileV2ExpandedDetails,
   // rendered directly beneath it) — a plain, ephemeral, per-screen-instance
@@ -1254,6 +1368,17 @@ export function ProfileV2Screen({ userId }: Props) {
       return () => {
         setGrailReorderMode(false);
         setGrailDragActive(false);
+      };
+    }, []),
+  );
+
+  // Leaving the screen also exits the Collection/Items Edit Mode (every
+  // completed drop is already saved; this screen refetches on focus).
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setReorder(null);
+        setReorderDragActive(false);
       };
     }, []),
   );
@@ -2135,20 +2260,28 @@ export function ProfileV2Screen({ userId }: Props) {
           showsVerticalScrollIndicator={false}
           onScroll={(e) => {
             scrollYRef.current = e.nativeEvent.contentOffset.y;
+            growItemsWindowNearEnd(e.nativeEvent.contentOffset.y);
             navbarOnScroll(e);
           }}
           scrollEventThrottle={scrollEventThrottle}
           onLayout={(e) => {
             viewportHeightRef.current = e.nativeEvent.layout.height;
+            // Where this view starts on screen — Edit Mode's auto-scroll edge.
+            scrollRef.current?.getNativeScrollRef()?.measureInWindow((_x, y) => {
+              scrollViewTopRef.current = y;
+            });
           }}
-          onContentSizeChange={(_w, h) => clampScrollToContent(h)}
+          onContentSizeChange={(_w, h) => {
+            contentHeightRef.current = h;
+            clampScrollToContent(h);
+          }}
           // The user scrolled first — their position wins over a pending
           // tab-switch clamp.
           onScrollBeginDrag={() => {
             clampAfterSectionChangeRef.current = false;
           }}
           stickyHeaderIndices={[1]}
-          scrollEnabled={!grailDragActive}>
+          scrollEnabled={!grailDragActive && !reorderDragActive}>
 
           {/* index 0 — shared profile showcase: identity card, Grails, and
               the owner/public action row. Grails renders here now — above
@@ -2372,7 +2505,13 @@ export function ProfileV2Screen({ userId }: Props) {
               themselves. Applied only alongside a real ProfileV2TabRow, so
               an empty tabRowSticky (edit mode, or before `profile` loads)
               still collapses to true zero height. */}
-          <View style={[styles.tabRowSticky, profile && !editMode && styles.tabRowStickyFilled]}>
+          <View
+            style={[styles.tabRowSticky, profile && !editMode && styles.tabRowStickyFilled]}
+            // Its height marks the top of the visible content once it pins —
+            // Edit Mode's auto-scroll edge.
+            onLayout={(e) => {
+              tabRowHeightRef.current = e.nativeEvent.layout.height;
+            }}>
             {profile && !editMode && (
               <ProfileV2TabRow
                 active={section}
@@ -2643,17 +2782,31 @@ export function ProfileV2Screen({ userId }: Props) {
 
                 {isSectionMounted('collections') && (
                   <View style={section !== 'collections' && styles.hiddenSection}>
-                    <ProfileV2Collections
-                      folders={folders}
-                      previewEntries={previewEntries}
-                      itemCounts={itemCounts}
-                      onOpenFolder={openFolder}
-                      onOpenItem={handleGrailItemPress}
-                      onOpenChildFolder={openFolder}
-                      onAddItem={isOwnProfile ? addFolderItem : undefined}
-                      onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
-                      onCreateFolderPress={isOwnProfile ? () => setShowCreateFolderModal(true) : undefined}
-                    />
+                    {reorder?.tab === 'collections' && isOwnProfile ? (
+                      <ProfileV2ReorderCollections
+                        folders={folders}
+                        itemCounts={itemCounts}
+                        onSave={saveCollectionsOrder}
+                        initialActiveId={reorder.activeId}
+                        onDone={exitReorder}
+                        onDragActiveChange={setReorderDragActive}
+                        autoScroll={reorderAutoScroll}
+                      />
+                    ) : (
+                      <ProfileV2Collections
+                        folders={folders}
+                        previewEntries={previewEntries}
+                        itemCounts={itemCounts}
+                        onOpenFolder={openFolder}
+                        onOpenItem={handleGrailItemPress}
+                        onOpenChildFolder={openFolder}
+                        onAddItem={isOwnProfile ? addFolderItem : undefined}
+                        onCreatePress={isOwnProfile ? () => router.push('/(tabs)/collection' as any) : undefined}
+                        onCreateFolderPress={isOwnProfile ? () => setShowCreateFolderModal(true) : undefined}
+                        layout={collectionsView}
+                        onLongPressCollection={isOwnProfile ? (folder) => enterReorder('collections', folder.id) : undefined}
+                      />
+                    )}
                   </View>
                 )}
                 {/* Background cover warmup for this profile's first few
@@ -2671,11 +2824,30 @@ export function ProfileV2Screen({ userId }: Props) {
 
                 {isSectionMounted('items') && (
                   <View style={section !== 'items' && styles.hiddenSection}>
-                    <ProfileV2ItemsGrid
-                      items={allItems}
-                      loading={allItemsLoading}
-                      onPressItem={handleGrailItemPress}
-                    />
+                    {reorder?.tab === 'items' && isOwnProfile ? (
+                      <ProfileV2ReorderItems
+                        items={allItems}
+                        layout={itemsView}
+                        ownerId={userId}
+                        onSave={saveItemsOrder}
+                        initialActiveId={reorder.activeId}
+                        onDone={exitReorder}
+                        onDragActiveChange={setReorderDragActive}
+                        autoScroll={reorderAutoScroll}
+                        renderLimit={itemsRenderLimit}
+                      />
+                    ) : (
+                      <ProfileV2ItemsGrid
+                        items={allItems}
+                        loading={allItemsLoading}
+                        onPressItem={handleGrailItemPress}
+                        layout={itemsView}
+                        ownerId={userId}
+                        isOwnProfile={isOwnProfile}
+                        onLongPressItem={isOwnProfile ? (item) => enterReorder('items', item.id) : undefined}
+                        renderLimit={itemsRenderLimit}
+                      />
+                    )}
                   </View>
                 )}
 
@@ -2738,6 +2910,7 @@ export function ProfileV2Screen({ userId }: Props) {
           ownerName={displayName}
           isOwnProfile={isOwnProfile}
           items={allItems}
+          toggle={listViewSwitch(itemsView, setItemsView)}
           onClose={() => setShowItemSearch(false)}
           onSelect={(item) => {
             setShowItemSearch(false);
@@ -2751,6 +2924,7 @@ export function ProfileV2Screen({ userId }: Props) {
           visible={showCollectionSearch}
           ownerId={userId}
           ownerName={displayName}
+          toggle={listViewSwitch(collectionsView, setCollectionsView)}
           onClose={() => setShowCollectionSearch(false)}
           onSelect={(collection) => {
             setShowCollectionSearch(false);
@@ -2784,6 +2958,11 @@ export function ProfileV2Screen({ userId }: Props) {
               openFolder(collection);
             },
           }}
+          // The "List View" switch, after Add Collection.
+          toggleOption={(() => {
+            const toggle = listViewSwitch(collectionsView, setCollectionsView);
+            return { ...toggle, title: toggle.label };
+          })()}
         />
       )}
 

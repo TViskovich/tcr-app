@@ -1,20 +1,44 @@
 import { type ReactNode, useRef } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useKeyboardShown } from '@/components/collection/collection-search';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+
+import { PV2 } from './profile-v2-theme';
 
 // Breathing room between the status bar and the sheet's top edge when the
 // sheet is as tall as it can get (design spacing, not a keyboard offset).
 const SHEET_TOP_GAP = 12;
+
+// A single switch row offered under the field while the query is empty —
+// the Collection/Items tab's "List View" switch (on = List View, off = Grid
+// View). Flipping it doesn't close the sheet.
+export type SearchSheetToggle = {
+  label: string;
+  icon: 'list.bullet';
+  value: boolean;
+  onChange: (value: boolean) => void;
+};
 
 type Props = {
   visible: boolean;
   query: string;
   onChangeQuery: (query: string) => void;
   placeholder: string;
+  toggle?: SearchSheetToggle;
   // Every way out (backdrop tap, Android back) — the caller resets its
   // query here, so the next open starts empty. (Not reset on open: the
   // field is already focused then, and could already hold typed letters.)
@@ -39,7 +63,7 @@ type Props = {
 // them. So the field stays on screen above the keyboard on every screen
 // size, and the results scroll underneath it. An overlay, so dismissing it
 // leaves the profile's layout and scroll position untouched.
-export function ProfileV2SearchSheet({ visible, query, onChangeQuery, placeholder, onClose, children }: Props) {
+export function ProfileV2SearchSheet({ visible, query, onChangeQuery, placeholder, toggle, onClose, children }: Props) {
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   // While the keyboard is up the sheet sits on it, so the home-indicator
@@ -77,6 +101,28 @@ export function ProfileV2SearchSheet({ visible, query, onChangeQuery, placeholde
             placeholder={placeholder}
             style={styles.search}
           />
+          {/* Only before searching — once there's a query, the results
+              take this space. */}
+          {toggle && !query.trim() && (
+            // The whole row flips the switch too. The app's established
+            // switch styling (as in the item details forms): light-blue
+            // track when on, white thumb.
+            <Pressable
+              style={styles.toggleRow}
+              onPress={() => toggle.onChange(!toggle.value)}
+              accessibilityRole="switch"
+              accessibilityLabel={toggle.label}
+              accessibilityState={{ checked: toggle.value }}>
+              <IconSymbol name={toggle.icon} size={18} color={PV2.textSecondary} />
+              <Text style={styles.toggleLabel}>{toggle.label}</Text>
+              <Switch
+                value={toggle.value}
+                onValueChange={toggle.onChange}
+                trackColor={{ false: PV2.collectorPanelBg, true: PV2.actionPrimary }}
+                thumbColor="#fff"
+              />
+            </Pressable>
+          )}
           <View style={styles.results}>{children}</View>
         </View>
       </KeyboardAvoidingView>
@@ -110,6 +156,19 @@ const styles = StyleSheet.create({
   },
   search: {
     marginBottom: 8,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 48,
+    paddingHorizontal: 4,
+  },
+  toggleLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
   },
   // Takes the sheet's remaining height and scrolls inside it (the results'
   // FlatList), under the search field. No minimum: with no query there's

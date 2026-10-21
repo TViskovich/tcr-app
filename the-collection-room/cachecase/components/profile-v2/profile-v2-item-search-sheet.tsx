@@ -1,42 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
-import { FlatList, Keyboard, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { FlatList, Keyboard, StyleSheet, Text, View } from 'react-native';
 
-import { Image } from 'expo-image';
-
-import { loadCollectionPaths } from '@/components/collection/collection-search';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useCollectionPathMap } from '@/components/collection/collection-search';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
-import type { CollectionItem } from '@/types';
 
-import { ProfileV2SearchSheet } from './profile-v2-search-sheet';
+import { itemName, itemRowStyles, type ListableItem, ProfileV2ItemRow } from './profile-v2-item-row';
+import { ProfileV2SearchSheet, type SearchSheetToggle } from './profile-v2-search-sheet';
 import { PV2 } from './profile-v2-theme';
 
-// Thumbnail frame — the 3:4 card shape every item tile in the app uses, big
-// enough to tell similar cards apart. The image is fitted inside it
-// (contain), never cropped, so its own proportions are kept.
-const THUMB_WIDTH = 54;
-const THUMB_HEIGHT = 72;
 // Rows rendered (and thumbnails signed) per query; a broader query asks the
 // user to keep typing instead of signing hundreds of images at once.
 const MAX_RESULTS = 60;
 
-export type SearchableItem = CollectionItem & { primary_image_id: string | null };
-
-// What a result is called: the player when there is one (sports cards),
-// else the title — the same lead the feed's item tiles use.
-export function itemName(item: SearchableItem) {
-  return item.player?.trim() || item.title?.trim() || 'Untitled';
-}
-
-// The item's title when the name above is the player — so a card reads as
-// "Player" with "2023 Topps Chrome" in its context line.
-function secondaryTitle(item: SearchableItem) {
-  const title = item.title?.trim();
-  return title && title !== itemName(item) ? title : null;
-}
+export type SearchableItem = ListableItem;
 
 // Profile V2's item search sheet — shared by Search Items (the Items pill)
 // and Search Tagged Items (the Tagged pill). Same sheet as Search
@@ -44,14 +23,15 @@ function secondaryTitle(item: SearchableItem) {
 // so each caller decides eligibility (and the caller's own data source has
 // already applied RLS/visibility). Nothing shows until there's a real
 // query; matching is case-insensitive and partial on the player/title. Each
-// result: the item's primary-image thumbnail (compact signed tier — never
-// the full-resolution image or its gallery), its name, and the caller's
-// context line.
+// result is a ProfileV2ItemRow: the item's primary-image thumbnail (compact
+// signed tier — never the full-resolution image or its gallery), its name,
+// and the caller's context line.
 export function ItemSearchSheet<T extends SearchableItem>({
   visible,
   items,
   placeholder,
   context,
+  toggle,
   onClose,
   onSelect,
 }: {
@@ -61,6 +41,9 @@ export function ItemSearchSheet<T extends SearchableItem>({
   // Extra context after the item's own title (e.g. where it lives, or when
   // it was tagged). Empty/null for none.
   context: (item: T) => string | null;
+  // Optional switch row under the field while the query is empty (the Items
+  // tab's "List View" switch).
+  toggle?: SearchSheetToggle;
   onClose: () => void;
   onSelect: (item: T) => void;
 }) {
@@ -93,7 +76,7 @@ export function ItemSearchSheet<T extends SearchableItem>({
         keyExtractor={(item) => item.id}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        ItemSeparatorComponent={() => <View style={styles.divider} />}
+        ItemSeparatorComponent={() => <View style={itemRowStyles.divider} />}
         ListFooterComponent={
           allMatches.length > MAX_RESULTS ? (
             <Text style={styles.more}>Showing {MAX_RESULTS} of {allMatches.length} — keep typing to narrow it down.</Text>
@@ -101,44 +84,18 @@ export function ItemSearchSheet<T extends SearchableItem>({
         }
         renderItem={({ item }) => {
           const imageId = item.primary_image_id;
-          const uri = imageId ? urls.get(imageId) : undefined;
-          const contextText = [secondaryTitle(item), context(item)].filter(Boolean).join(' · ');
           return (
-            <TouchableOpacity
-              style={styles.row}
+            <ProfileV2ItemRow
+              item={item}
+              imageUri={imageId ? urls.get(imageId) : undefined}
+              imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) : undefined}
+              context={context(item)}
               onPress={() => {
                 Keyboard.dismiss();
                 setQuery('');
                 onSelect(item);
               }}
-              activeOpacity={0.65}
-              accessibilityRole="button"
-              accessibilityLabel={[itemName(item), contextText].filter(Boolean).join(', ')}>
-              {/* Same fallback as the profile grids: the plain dark frame
-                  shows until (or if never) the signed thumbnail resolves. */}
-              <View style={styles.thumb}>
-                {uri && imageId && (
-                  <Image
-                    source={{ uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
-                    transition={150}
-                    cachePolicy="memory-disk"
-                  />
-                )}
-              </View>
-              <View style={styles.rowText}>
-                <Text style={styles.rowTitle} numberOfLines={2}>
-                  {itemName(item)}
-                </Text>
-                {!!contextText && (
-                  <Text style={styles.rowContext} numberOfLines={1}>
-                    {contextText}
-                  </Text>
-                )}
-              </View>
-              <IconSymbol name="chevron.right" size={14} color="rgba(255,255,255,0.28)" />
-            </TouchableOpacity>
+            />
           );
         }}
       />
@@ -151,6 +108,7 @@ export function ItemSearchSheet<T extends SearchableItem>({
       query={query}
       onChangeQuery={setQuery}
       placeholder={placeholder}
+      toggle={toggle}
       onClose={() => {
         setQuery('');
         onClose();
@@ -170,43 +128,35 @@ type Props = {
   // limited either way). Searching exactly these means Search Items finds
   // exactly what the Items grid shows the viewer, and nothing more.
   items: SearchableItem[];
+  toggle?: SearchSheetToggle;
   onClose: () => void;
   onSelect: (item: SearchableItem) => void;
 };
 
 // Profile V2: long-press the Items pill (while Items is the active tab) →
 // search this profile's items by name, for the owner and visitors alike.
-// Context line: where the item lives. Choosing one opens the normal Item
-// Detail screen, which decides what the signed-in viewer can do there.
-export function ProfileV2ItemSearchSheet({ visible, ownerId, ownerName, isOwnProfile, items, onClose, onSelect }: Props) {
-  // Collection name paths for each result's context line — the same loader
-  // and privacy rules as Search Collections, so a visitor never sees a
-  // private collection's name. Loaded as the sheet opens.
-  const pathsKey = `${ownerId}:${isOwnProfile}`;
-  const [paths, setPaths] = useState<{ key: string; map: Map<string, string[]> } | null>(null);
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    loadCollectionPaths(ownerId, isOwnProfile)
-      .then((map) => {
-        if (!cancelled) setPaths({ key: `${ownerId}:${isOwnProfile}`, map });
-      })
-      .catch((e: unknown) => {
-        // Context only — results still show, just without where they live.
-        console.error('[ProfileV2ItemSearchSheet] collection paths failed:', e);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [visible, ownerId, isOwnProfile]);
-  const pathMap = paths?.key === pathsKey ? paths.map : null;
-
+// Context line: where the item lives (same loader and privacy rules as
+// Search Collections, so a visitor never sees a private collection's name).
+// Choosing one opens the normal Item Detail screen, which decides what the
+// signed-in viewer can do there.
+export function ProfileV2ItemSearchSheet({
+  visible,
+  ownerId,
+  ownerName,
+  isOwnProfile,
+  items,
+  toggle,
+  onClose,
+  onSelect,
+}: Props) {
+  const pathMap = useCollectionPathMap(ownerId, isOwnProfile, visible);
   return (
     <ItemSearchSheet
       visible={visible}
       items={items}
       placeholder={isOwnProfile ? 'Search your items' : `Search ${ownerName}'s items`}
       context={(item) => pathMap?.get(item.folder_id)?.join(' › ') ?? null}
+      toggle={toggle}
       onClose={onClose}
       onSelect={onSelect}
     />
@@ -225,35 +175,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: PV2.textTertiary,
     textAlign: 'center',
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 8,
-  },
-  thumb: {
-    width: THUMB_WIDTH,
-    height: THUMB_HEIGHT,
-    borderRadius: 6,
-    overflow: 'hidden',
-    backgroundColor: PV2.collectorPanelBg,
-  },
-  rowText: {
-    flex: 1,
-    gap: 3,
-  },
-  rowTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  rowContext: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.50)',
   },
 });

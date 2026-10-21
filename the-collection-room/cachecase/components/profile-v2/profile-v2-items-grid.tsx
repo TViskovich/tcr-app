@@ -3,16 +3,22 @@ import { Dimensions, StyleSheet, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 
+import { useCollectionPathMap } from '@/components/collection/collection-search';
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
+import type { ProfileViewMode } from '@/hooks/use-profile-view-mode';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem } from '@/types';
 
+import { itemRowStyles, ProfileV2ItemRow } from './profile-v2-item-row';
 import { PV2 } from './profile-v2-theme';
 
-const COLS = 3;
+// List View's loading placeholders — about a screenful of rows.
+const LIST_LOADING_PLACEHOLDER_COUNT = 6;
+
+export const COLS = 3;
 
 // Same footprint as the existing "Top 9" Grails grid (profile-v2-grid.tsx /
 // grail-slot-preview.tsx) — same horizontal inset, same inter-cell gap, same
@@ -20,18 +26,18 @@ const COLS = 3;
 // borderRadius: 0 flat-tile treatment. Deliberately not re-derived from
 // scratch: this tab should look like the same grid language already used
 // elsewhere in the app, not a new one.
-const GRID_HORIZONTAL_MARGIN = 3;
-const GRID_GAP = 2;
+export const GRID_HORIZONTAL_MARGIN = 3;
+export const GRID_GAP = 2;
 
 const GRID_WIDTH = Dimensions.get('window').width - GRID_HORIZONTAL_MARGIN * 2;
-const CELL_WIDTH = (GRID_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
+export const CELL_WIDTH = (GRID_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
 // Explicit numeric height, not aspectRatio — aspectRatio on a flex child
 // inside a flexWrap:'wrap' row collapsed to a thin horizontal strip
 // on-device (confirmed via a temporary debug-bordered tile: the tile had
 // real width but almost no height), even though CELL_WIDTH itself was
 // correct. Computing height directly from CELL_WIDTH sidesteps whatever
 // Yoga/RN-version-specific aspectRatio+flexWrap interaction caused that.
-const CELL_HEIGHT = CELL_WIDTH * (3.5 / 2.5);
+export const CELL_HEIGHT = CELL_WIDTH * (3.5 / 2.5);
 
 // Placeholder cell count while the initial batch is still loading — purely a
 // skeleton, discarded the moment real items arrive (which may be more or
@@ -57,6 +63,22 @@ type Props = {
   items: ItemWithImage[];
   loading: boolean;
   onPressItem: (item: CollectionItem) => void;
+  // Grid View (the default photo grid) or List View (compact rows — the
+  // viewer's own preference, see hooks/use-profile-view-mode.ts). Same
+  // items, same signed thumbnails, same tap target either way.
+  layout?: ProfileViewMode;
+  // List View's "where it lives" line: the profile being viewed, and
+  // whether its private collections may be named (own profile only — the
+  // same rule as Search Items).
+  ownerId: string;
+  isOwnProfile: boolean;
+  // Owner only: long-pressing an item (grid tile or list row) enters Edit
+  // Mode. Omitted for a visitor.
+  onLongPressItem?: (item: CollectionItem) => void;
+  // How many items to render (and sign images for) — the screen grows it
+  // as the page scrolls toward the end, so a large profile never mounts or
+  // signs every tile at once. Omitted = all.
+  renderLimit?: number;
 };
 
 // Dense, edge-to-edge 3-column item grid — Profile V3's Items tab body. No
@@ -64,7 +86,20 @@ type Props = {
 // header: just tap-to-open tiles. Unlike ProfileV2Grid (a fixed 3x3 of
 // addressable slots), this is a plain variable-length photo grid, so cells
 // wrap rather than being chunked into fixed rows.
-export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
+export function ProfileV2ItemsGrid({
+  items,
+  loading,
+  onPressItem,
+  layout = 'grid',
+  ownerId,
+  isOwnProfile,
+  onLongPressItem,
+  renderLimit = Number.POSITIVE_INFINITY,
+}: Props) {
+  const isList = layout === 'list';
+  // Loaded only while List View is showing.
+  const pathMap = useCollectionPathMap(ownerId, isOwnProfile, isList);
+  const shown = useMemo(() => items.slice(0, renderLimit), [items, renderLimit]);
   // Same identity useSignedItemImages itself keys its cache by — reused
   // here only to build each tile's stable expo-image cacheKey (Phase 2 of
   // the private-image caching upgrade — see lib/private-image-cache-key.ts).
@@ -74,7 +109,7 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
   // One batched signing call for the whole visible grid, same convention as
   // ProfileV2Grid — never one request per tile.
   const { urls: signedImageUrls, servedTiers } = useSignedItemImages(
-    items.map((i) => i.primary_image_id),
+    shown.map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
   );
 
@@ -101,6 +136,44 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
     [items, signedImageUrls, servedTiers, identity],
   );
 
+  if (isList) {
+    // Plain rows in the profile's own page scroll (like the grid, not a
+    // nested vertical list — that would fight the outer ScrollView).
+    // Thumbnails reuse the grid's own batched compact-tier URLs above, so
+    // switching views signs and downloads nothing new.
+    if (loading && items.length === 0) {
+      return (
+        <View style={styles.list}>
+          {Array.from({ length: LIST_LOADING_PLACEHOLDER_COUNT }, (_, i) => (
+            <View key={`loading-${i}`} style={styles.listPlaceholder} />
+          ))}
+        </View>
+      );
+    }
+    return (
+      <View style={styles.list}>
+        {shown.map((item, index) => {
+          const imageId = item.primary_image_id;
+          return (
+            <View key={item.id}>
+              {index > 0 && <View style={itemRowStyles.divider} />}
+              <ProfileV2ItemRow
+                item={item}
+                imageUri={imageId ? signedImageUrls.get(imageId) : undefined}
+                imageCacheKey={imageId ? itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) : undefined}
+                context={pathMap?.get(item.folder_id)?.join(' › ') ?? null}
+                onPress={() => onPressItem(item)}
+                onLongPress={onLongPressItem ? () => onLongPressItem(item) : undefined}
+                // Three bars, visual only for now (no reordering).
+                trailing="bars"
+              />
+            </View>
+          );
+        })}
+      </View>
+    );
+  }
+
   if (loading && items.length === 0) {
     return (
       <View style={styles.grid}>
@@ -117,14 +190,17 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
           never participates in this View's own flexWrap layout, safe as
           the first child regardless of position. */}
       <PrivateImageWarmup entries={warmupEntries} />
-      {items.map((item) => {
+      {shown.map((item) => {
         const uri = item.primary_image_id ? signedImageUrls.get(item.primary_image_id) : undefined;
         return (
           <TouchableOpacity
             key={item.id}
             style={styles.cell}
             activeOpacity={0.85}
-            onPress={() => onPressItem(item)}>
+            onPress={() => onPressItem(item)}
+            // Owner only: enters Edit Mode; the release then doesn't open it.
+            onLongPress={onLongPressItem ? () => onLongPressItem(item) : undefined}
+            delayLongPress={onLongPressItem ? 400 : undefined}>
             {uri ? (
               <Image
                 source={{
@@ -147,6 +223,16 @@ export function ProfileV2ItemsGrid({ items, loading, onPressItem }: Props) {
 }
 
 const styles = StyleSheet.create({
+  // List View — compact rows in the page's own 16px inset.
+  list: {
+    marginHorizontal: 16,
+  },
+  listPlaceholder: {
+    height: 72,
+    marginVertical: 8,
+    borderRadius: 6,
+    backgroundColor: PV2.emptyCardBg,
+  },
   // No top margin — the starting offset below the sticky tab row is now
   // owned entirely by profile-v2-screen.tsx's shared TAB_CONTENT_TOP_GAP
   // (tabBodyWrap), so every tab body begins at the same height.

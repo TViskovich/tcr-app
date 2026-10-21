@@ -39,6 +39,9 @@ export async function resolveCovers(folders: Folder[]): Promise<Folder[]> {
 // tile can size itself off this exact same limit, rather than a second,
 // independently hardcoded 10 that could drift out of sync with this one.
 export const PREVIEW_ITEM_LIMIT = 10;
+// useAllItems' page size — the API's own row cap (supabase/config.toml
+// max_rows), so each request returns a full page until the last.
+const ALL_ITEMS_PAGE_SIZE = 1000;
 
 async function fetchPreviewItems(folderIds: string[]): Promise<Record<string, CollectionItem[]>> {
   if (!folderIds.length) return {};
@@ -103,6 +106,12 @@ export function compareGridEntriesByRecency(a: CollectionGridEntry, b: Collectio
   if (a.kind === 'item' && b.kind === 'item') {
     return a.item.sort_order - b.item.sort_order;
   }
+  // Two child collections: the owner's saved sibling order
+  // (folders.sort_order), newest first among never-rearranged ties.
+  if (a.kind === 'folder' && b.kind === 'folder') {
+    const byOrder = (a.folder.sort_order ?? 0) - (b.folder.sort_order ?? 0);
+    if (byOrder !== 0) return byOrder;
+  }
   const aTime = new Date(a.kind === 'folder' ? a.folder.created_at : a.item.created_at).getTime();
   const bTime = new Date(b.kind === 'folder' ? b.folder.created_at : b.item.created_at).getTime();
   return bTime - aTime;
@@ -139,7 +148,7 @@ function toFolderWithFirstItem({ collection_items: firstItems, ...folder }: Chil
 // enhancement make nested folders disappear.
 async function queryChildFolders(
   parentFolderId: string,
-  { orderBy, ascending, limit }: { orderBy: 'name' | 'created_at'; ascending: boolean; limit?: number },
+  { orderBy, ascending, limit }: { orderBy: 'name' | 'created_at' | 'sort_order'; ascending: boolean; limit?: number },
 ): Promise<{ data: Folder[] | null; error: { message: string } | null }> {
   let embedded = supabase
     .from('folders')
@@ -150,6 +159,9 @@ async function queryChildFolders(
     .order('sort_order', { referencedTable: 'collection_items', ascending: true })
     .limit(1, { referencedTable: 'collection_items' })
     .order(orderBy, { ascending });
+  // The owner's sibling order (folders.sort_order) ties only for rows that
+  // were never rearranged; newest first, as before, breaks those.
+  if (orderBy === 'sort_order') embedded = embedded.order('created_at', { ascending: false });
   if (limit != null) embedded = embedded.limit(limit);
   const embeddedRes = await embedded;
   if (!embeddedRes.error) {
@@ -158,6 +170,7 @@ async function queryChildFolders(
 
   if (__DEV__) console.warn('[queryChildFolders] first-item embed failed, using plain query:', embeddedRes.error.message);
   let plain = supabase.from('folders').select('*').eq('parent_folder_id', parentFolderId).order(orderBy, { ascending });
+  if (orderBy === 'sort_order') plain = plain.order('created_at', { ascending: false });
   if (limit != null) plain = plain.limit(limit);
   const plainRes = await plain;
   return { data: plainRes.data as Folder[] | null, error: plainRes.error };
@@ -175,7 +188,9 @@ async function fetchChildFolderPreviews(folderIds: string[]): Promise<Record<str
   if (!folderIds.length) return {};
   const results = await Promise.all(
     folderIds.map((id) =>
-      queryChildFolders(id, { orderBy: 'created_at', ascending: false, limit: PREVIEW_ITEM_LIMIT }),
+      // The owner's saved sibling order (20261026120000_add_profile_ordering
+      // — backfilled from newest-first, so unchanged until rearranged).
+      queryChildFolders(id, { orderBy: 'sort_order', ascending: true, limit: PREVIEW_ITEM_LIMIT }),
     ),
   );
   const byFolder: Record<string, Folder[]> = {};
@@ -290,7 +305,11 @@ export function useFolders(
         .eq('user_id', userId)
         .is('parent_folder_id', null);
       if (publicOnly) query = query.eq('is_public', true);
-      const { data, error: queryError } = await query.order('created_at', { ascending: false });
+      // The owner's saved top-level order (folders.sort_order — backfilled
+      // from newest-first), newest first among never-rearranged ties.
+      const { data, error: queryError } = await query
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false });
       if (!isCurrent()) return;
 
       if (queryError) {
@@ -751,15 +770,39 @@ export function useAllItems(
     // resolve via the item's folder_id, never via folders.cover_item_id —
     // that FK answers "which item is this folder's cover", not "which
     // folder is this item in".
-    let query = supabase
-      .from('collection_items')
-      .select('*, folders!collection_items_folder_id_fkey(is_public)')
-      .eq('user_id', userId)
-      .eq('collection_status', 'active');
-    if (publicOnly) query = query.eq('is_public', true);
-    if (folderId) query = query.eq('folder_id', folderId);
-    const { data, error: queryError } = await query.order('created_at', { ascending: false });
-    if (!isCurrent()) return;
+    const pageQuery = (from: number) => {
+      let query = supabase
+        .from('collection_items')
+        .select('*, folders!collection_items_folder_id_fkey(is_public)')
+        .eq('user_id', userId)
+        .eq('collection_status', 'active');
+      if (publicOnly) query = query.eq('is_public', true);
+      if (folderId) query = query.eq('folder_id', folderId);
+      // All items (Profile's Items tab): the owner's profile-wide order
+      // (collection_items.profile_sort_order — backfilled from newest-first),
+      // ties broken by id exactly as move_profile_item does. One folder's
+      // items keep their existing newest-first order. Either way the key is
+      // total (id last), so pages never overlap or skip a row.
+      query = folderId
+        ? query.order('created_at', { ascending: false }).order('id', { ascending: true })
+        : query.order('profile_sort_order', { ascending: true }).order('id', { ascending: true });
+      return query.range(from, from + ALL_ITEMS_PAGE_SIZE - 1);
+    };
+    // Every row, a page at a time — a single request stops at the API's row
+    // cap (1,000), which would silently truncate a large profile. Rows are
+    // metadata only; images are signed later, just for the tiles shown.
+    const data: CollectionItem[] = [];
+    let queryError: { message: string } | null = null;
+    for (let from = 0; ; from += ALL_ITEMS_PAGE_SIZE) {
+      const page = await pageQuery(from);
+      if (!isCurrent()) return;
+      if (page.error) {
+        queryError = page.error;
+        break;
+      }
+      data.push(...((page.data ?? []) as CollectionItem[]));
+      if ((page.data?.length ?? 0) < ALL_ITEMS_PAGE_SIZE) break;
+    }
     if (queryError) {
       console.error('[useAllItems] query failed:', queryError.message, queryError);
       setError(queryError.message);

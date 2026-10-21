@@ -59,16 +59,27 @@ export function deriveStoragePathFromPublicUrl(
 // answer, so it must never overwrite a previously-known value; a query
 // SUCCESS with zero matching rows still correctly writes null below (a
 // genuine deletion must still clear the tile).
+// attachPrimaryImageIds' ids per request (~5.5KB of URL).
+const PRIMARY_IMAGE_ID_CHUNK = 150;
+
 export async function attachPrimaryImageIds<T extends { id: string }>(
   items: T[],
   previousIds?: Map<string, string | null>,
 ): Promise<(T & { primary_image_id: string | null })[]> {
   if (!items.length) return [];
-  const { data, error } = await supabase
-    .from('collection_item_images')
-    .select('id, item_id')
-    .eq('is_primary', true)
-    .in('item_id', items.map((i) => i.id));
+  // Chunked: one `in` filter with every id would outgrow the request URL
+  // (and the API's 1,000-row cap) for a large profile. Same single round
+  // trip for the common small case; parallel chunks beyond it.
+  const ids = items.map((i) => i.id);
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += PRIMARY_IMAGE_ID_CHUNK) chunks.push(ids.slice(i, i + PRIMARY_IMAGE_ID_CHUNK));
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      supabase.from('collection_item_images').select('id, item_id').eq('is_primary', true).in('item_id', chunk),
+    ),
+  );
+  const error = results.find((r) => r.error)?.error ?? null;
+  const data = results.flatMap((r) => r.data ?? []);
 
   if (error) {
     // Never block rendering of the items themselves over this — every item

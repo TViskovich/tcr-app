@@ -46,6 +46,7 @@ const MAPPING = {
   'message': 'chat-bubble-outline',
   'person': 'person-outline',
   'square.grid.2x2': 'grid-view',
+  'list.bullet': 'format-list-bulleted',
   'heart': 'favorite-border',
   'heart.fill': 'favorite',
   'line.3.horizontal': 'menu',

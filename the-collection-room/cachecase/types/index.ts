@@ -43,6 +43,9 @@ export type Folder = {
   // Privacy is inherited recursively up the chain — also enforced entirely
   // server-side (folder_is_effectively_visible), never duplicated here.
   parent_folder_id: string | null;
+  // Position among its siblings (same owner + parent; 20261026120000_add_
+  // profile_ordering.sql). Optional: older cached rows predate the column.
+  sort_order?: number;
   // Optional descriptive metadata (supabase/migrations/
   // 20261021120000_add_folder_metadata.sql; helpers in
   // lib/folder-metadata.ts). NULL = not provided. Optional here because
@@ -108,6 +111,10 @@ export type CollectionItem = {
   // exactly like before this column existed, with no insert-call-site
   // changes anywhere.
   sort_order: number;
+  // The owner's profile-wide arrangement (Profile V2's Items tab) — separate
+  // from sort_order above (20261026120000_add_profile_ordering.sql).
+  // Optional: older cached rows predate the column.
+  profile_sort_order?: number;
   // Item-level privacy (Model A, most-restrictive-wins — see
   // supabase/migrations/20260825120000_add_collection_item_privacy.sql).
   // Effective visibility to a non-owner is folder.is_public AND this — a

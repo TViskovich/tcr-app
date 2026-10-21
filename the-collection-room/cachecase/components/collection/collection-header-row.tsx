@@ -48,6 +48,9 @@ type Props = {
   // variant. Everything else (title, left nav chevron, tap targets) is
   // the same structure/interactions as "full" (the default).
   variant?: 'full' | 'compact';
+  // Optional long-press on the title (Profile V2's owner Edit Mode). Once
+  // it fires, the release doesn't also open the collection.
+  onLongPressTitle?: () => void;
 };
 
 // The title row above each collection's horizontal preview. No enclosing
@@ -64,6 +67,7 @@ export function CollectionHeaderRow({
   onToggle,
   onOpenFolder,
   variant = 'full',
+  onLongPressTitle,
 }: Props) {
   const compact = variant === 'compact';
   const reducedMotion = useReducedMotion();
@@ -87,6 +91,8 @@ export function CollectionHeaderRow({
       <Pressable
         style={({ pressed }) => [styles.titleTouch, pressed && styles.pressed]}
         onPress={onOpenFolder}
+        onLongPress={onLongPressTitle}
+        delayLongPress={onLongPressTitle ? 400 : undefined}
         accessibilityRole="button"
         accessibilityLabel={`Open ${title} collection`}
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}>
