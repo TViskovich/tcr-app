@@ -8,7 +8,7 @@
     "scheme": "cachecase",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/brand/cachecase-app-icon-v5-light-blue.png",
+      "icon": "./assets/brand/cachecase-app-icon-v4-darkbrown.png",
       "supportsTablet": true,
       "bundleIdentifier": "app.cachecase",
       "buildNumber": "1",
