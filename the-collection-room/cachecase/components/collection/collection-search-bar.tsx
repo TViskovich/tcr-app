@@ -4,6 +4,13 @@ import { Pressable, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } fr
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
+// The bar's horizontal geometry — exported so a row below it can line up
+// with the magnifying glass and the text (Profile V2's List View switch).
+export const SEARCH_BAR_BORDER = 1;
+export const SEARCH_BAR_PADDING_H = 12;
+export const SEARCH_BAR_ICON_SIZE = 15;
+export const SEARCH_BAR_ICON_GAP = 8;
+
 type Props = {
   value: string;
   onChange: (value: string) => void;
@@ -23,7 +30,7 @@ type Props = {
 export function CollectionSearchBar({ value, onChange, placeholder, style, inputRef, autoFocus, onFocus }: Props) {
   return (
     <View style={[styles.row, style]}>
-      <IconSymbol name="magnifyingglass" size={15} color={PV2.textTertiary} style={styles.icon} />
+      <IconSymbol name="magnifyingglass" size={SEARCH_BAR_ICON_SIZE} color={PV2.textTertiary} style={styles.icon} />
       <TextInput
         ref={inputRef}
         autoFocus={autoFocus}
@@ -50,13 +57,13 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: SEARCH_BAR_ICON_GAP,
     // 7 + the input's 22 + 7 — the same overall bar height as before.
     paddingVertical: 7,
-    paddingHorizontal: 12,
+    paddingHorizontal: SEARCH_BAR_PADDING_H,
     borderRadius: 12,
     backgroundColor: PV2.emptyCardBg,
-    borderWidth: 1,
+    borderWidth: SEARCH_BAR_BORDER,
     borderColor: PV2.border,
   },
   // An explicit height, taller than the 15pt font's line box, with the text

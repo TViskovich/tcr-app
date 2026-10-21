@@ -522,7 +522,6 @@ export function ProfileV2Screen({ userId }: Props) {
     return {
       icon: 'list.bullet' as const,
       label: 'List View',
-      subtitle: 'Show as a compact list',
       value: mode === 'list',
       onChange: (on: boolean) => setMode(on ? 'list' : 'grid'),
     };
@@ -2958,11 +2957,9 @@ export function ProfileV2Screen({ userId }: Props) {
               openFolder(collection);
             },
           }}
-          // The "List View" switch, after Add Collection.
-          toggleOption={(() => {
-            const toggle = listViewSwitch(collectionsView, setCollectionsView);
-            return { ...toggle, title: toggle.label };
-          })()}
+          // The "List View" switch — the same row as Search Items / Search
+          // Collections, set apart below the actions.
+          toggleOption={listViewSwitch(collectionsView, setCollectionsView)}
         />
       )}
 
