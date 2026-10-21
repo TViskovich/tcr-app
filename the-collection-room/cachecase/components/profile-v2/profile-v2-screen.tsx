@@ -6,8 +6,10 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -80,7 +82,7 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
 
 import { GrailSlotChooser } from './grail-slot-chooser';
-import { resolveProfileBannerVariant, type ProfileBannerVariant } from './profile-banner-variants';
+import { getProfileBannerAccent, resolveProfileBannerVariant, type ProfileBannerVariant } from './profile-banner-variants';
 import { resolveProfileLogoVariant, type ProfileLogoVariant } from './profile-logo-variants';
 import { ProfileV2BannerPicker } from './profile-v2-banner-picker';
 import { ProfileV2Collections } from './profile-v2-collections';
@@ -311,6 +313,7 @@ type IntendedProfileFields = Pick<
   | 'hero_theme'
   | 'banner_variant'
   | 'profile_logo_variant'
+  | 'grails_divider_glow'
 >;
 
 // True only if the row currently holds EXACTLY the state this save attempt
@@ -332,6 +335,7 @@ function intendedProfileMatchesRow(intended: IntendedProfileFields, row: Intende
     intended.hero_theme === row.hero_theme &&
     intended.banner_variant === row.banner_variant &&
     intended.profile_logo_variant === row.profile_logo_variant &&
+    !!intended.grails_divider_glow === !!row.grails_divider_glow &&
     arraysEqualOrdered(intended.favorite_sports, row.favorite_sports) &&
     arraysEqualOrdered(intended.favorite_teams, row.favorite_teams) &&
     arraysEqualOrdered(intended.collecting_categories, row.collecting_categories) &&
@@ -845,6 +849,20 @@ export function ProfileV2Screen({ userId }: Props) {
     if (scrollYRef.current > maxY + 1) scrollRef.current?.scrollTo({ y: maxY, animated: false });
   }
 
+  // Grails Divider Glow only animates while the Grails are on screen: the
+  // showcase (this ScrollView's first child, which holds them) has a bottom
+  // edge; once the page scrolls past it the glow pauses. State changes only
+  // when that line is crossed — never per scroll event.
+  const showcaseBottomRef = useRef(Number.POSITIVE_INFINITY);
+  const grailsOnScreenRef = useRef(true);
+  const [grailsOnScreen, setGrailsOnScreen] = useState(true);
+  function trackGrailsOnScreen(scrollY: number) {
+    const onScreen = scrollY < showcaseBottomRef.current;
+    if (onScreen === grailsOnScreenRef.current) return;
+    grailsOnScreenRef.current = onScreen;
+    setGrailsOnScreen(onScreen);
+  }
+
   // ── Owner Edit Mode (drag-and-drop rearranging) ───────────────────────────
   // Long-pressing a collection or item entry on your own profile opens that
   // tab's Edit Mode (ProfileV2ReorderCollections / ProfileV2ReorderItems):
@@ -1018,6 +1036,10 @@ export function ProfileV2Screen({ userId }: Props) {
   // banner (one combination picker) but stored independently. null = the
   // original wordmark (a pre-logo profile that hasn't chosen yet).
   const [selectedLogo, setSelectedLogo] = useState<ProfileLogoVariant | null>(null);
+  // Edit-mode draft of the owner's Grails Divider Glow (profiles.
+  // grails_divider_glow) — previewed live on the Grails above while editing,
+  // saved with the rest of the profile.
+  const [selectedGrailsGlow, setSelectedGrailsGlow] = useState(false);
   const [saving, setSaving] = useState(false);
   // Synchronous re-entry lock for handleSave — `saving` (React state) only
   // reflects the UI's loading indicator and updates asynchronously, so two
@@ -1538,6 +1560,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setSelectedTheme(resolveHeroCanvasTheme(profile?.hero_theme));
     setSelectedBanner(resolveProfileBannerVariant(profile?.banner_variant));
     setSelectedLogo(resolveProfileLogoVariant(profile?.profile_logo_variant));
+    setSelectedGrailsGlow(!!profile?.grails_divider_glow);
     setDetailsExpanded(false);
     setEditMode(true);
   }
@@ -1575,6 +1598,7 @@ export function ProfileV2Screen({ userId }: Props) {
       selectedTheme !== resolveHeroCanvasTheme(profile?.hero_theme) ||
       selectedBanner !== resolveProfileBannerVariant(profile?.banner_variant) ||
       selectedLogo !== resolveProfileLogoVariant(profile?.profile_logo_variant) ||
+      selectedGrailsGlow !== !!profile?.grails_divider_glow ||
       newAvatarUri !== null ||
       removeAvatar ||
       newHeroUri !== null ||
@@ -1968,6 +1992,7 @@ export function ProfileV2Screen({ userId }: Props) {
             hero_theme: resolveHeroCanvasTheme(profile?.hero_theme),
             banner_variant: resolveProfileBannerVariant(profile?.banner_variant),
             profile_logo_variant: resolveProfileLogoVariant(profile?.profile_logo_variant),
+            grails_divider_glow: !!profile?.grails_divider_glow,
           }
         : {
             hero_display_name: editForm.heroName.trim() || null,
@@ -1985,6 +2010,7 @@ export function ProfileV2Screen({ userId }: Props) {
             hero_theme: selectedTheme,
             banner_variant: selectedBanner,
             profile_logo_variant: selectedLogo,
+            grails_divider_glow: selectedGrailsGlow,
           };
 
       // Shared by every branch below that has proven (either directly or
@@ -2047,7 +2073,7 @@ export function ProfileV2Screen({ userId }: Props) {
           const { data: reconData, error: reconError } = await supabase
             .from('profiles')
             .select(
-              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, banner_variant, profile_logo_variant'
+              'hero_display_name, display_name, bio, tagline, location, website, favorite_sports, favorite_teams, collecting_categories, collector_tags, avatar_url, hero_image_url, hero_theme, banner_variant, profile_logo_variant, grails_divider_glow'
             )
             .eq('id', userId)
             .maybeSingle();
@@ -2260,6 +2286,7 @@ export function ProfileV2Screen({ userId }: Props) {
           onScroll={(e) => {
             scrollYRef.current = e.nativeEvent.contentOffset.y;
             growItemsWindowNearEnd(e.nativeEvent.contentOffset.y);
+            trackGrailsOnScreen(e.nativeEvent.contentOffset.y);
             navbarOnScroll(e);
           }}
           scrollEventThrottle={scrollEventThrottle}
@@ -2290,7 +2317,11 @@ export function ProfileV2Screen({ userId }: Props) {
               conditionally omitted), so stickyHeaderIndices={[1]} below
               always resolves to the tab row, regardless of
               profile/editMode state. */}
-          <View>
+          <View
+            onLayout={(e) => {
+              // Where the Grails showcase ends — the Divider Glow pauses below it.
+              showcaseBottomRef.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+            }}>
             {/* Standalone top action row — public/visitor view only. Back
                 (shared BackButton, components/ui/back-button.tsx — bare
                 chevron, no pill/circle/background) on the left, the Grails
@@ -2425,6 +2456,21 @@ export function ProfileV2Screen({ userId }: Props) {
                     </View>
                   )}
                   <ProfileV2Grid
+                      // The profile OWNER's Grails Divider Glow (their
+                      // saved choice — or, while they edit, the draft), in
+                      // the owner's banner colours, so a visitor sees
+                      // exactly what the owner chose. Off = omitted = the
+                      // grid exactly as before.
+                      dividerGlow={
+                        (editMode ? selectedGrailsGlow : !!profile?.grails_divider_glow)
+                          ? {
+                              colors: getProfileBannerAccent(
+                                editMode ? selectedBanner : resolveProfileBannerVariant(profile?.banner_variant),
+                              ).colors,
+                              active: grailsOnScreen,
+                            }
+                          : undefined
+                      }
                       reorderMode={grailReorderMode}
                       onDragReorder={isOwnProfile ? handleGrailDragReorder : undefined}
                       onDragActiveChange={setGrailDragActive}
@@ -2634,6 +2680,30 @@ export function ProfileV2Screen({ userId }: Props) {
                   }}
                 />
               )}
+
+              {/* Owner-only (this whole form is): the Grails Divider Glow,
+                  in the banner's colours — previewed live on the Grails
+                  above, saved with the rest of the profile. Off by
+                  default. */}
+              <Pressable
+                style={styles.glowRow}
+                onPress={() => setSelectedGrailsGlow((on) => !on)}
+                accessibilityRole="switch"
+                accessibilityLabel="Grails Divider Glow"
+                accessibilityState={{ checked: selectedGrailsGlow }}>
+                <View style={styles.glowText}>
+                  <Text style={styles.glowLabel}>Grails Divider Glow</Text>
+                  <Text style={styles.glowHint}>
+                    A soft light in your banner&apos;s colours drifts through the gaps between your Grails.
+                  </Text>
+                </View>
+                <Switch
+                  value={selectedGrailsGlow}
+                  onValueChange={setSelectedGrailsGlow}
+                  trackColor={{ false: PV2.collectorPanelBg, true: PV2.actionPrimary }}
+                  thumbColor="#fff"
+                />
+              </Pressable>
 
               {SHOW_HERO_THEME_PICKER && (
                 <>
@@ -3118,6 +3188,27 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
     marginTop: 16,
     marginBottom: 6,
+  },
+  // Edit Profile's Grails Divider Glow switch, under the banner picker.
+  glowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 16,
+  },
+  glowText: {
+    flex: 1,
+    gap: 2,
+  },
+  glowLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: PV2.textPrimary,
+  },
+  glowHint: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: PV2.textTertiary,
   },
   sectionHeader: {
     fontSize: 13,

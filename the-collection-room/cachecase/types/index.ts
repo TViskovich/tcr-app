@@ -321,6 +321,10 @@ export type Profile = {
   // same cache reason as banner_variant. Always read through
   // resolveProfileLogoVariant.
   profile_logo_variant?: string | null;
+  // Owner's optional Grails Divider Glow on Profile V2 (profiles.
+  // grails_divider_glow, 20261027120000). Optional: older cached rows
+  // predate the column (treated as off).
+  grails_divider_glow?: boolean;
 };
 
 export type Post = {

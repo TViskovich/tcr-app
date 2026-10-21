@@ -1,4 +1,4 @@
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { type ColorValue, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -8,6 +8,7 @@ import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
 
 import { GrailDragGrid } from './grail-drag-grid';
+import { GrailsDividerGlow } from './grails-divider-glow';
 import { GrailSlotPreview } from './grail-slot-preview';
 import { PV2 } from './profile-v2-theme';
 
@@ -137,6 +138,11 @@ type Props = {
   // Detail's Replace a Grail picker), reorder mode stays tap-to-select.
   onDragReorder?: (orderedSlotIds: string[]) => Promise<boolean>;
   onDragActiveChange?: (active: boolean) => void;
+  // Profile V2 only: the owner's optional Grails Divider Glow
+  // (profiles.grails_divider_glow), in the owner's theme colours. Omitted =
+  // the grid exactly as before. Drawn only in the normal (non-reorder,
+  // loaded) grid, behind the tiles.
+  dividerGlow?: { colors: readonly ColorValue[]; active: boolean };
 };
 
 export function ProfileV2Grid({
@@ -156,6 +162,7 @@ export function ProfileV2Grid({
   onEnterReorder,
   onDragReorder,
   onDragActiveChange,
+  dividerGlow,
 }: Props) {
   // Same batched, preview-tier call as GrailImagesWarmup (above), which the
   // profile screen mounts before this grid can render — so by the time the
@@ -204,6 +211,17 @@ export function ProfileV2Grid({
 
   return (
     <View style={styles.grid}>
+      {/* First child = beneath every row; absolutely positioned, so it
+          takes no part in the grid's own flex/gap layout. */}
+      {dividerGlow && !loading && !reorderMode && (
+        <GrailsDividerGlow
+          cellWidth={GRID_CELL_WIDTH}
+          cellHeight={GRID_CELL_HEIGHT}
+          gap={GRID_GAP}
+          colors={dividerGlow.colors}
+          active={dividerGlow.active}
+        />
+      )}
       {rows.map((row, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {row.map((slot, colIndex) => {
