@@ -77,8 +77,9 @@ import { recordRecentProfile } from '@/lib/recent-profiles';
 import { peekVisitedProfile, rememberVisitedProfile } from '@/lib/visited-profile-cache';
 import { saveFolderOrder, saveProfileItemMove } from '@/lib/profile-ordering';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
-import type { CollectionItem, Folder, GrailChooserTarget, Profile } from '@/types';
+import type { CollectionItem, Folder, GrailChooserTarget, GrailSlot, Profile } from '@/types';
 
+import { GrailActionMenu } from './grail-action-menu';
 import { GrailSlotChooser } from './grail-slot-chooser';
 import { GrailsEffectPicker } from './grails-effect-picker';
 import { getGrailsEffectTheme, resolveGrailsShowcaseEffect, type GrailsShowcaseEffect } from './grails-showcase-effects';
@@ -1384,6 +1385,17 @@ export function ProfileV2Screen({ userId }: Props) {
   // While a Grail is lifted the page itself stops scrolling, so a vertical
   // drag moves the card rather than the profile.
   const [grailDragActive, setGrailDragActive] = useState(false);
+  // Reorder mode's per-Grail action menu (GrailActionMenu), opened by a
+  // quick tap on a Grail in the drag grid: Replace / Remove / Cancel. Held
+  // by slot id and looked up in live grailSlots, so a Grail that changes
+  // underneath it simply closes the menu.
+  const [grailMenuSlotId, setGrailMenuSlotId] = useState<string | null>(null);
+  const grailMenuSlot = grailMenuSlotId ? (grailSlots.find((s) => s.id === grailMenuSlotId) ?? null) : null;
+  // True while a Remove from Grails is being saved — no new menu meanwhile.
+  const [removingGrail, setRemovingGrail] = useState(false);
+  // iOS: the menu's chosen action, run from the sheet's onDismiss once its
+  // close animation has finished (see chooseGrailAction).
+  const pendingGrailActionRef = useRef<{ kind: 'replace' | 'remove'; slotIndex: number } | null>(null);
 
   // Leaving the screen exits reorder mode (every completed drop is
   // already saved).
@@ -1392,6 +1404,7 @@ export function ProfileV2Screen({ userId }: Props) {
       return () => {
         setGrailReorderMode(false);
         setGrailDragActive(false);
+        setGrailMenuSlotId(null);
       };
     }, []),
   );
@@ -1522,16 +1535,52 @@ export function ProfileV2Screen({ userId }: Props) {
             // — only that part of the cached payload changes, so there's no
             // full invalidation/refetch for a removal made here.
             hasRealSettleOccurredRef.current = true;
-            const outcome = await removeGrailSlotOptimistic(expected);
-            if (outcome === 'conflict') {
-              Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
-            } else if (outcome === 'failed') {
-              Alert.alert('Couldn’t remove from Grails. Try again.');
+            setRemovingGrail(true);
+            try {
+              const outcome = await removeGrailSlotOptimistic(expected);
+              if (outcome === 'conflict') {
+                Alert.alert('Already Changed', 'That Grail slot changed or was already removed.');
+              } else if (outcome === 'failed') {
+                Alert.alert('Couldn’t remove from Grails. Try again.');
+              }
+            } finally {
+              setRemovingGrail(false);
             }
           },
         },
       ],
     );
+  }
+
+  // Reorder mode: a quick tap on a Grail opens its action menu (owner only,
+  // and not while a reorder or removal is still saving).
+  function openGrailMenu(slotId: string) {
+    if (!isOwnProfile || savingGrailReorder || removingGrail) return;
+    setGrailMenuSlotId(slotId);
+  }
+
+  // Replace / Remove reuse the exact flows above (stale-slot checks, the
+  // chooser, the Remove confirmation and its optimistic delete). On iOS the
+  // action waits for the menu's own close animation (onDismiss) — presenting
+  // the chooser Modal or the confirmation alert while the sheet is still
+  // dismissing can silently fail — the same deferral FolderCoverMenu uses.
+  // Android's Modal has no onDismiss, so it runs right away.
+  function chooseGrailAction(kind: 'replace' | 'remove', slot: GrailSlot) {
+    const action = { kind, slotIndex: slot.slot_index };
+    setGrailMenuSlotId(null);
+    if (Platform.OS === 'ios') pendingGrailActionRef.current = action;
+    else runGrailAction(action);
+  }
+
+  function runGrailAction({ kind, slotIndex }: { kind: 'replace' | 'remove'; slotIndex: number }) {
+    if (kind === 'replace') openGrailReplace(slotIndex);
+    else handleRemoveGrailSlot(slotIndex);
+  }
+
+  function handleGrailMenuDismiss() {
+    const action = pendingGrailActionRef.current;
+    pendingGrailActionRef.current = null;
+    if (action) runGrailAction(action);
   }
 
   // Shared by enterEdit (initial open) and cancelEdit (explicit restore) —
@@ -2479,6 +2528,7 @@ export function ProfileV2Screen({ userId }: Props) {
                       reorderMode={grailReorderMode}
                       onDragReorder={isOwnProfile ? handleGrailDragReorder : undefined}
                       onDragActiveChange={setGrailDragActive}
+                      onPressDragGrail={isOwnProfile ? openGrailMenu : undefined}
                       onEnterReorder={
                         isOwnProfile && grailSlots.length >= 2 ? () => setGrailReorderMode(true) : undefined
                       }
@@ -2936,6 +2986,15 @@ export function ProfileV2Screen({ userId }: Props) {
       </KeyboardAvoidingView>
 
       <GrailSlotChooser target={grailChooserTarget} onClose={closeGrailChooser} />
+      {isOwnProfile && (
+        <GrailActionMenu
+          slot={grailMenuSlot}
+          onReplace={(slot) => chooseGrailAction('replace', slot)}
+          onRemove={(slot) => chooseGrailAction('remove', slot)}
+          onClose={() => setGrailMenuSlotId(null)}
+          onDismiss={handleGrailMenuDismiss}
+        />
+      )}
 
       {profile && (
         <ShareSheet

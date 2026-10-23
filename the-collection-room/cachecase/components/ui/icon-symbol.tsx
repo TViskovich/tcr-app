@@ -71,6 +71,8 @@ const MAPPING = {
   'photo': 'image',
   // DM Share Item picker's selected-tile badge (share-item-picker.tsx).
   'checkmark': 'check',
+  // Grail action menu's Remove from Grails row (grail-action-menu.tsx).
+  'minus.circle': 'remove-circle-outline',
 } as IconMapping;
 
 /**

@@ -23,7 +23,21 @@ const SLOT_COUNT = 9;
 const COLS = 3;
 
 // How long a finger has to rest on a Grail before it lifts and follows.
-const LIFT_DELAY_MS = 220;
+const LIFT_DELAY_MS = 300;
+// Tap (opens the Grail's action menu) vs lift — the two race (Gesture.Race),
+// and whichever ACTIVATES first cancels the other:
+// - A tap only activates on release, so any press released before
+//   LIFT_DELAY_MS — however deliberate — is a tap.
+// - At LIFT_DELAY_MS the pan activates (card lifts) and cancels the tap, so
+//   releasing after that — moved or not — never opens the menu.
+// There's no window where neither can win: the tap's own duration limit is
+// only a safety ceiling far past the lift. It matters just when the pan has
+// already failed — RNGH fails a long-press pan if the finger drifts more
+// than ~10pt before LIFT_DELAY_MS (native, not configurable) — so a long,
+// wobbly hold that never lifted doesn't turn into a menu. A press that
+// drifts 10–TAP_MAX_DISTANCE pt and is released promptly is still a tap.
+const TAP_MAX_DISTANCE = 12;
+const TAP_MAX_DURATION_MS = 1000;
 // Lift: same idea as Football IQ Academy's draggable field marker
 // (InteractiveField.tsx — a spring scale-up while dragging), toned down for
 // a full-size card.
@@ -65,6 +79,9 @@ type Props = Geometry & {
   // its own vertical scrolling so a vertical drag moves the card, not the
   // page. Called twice per drag, never per frame.
   onDragActiveChange?: (active: boolean) => void;
+  // A quick tap on a Grail (no lift) — Profile opens its Replace / Remove
+  // menu. Off while a reorder is saving.
+  onPressGrail?: (slotId: string) => void;
 };
 
 /**
@@ -89,6 +106,7 @@ export function GrailDragGrid({
   servedTiers,
   onReorder,
   onDragActiveChange = noop,
+  onPressGrail,
   cellWidth,
   cellHeight,
   gap,
@@ -149,7 +167,8 @@ export function GrailDragGrid({
           geometry={geometry}
           enabled={!saving}
           onDrop={handleDrop}
-          onDragActiveChange={onDragActiveChange}>
+          onDragActiveChange={onDragActiveChange}
+          onPress={onPressGrail}>
           {/* Same tile Profile shows (thumbnail / animated collection
               preview). Touches go to the drag gesture, not its Pressable. */}
           <View style={styles.tileContent} pointerEvents="none">
@@ -182,6 +201,7 @@ function DraggableGrail({
   enabled,
   onDrop,
   onDragActiveChange,
+  onPress,
   children,
 }: {
   slot: GrailSlot;
@@ -192,6 +212,7 @@ function DraggableGrail({
   enabled: boolean;
   onDrop: (nextOrder: string[], startOrder: string[]) => void;
   onDragActiveChange: (active: boolean) => void;
+  onPress?: (slotId: string) => void;
   children: React.ReactNode;
 }) {
   const id = slot.id;
@@ -272,6 +293,21 @@ function DraggableGrail({
       if (success) scheduleOnRN(onDrop, order.get(), startOrder.get());
     });
 
+  // Tap → the Grail's action menu, recognised on release as long as the pan
+  // hasn't lifted the card first (see the LIFT_DELAY_MS / TAP_* comment):
+  // once it has, Race has cancelled this tap, so a finished drag — or a lift
+  // released without moving — never fires it. Off while a reorder is saving
+  // (`enabled`); the screen also ignores it while a removal is saving.
+  const tap = Gesture.Tap()
+    .enabled(enabled && !!onPress)
+    .maxDuration(TAP_MAX_DURATION_MS)
+    .maxDistance(TAP_MAX_DISTANCE)
+    .onEnd((_e, success) => {
+      if (success && onPress) scheduleOnRN(onPress, id);
+    });
+
+  const gesture = Gesture.Race(pan, tap);
+
   const style = useAnimatedStyle(() => {
     const lifted = activeId.get() === id;
     return {
@@ -286,10 +322,18 @@ function DraggableGrail({
   });
 
   return (
-    <GestureDetector gesture={pan}>
+    <GestureDetector gesture={gesture}>
       <Animated.View
         style={[styles.cell, styles.liftShadow, { width: geometry.cellWidth, height: geometry.cellHeight }, style]}
-        accessibilityHint="Long press and drag to reorder">
+        accessible
+        accessibilityRole="button"
+        accessibilityHint={onPress ? 'Opens Replace and Remove options. Long press and drag to reorder.' : 'Long press and drag to reorder'}
+        // VoiceOver's double-tap doesn't reach a gesture-handler Tap, so it
+        // opens the same menu through the accessibility "activate" action.
+        accessibilityActions={onPress ? [{ name: 'activate' }] : undefined}
+        onAccessibilityAction={(e) => {
+          if (e.nativeEvent.actionName === 'activate' && enabled) onPress?.(id);
+        }}>
         {children}
       </Animated.View>
     </GestureDetector>

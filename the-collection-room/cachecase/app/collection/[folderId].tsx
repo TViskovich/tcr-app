@@ -1899,11 +1899,11 @@ export default function CollectionFolderScreen() {
       </View>
     ) : (
       <View style={styles.emptyWrap}>
-        <Text style={styles.emptyTitle}>No cards yet</Text>
-        <Text style={styles.emptyBody}>Add your first card to this collection.</Text>
+        <Text style={styles.emptyTitle}>No items yet</Text>
+        <Text style={styles.emptyBody}>Add your first item to this collection.</Text>
         {isOwner && (
           <Pressable style={styles.emptyButton} onPress={addCard}>
-            <Text style={styles.emptyButtonText}>Add Card</Text>
+            <Text style={styles.emptyButtonText}>Add Item</Text>
           </Pressable>
         )}
       </View>
@@ -2136,7 +2136,7 @@ export default function CollectionFolderScreen() {
           </View>
         ) : itemsError && items.length === 0 ? (
           // Real query/network failure with nothing already on screen —
-          // distinct from the legitimate "No cards yet" empty state further
+          // distinct from the legitimate "No items yet" empty state further
           // down. Retry re-runs the items and tally loads the focus effect uses.
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>Couldn&apos;t load cards</Text>

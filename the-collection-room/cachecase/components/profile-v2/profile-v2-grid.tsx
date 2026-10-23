@@ -140,6 +140,9 @@ type Props = {
   // Detail's Replace a Grail picker), reorder mode stays tap-to-select.
   onDragReorder?: (orderedSlotIds: string[]) => Promise<boolean>;
   onDragActiveChange?: (active: boolean) => void;
+  // A quick tap on a Grail in the drag grid (Profile opens its Replace /
+  // Remove menu). Only used alongside onDragReorder.
+  onPressDragGrail?: (slotId: string) => void;
   // Profile V2 only: the owner's optional Grails showcase effect
   // (profiles.grails_showcase_effect), in the owner's theme colours.
   // Omitted = the grid exactly as before. Drawn only in the normal
@@ -173,6 +176,7 @@ export function ProfileV2Grid({
   onEnterReorder,
   onDragReorder,
   onDragActiveChange,
+  onPressDragGrail,
   showcaseEffect,
 }: Props) {
   // Same batched, preview-tier call as GrailImagesWarmup (above), which the
@@ -204,6 +208,7 @@ export function ProfileV2Grid({
           servedTiers={servedTiers}
           onReorder={onDragReorder}
           onDragActiveChange={onDragActiveChange}
+          onPressGrail={onPressDragGrail}
           cellWidth={GRID_CELL_WIDTH}
           cellHeight={GRID_CELL_HEIGHT}
           gap={GRID_GAP}

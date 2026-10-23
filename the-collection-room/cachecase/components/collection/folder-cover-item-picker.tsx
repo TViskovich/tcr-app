@@ -59,8 +59,8 @@ export function FolderCoverItemPicker({ visible, onClose, items, signedUrls, onS
 
         {eligibleItems.length === 0 ? (
           <View style={styles.emptyWrap}>
-            <Text style={styles.emptyTitle}>No card photos yet</Text>
-            <Text style={styles.emptyBody}>Add a photo to a card in this collection first.</Text>
+            <Text style={styles.emptyTitle}>No item photos yet</Text>
+            <Text style={styles.emptyBody}>Add a photo to an item in this collection first.</Text>
           </View>
         ) : (
           <ScrollView style={styles.scroll} contentContainerStyle={styles.grid}>

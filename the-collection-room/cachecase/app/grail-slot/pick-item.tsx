@@ -234,7 +234,7 @@ export default function PickGrailItemScreen() {
         ) : items.length === 0 ? (
           <View style={styles.center}>
             <Text style={styles.emptyTitle}>No items yet</Text>
-            <Text style={styles.emptyBody}>Add cards to your collection first.</Text>
+            <Text style={styles.emptyBody}>Add items to your collection first.</Text>
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.grid}>

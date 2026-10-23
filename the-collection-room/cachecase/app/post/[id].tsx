@@ -466,7 +466,9 @@ function PostHeader({
   // A quote's embedded post was tapped — open it.
   onOpenQuoted: (postId: string) => void;
 }) {
-  const displayName = post.display_name || post.username;
+  // Author row: display name, then @username. No (or a blank) display name
+  // falls back to the username.
+  const displayName = post.display_name?.trim() || post.username;
   // Same "Post to Feed" repost distinction as post-card.tsx's own
   // isForeignRepost — see FeedPost.sourceOwner's own comment for exactly
   // when this is set.
@@ -1645,7 +1647,10 @@ export default function PostDetailScreen() {
               // comment for why.
               { headerShown: false }
             : {
-                title: `@${post.username}`,
+                // Static, like this screen's loading/error states — the
+                // author's name and @username are in the post's own header
+                // row, so repeating the handle here was just duplication.
+                title: 'Post',
                 headerBackTitle: '',
                 headerLeft: headerBackLeft,
                 headerRight: isOwner

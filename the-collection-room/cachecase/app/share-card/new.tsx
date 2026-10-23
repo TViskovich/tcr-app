@@ -1256,9 +1256,9 @@ export default function ShareCardScreen() {
               // Paused while a card is lifted, so a vertical drag moves the
               // card rather than the page.
               scrollEnabled={!dragActive}>
-              <Text style={styles.sectionLabel}>Arrange your cards</Text>
+              <Text style={styles.sectionLabel}>Arrange your items</Text>
               {selectedItems.length > 1 && (
-                <Text style={styles.arrangeHint}>Press and hold a card, then drag to reorder. The first card leads the post.</Text>
+                <Text style={styles.arrangeHint}>Press and hold an item, then drag to reorder. The first item leads the post.</Text>
               )}
               {/* Long-press-and-drag (ShareCardDragGrid); a drop reorders
                   selectedIds locally — nothing is saved until Post. */}
@@ -1302,7 +1302,7 @@ export default function ShareCardScreen() {
                         disabled={posting}
                         hitSlop={6}
                         accessibilityRole="button"
-                        accessibilityLabel="Remove card from post">
+                        accessibilityLabel="Remove item from post">
                         <IconSymbol name="xmark" size={12} color={PV2.textPrimary} />
                       </TouchableOpacity>
                     </View>
