@@ -35,6 +35,7 @@ import { CollectionAddMenu } from '@/components/collection/collection-add-menu';
 import { CreateFolderModal } from '@/components/collection/create-folder-modal';
 import { CreateMenu } from '@/components/create/create-menu';
 import { ShareSheet } from '@/components/share/share-sheet';
+import { useGrailsShareImage } from '@/components/share/grails-share-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   getHeroCanvasPickerThemes,
@@ -71,6 +72,7 @@ import {
   type ProfileImageKind,
 } from '@/lib/storage';
 import { registerScrollToTop } from '@/lib/scroll-to-top';
+import { clearPreviousShareImages } from '@/lib/share/share-image';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { recordRecentProfile } from '@/lib/recent-profiles';
@@ -1197,17 +1199,26 @@ export function ProfileV2Screen({ userId }: Props) {
   // sends this profile's deep link (app/user/[username].tsx — see
   // lib/share/share-target.ts).
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
+  // Offscreen renderer for the Grails picture attached to Share Elsewhere
+  // (components/share/grails-share-image.tsx); renders nothing until used.
+  const { renderer: grailsShareRenderer, compose: composeGrailsShareImage } = useGrailsShareImage();
 
   function handleShareProfileElsewhere() {
     if (!profile) return;
+    clearPreviousShareImages();
     // Same hero_display_name → display_name → username fallback used for
     // the rest of this screen (see the `displayName` const near the
-    // bottom of this component).
-    shareElsewhere({
-      type: 'profile',
-      username: profile.username,
-      title: profile.hero_display_name || profile.display_name || profile.username,
-    });
+    // bottom of this component). Attaches a picture of the Grails showcase
+    // exactly as this viewer sees it (the slots already loaded here, each
+    // image signed for this viewer) when there's at least one Grail.
+    shareElsewhere(
+      {
+        type: 'profile',
+        username: profile.username,
+        title: profile.hero_display_name || profile.display_name || profile.username,
+      },
+      composeGrailsShareImage(grailSlots, profile.username),
+    );
   }
 
   // Temporary owner-only entry point for testing the real
@@ -3010,6 +3021,7 @@ export function ProfileV2Screen({ userId }: Props) {
           onShareElsewhere={handleShareProfileElsewhere}
         />
       )}
+      {grailsShareRenderer}
 
       {isOwnProfile && currentUserId && (
         <ProfileV2TaggedSearchSheet

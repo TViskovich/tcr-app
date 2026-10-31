@@ -69,6 +69,7 @@ import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { folderCoverCacheKey, itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { deleteFolderCover, uploadFolderCover } from '@/lib/storage';
+import { clearPreviousShareImages, prepareFolderShareImage } from '@/lib/share/share-image';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -996,15 +997,25 @@ export default function CollectionFolderScreen() {
 
   // Share Elsewhere — native share sheet with the folder's deep link (see
   // lib/share/share-target.ts). The owner's own folder omits the "by @"
-  // part rather than guessing a handle from their email.
+  // part rather than guessing a handle from their email. Attaches the
+  // folder's cover (as the header shows it), else the first visible card's
+  // image, when it can be prepared in time — see lib/share/share-image.ts.
   function handleShareElsewhere() {
     if (!folder) return;
-    shareElsewhere({
-      type: 'folder',
-      id: folder.id,
-      title: folder.name,
-      ownerUsername: isOwner ? null : (ownerProfile?.username ?? null),
-    });
+    clearPreviousShareImages();
+    const fallbackImageId =
+      items.find((i) => i.primary_image_id)?.primary_image_id ??
+      childFolders.find((f) => f.first_item_image_id)?.first_item_image_id ??
+      null;
+    shareElsewhere(
+      {
+        type: 'folder',
+        id: folder.id,
+        title: folder.name,
+        ownerUsername: isOwner ? null : (ownerProfile?.username ?? null),
+      },
+      prepareFolderShareImage(folder.id, fallbackImageId),
+    );
   }
 
 

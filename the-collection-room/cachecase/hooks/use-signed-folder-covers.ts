@@ -488,35 +488,47 @@ export const FOLDER_HEADER_COVER_TIER: ImageTier = DETAIL_IMAGE_TIER;
 // already exists. Same identity scoping and active-account guard as the
 // hook; fire-and-forget, never throws.
 export function prefetchFolderHeaderCover(folderId: string): void {
-  void (async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const identity = data.session?.user?.id ?? 'anon';
-      if (!isActiveSignedUrlIdentity(identity)) return;
+  void prefetchSignedFolderCover(folderId, FOLDER_HEADER_COVER_TIER);
+}
 
-      const cacheId = `${folderId}${imageTierCacheSuffix(FOLDER_HEADER_COVER_TIER)}`;
-      const key = `${identity}:${cacheId}`;
-      if (isFresh(cache.get(key)) || inFlight.has(key)) return;
+// The awaitable form of prefetchFolderHeaderCover, for any tier: resolves
+// once this folder's cover has a settled cache entry (signed now, already
+// fresh, restored from the persisted layer, or another caller's request in
+// flight finishing), so peekCachedSignedFolderCover can read it right after.
+// Same cache, dedupe, persistence and identity guard as the hook; never
+// rejects.
+export async function prefetchSignedFolderCover(folderId: string, tier: ImageTier): Promise<void> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const identity = data.session?.user?.id ?? 'anon';
+    if (!isActiveSignedUrlIdentity(identity)) return;
 
-      // Same gap-only hydration as the hook: a still-valid persisted entry
-      // (e.g. after a cold start) needs no request at all.
-      if (!cache.has(key)) {
-        const persisted = (await readPersistedSignedUrlMap(CACHE_DOMAIN, identity))[cacheId];
-        if (persisted && persisted.expiresAt > Date.now() && !cache.has(key)) {
-          cache.set(key, {
-            url: persisted.url,
-            expiresAt: persisted.expiresAt,
-            ...(persisted.token ? { token: persisted.token } : {}),
-          });
-        }
-        if (isFresh(cache.get(key)) || inFlight.has(key)) return;
+    const cacheId = `${folderId}${imageTierCacheSuffix(tier)}`;
+    const key = `${identity}:${cacheId}`;
+    if (isFresh(cache.get(key))) return;
+    const pending = inFlight.get(key);
+    if (pending) return await pending;
+
+    // Same gap-only hydration as the hook: a still-valid persisted entry
+    // (e.g. after a cold start) needs no request at all.
+    if (!cache.has(key)) {
+      const persisted = (await readPersistedSignedUrlMap(CACHE_DOMAIN, identity))[cacheId];
+      if (persisted && persisted.expiresAt > Date.now() && !cache.has(key)) {
+        cache.set(key, {
+          url: persisted.url,
+          expiresAt: persisted.expiresAt,
+          ...(persisted.token ? { token: persisted.token } : {}),
+        });
       }
-
-      await signCoverIds([folderId], FOLDER_HEADER_COVER_TIER, identity, data.session?.access_token ?? null, () => false);
-    } catch {
-      // best-effort — the destination screen still requests it normally
+      if (isFresh(cache.get(key))) return;
+      const pendingAfterRead = inFlight.get(key);
+      if (pendingAfterRead) return await pendingAfterRead;
     }
-  })();
+
+    await signCoverIds([folderId], tier, identity, data.session?.access_token ?? null, () => false);
+  } catch {
+    // best-effort — the destination screen still requests it normally
+  }
 }
 
 // Accepts folders.id values only (nulls/undefineds filtered out, safe to

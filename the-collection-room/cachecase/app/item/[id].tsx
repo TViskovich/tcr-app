@@ -83,6 +83,7 @@ import {
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
+import { clearPreviousShareImages, prepareItemShareImage } from '@/lib/share/share-image';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -1671,15 +1672,22 @@ export default function ItemDetailScreen() {
   // Share Elsewhere — native share sheet with the item's deep link (see
   // lib/share/share-target.ts). handle: always the ITEM'S OWNER
   // (ownerProfile — fetched for every viewer, owner included), never the
-  // viewer's own email-derived guess.
+  // viewer's own email-derived guess. Attaches the primary image (the one
+  // the carousel shows first) when it can be prepared in time — see
+  // lib/share/share-image.ts.
   function handleShareOutside() {
     if (!item) return;
-    shareElsewhere({
-      type: 'item',
-      id: item.id,
-      title: item.title || 'this card',
-      ownerUsername: ownerProfile?.username ?? null,
-    });
+    clearPreviousShareImages();
+    const primaryImage = galleryImages.find((img) => img.is_primary) ?? galleryImages[0];
+    shareElsewhere(
+      {
+        type: 'item',
+        id: item.id,
+        title: item.title || 'this card',
+        ownerUsername: ownerProfile?.username ?? null,
+      },
+      prepareItemShareImage(primaryImage?.id),
+    );
   }
 
   // Send in DM — the Share Item sheet has already started closing (its own
