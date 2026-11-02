@@ -484,17 +484,17 @@ export default function TabLayout() {
             tabBarIcon: ({ focused }) => <CacheCaseGridIcon active={focused} />,
           }}
         />
-        {/* RIGHT bar button — new personal Dashboard destination
+        {/* RIGHT bar button — the collector's Dashboard
             (app/(tabs)/dashboard.tsx). Takes over the plain person-icon
-            treatment the Profile tab used to have. */}
+            treatment the Profile tab used to have; the profile itself is the
+            centre CacheCase tab, so this one is named Dashboard. */}
         <Tabs.Screen
           name="dashboard"
           options={{
-            title: 'Profile',
-            // Explicit now that the visible "Profile" label under the icon
-            // is gone — same reasoning as index's tabBarAccessibilityLabel
-            // above.
-            tabBarAccessibilityLabel: 'Profile',
+            title: 'Dashboard',
+            // Explicit since the bar shows no text labels — same reasoning
+            // as index's tabBarAccessibilityLabel above.
+            tabBarAccessibilityLabel: 'Dashboard',
             tabBarIcon: ({ color }) => <IconSymbol size={ICON_SIZE} name="person" color={color} />,
           }}
         />

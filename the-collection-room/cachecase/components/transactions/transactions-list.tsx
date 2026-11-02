@@ -54,6 +54,10 @@ type Props = {
   // nothing when omitted; tapping it never touches transfer data itself,
   // it only navigates.
   onViewAll?: () => void;
+  // Dashboard preview: show at most this many rows of the current filter
+  // (newest first), with a note pointing to View All. Accept / Decline /
+  // Cancel on the rows shown are unchanged. Omitted: every row.
+  maxRows?: number;
 };
 
 // Shared core of the ownership-transfer list/summary/actions UI — used by
@@ -71,7 +75,7 @@ type Props = {
 // screen this renders inside already has its own single outer ScrollView.
 // A user's own transfer history is not the kind of large, unbounded list
 // virtualization exists for.
-export function TransactionsList({ currentUserId, onViewAll }: Props) {
+export function TransactionsList({ currentUserId, onViewAll, maxRows }: Props) {
   const router = useRouter();
 
   const [filter, setFilter] = useState<FilterKey>('all');
@@ -342,6 +346,7 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
   }
 
   const filtered = transfers.filter((t) => matchesFilter(t, filter));
+  const shown = maxRows !== undefined ? filtered.slice(0, maxRows) : filtered;
   const total = transfers.length;
   const pendingCount = transfers.filter((t) => t.status === 'pending').length;
 
@@ -397,7 +402,7 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
           </Text>
         </View>
       ) : (
-        filtered.map((item, index) => (
+        shown.map((item, index) => (
           <View key={item.id}>
             {index > 0 && <View style={styles.divider} />}
             <TransactionRow
@@ -415,11 +420,23 @@ export function TransactionsList({ currentUserId, onViewAll }: Props) {
           </View>
         ))
       )}
+      {shown.length < filtered.length && (
+        <Text style={styles.moreHint}>
+          Showing {shown.length} of {filtered.length}
+          {onViewAll ? ' — View All for the full history.' : '.'}
+        </Text>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  moreHint: {
+    color: PV2.textTertiary,
+    fontSize: 12,
+    textAlign: 'center',
+    paddingTop: 12,
+  },
   content: {
     paddingHorizontal: 16,
     paddingTop: 16,
