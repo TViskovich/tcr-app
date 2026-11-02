@@ -19,9 +19,15 @@ import { PV2 } from './profile-v2-theme';
 // this file only owns the tab strip, not what renders below it.
 export type ProfileV2Section = 'posts' | 'collections' | 'items' | 'tagged' | 'cachecase' | 'transfer';
 
+// Every label fits its pill at full size on the narrowest supported width
+// (375pt: four ~80pt pills; "Collections", the longest, is ~64pt at 12pt
+// bold). A larger Dynamic Type size or a narrower screen shrinks a label
+// slightly to fit — never clips it or widens one pill over the others.
+const LABEL_MIN_FONT_SCALE = 0.8;
+
 const TABS: { section: ProfileV2Section; label: string }[] = [
   { section: 'posts', label: 'Posts' },
-  { section: 'collections', label: 'Collection' },
+  { section: 'collections', label: 'Collections' },
   { section: 'items', label: 'Items' },
   { section: 'tagged', label: 'Tagged' },
 ];
@@ -137,7 +143,11 @@ export function ProfileV2TabRow({
             <View style={styles.surface}>
               <View style={[StyleSheet.absoluteFill, selected ? styles.fillSelected : styles.fill]} />
             </View>
-            <Text style={[styles.label, selected && styles.labelSelected]} numberOfLines={1}>
+            <Text
+              style={[styles.label, selected && styles.labelSelected]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={LABEL_MIN_FONT_SCALE}>
               {tab.label}
             </Text>
           </TouchableOpacity>
@@ -199,6 +209,8 @@ const styles = StyleSheet.create({
     color: PV2.textTertiary,
     fontSize: 12,
     fontWeight: '600',
+    // Keeps a long label off the pill's rounded ends.
+    paddingHorizontal: 6,
   },
   labelSelected: {
     color: PV2.textPrimary,
