@@ -51,7 +51,8 @@ import {
 } from '@/hooks/use-grail-slots';
 import { useProfile } from '@/hooks/use-profile';
 import { type ProfileViewMode, useProfileViewMode } from '@/hooks/use-profile-view-mode';
-import { type SavedCardEntry, useSavedGrails } from '@/hooks/use-saved';
+import { useSavedGrails } from '@/hooks/use-saved';
+import type { TaggedCardEntry } from '@/hooks/use-tagged-content';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
@@ -538,12 +539,12 @@ export function ProfileV2Screen({ userId }: Props) {
     setShowItemSearch(true);
   }
   // Own profile only: long-pressing the Tagged pill (while Tagged is
-  // active) opens Search Tagged Items over exactly the saved cards the
+  // active) opens Search Tagged Items over exactly the tagged items the
   // Tagged tab is showing — ProfileV2Tagged hands them up (onCardsChange),
   // so there's no second query and no wider item set. A result opens what
   // tapping it in the Tagged grid opens (handleGrailItemPress). On another
   // collector's profile the long-press is a no-op (see the tab row props).
-  const [taggedCards, setTaggedCards] = useState<SavedCardEntry[]>([]);
+  const [taggedCards, setTaggedCards] = useState<TaggedCardEntry[]>([]);
   const [showTaggedSearch, setShowTaggedSearch] = useState(false);
   function handleTaggedLongPress() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -808,8 +809,8 @@ export function ProfileV2Screen({ userId }: Props) {
   // until re-signed) and no image re-decode/fade-in. Only for tabs that
   // render this screen's own resident data (posts/folders/allItems, loaded
   // and refreshed by the hooks above regardless of tab) — 'tagged' keeps
-  // remounting, since its own useSavedAll refetches on mount and that is
-  // its only refresh path. Scoped to the userId it was recorded for: a
+  // remounting, and also reloads on focus (useTaggedContent), so tag
+  // removals and visibility changes show up on return. Scoped to the userId it was recorded for: a
   // different profile starts over with just its current tab mounted, so no
   // hidden tab from the previous profile survives.
   const [visitedSections, setVisitedSections] = useState<{
@@ -2973,15 +2974,14 @@ export function ProfileV2Screen({ userId }: Props) {
                   </View>
                 )}
 
-                {/* "Tagged" tab label unchanged — its content is now the
-                    existing bookmark/save repository (hooks/use-saved.ts),
-                    not the old (never-implemented) tagged-content path.
+                {/* Tagged: Items / Collections other collectors tagged this
+                    profile in (hooks/use-tagged-content.ts — collector
+                    tagging; saved content stays on the Saved screen).
                     Same navigation handlers Grails already uses for an
                     item/collection tap — no parallel navigation path. */}
                 {section === 'tagged' && (
                   <ProfileV2Tagged
                     userId={userId}
-                    isOwnProfile={isOwnProfile}
                     onPressItem={handleGrailItemPress}
                     onPressFolder={handleGrailCollectionPress}
                     onCardsChange={isOwnProfile ? setTaggedCards : undefined}

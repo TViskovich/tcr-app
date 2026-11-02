@@ -28,6 +28,10 @@ type Props = {
   likeInFlight: boolean;
   onPressLike: () => void;
   onPressShare: () => void;
+  // Collector tagging (components/tagging/collector-tag-sheet.tsx). Omitted
+  // where tagging isn't available (database without the migration): no
+  // button at all, the row is exactly as before.
+  onPressTag?: () => void;
 };
 
 // One row now: CacheCase ID on the left, Comment/Like/Share grouped on the
@@ -44,6 +48,7 @@ export function ItemActionBar({
   likeInFlight,
   onPressLike,
   onPressShare,
+  onPressTag,
 }: Props) {
   return (
     <View style={styles.row}>
@@ -90,6 +95,17 @@ export function ItemActionBar({
           accessibilityLabel="Share">
           <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
         </TouchableOpacity>
+
+        {onPressTag ? (
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={onPressTag}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Tag">
+            <IconSymbol name="tag" size={20} color={PV2.textPrimary} />
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );

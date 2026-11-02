@@ -1,10 +1,11 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { ActivityIndicator, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from 'expo-router';
 
-import { useSavedAll, type SavedCardEntry, type SavedFolderEntry } from '@/hooks/use-saved';
+import { type TaggedCardEntry, type TaggedFolderEntry, useTaggedContent } from '@/hooks/use-tagged-content';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
@@ -24,40 +25,34 @@ const CELL_HEIGHT = CELL_WIDTH / CARD_ASPECT_RATIO;
 const LOADING_PLACEHOLDER_COUNT = 9;
 
 type TaggedEntry =
-  | { kind: 'folder'; savedAt: string; folder: SavedFolderEntry }
-  | { kind: 'card'; savedAt: string; card: SavedCardEntry };
+  | { kind: 'folder'; taggedAt: string; folder: TaggedFolderEntry }
+  | { kind: 'card'; taggedAt: string; card: TaggedCardEntry };
 
 type Props = {
   // The profile being VIEWED, not necessarily the signed-in viewer.
   userId: string;
-  isOwnProfile: boolean;
   onPressItem: (item: CollectionItem) => void;
   onPressFolder: (folder: Folder) => void;
-  // The saved cards this tab is showing, whenever they (re)load — Profile's
+  // The tagged items this tab is showing, whenever they (re)load — Profile's
   // Search Tagged Items searches exactly these, never a wider item set.
-  onCardsChange?: (cards: SavedCardEntry[]) => void;
+  onCardsChange?: (cards: TaggedCardEntry[]) => void;
 };
 
-// Profile V3's "Tagged" tab. The visible label stays "Tagged" (see
-// profile-v2-tab-row.tsx) — only the content behind it changed: this now
-// renders the profile owner's existing bookmark/save repository
-// (hooks/use-saved.ts's useSavedAll, the exact same source app/saved.tsx
-// already reads for the dedicated Saved screen), instead of the old
-// tagged-content path, which never had any real implementation wired up
-// (profile-v2-screen.tsx had no `section === 'tagged'` render branch at
-// all prior to this).
-//
-// Privacy: only ever queried for the profile's OWNER viewing their own
-// profile. `isOwnProfile ? userId : undefined` means a visitor viewing
-// someone else's profile passes `undefined` into useSavedAll, which
-// no-ops entirely (see that hook's own `!currentUserId` early return) —
-// another user's bookmarks are never fetched, let alone rendered, from
-// this tab. This matches the only other place saved_* rows are ever
-// read in the app (app/saved.tsx, always for the signed-in session's own
-// id) — there is no existing precedent anywhere for showing one user's
-// saved_* rows to a different viewer.
-export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFolder, onCardsChange }: Props) {
-  const { folders, cards, loading } = useSavedAll(isOwnProfile ? userId : undefined);
+// Profile V2's "Tagged" tab: the Items and Collections other collectors
+// have tagged this profile in (hooks/use-tagged-content.ts — collector
+// tagging, not bookmarks; saved content lives on the Saved screen). Shown
+// on every profile, to every viewer, limited by RLS to content that viewer
+// can see: a private, nested-private or deleted item/collection simply
+// isn't returned. Tiles open the original owner's Item / Collection Detail.
+// Reloaded whenever the profile regains focus, so a removed tag or content
+// that turned private drops out on return.
+export function ProfileV2Tagged({ userId, onPressItem, onPressFolder, onCardsChange }: Props) {
+  const { folders, cards, loading, failed, refresh } = useTaggedContent(userId);
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
   useEffect(() => {
     onCardsChange?.(cards);
   }, [cards, onCardsChange]);
@@ -85,6 +80,13 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
       <View style={styles.empty}>
         {loading ? (
           <ActivityIndicator color={PV2.textSecondary} />
+        ) : failed ? (
+          <>
+            <Text style={styles.emptyTitle}>Couldn’t load tagged items</Text>
+            <TouchableOpacity onPress={() => void refresh()} style={styles.retry} accessibilityRole="button">
+              <Text style={styles.retryText}>Try again</Text>
+            </TouchableOpacity>
+          </>
         ) : (
           <Text style={styles.emptyTitle}>Nothing tagged yet</Text>
         )}
@@ -92,13 +94,13 @@ export function ProfileV2Tagged({ userId, isOwnProfile, onPressItem, onPressFold
     );
   }
 
-  // One merged, most-recently-saved-first feed — folders and cards are
-  // different shapes, but both are "things this profile owner bookmarked",
-  // so they read as a single tab rather than two separate sub-sections.
+  // One merged, most-recently-tagged-first feed — folders and cards are
+  // different shapes, but both are "things this profile was tagged in", so
+  // they read as a single tab rather than two separate sub-sections.
   const merged: TaggedEntry[] = [
-    ...folders.map((folder) => ({ kind: 'folder' as const, savedAt: folder.savedAt, folder })),
-    ...cards.map((card) => ({ kind: 'card' as const, savedAt: card.savedAt, card })),
-  ].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+    ...folders.map((folder) => ({ kind: 'folder' as const, taggedAt: folder.taggedAt, folder })),
+    ...cards.map((card) => ({ kind: 'card' as const, taggedAt: card.taggedAt, card })),
+  ].sort((a, b) => b.taggedAt.localeCompare(a.taggedAt));
 
   return (
     <View style={styles.grid}>
@@ -128,12 +130,16 @@ function FolderTile({
   cover,
   onPress,
 }: {
-  folder: SavedFolderEntry;
+  folder: TaggedFolderEntry;
   cover: { uri: string; cacheKey?: string } | null;
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.cell} activeOpacity={0.85} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.cell}
+      activeOpacity={0.85}
+      onPress={onPress}
+      accessibilityLabel={`Collection: ${folder.name}`}>
       {cover ? (
         <Image source={cover} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
       ) : null}
@@ -153,12 +159,16 @@ function CardTile({
   imageUrl,
   onPress,
 }: {
-  card: SavedCardEntry;
+  card: TaggedCardEntry;
   imageUrl: string | undefined;
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.cell} activeOpacity={0.85} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.cell}
+      activeOpacity={0.85}
+      onPress={onPress}
+      accessibilityLabel={card.title || 'Item'}>
       {imageUrl ? (
         <Image source={{ uri: imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
       ) : null}
@@ -207,5 +217,18 @@ const styles = StyleSheet.create({
   emptyTitle: {
     color: PV2.textSecondary,
     fontSize: 15,
+  },
+  retry: {
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  retryText: {
+    color: PV2.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

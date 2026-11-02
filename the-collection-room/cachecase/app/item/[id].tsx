@@ -24,6 +24,7 @@ import { GradedToggle, GradingCompanyField } from '@/components/item-detail/grad
 import { OptionWithOtherField } from '@/components/item-detail/option-with-other-field';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
 import { ItemCommentsSheet } from '@/components/item-detail/item-comments-sheet';
+import { CollectorTagSheet } from '@/components/tagging/collector-tag-sheet';
 import { ItemDescription } from '@/components/item-detail/item-description';
 import { ItemIdentity } from '@/components/item-detail/item-identity';
 import { buildItemImageList, ItemImageCarousel, type CarouselImage } from '@/components/item-detail/item-image-carousel';
@@ -48,6 +49,7 @@ import { useItemLikes } from '@/hooks/use-item-likes';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
 import {
   POKEMON_GRADING_COMPANIES,
@@ -699,6 +701,9 @@ export default function ItemDetailScreen() {
   const [queueAdjustedUris, setQueueAdjustedUris] = useState<string[]>([]);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
+  // Collector tagging — Tag action only where the database has it.
+  const taggingAvailable = useTaggingAvailable();
+  const [tagSheetVisible, setTagSheetVisible] = useState(false);
   // Sender Transferred-Out Item Lifecycle — a top-level derived flag, not
   // a separate query: collection_status already comes back on the same
   // row this screen fetches by id. Used both to gate the header Edit
@@ -2469,6 +2474,7 @@ export default function ItemDetailScreen() {
                 likeInFlight={itemLikeInFlight}
                 onPressLike={toggleItemLike}
                 onPressShare={() => setShareSheetVisible(true)}
+                onPressTag={taggingAvailable ? () => setTagSheetVisible(true) : undefined}
               />
 
               <ItemIdentity title={identity.title} subtitleLines={identity.subtitleLines} />
@@ -2621,6 +2627,16 @@ export default function ItemDetailScreen() {
           onCancel={handleQueueCancelled}
         />
       )}
+
+      {taggingAvailable ? (
+        <CollectorTagSheet
+          visible={tagSheetVisible}
+          onClose={() => setTagSheetVisible(false)}
+          target={{ kind: 'item', id }}
+          ownerId={item.user_id}
+          contentTitle={item.title || 'Item'}
+        />
+      ) : null}
 
       <ItemCommentsSheet
         visible={itemCommentsVisible}

@@ -42,6 +42,7 @@ import { GalleryCommentsSheet } from '@/components/collection/gallery-comments-s
 import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { CollectorTagSheet } from '@/components/tagging/collector-tag-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { FOLDER_COVER_ASPECT_RATIO, FOLDER_COVER_RADIUS } from '@/constants/folder-cover';
@@ -65,6 +66,7 @@ import {
 } from '@/hooks/use-signed-folder-covers';
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
 import { folderMetadataLine } from '@/lib/folder-metadata';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
@@ -421,6 +423,9 @@ export default function CollectionFolderScreen() {
   }, [loadFolder]);
 
   const isOwner = !!currentUserId && folder?.user_id === currentUserId;
+  // Collector tagging — Tag action only where the database has it.
+  const taggingAvailable = useTaggingAvailable();
+  const [tagSheetVisible, setTagSheetVisible] = useState(false);
   const isPrivate = folder !== null && !folder.is_public && !isOwner;
 
   const [search, setSearch] = useState('');
@@ -1625,6 +1630,17 @@ export default function CollectionFolderScreen() {
             <Pressable onPress={() => setShareSheetVisible(true)} hitSlop={10} style={styles.iconBtn}>
               <IconSymbol name="square.and.arrow.up" size={20} color={PV2.textPrimary} />
             </Pressable>
+            {/* Collector tagging — only where the database has it. */}
+            {taggingAvailable ? (
+              <Pressable
+                onPress={() => setTagSheetVisible(true)}
+                hitSlop={10}
+                style={styles.iconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Tag">
+                <IconSymbol name="tag" size={20} color={PV2.textPrimary} />
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </View>
@@ -2481,6 +2497,16 @@ export default function CollectionFolderScreen() {
         onShareElsewhere={handleShareElsewhere}
       />
 
+      {taggingAvailable && folderId ? (
+        <CollectorTagSheet
+          visible={tagSheetVisible}
+          onClose={() => setTagSheetVisible(false)}
+          target={{ kind: 'collection', id: folderId }}
+          ownerId={folder?.user_id}
+          contentTitle={folderTitle}
+        />
+      ) : null}
+
       <FolderCommentsSheet
         visible={commentsVisible}
         onClose={() => setCommentsVisible(false)}
@@ -2677,6 +2703,10 @@ const styles = StyleSheet.create({
   itemCountLabel: {
     fontSize: 13,
     color: PV2.textSecondary,
+    // With four actions beside it (Tag added), a long count on a narrow
+    // phone wraps instead of pushing the icons off the edge.
+    flexShrink: 1,
+    marginRight: 12,
   },
   // Comment/Like/Share group as it sits nested inside metaActionsRow —
   // same icon gap (24) as galleryActionsRow below, but no padding/margin of

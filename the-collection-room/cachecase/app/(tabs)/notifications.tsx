@@ -20,6 +20,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { navigateToProfile } from '@/lib/profile-navigation';
+import { checkTaggingAvailable } from '@/lib/content-tags';
 import { supabase } from '@/lib/supabase';
 
 type NotificationType =
@@ -31,7 +32,10 @@ type NotificationType =
   | 'ownership_transfer_requested'
   | 'ownership_transfer_accepted'
   | 'ownership_transfer_declined'
-  | 'ownership_transfer_cancelled';
+  | 'ownership_transfer_cancelled'
+  // Collector tagging (20261102120000_add_collector_tagging.sql).
+  | 'item_tag'
+  | 'folder_tag';
 
 // Ownership Transfer Notifications Phase 1 — these four are always
 // server-inserted inside the transfer RPCs (never client-inserted, unlike
@@ -57,6 +61,9 @@ type NotificationItem = {
   ratingScore: number | null;
   transferId: string | null;
   registeredCardId: string | null;
+  // Tag notifications: the tagged item / collection (the owner's original).
+  itemId: string | null;
+  folderId: string | null;
   actorId: string;
   actorUsername: string;
   actorDisplayName: string | null;
@@ -87,14 +94,20 @@ function notifLabel(item: NotificationItem): string {
     case 'ownership_transfer_accepted':   return 'accepted your card transfer.';
     case 'ownership_transfer_declined':   return 'declined your card transfer.';
     case 'ownership_transfer_cancelled':  return 'cancelled a card transfer.';
+    case 'item_tag':      return 'tagged you in an item.';
+    case 'folder_tag':    return 'tagged you in a collection.';
     default:               return 'interacted with you.';
   }
 }
 
 async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
+  // item_id / folder_id only exist once the tagging migration is in this
+  // database (lib/content-tags.ts) — asking for them before would fail the
+  // whole list; without it there are no tag notifications to show anyway.
+  const tagColumns = (await checkTaggingAvailable()) ? ', item_id, folder_id' : '';
   const { data: rows, error } = await supabase
     .from('notifications')
-    .select('id, type, read, created_at, post_id, conversation_id, actor_id, rating_score, transfer_id, registered_card_id')
+    .select(`id, type, read, created_at, post_id, conversation_id, actor_id, rating_score, transfer_id, registered_card_id${tagColumns}`)
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(100);
@@ -133,6 +146,8 @@ async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
       ratingScore: r.rating_score ?? null,
       transferId: r.transfer_id ?? null,
       registeredCardId: r.registered_card_id ?? null,
+      itemId: r.item_id ?? null,
+      folderId: r.folder_id ?? null,
       actorId: r.actor_id,
       actorUsername: p.username ?? 'user',
       actorDisplayName: p.display_name ?? null,
@@ -452,6 +467,16 @@ export default function NotificationsScreen() {
         } else if (currentUserId) {
           router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
         }
+        break;
+      // Collector tagging — the owner's original Item / Collection Detail.
+      // Those screens read under RLS, so content that has since been
+      // deleted or made private shows their own unavailable state (a
+      // deleted one also takes its notification with it).
+      case 'item_tag':
+        if (notif.itemId) router.push({ pathname: '/item/[id]', params: { id: notif.itemId } });
+        break;
+      case 'folder_tag':
+        if (notif.folderId) router.push({ pathname: '/collection/[folderId]', params: { folderId: notif.folderId } });
         break;
     }
   }

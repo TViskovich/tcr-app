@@ -78,6 +78,8 @@ const MAPPING = {
   'circle': 'radio-button-unchecked',
   'person.badge.plus': 'person-add',
   'pencil': 'edit',
+  // Collector tagging: the Tag action on Item / Collection Detail.
+  'tag': 'local-offer',
 } as IconMapping;
 
 /**
