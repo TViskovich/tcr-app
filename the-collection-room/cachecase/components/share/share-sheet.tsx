@@ -46,10 +46,6 @@ type Props = {
   feed: ShareSheetAction;
   dm: ShareSheetAction;
   onShareElsewhere: () => void;
-  // Icon tile colors. 'standard' (default — folders, profiles): see the
-  // comment above ShareSheet. 'brand' (Share Item): Feed and Direct Message
-  // on the same CacheCase blue, Elsewhere on neutral gray, every glyph white.
-  iconPalette?: 'standard' | 'brand';
 };
 
 // The CacheCase Share sheet — every in-app Share button opens this (Item
@@ -60,12 +56,12 @@ type Props = {
 // model and Share Elsewhere). Structurally modeled on
 // components/create/create-menu.tsx (dark rounded sheet / drag handle /
 // icon+title+subtitle+chevron rows, slide-up Modal, tap-outside-to-dismiss).
-// Icon colors: Feed is the bottom navigation's own Feed icon ('house', see
-// components/navigation/global-floating-tab-bar.tsx) lit in the nav's
-// active Feed tint on a black tile, so the destination reads the same
-// everywhere; Direct Message is the blue action fill; Elsewhere (leaving
-// CacheCase) is green — never the red accent, which reads as destructive
-// on an ordinary share action.
+// One look for every target, the Share Item design: Feed and Direct Message
+// on the same CacheCase blue, Elsewhere (leaving CacheCase) on neutral gray,
+// every glyph white — never the red accent, which reads as destructive on an
+// ordinary share action. Only the content differs per target: heading,
+// preview shape (item card / collection cover / avatar), text, and each
+// row's state.
 export function ShareSheet({
   visible,
   onClose,
@@ -77,9 +73,7 @@ export function ShareSheet({
   feed,
   dm,
   onShareElsewhere,
-  iconPalette = 'standard',
 }: Props) {
-  const brand = iconPalette === 'brand';
   const [notice, setNotice] = useState<'feed' | 'dm' | null>(null);
   // Synchronous re-entry guard: the sheet stays touchable while its dismiss
   // animation runs, so a fast second tap could otherwise start the same
@@ -111,10 +105,6 @@ export function ShareSheet({
     label: string,
     icon: IconName,
     iconStyle: object,
-    // Glyph color — white on a colored tile by default; Feed passes the
-    // nav bar's active Feed tint and gets the same glow (glyphLit).
-    iconColor = '#FFFFFF',
-    glyphStyle?: object,
   ) {
     const muted = action.kind !== 'available';
     const disabled = action.kind === 'unsupported';
@@ -129,9 +119,7 @@ export function ShareSheet({
           accessibilityState={{ disabled }}
           accessibilityHint={action.kind === 'blocked' ? `Explains why this can’t be shared yet` : undefined}>
           <View style={[styles.iconWrap, iconStyle, muted && styles.iconWrapMuted]}>
-            <View style={glyphStyle}>
-              <IconSymbol name={icon} size={20} color={iconColor} />
-            </View>
+            <IconSymbol name={icon} size={20} color="#FFFFFF" />
           </View>
           <View style={styles.rowText}>
             <Text style={[styles.rowTitle, muted && styles.rowTitleMuted]}>{label}</Text>
@@ -200,9 +188,7 @@ export function ShareSheet({
           </View>
 
           <View style={styles.optionsGroup}>
-            {brand
-              ? renderRow('feed', feed, 'Feed', 'house', styles.iconWrapDM)
-              : renderRow('feed', feed, 'Feed', 'house', styles.iconWrapFeed, PV2.feedActive, styles.glyphLit)}
+            {renderRow('feed', feed, 'Feed', 'house', styles.iconWrapDM)}
 
             <View style={styles.divider} />
 
@@ -215,7 +201,7 @@ export function ShareSheet({
               onPress={() => run(onShareElsewhere)}
               activeOpacity={0.65}
               accessibilityRole="button">
-              <View style={[styles.iconWrap, brand ? styles.iconWrapNeutral : styles.iconWrapExternal]}>
+              <View style={[styles.iconWrap, styles.iconWrapNeutral]}>
                 <IconSymbol name="square.and.arrow.up" size={20} color="#FFFFFF" />
               </View>
               <View style={styles.rowText}>
@@ -325,15 +311,6 @@ const styles = StyleSheet.create({
   },
   // Black tile with the nav bar's lit Feed icon — same tint and glow as the
   // selected Feed tab (iconLitWrap/iconLit in app/(tabs)/_layout.tsx).
-  iconWrapFeed: {
-    backgroundColor: '#000000',
-  },
-  glyphLit: {
-    shadowColor: PV2.feedActive,
-    shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 8,
-    shadowOpacity: 0.85,
-  },
   iconWrapDM: {
     backgroundColor: PV2.actionPrimaryFill,
   },
@@ -379,10 +356,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: PV2.textPrimary,
   },
-  iconWrapExternal: {
-    backgroundColor: PV2.actionExternalFill,
-  },
-  // iconPalette 'brand' (Share Item) only — Elsewhere's neutral gray tile.
+  // Elsewhere's neutral gray tile.
   iconWrapNeutral: {
     backgroundColor: PV2.actionNeutralFill,
   },

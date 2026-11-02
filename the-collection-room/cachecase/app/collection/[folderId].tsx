@@ -2403,7 +2403,7 @@ export default function CollectionFolderScreen() {
       <ShareSheet
         visible={shareSheetVisible}
         onClose={() => setShareSheetVisible(false)}
-        heading="Share Folder"
+        heading="Share Collection"
         imageUri={coverUrl ?? coverPreviewPeek?.url ?? null}
         imageShape="square"
         title={folderTitle}
@@ -2414,15 +2414,15 @@ export default function CollectionFolderScreen() {
             : isOwner && folder && !folder.is_public
               ? {
                   kind: 'blocked',
-                  subtitle: 'Make this folder public to share',
-                  noticeTitle: 'This folder must be public before it can be posted.',
-                  noticeText: 'Change the folder’s visibility and try again.',
-                  fixLabel: 'Edit Folder',
+                  subtitle: 'Make this collection public to share',
+                  noticeTitle: 'This collection must be public before it can be posted.',
+                  noticeText: 'Change the collection’s visibility and try again.',
+                  fixLabel: 'Edit Collection',
                   onFix: () => setTimeout(() => setEditVisible(true), 350),
                 }
-              : { kind: 'available', subtitle: 'Create a CacheCase post with this folder', onPress: handleShareToFeed }
+              : { kind: 'available', subtitle: 'Post with this collection.', onPress: handleShareToFeed }
         }
-        dm={{ kind: 'unsupported', subtitle: 'Not available for folders yet' }}
+        dm={{ kind: 'unsupported', subtitle: 'Not available for collections yet' }}
         onShareElsewhere={handleShareElsewhere}
       />
 
