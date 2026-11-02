@@ -12,6 +12,7 @@ import {
 import {
   BackHandler,
   type GestureResponderEvent,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -21,7 +22,9 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { type EdgeInsets, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 import { PV2 } from './profile-v2-theme';
 
@@ -39,18 +42,55 @@ export function useAnchoredMenu() {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const triggerRef = useRef<View>(null);
+  // Cancels an open still waiting on the keyboard to finish hiding.
+  const cancelPendingOpen = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cancelPendingOpen.current?.(), []);
 
   // Tapping the trigger of an open menu closes it (only reachable inside an
   // AnchoredMenuHost — a Modal-hosted menu covers its trigger).
+  //
+  // An open keyboard is dismissed first, and the trigger is only measured
+  // once it has finished hiding: the forms' ScrollViews shift their content
+  // as the keyboard insets go away, so a measurement taken mid-animation
+  // would place the menu away from its field (and partly behind the
+  // keyboard). Field values are unaffected — dismissing only blurs.
   function openMenu() {
     if (open) {
       setOpen(false);
       return;
     }
-    triggerRef.current?.measureInWindow((x, y, width, height) => {
-      setAnchor({ x, y, width, height });
-      setOpen(true);
-    });
+    if (cancelPendingOpen.current) return;
+
+    const measureAndOpen = () =>
+      triggerRef.current?.measureInWindow((x, y, width, height) => {
+        setAnchor({ x, y, width, height });
+        setOpen(true);
+      });
+
+    if (!Keyboard.isVisible()) {
+      measureAndOpen();
+      return;
+    }
+
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      sub.remove();
+      clearTimeout(timer);
+      cancelPendingOpen.current = null;
+    };
+    const finish = () => {
+      if (settled) return;
+      cleanup();
+      // One more frame for the ScrollView's inset change to lay out.
+      requestAnimationFrame(measureAndOpen);
+    };
+    const sub = Keyboard.addListener('keyboardDidHide', finish);
+    // Fallback in case the hide event never arrives.
+    const timer = setTimeout(finish, KEYBOARD_HIDE_TIMEOUT_MS);
+    cancelPendingOpen.current = cleanup;
+    Keyboard.dismiss();
   }
 
   function closeMenu() {
@@ -65,14 +105,41 @@ type Props = {
   anchor: AnchorRect | null;
   onRequestClose: () => void;
   children: ReactNode;
-  // Long option lists (e.g. SelectField with many options): the menu is
-  // capped to the space available on screen and scrolls, opening ABOVE the
-  // trigger when there's more room there. Off by default — every existing
-  // short menu renders exactly as before.
+  // Long option lists (e.g. SelectField with many options): the options
+  // scroll inside a height-capped list (see scrollableMaxHeight), and the
+  // menu may open ABOVE the trigger when there's more room there. Off by
+  // default — every existing short menu renders exactly as before.
   scrollable?: boolean;
 };
 
 const SCREEN_MARGIN = 16;
+const KEYBOARD_HIDE_TIMEOUT_MS = 500;
+// Menu chrome around a scrollable list: paddingVertical 4 + 1px borders.
+const MENU_CHROME = 10;
+// A scrollable list never shrinks below ~5 rows to squeeze into a sliver of
+// space under a low trigger; it opens taller and the page scrolls instead.
+const MIN_SCROLLABLE_HEIGHT = 220;
+
+// The tallest a scrollable menu's list gets: just over half the safe-area
+// window, so the menu reads as a dropdown rather than a full-screen sheet
+// and always fits on screen whole.
+function scrollableMaxHeight(windowHeight: number, insets: EdgeInsets) {
+  return Math.round((windowHeight - insets.top - insets.bottom) * 0.55) - MENU_CHROME;
+}
+
+// A long menu's options, scrolling independently of the page behind them.
+function MenuScrollList({ maxHeight, children }: { maxHeight: number; children: ReactNode }) {
+  return (
+    <ScrollView
+      style={{ maxHeight, flexGrow: 0 }}
+      nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator
+      persistentScrollbar>
+      {children}
+    </ScrollView>
+  );
+}
 
 // The dropdown box itself — anchored under `anchor` (from useAnchoredMenu
 // above), compact, dark. The project's existing menu-shaped components
@@ -138,7 +205,11 @@ function ModalAnchoredMenu({ visible, anchor, onRequestClose, children, scrollab
               // never flashes in the wrong place.
               menuHeight === 0 && styles.menuMeasuring,
             ]}>
-            {children}
+            {scrollable ? (
+              <MenuScrollList maxHeight={scrollableMaxHeight(windowHeight, insets)}>{children}</MenuScrollList>
+            ) : (
+              children
+            )}
           </View>
         )}
       </ScrollView>
@@ -352,6 +423,8 @@ function HostedMenuBox({
   store: MenuStore;
 }) {
   const { anchor } = entry;
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [layerOrigin, setLayerOrigin] = useState<{ x: number; y: number } | null>(null);
   const [menuHeight, setMenuHeight] = useState(0);
   const measuredFor = useRef<AnchorRect | null>(null);
@@ -370,6 +443,15 @@ function HostedMenuBox({
   // fits above.
   const openAbove = ready && layerHeight > 0 && below + menuHeight > layerHeight && aboveTop >= 0;
   const left = layerOrigin ? anchor.x - layerOrigin.x : 0;
+  // A scrollable list is also fitted to the visible space under its field
+  // (above the home indicator and the floating tab bar), so the whole menu
+  // shows without scrolling the page; the options scroll inside it.
+  const spaceBelow =
+    windowHeight - insets.bottom - TAB_BAR_HEIGHT - SCREEN_MARGIN - (anchor.y + anchor.height + 6) - MENU_CHROME;
+  const listMaxHeight = Math.min(
+    scrollableMaxHeight(windowHeight, insets),
+    Math.max(MIN_SCROLLABLE_HEIGHT, spaceBelow),
+  );
 
   return (
     <View
@@ -385,7 +467,7 @@ function HostedMenuBox({
         // Hidden until placed, so it never flashes in the wrong spot.
         !ready && styles.menuMeasuring,
       ]}>
-      {entry.children}
+      {entry.scrollable ? <MenuScrollList maxHeight={listMaxHeight}>{entry.children}</MenuScrollList> : entry.children}
     </View>
   );
 }
