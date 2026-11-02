@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,10 +17,12 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
+import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
-import { useAllItems } from '@/hooks/use-collection';
+import { itemMatchesSearch, useAllItems } from '@/hooks/use-collection';
 import { insertGrailSlot, replaceGrailSlot, useGrailSlots } from '@/hooks/use-grail-slots';
+import { useProfileItemSearch } from '@/hooks/use-item-search';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
@@ -27,6 +32,9 @@ import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 const NUM_COLUMNS = 3;
 const GRID_GAP = 10;
 const HORIZONTAL_PADDING = 16;
+// How close (pt) to the end of the grid scrolling must get before the next
+// page of search matches is fetched.
+const SEARCH_LOAD_MORE_DISTANCE = 600;
 
 // Single-item Grail slot picker — reached only via GrailSlotChooser, which
 // forwards target.mode/slotIndex/expected* as route params. This screen
@@ -87,6 +95,27 @@ export default function PickGrailItemScreen() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Search: the instant local name match plus the database's metadata
+  // search over the user's own items (hooks/use-item-search.ts — the same
+  // matching as Collection/Profile search). It only narrows what's shown;
+  // the selection, the "In Grails" rule and Save are unchanged, and a
+  // selected item stays selected while a search hides it.
+  const [query, setQuery] = useState('');
+  const serverSearch = useProfileItemSearch(target ? currentUserId : undefined, query);
+  const shownItems = useMemo(() => {
+    const q = query.trim();
+    if (!q) return items;
+    return items.filter((item) => itemMatchesSearch(item, q) || !!serverSearch.matchIds?.has(item.id));
+  }, [items, query, serverSearch.matchIds]);
+
+  function handleGridScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    if (!query.trim()) return;
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    if (contentSize.height - (contentOffset.y + layoutMeasurement.height) < SEARCH_LOAD_MORE_DISTANCE) {
+      serverSearch.loadMore();
+    }
+  }
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const tileWidth = (windowWidth - HORIZONTAL_PADDING * 2 - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
@@ -237,26 +266,44 @@ export default function PickGrailItemScreen() {
             <Text style={styles.emptyBody}>Add items to your collection first.</Text>
           </View>
         ) : (
-          <ScrollView contentContainerStyle={styles.grid}>
-            {items.map((item) => {
-              const disabled = assignedElsewhere.has(item.id);
-              const selected = selectedId === item.id;
-              return (
-                <View key={item.id} style={{ width: tileWidth }}>
-                  <View style={disabled ? styles.tileDisabled : undefined} pointerEvents={disabled ? 'none' : 'auto'}>
-                    <CollectionPreviewCard
-                      imageUrl={item.primary_image_id ? (signedImageUrls.get(item.primary_image_id) ?? null) : null}
-                      title={item.title}
-                      subtitle={disabled ? 'In Grails' : item.brand}
-                      tileWidth={tileWidth}
-                      onPress={() => toggleSelect(item.id)}
-                    />
+          <>
+            <CollectionSearchBar
+              value={query}
+              onChange={setQuery}
+              placeholder="Search your items"
+              style={styles.searchBar}
+            />
+            <ScrollView
+              contentContainerStyle={styles.grid}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              onScroll={handleGridScroll}
+              scrollEventThrottle={64}>
+              {!!query.trim() && shownItems.length === 0 && (
+                <Text style={styles.searchEmpty}>
+                  {serverSearch.searching ? 'Searching…' : 'No items match your search.'}
+                </Text>
+              )}
+              {shownItems.map((item) => {
+                const disabled = assignedElsewhere.has(item.id);
+                const selected = selectedId === item.id;
+                return (
+                  <View key={item.id} style={{ width: tileWidth }}>
+                    <View style={disabled ? styles.tileDisabled : undefined} pointerEvents={disabled ? 'none' : 'auto'}>
+                      <CollectionPreviewCard
+                        imageUrl={item.primary_image_id ? (signedImageUrls.get(item.primary_image_id) ?? null) : null}
+                        title={item.title}
+                        subtitle={disabled ? 'In Grails' : item.brand}
+                        tileWidth={tileWidth}
+                        onPress={() => toggleSelect(item.id)}
+                      />
+                    </View>
+                    {selected && <View style={styles.selectedRing} pointerEvents="none" />}
                   </View>
-                  {selected && <View style={styles.selectedRing} pointerEvents="none" />}
-                </View>
-              );
-            })}
-          </ScrollView>
+                );
+              })}
+            </ScrollView>
+          </>
         )}
       </SafeAreaView>
     </>
@@ -318,6 +365,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  searchBar: {
+    marginHorizontal: HORIZONTAL_PADDING,
+    marginBottom: 10,
+  },
+  searchEmpty: {
+    width: '100%',
+    paddingVertical: 32,
+    fontSize: 14,
+    color: PV2.textSecondary,
+    textAlign: 'center',
   },
   grid: {
     paddingHorizontal: HORIZONTAL_PADDING,

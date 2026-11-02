@@ -19,6 +19,7 @@ import { CHAT } from '@/components/conversation/conversation-theme';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { type CollectionItemWithFolderVisibility, useAllItems } from '@/hooks/use-collection';
+import { useProfileItemSearch } from '@/hooks/use-item-search';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
 import { compactItemIdentity, ITEM_TYPE_LABEL } from '@/lib/dm-attachments';
@@ -136,11 +137,20 @@ function PickerBody({
     [shareableItems],
   );
 
+  // Metadata search over the sender's own items (hooks/use-item-search.ts —
+  // the same database matching as Collection/Profile search: every
+  // category's details, paged as the grid scrolls). Its matches only pick
+  // from shareableItems, so the picker's eligibility and type chips still
+  // decide what's offered; the instant local match below is kept alongside.
+  const serverSearch = useProfileItemSearch(currentUserId, query);
+  const serverIds = serverSearch.matchIds;
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return shareableItems.filter((item) => {
       if (typeFilter !== 'all' && item.item_type !== typeFilter) return false;
       if (!q) return true;
+      if (serverIds?.has(item.id)) return true;
       const haystack = [
         item.player,
         item.title,
@@ -154,7 +164,7 @@ function PickerBody({
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [shareableItems, query, typeFilter]);
+  }, [shareableItems, query, typeFilter, serverIds]);
 
   const selected = selectedId ? (shareableItems.find((i) => i.id === selectedId) ?? null) : null;
   const tileWidth = (width - GRID_PADDING * 2 - GRID_GAP * (COLUMNS - 1)) / COLUMNS;
@@ -281,9 +291,13 @@ function PickerBody({
           columnWrapperStyle={styles.gridRow}
           contentContainerStyle={[styles.grid, { paddingBottom: (selected ? 300 : 24) + insets.bottom }]}
           extraData={selectedId}
+          onEndReached={query.trim() ? serverSearch.loadMore : undefined}
+          onEndReachedThreshold={0.5}
           ListEmptyComponent={
             <View style={styles.center}>
-              <Text style={styles.emptyText}>No items match your search.</Text>
+              <Text style={styles.emptyText}>
+                {serverSearch.searching ? 'Searching…' : 'No items match your search.'}
+              </Text>
             </View>
           }
           renderItem={({ item }) => (

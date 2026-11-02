@@ -5,11 +5,20 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { supabase } from '@/lib/supabase';
 
-// Search one collector's collections by name — nested ones at every level —
-// shared by Profile V2's two long-press entry points on the Collection
-// pill: a visitor's Search Collections sheet
+// Search one collector's collections — nested ones at every level — by
+// name, description and genre, shared by Profile V2's two long-press entry
+// points on the Collection pill: a visitor's Search Collections sheet
 // (components/profile-v2/profile-v2-collection-search-sheet.tsx) and the
 // owner's Add menu (components/collection/collection-add-menu.tsx).
+//
+// The search itself runs in the database (search_profile_collections —
+// supabase/migrations/20261031160000_add_profile_collection_search.sql):
+// it walks the folder tree server-side with the same visibility rules as
+// loadCollectionPaths below, matches with the same normalization as item
+// search, and returns only matching collections with their path labels,
+// a page at a time — the tree is never loaded just to search it. Until that
+// migration is deployed, the hook falls back to the original client-side
+// name search over loadSearchableCollections.
 
 // Folder rows only — no items, images or covers.
 const PAGE_SIZE = 1000;
@@ -116,46 +125,180 @@ export function useCollectionPathMap(ownerId: string, includePrivate: boolean, e
 
 export type CollectionSearch = ReturnType<typeof useCollectionSearch>;
 
-// Query + results state. Nothing loads until load() (the caller decides
-// when — on open, on focus), and nothing is listed until there's a real
-// query: an empty or whitespace-only one matches nothing.
+const SEARCH_PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 250;
+
+// PostgREST's "function not found" — the migration isn't deployed here yet.
+function isMissingFunction(error: { code?: string } | null | undefined) {
+  return error?.code === 'PGRST202';
+}
+
+async function searchCollectionsPage(
+  ownerId: string,
+  query: string,
+  includePrivate: boolean,
+  offset: number,
+): Promise<CollectionSearchResult[]> {
+  const { data, error } = await supabase.rpc('search_profile_collections', {
+    p_owner_id: ownerId,
+    p_query: query,
+    p_include_private: includePrivate,
+    p_limit: SEARCH_PAGE_SIZE,
+    p_offset: offset,
+  });
+  if (error) throw error;
+  return ((data ?? []) as { folder_id: string; name: string; path: string[] | null }[]).map((row) => ({
+    id: row.folder_id,
+    name: row.name,
+    path: row.path ?? [],
+  }));
+}
+
+type ServerResults = {
+  key: string; // `${ownerId}:${includePrivate}:${query}`
+  results: CollectionSearchResult[];
+  hasMore: boolean;
+  failed: boolean;
+};
+
+// Query + results state. Nothing is listed until there's a real query: an
+// empty or whitespace-only one matches nothing. Each query is searched
+// after a short pause in typing; loadMore fetches the next page (wire it to
+// the list's onEndReached). Responses for an older query are dropped.
+// `load` (called by the callers when the search opens) only matters for the
+// pre-migration fallback, which preloads the collection list.
 export function useCollectionSearch(ownerId: string | undefined, { includePrivate }: { includePrivate: boolean }) {
   const [query, setQuery] = useState('');
-  const [collections, setCollections] = useState<{ key: string; list: CollectionSearchResult[] } | null>(null);
-  const [failed, setFailed] = useState(false);
-  const requestRef = useRef(0);
-  const key = `${ownerId ?? ''}:${includePrivate}`;
+  const [server, setServer] = useState<ServerResults | null>(null);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  // Pre-migration fallback: the original client-side list.
+  const [legacy, setLegacy] = useState<{ key: string; list: CollectionSearchResult[] } | null>(null);
+  const [legacyFailed, setLegacyFailed] = useState(false);
+  const [unsupported, setUnsupported] = useState(false);
+  const generationRef = useRef(0);
+  const loadingPageRef = useRef(false);
+  const serverRef = useRef<ServerResults | null>(null);
+  useEffect(() => {
+    serverRef.current = server;
+  }, [server]);
 
-  // No synchronous state updates — safe to call from an effect. The last
-  // list for the same owner stays in place while it refreshes.
-  const load = useCallback(() => {
+  const ownerKey = `${ownerId ?? ''}:${includePrivate}`;
+  const trimmed = query.trim();
+  const queryKey = `${ownerKey}:${trimmed}`;
+
+  const loadLegacy = useCallback(() => {
     if (!ownerId) return;
-    const request = ++requestRef.current;
     loadSearchableCollections(ownerId, includePrivate)
       .then((list) => {
-        if (request !== requestRef.current) return;
-        setCollections({ key: `${ownerId}:${includePrivate}`, list });
-        setFailed(false);
+        setLegacy({ key: `${ownerId}:${includePrivate}`, list });
+        setLegacyFailed(false);
       })
       .catch((e: unknown) => {
         console.error('[collection-search] load failed:', e);
-        if (request === requestRef.current) setFailed(true);
+        setLegacyFailed(true);
       });
   }, [ownerId, includePrivate]);
 
-  const retry = useCallback(() => {
-    setFailed(false);
-    load();
-  }, [load]);
-
-  const list = collections?.key === key ? collections.list : null;
-  const needle = query.trim().toLocaleLowerCase();
-  const matches = useMemo(
-    () => (list && needle ? list.filter((c) => c.name.toLocaleLowerCase().includes(needle)) : []),
-    [list, needle],
+  const fetchPage = useCallback(
+    async (generation: number, key: string, owner: string, q: string, offset: number, previous: CollectionSearchResult[]) => {
+      loadingPageRef.current = true;
+      setPageLoading(true);
+      try {
+        const page = await searchCollectionsPage(owner, q, includePrivate, offset);
+        if (generation !== generationRef.current) return;
+        setServer({ key, results: [...previous, ...page], hasMore: page.length === SEARCH_PAGE_SIZE, failed: false });
+      } catch (e) {
+        if (generation !== generationRef.current) return;
+        if (isMissingFunction(e as { code?: string })) {
+          setUnsupported(true);
+          loadLegacy();
+          return;
+        }
+        console.error('[collection-search] search failed:', e);
+        setServer((prev) =>
+          prev && prev.key === key && prev.results.length > 0
+            ? { ...prev, hasMore: false }
+            : { key, results: [], hasMore: false, failed: true },
+        );
+      } finally {
+        if (generation === generationRef.current) {
+          loadingPageRef.current = false;
+          setPageLoading(false);
+        }
+      }
+    },
+    [includePrivate, loadLegacy],
   );
 
-  return { query, setQuery, needle, list, matches, failed, load, retry };
+  useEffect(() => {
+    const generation = ++generationRef.current;
+    loadingPageRef.current = false;
+    if (!trimmed || !ownerId || unsupported) return;
+    const timer = setTimeout(() => void fetchPage(generation, queryKey, ownerId, trimmed, 0, []), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [queryKey, ownerId, trimmed, unsupported, fetchPage, retryCount]);
+
+  const loadMore = useCallback(() => {
+    const current = serverRef.current;
+    if (!current || current.failed || !current.hasMore || loadingPageRef.current || !ownerId) return;
+    const q = current.key.slice(ownerKey.length + 1);
+    void fetchPage(generationRef.current, current.key, ownerId, q, current.results.length, current.results);
+  }, [fetchPage, ownerId, ownerKey]);
+
+  // No synchronous state updates — safe to call from an effect.
+  const load = useCallback(() => {
+    if (unsupported) loadLegacy();
+  }, [unsupported, loadLegacy]);
+
+  const retry = useCallback(() => {
+    if (unsupported) {
+      setLegacyFailed(false);
+      loadLegacy();
+    } else {
+      setServer(null);
+      setRetryCount((n) => n + 1);
+    }
+  }, [unsupported, loadLegacy]);
+
+  const needle = trimmed.toLocaleLowerCase();
+  const legacyList = legacy?.key === ownerKey ? legacy.list : null;
+  const legacyMatches = useMemo(
+    () => (legacyList && needle ? legacyList.filter((c) => c.name.toLocaleLowerCase().includes(needle)) : []),
+    [legacyList, needle],
+  );
+  const active = server?.key === queryKey ? server : null;
+
+  if (unsupported) {
+    return {
+      query,
+      setQuery,
+      needle,
+      list: legacyList,
+      matches: legacyMatches,
+      failed: legacyFailed,
+      searching: !!needle && !legacyList && !legacyFailed,
+      hasMore: false,
+      load,
+      loadMore,
+      retry,
+    };
+  }
+  return {
+    query,
+    setQuery,
+    needle,
+    // The server search has no up-front list; kept for callers' "show the
+    // error state" check (null + failed).
+    list: null as CollectionSearchResult[] | null,
+    matches: active && !active.failed ? active.results : [],
+    failed: !!active?.failed,
+    searching: !!needle && !!ownerId && (!active || pageLoading),
+    hasMore: !!active?.hasMore,
+    load,
+    loadMore,
+    retry,
+  };
 }
 
 // True while the software keyboard is up — lets a bottom sheet drop its
@@ -175,11 +318,12 @@ export function useKeyboardShown() {
   return shown;
 }
 
-// The results area under a search field: a load error (shown even before
-// typing, so a failed load never just looks like an empty search), nothing
-// for an empty query, a spinner if typing beat the list, "No collections
-// found", or the matches — name plus parent path, so same-named
-// collections can be told apart. Scrolls within whatever height it's given.
+// The results area under a search field: a load/search error with Retry
+// (so a failure never just looks like an empty search), nothing for an
+// empty query, a spinner while the first page is on its way, "No
+// collections found", or the matches — name plus parent path, so same-named
+// collections can be told apart. Scrolls within whatever height it's given,
+// fetching the next page near the end.
 export function CollectionSearchResults({
   search,
   onSelect,
@@ -187,12 +331,12 @@ export function CollectionSearchResults({
   search: CollectionSearch;
   onSelect: (collection: CollectionSearchResult) => void;
 }) {
-  const { list, failed, needle, matches, retry } = search;
+  const { failed, needle, matches, retry, searching, loadMore } = search;
 
-  if (!list && failed) {
+  if (failed) {
     return (
       <View style={styles.state}>
-        <Text style={styles.stateText}>Couldn&apos;t load collections.</Text>
+        <Text style={styles.stateText}>Couldn&apos;t search collections.</Text>
         <TouchableOpacity style={styles.retryButton} onPress={retry} activeOpacity={0.8}>
           <Text style={styles.retryText}>Retry</Text>
         </TouchableOpacity>
@@ -200,7 +344,7 @@ export function CollectionSearchResults({
     );
   }
   if (!needle) return null;
-  if (!list) return <ActivityIndicator style={styles.state} color={PV2.link} />;
+  if (matches.length === 0 && searching) return <ActivityIndicator style={styles.state} color={PV2.link} />;
   if (matches.length === 0) return <Text style={[styles.state, styles.stateText]}>No collections found</Text>;
 
   return (
@@ -209,6 +353,8 @@ export function CollectionSearchResults({
       keyExtractor={(c) => c.id}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
+      onEndReached={loadMore}
+      onEndReachedThreshold={0.5}
       ItemSeparatorComponent={() => <View style={styles.divider} />}
       renderItem={({ item }) => (
         <TouchableOpacity

@@ -37,6 +37,12 @@ type Props = {
   onClose: () => void;
   // The results, under the field. Scrolls within whatever height is left.
   children: ReactNode;
+  // Optional control beside the search field (Search Items' filter button).
+  fieldAccessory?: ReactNode;
+  // Optional layer drawn above the whole sheet, inside the same Modal, in
+  // window coordinates (Search Items' filter dropdown) — never a second
+  // Modal stacked on this one.
+  overlay?: ReactNode;
 };
 
 // The bottom-sheet search shell shared by Profile V2's long-press searches
@@ -55,7 +61,17 @@ type Props = {
 // them. So the field stays on screen above the keyboard on every screen
 // size, and the results scroll underneath it. An overlay, so dismissing it
 // leaves the profile's layout and scroll position untouched.
-export function ProfileV2SearchSheet({ visible, query, onChangeQuery, placeholder, toggle, onClose, children }: Props) {
+export function ProfileV2SearchSheet({
+  visible,
+  query,
+  onChangeQuery,
+  placeholder,
+  toggle,
+  onClose,
+  children,
+  fieldAccessory,
+  overlay,
+}: Props) {
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   // While the keyboard is up the sheet sits on it, so the home-indicator
@@ -85,20 +101,24 @@ export function ProfileV2SearchSheet({ visible, query, onChangeQuery, placeholde
 
         <View style={[styles.sheet, { paddingBottom: (keyboardShown ? 0 : insets.bottom) + 12 }]}>
           <View style={styles.handle} />
-          <CollectionSearchBar
-            inputRef={inputRef}
-            autoFocus
-            value={query}
-            onChange={onChangeQuery}
-            placeholder={placeholder}
-            style={styles.search}
-          />
+          <View style={styles.searchRow}>
+            <CollectionSearchBar
+              inputRef={inputRef}
+              autoFocus
+              value={query}
+              onChange={onChangeQuery}
+              placeholder={placeholder}
+              style={styles.searchField}
+            />
+            {fieldAccessory}
+          </View>
           {/* Only before searching — once there's a query, the results
               take this space. */}
           {toggle && !query.trim() && <ListViewSwitchRow toggle={toggle} alignTo="searchField" />}
           <View style={styles.results}>{children}</View>
         </View>
       </KeyboardAvoidingView>
+      {overlay}
     </Modal>
   );
 }
@@ -127,8 +147,14 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginBottom: 16,
   },
-  search: {
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 8,
+  },
+  searchField: {
+    flex: 1,
   },
   // Takes the sheet's remaining height and scrolls inside it (the results'
   // FlatList), under the search field. No minimum: with no query there's

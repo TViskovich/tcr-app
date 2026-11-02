@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,
   Platform,
   Pressable,
   StyleSheet,
@@ -54,6 +55,7 @@ import {
   useItems,
 } from '@/hooks/use-collection';
 import { useFolderLikes } from '@/hooks/use-folder-likes';
+import { useCollectionItemSearch } from '@/hooks/use-item-search';
 import {
   invalidateSignedFolderCover,
   FOLDER_HEADER_COVER_TIER,
@@ -427,12 +429,21 @@ export default function CollectionFolderScreen() {
   // Collapsing it also clears `search`, so the grid never stays silently
   // filtered by a query the (now-hidden) bar isn't showing.
   const [searchVisible, setSearchVisible] = useState(false);
+  // The default grid's FlatList — scrolled to the top when Search opens or
+  // closes (see toggleSearch / searchLayout).
+  const gridListRef = useRef<FlatList<FolderGridRow>>(null);
 
   function toggleSearch() {
-    setSearchVisible((visible) => {
-      if (visible) setSearch('');
-      return !visible;
-    });
+    const opening = !searchVisible;
+    if (!opening) {
+      setSearch('');
+      Keyboard.dismiss();
+    }
+    setSearchVisible(opening);
+    // Opening: the search field (the pinned row in search mode) lands
+    // directly under the navigation. Closing: the restored cover and
+    // collection header are back in view from the top.
+    requestAnimationFrame(() => gridListRef.current?.scrollToOffset({ offset: 0, animated: false }));
   }
 
   // Phase 2 bulk move — Select mode. Local UI-only state (see
@@ -932,15 +943,28 @@ export default function CollectionFolderScreen() {
       }
     });
 
-  // Filters what's already loaded (the full per-folder item set from
-  // useItems, not a capped preview) — no new query per keystroke. Runs over
-  // `cardItems`, which by default is every item in the folder (see its own
-  // comment above), so this is what powers search for the default grid too.
+  // Metadata search (hooks/use-item-search.ts): the database matches the
+  // query against every item's title AND category details (a comic's
+  // characters or printing, a card's set, a sneaker's colorway, ...) under
+  // the viewer's own RLS, a page of matching ids at a time — more pages load
+  // as the grid scrolls to its end (onEndReached below). The instant local
+  // title/player/team/brand match is kept alongside it, so results appear
+  // while the server responds and search still works if the server search
+  // is unavailable. Runs over `cardItems` (by default every item in the
+  // folder — see its own comment above), so the visible order, grid/list
+  // presentation and card-mode scoping are unchanged; the server's ids only
+  // decide which of those items match.
+  const {
+    matchIds: searchMatchIds,
+    searching: searchPending,
+    loadMore: loadMoreSearchMatches,
+  } = useCollectionItemSearch(folderId, search);
   const filteredCardItems = useMemo(() => {
     const q = search.trim();
     if (!q) return cardItems;
-    return cardItems.filter((item) => itemMatchesSearch(item, q));
-  }, [cardItems, search]);
+    return cardItems.filter((item) => itemMatchesSearch(item, q) || !!searchMatchIds?.has(item.id));
+  }, [cardItems, search, searchMatchIds]);
+  const handleGridEndReached = search.trim() ? loadMoreSearchMatches : undefined;
 
   const isCardMode = !!activePlayer;
   const screenTitle = isCardMode ? (activePlayer === NO_PLAYER_KEY ? 'Other' : activePlayer!) : folderTitle;
@@ -1220,6 +1244,12 @@ export default function CollectionFolderScreen() {
   }
 
   const showInitialLoading = loading && items.length === 0;
+  // Search-focused layout for the default grid while Search is open: the
+  // cover banner, the identity/title/social panel and the about row step
+  // aside, and the search field takes the pinned row's place directly under
+  // the navigation, so results get the screen above the keyboard. Closing
+  // Search restores everything. Card mode keeps its own layout.
+  const searchLayout = searchVisible && !isCardMode && !showInitialLoading && items.length > 0;
   // Retry after a failed load re-requests the header tally too, so one tap
   // recovers both the grid and the count.
   function retryLoad() {
@@ -1313,14 +1343,14 @@ export default function CollectionFolderScreen() {
         })),
       ];
     }
-    const about: FolderGridRow[] = hasFolderAbout ? [{ kind: 'about' }] : [];
+    const about: FolderGridRow[] = hasFolderAbout && !searchLayout ? [{ kind: 'about' }] : [];
     if (gridRows.length === 0) return [{ kind: 'sticky' }, ...about, { kind: 'empty' }];
     return [
       { kind: 'sticky' },
       ...about,
       ...gridRows.map((entries, index) => ({ kind: 'row' as const, entries, isLast: index === gridRows.length - 1 })),
     ];
-  }, [gridRows, reorderMode, moveListMode, filteredCardItems, reorderPositions, hasFolderAbout]);
+  }, [gridRows, reorderMode, moveListMode, filteredCardItems, reorderPositions, hasFolderAbout, searchLayout]);
 
   // ── Loading / not-found / private states ────────────────────────
   // Only relevant now that non-owner traffic (public profiles, Saved,
@@ -1425,7 +1455,7 @@ export default function CollectionFolderScreen() {
             all (not even an empty placeholder) for a folder that has never
             had a cover set, so every existing folder's layout is unchanged
             until its owner opts in. */}
-        {showCoverHero && (
+        {showCoverHero && !searchLayout && (
           <View style={styles.coverHero}>
             {/* Waits for the folder row (a fast plain read, started at mount
                 alongside the cover request) so the image's FIRST load already
@@ -1478,15 +1508,6 @@ export default function CollectionFolderScreen() {
             )}
           </View>
         )}
-
-        {!showInitialLoading && items.length > 0 && searchVisible && (
-          <CollectionSearchBar
-            value={search}
-            onChange={setSearch}
-            placeholder="Search players, teams..."
-            style={styles.searchBar}
-          />
-        )}
       </>
     );
   }
@@ -1504,6 +1525,22 @@ export default function CollectionFolderScreen() {
   // that gap, the gap moved onto this wrapper instead, see
   // styles.folderStickyBar's own comment).
   function renderFolderStickyBar() {
+    // Search-focused layout: the search field IS the pinned row (so it stays
+    // put under the navigation while results scroll), standing in for the
+    // identity/title/social panel until Search closes.
+    if (searchLayout) {
+      return (
+        <View style={styles.searchStickyBar}>
+          <CollectionSearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Search players, teams..."
+            style={styles.searchBar}
+            autoFocus
+          />
+        </View>
+      );
+    }
     return (
       <View style={styles.folderStickyBar}>
         {/* Compact identity row — non-owner viewing someone else's folder
@@ -1902,12 +1939,20 @@ export default function CollectionFolderScreen() {
   // never fire there; this is rendered directly as data[1]'s content (kind:
   // 'empty') instead. Card mode's FlatList still has no other guaranteed
   // row, so it keeps using this via the real ListEmptyComponent prop.
+  // While the metadata search is still answering, "No matches" would be
+  // premature — say it's searching instead.
   const emptyStateContent =
     search.trim() && cardItems.length > 0 ? (
-      <View style={styles.emptyWrap}>
-        <Text style={styles.emptyTitle}>No matches</Text>
-        <Text style={styles.emptyBody}>Try a different search term.</Text>
-      </View>
+      searchPending ? (
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyBody}>Searching…</Text>
+        </View>
+      ) : (
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyTitle}>No matches</Text>
+          <Text style={styles.emptyBody}>Try a different search term.</Text>
+        </View>
+      )
     ) : (
       <View style={styles.emptyWrap}>
         <Text style={styles.emptyTitle}>No items yet</Text>
@@ -2177,6 +2222,8 @@ export default function CollectionFolderScreen() {
               ]}
               onScroll={navbarOnScroll}
               scrollEventThrottle={scrollEventThrottle}
+              onEndReached={handleGridEndReached}
+              onEndReachedThreshold={0.5}
               renderItem={({ item: entry }) => renderGridTile(entry, gridTileKey(entry))}
               ListEmptyComponent={() => emptyStateContent}
             />
@@ -2191,6 +2238,7 @@ export default function CollectionFolderScreen() {
           <>
             {itemsErrorBanner}
             <FlatList<FolderGridRow>
+              ref={gridListRef}
               data={stickyRowsData}
               keyExtractor={(row, index) =>
                 row.kind === 'sticky'
@@ -2210,7 +2258,12 @@ export default function CollectionFolderScreen() {
                               : `row-${index}`
               }
               keyboardShouldPersistTaps="handled"
-              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              // Search layout: any drag on the results dismisses the keyboard
+              // (Search stays open), and on iOS the keyboard's height is
+              // added to the list's bottom inset so every result — the last
+              // row included — can be scrolled above it.
+              keyboardDismissMode={searchLayout || Platform.OS !== 'ios' ? 'on-drag' : 'interactive'}
+              automaticallyAdjustKeyboardInsets={searchLayout && Platform.OS === 'ios'}
               // Called here (an already-built element), NOT passed as a bare
               // function reference. VirtualizedList's own rendering does
               // `isValidElement(ListHeaderComponent) ? ListHeaderComponent :
@@ -2241,6 +2294,8 @@ export default function CollectionFolderScreen() {
               ]}
               onScroll={navbarOnScroll}
               scrollEventThrottle={scrollEventThrottle}
+              onEndReached={handleGridEndReached}
+              onEndReachedThreshold={0.5}
               renderItem={({ item: row }) => {
                 if (row.kind === 'sticky') return renderFolderStickyBar();
                 if (row.kind === 'about') return renderFolderAbout();
@@ -2781,6 +2836,13 @@ const styles = StyleSheet.create({
   folderStickyBar: {
     backgroundColor: PV2.bg,
     marginBottom: 10,
+  },
+  // The pinned row in the search-focused layout — opaque like
+  // folderStickyBar, so results scroll beneath it, with the search bar's own
+  // margins (styles.searchBar) giving the gap to the first result row.
+  searchStickyBar: {
+    backgroundColor: PV2.bg,
+    paddingTop: 4,
   },
   // Same horizontal inset as titleRow/metaActionsRow, so the text lines up
   // under the title in the sticky panel above.

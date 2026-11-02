@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type MutableRefObject, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,16 +21,19 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
+import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
 import { SharePostPreview } from '@/components/feed/share-post-preview';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { ShareCardDragGrid } from '@/components/share/share-card-drag-grid';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import {
   type CollectionItemWithFolderVisibility,
+  itemMatchesSearch,
   useAllItems,
   useChildFolders,
   useFolders,
 } from '@/hooks/use-collection';
+import { useCollectionItemSearch, useProfileItemSearch } from '@/hooks/use-item-search';
 import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
@@ -117,11 +120,21 @@ function hasShareableImage(item: CollectionItem) {
 // of a spinner. Signing is two batches through the shared signed-URL cache:
 // the first screenful (PRIORITY_CARD_COUNT), then the rest, so the visible
 // tiles never wait on a large folder's whole batch.
+//
+// `query` narrows the cards shown: the instant local name match plus the
+// database's metadata search for this scope (hooks/use-item-search.ts — a
+// folder's own items, or all of the user's items for All Cards; the same
+// matching as Collection/Profile search). Server matches only pick from this
+// scope's loaded cards, so eligibility (photo, public/private dimming) and
+// selection are unchanged. `loadMoreRef` receives this scope's "next page of
+// matches" for the browse scroll view.
 function ScopedCards({
   scopeKey,
   userId,
   folderId,
   seed,
+  query,
+  loadMoreRef,
   onLoaded,
   children,
 }: {
@@ -129,9 +142,16 @@ function ScopedCards({
   userId: string | undefined;
   folderId?: string;
   seed: CollectionItemWithFolderVisibility[] | null;
+  query: string;
+  loadMoreRef: MutableRefObject<(() => void) | null>;
   onLoaded: (scopeKey: string, items: CollectionItemWithFolderVisibility[]) => void;
   children: (scope: {
+    // This scope's cards, narrowed by `query` when there is one.
     items: CollectionItemWithFolderVisibility[];
+    // How many cards the scope has before any search narrowing.
+    totalCount: number;
+    searchActive: boolean;
+    searching: boolean;
     loading: boolean;
     error: string | null;
     refresh: () => void;
@@ -140,7 +160,21 @@ function ScopedCards({
   }) => ReactNode;
 }) {
   const { items: allRows, loading, error, refresh } = useAllItems(userId, { folderId, seed });
-  const items = allRows.filter(hasShareableImage);
+  const scopeItems = allRows.filter(hasShareableImage);
+  const folderSearch = useCollectionItemSearch(folderId, query);
+  const allCardsSearch = useProfileItemSearch(folderId ? undefined : userId, query);
+  const server = folderId ? folderSearch : allCardsSearch;
+  const q = query.trim();
+  const items = q
+    ? scopeItems.filter((item) => itemMatchesSearch(item, q) || !!server.matchIds?.has(item.id))
+    : scopeItems;
+  const { loadMore } = server;
+  useEffect(() => {
+    loadMoreRef.current = loadMore;
+    return () => {
+      if (loadMoreRef.current === loadMore) loadMoreRef.current = null;
+    };
+  }, [loadMoreRef, loadMore]);
   const priority = useSignedItemImages(
     items.slice(0, PRIORITY_CARD_COUNT).map((i) => i.primary_image_id),
     COMPACT_IMAGE_TIER,
@@ -154,7 +188,21 @@ function ScopedCards({
   useEffect(() => {
     onLoaded(scopeKey, allRows);
   }, [scopeKey, allRows, onLoaded]);
-  return <>{children({ items, loading, error, refresh, imageUrls, servedTiers })}</>;
+  return (
+    <>
+      {children({
+        items,
+        totalCount: scopeItems.length,
+        searchActive: !!q,
+        searching: server.searching,
+        loading,
+        error,
+        refresh,
+        imageUrls,
+        servedTiers,
+      })}
+    </>
+  );
 }
 
 // Card picker for the Create menu's "Share Item" option — lets the
@@ -304,6 +352,10 @@ export default function ShareCardScreen() {
   // mounted (hidden) during Preview so Back returns to the same folder and
   // scroll position.
   const browseScrollRef = useRef<ScrollView>(null);
+  // Search within the open scope (folder or All Cards) — cleared whenever
+  // the scope changes; see ScopedCards.
+  const [cardQuery, setCardQuery] = useState('');
+  const scopeLoadMoreRef = useRef<(() => void) | null>(null);
   // The caption sits below the (tall) preview and is the last thing in
   // either composer layout, so "keep it visible" = scroll to the end: once
   // the keyboard has finished opening (KeyboardAvoidingView has shrunk the
@@ -577,11 +629,13 @@ export default function ShareCardScreen() {
   );
 
   function openFolder(folder: Folder) {
+    setCardQuery('');
     setScopeSeed(seedFor(folder.id));
     setBrowse((prev) => ({ kind: 'folder', trail: prev?.kind === 'folder' ? [...prev.trail, folder] : [folder] }));
   }
 
   function openAllCards() {
+    setCardQuery('');
     setScopeSeed(seedFor(null));
     setBrowse({ kind: 'all' });
   }
@@ -590,6 +644,7 @@ export default function ShareCardScreen() {
   // Cards back to the picker. Never leaves the screen — that's Cancel.
   const goUp = useCallback(() => {
     const parent = browse?.kind === 'folder' && browse.trail.length > 1 ? browse.trail[browse.trail.length - 2] : null;
+    setCardQuery('');
     if (parent) setScopeSeed(seedFor(parent.id));
     setBrowse((prev) =>
       prev?.kind === 'folder' && prev.trail.length > 1 ? { kind: 'folder', trail: prev.trail.slice(0, -1) } : null,
@@ -1048,7 +1103,16 @@ export default function ShareCardScreen() {
               ref={browseScrollRef}
               contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
               keyboardShouldPersistTaps="handled"
-              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              // Next page of search matches near the end (see ScopedCards).
+              onScroll={(e) => {
+                if (!cardQuery.trim()) return;
+                const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+                if (contentSize.height - (contentOffset.y + layoutMeasurement.height) < 600) {
+                  scopeLoadMoreRef.current?.();
+                }
+              }}
+              scrollEventThrottle={64}>
               {browse === null ? (
                 <>
                   {/* Choose where to browse. All Cards first (the original
@@ -1104,6 +1168,12 @@ export default function ShareCardScreen() {
                     </Text>
                   </TouchableOpacity>
 
+                  <CollectionSearchBar
+                    value={cardQuery}
+                    onChange={setCardQuery}
+                    placeholder={currentFolder ? `Search ${currentFolder.name}` : 'Search all cards'}
+                  />
+
                   {childFolders.length > 0 && (
                     <View style={styles.folderGrid}>
                       {childFolders.map((folder) => (
@@ -1127,14 +1197,16 @@ export default function ShareCardScreen() {
                     userId={currentUserId}
                     folderId={currentFolder?.id}
                     seed={scopeSeed}
+                    query={cardQuery}
+                    loadMoreRef={scopeLoadMoreRef}
                     onLoaded={rememberItems}>
                     {(scope) =>
                       // Seeded cards stay on screen while they refresh — the
                       // spinner / error states are only for a scope with
                       // nothing to show yet.
-                      scope.loading && scope.items.length === 0 ? (
+                      scope.loading && scope.totalCount === 0 ? (
                         <ActivityIndicator style={styles.scopeState} color={PV2.link} />
-                      ) : scope.error && scope.items.length === 0 ? (
+                      ) : scope.error && scope.totalCount === 0 ? (
                         // Distinct from the empty state below — a failed query
                         // must never look identical to "you have no cards."
                         // The raw Supabase message is only ever logged (via
@@ -1146,6 +1218,10 @@ export default function ShareCardScreen() {
                             <Text style={styles.emptyButtonText}>Retry</Text>
                           </TouchableOpacity>
                         </View>
+                      ) : scope.searchActive && scope.items.length === 0 && scope.totalCount > 0 ? (
+                        <Text style={styles.scopeEmpty}>
+                          {scope.searching ? 'Searching…' : 'No cards match your search.'}
+                        </Text>
                       ) : scope.items.length === 0 ? (
                         currentFolder ? (
                           <Text style={styles.scopeEmpty}>
