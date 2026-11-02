@@ -30,6 +30,9 @@ type Props = {
   continuesRun: boolean;
   avatarUrl: string | null | undefined;
   avatarName: string;
+  // Group conversations: the sender's name above the first incoming message
+  // of a run. Omitted in DMs (there's only one other person).
+  senderName?: string;
 };
 
 export const MessageBubble = memo(function MessageBubble({
@@ -43,6 +46,7 @@ export const MessageBubble = memo(function MessageBubble({
   continuesRun,
   avatarUrl,
   avatarName,
+  senderName,
 }: Props) {
   if (isOwn) {
     return (
@@ -77,6 +81,11 @@ export const MessageBubble = memo(function MessageBubble({
         {showAvatar ? <ChatAvatar uri={avatarUrl} name={avatarName} size={INCOMING_AVATAR_SIZE} /> : null}
       </View>
       <View style={styles.columnOther}>
+        {senderName ? (
+          <Text style={styles.senderName} numberOfLines={1}>
+            {senderName}
+          </Text>
+        ) : null}
         {body ? (
           <View style={[styles.bubble, styles.bubbleOther]}>
             <Text style={styles.text}>{body}</Text>
@@ -162,5 +171,12 @@ const styles = StyleSheet.create({
   },
   statusRead: {
     color: CHAT.statusRead,
+  },
+  senderName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: CHAT.timestamp,
+    marginBottom: 3,
+    marginHorizontal: 6,
   },
 });

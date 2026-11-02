@@ -23,6 +23,11 @@ type Props = {
   bottomInset: number;
   // Disables row taps (e.g. while the parent is resolving a conversation).
   disabled?: boolean;
+  // Multi-select (New Group, Add Members): rows show a selection circle
+  // instead of a chevron, and onSelect toggles. Omitted: single pick.
+  selectedIds?: ReadonlySet<string>;
+  // People not offered at all (e.g. a group's current members).
+  excludeIds?: ReadonlySet<string>;
 };
 
 // Strips characters that carry meaning inside a PostgREST .or() filter
@@ -32,11 +37,19 @@ function sanitizeSearchTerm(term: string) {
 }
 
 // "Choose someone" list shared by Item Detail → Send in DM
-// (send-item-dm-sheet.tsx) and the inbox's New Message sheet
-// (new-message-sheet.tsx): search field + Recent (existing 1:1
-// conversations, via the inbox's own loadInbox) or People (profile search by
+// (send-item-dm-sheet.tsx), the inbox's New Message sheet
+// (new-message-sheet.tsx, single pick or New Group's multi-select) and Group
+// Info's Add Members: search field + Recent (existing 1:1 conversations, via
+// the inbox's own loadInbox — never groups) or People (profile search by
 // username / display name, debounced, excluding the signed-in user).
-export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }: Props) {
+export function RecipientList({
+  currentUserId,
+  onSelect,
+  bottomInset,
+  disabled,
+  selectedIds,
+  excludeIds,
+}: Props) {
   const [query, setQuery] = useState('');
   const [recents, setRecents] = useState<ConversationItem[]>([]);
   const [recentsLoading, setRecentsLoading] = useState(true);
@@ -93,10 +106,11 @@ export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }
   const searching = !!term && searchResult?.term !== term;
   const results = searchResult?.term === term ? searchResult.rows : [];
 
-  const recentUserIds = useMemo(() => new Set(recents.map((c) => c.otherUserId)), [recents]);
+  const directRecents = useMemo(() => recents.filter((c) => c.kind === 'direct'), [recents]);
+  const recentUserIds = useMemo(() => new Set(directRecents.map((c) => c.otherUserId)), [directRecents]);
   const recentRecipients: (Recipient & { preview: string | null })[] = useMemo(
     () =>
-      recents
+      directRecents
         .filter((c) => c.otherUserId && c.otherUserId !== currentUserId)
         .map((c) => ({
           id: c.otherUserId,
@@ -105,11 +119,14 @@ export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }
           avatarUrl: c.otherAvatarUrl,
           preview: c.lastMessageBody,
         })),
-    [recents, currentUserId],
+    [directRecents, currentUserId],
   );
 
   const showingSearch = !!term;
-  const listData: (Recipient & { preview?: string | null })[] = showingSearch ? results : recentRecipients;
+  const listData: (Recipient & { preview?: string | null })[] = (showingSearch ? results : recentRecipients).filter(
+    (r) => !excludeIds?.has(r.id),
+  );
+  const multiSelect = !!selectedIds;
 
   return (
     <>
@@ -131,6 +148,8 @@ export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }
 
       <FlatList
         data={listData}
+        // A new set per toggle, so selection marks redraw.
+        extraData={selectedIds}
         keyExtractor={(r) => r.id}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -158,12 +177,14 @@ export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }
             : r.preview
               ? `@${r.username} · ${r.preview}`
               : `@${r.username}`;
+          const selected = !!selectedIds?.has(r.id);
           return (
             <Pressable
               onPress={() => onSelect(r)}
               disabled={disabled}
               style={({ pressed }) => [styles.row, pressed && styles.pressed]}
-              accessibilityRole="button"
+              accessibilityRole={multiSelect ? 'checkbox' : 'button'}
+              accessibilityState={multiSelect ? { checked: selected } : undefined}
               accessibilityLabel={r.displayName || r.username}>
               <ChatAvatar uri={r.avatarUrl} name={r.displayName || r.username} size={44} />
               <View style={styles.rowText}>
@@ -174,7 +195,15 @@ export function RecipientList({ currentUserId, onSelect, bottomInset, disabled }
                   {secondary}
                 </Text>
               </View>
-              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              {multiSelect ? (
+                <IconSymbol
+                  name={selected ? 'checkmark.circle.fill' : 'circle'}
+                  size={22}
+                  color={selected ? CHAT.accent : PV2.textTertiary}
+                />
+              ) : (
+                <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              )}
             </Pressable>
           );
         }}

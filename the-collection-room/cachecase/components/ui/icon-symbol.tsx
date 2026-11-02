@@ -73,6 +73,11 @@ const MAPPING = {
   'checkmark': 'check',
   // Grail action menu's Remove from Grails row (grail-action-menu.tsx).
   'minus.circle': 'remove-circle-outline',
+  // Group messaging: multi-select rows (recipient-list.tsx) and Group Info
+  // actions (app/group-info/[id].tsx).
+  'circle': 'radio-button-unchecked',
+  'person.badge.plus': 'person-add',
+  'pencil': 'edit',
 } as IconMapping;
 
 /**

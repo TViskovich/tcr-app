@@ -414,13 +414,16 @@ async function main() {
       if (!conversationId) return skip('conversation id unknown');
       const anonymous = createUserClient(config);
       const { data, error } = await anonymous.from('messages').select('id').eq('conversation_id', conversationId);
-      // anon's EXECUTE on is_conversation_participant was revoked on purpose
-      // (20260725120000_secure_dm_direct_access.sql), and messages_select
-      // still applies to anon, so Postgres refuses the whole query before
-      // reading any row — a fail-closed denial, same outcome as zero rows.
-      // Only that exact error qualifies; any other error stays inconclusive.
-      if (error?.code === '42501' && /permission denied for function is_conversation_participant/.test(error.message)) {
-        return pass('denied: 42501 permission denied for function is_conversation_participant');
+      // A fail-closed denial, same outcome as zero rows: before
+      // 20261101130000 anon lacked EXECUTE on is_conversation_participant
+      // (20260725120000_secure_dm_direct_access.sql); since then anon has no
+      // privileges on messages at all. Only those exact errors qualify; any
+      // other error stays inconclusive.
+      if (
+        error?.code === '42501' &&
+        /permission denied for (function is_conversation_participant|table messages)/.test(error.message)
+      ) {
+        return pass(`denied: 42501 ${error.message}`);
       }
       return denied('messages', data, error);
     });

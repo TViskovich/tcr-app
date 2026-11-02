@@ -19,6 +19,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatAvatar } from '@/components/conversation/chat-avatar';
+import { GroupAvatar } from '@/components/conversation/group-avatar';
 import { CHAT } from '@/components/conversation/conversation-theme';
 import { NewMessageSheet } from '@/components/conversation/new-message-sheet';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
@@ -66,8 +67,10 @@ function formatTime(iso: string) {
 }
 
 function previewText(item: ConversationItem) {
-  if (!item.lastMessageBody) return 'New conversation';
-  return item.lastMessageFromMe ? `You: ${item.lastMessageBody}` : item.lastMessageBody;
+  if (!item.lastMessageBody) return item.kind === 'group' ? 'New group' : 'New conversation';
+  if (item.lastMessageFromMe) return `You: ${item.lastMessageBody}`;
+  // In a group, say who wrote it.
+  return item.lastMessageSenderName ? `${item.lastMessageSenderName}: ${item.lastMessageBody}` : item.lastMessageBody;
 }
 
 // The DM inbox. Rendered standalone by the /(tabs)/messages route (own
@@ -221,7 +224,8 @@ export function MessagesInbox({
             c.lastMessageAt === prev[i].lastMessageAt &&
             c.lastMessageBody === prev[i].lastMessageBody &&
             c.lastMessageFromMe === prev[i].lastMessageFromMe &&
-            c.unread === prev[i].unread,
+            c.unread === prev[i].unread &&
+            c.groupTitle === prev[i].groupTitle,
         );
       if (unchanged) return;
 
@@ -414,12 +418,17 @@ export function MessagesInbox({
     });
   }
 
+  // A group opens by id alone — the screen loads its name and members.
+  function openGroupConversation(conversationId: string) {
+    router.push({ pathname: '/conversation/[id]', params: { id: conversationId } });
+  }
+
   // Local filter over the loaded inbox — name, handle, or last message.
   const filteredConversations = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return conversations;
     return conversations.filter((c) =>
-      [c.otherUsername, c.otherDisplayName, c.lastMessageBody]
+      [c.otherUsername, c.otherDisplayName, c.groupTitle, ...c.groupMemberNames, c.lastMessageBody]
         .filter(Boolean)
         .some((v) => (v as string).toLowerCase().includes(q)),
     );
@@ -574,7 +583,11 @@ export function MessagesInbox({
           renderItem={({ item }) => (
             <ConversationRow
               item={item}
-              onPress={() => openConversation(item.id, item.otherUsername, item.otherDisplayName)}
+              onPress={() =>
+                item.kind === 'group'
+                  ? openGroupConversation(item.id)
+                  : openConversation(item.id, item.otherUsername, item.otherDisplayName)
+              }
               onDeletePress={() => handleDeletePress(item)}
               leaveRightSwipes={embedded}
             />
@@ -590,8 +603,15 @@ export function MessagesInbox({
         onClose={() => setNewMessageOpen(false)}
         onOpenConversation={(conversationId, recipient) => {
           setNewMessageOpen(false);
-          // Let the page sheet start dismissing before the push.
-          setTimeout(() => openConversation(conversationId, recipient.username, recipient.displayName), 300);
+          // Let the page sheet start dismissing before the push. A null
+          // recipient is a newly created group.
+          setTimeout(
+            () =>
+              recipient
+                ? openConversation(conversationId, recipient.username, recipient.displayName)
+                : openGroupConversation(conversationId),
+            300,
+          );
         }}
       />
 
@@ -643,7 +663,8 @@ function ConversationRow({
   leaveRightSwipes?: boolean;
 }) {
   const swipeableRef = useRef<Swipeable>(null);
-  const displayName = item.otherDisplayName || item.otherUsername;
+  const isGroup = item.kind === 'group';
+  const displayName = isGroup ? (item.groupTitle ?? 'Group') : item.otherDisplayName || item.otherUsername;
 
   function handleDeleteTap() {
     // Close the swipe before the confirmation Alert appears, rather than
@@ -673,11 +694,18 @@ function ConversationRow({
         onPress={onPress}
         style={({ pressed }) => [styles.card, item.unread && styles.cardUnread, pressed && styles.cardPressed]}
         accessibilityRole="button"
-        accessibilityLabel={`${displayName}${item.unread ? ', unread' : ''}. ${previewText(item)}`}>
+        accessibilityLabel={`${isGroup ? 'Group: ' : ''}${displayName}${item.unread ? ', unread' : ''}. ${previewText(item)}`}>
         <View style={styles.row}>
-          <ChatAvatar uri={item.otherAvatarUrl} name={displayName} size={40} />
+          {isGroup ? (
+            <GroupAvatar names={item.groupMemberNames} size={40} />
+          ) : (
+            <ChatAvatar uri={item.otherAvatarUrl} name={displayName} size={40} />
+          )}
           <View style={styles.rowBody}>
             <View style={styles.rowTop}>
+              {/* Groups carry a small people glyph before the name, so they
+                  read as groups even when named like a person. */}
+              {isGroup ? <IconSymbol name="person.2.fill" size={13} color={PV2.textTertiary} /> : null}
               <Text style={[styles.rowName, item.unread && styles.rowNameUnread]} numberOfLines={1}>
                 {displayName}
               </Text>

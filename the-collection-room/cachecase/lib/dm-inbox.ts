@@ -1,4 +1,5 @@
 import { messagePreviewText } from '@/lib/dm-attachments';
+import { type ConversationKind, groupTitle, withGroupSchema } from '@/lib/group-chat';
 import { supabase } from '@/lib/supabase';
 
 // The signed-in user's visible (non-hidden) 1:1 conversations, newest first,
@@ -9,6 +10,15 @@ import { supabase } from '@/lib/supabase';
 
 export type ConversationItem = {
   id: string;
+  // 'group' rows (conversations.kind) use the group fields below; the other*
+  // fields describe a DM's one other person and are empty for groups.
+  kind: ConversationKind;
+  // Group only: its name, else "Ana, Ben +3" (lib/group-chat.ts groupTitle).
+  groupTitle: string | null;
+  // Group only: the other members' names (default avatar initials, search).
+  groupMemberNames: string[];
+  // Group only: who sent the latest message, for the "Ana: …" preview.
+  lastMessageSenderName: string | null;
   otherUserId: string;
   otherUsername: string;
   otherDisplayName: string | null;
@@ -52,17 +62,38 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
 
   const convIds = (myRows as any[]).map((r) => r.conversation_id as string);
 
-  const [allParticipantsRes, conversationsRes, messagesRes] = await Promise.all([
-    supabase
-      .from('conversation_participants')
-      .select('conversation_id, user_id')
-      .in('conversation_id', convIds)
-      .abortSignal(signal),
-    supabase
-      .from('conversations')
-      .select('id, last_message_at')
-      .in('id', convIds)
-      .abortSignal(signal),
+  // Group columns only where the database has them (lib/group-chat.ts
+  // withGroupSchema); otherwise the original DM-only selects.
+  const [{ result: allParticipantsRes }, { result: conversationsRes }, messagesRes] = await Promise.all([
+    withGroupSchema(
+      () =>
+        supabase
+          .from('conversation_participants')
+          .select('conversation_id, user_id, joined_at')
+          .in('conversation_id', convIds)
+          .order('joined_at', { ascending: true })
+          .abortSignal(signal),
+      () =>
+        supabase
+          .from('conversation_participants')
+          .select('conversation_id, user_id')
+          .in('conversation_id', convIds)
+          .abortSignal(signal),
+    ),
+    withGroupSchema(
+      () =>
+        supabase
+          .from('conversations')
+          .select('id, last_message_at, kind, name')
+          .in('id', convIds)
+          .abortSignal(signal),
+      () =>
+        supabase
+          .from('conversations')
+          .select('id, last_message_at')
+          .in('id', convIds)
+          .abortSignal(signal),
+    ),
     supabase
       .from('messages')
       .select('conversation_id, sender_id, body, created_at, attachment_type')
@@ -74,15 +105,18 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
 
   if (signal.aborted) return [];
 
-  // Map: conversation_id → other user_id
-  const convOtherUserMap = new Map<string, string>();
+  // Map: conversation_id → the other participants' user_ids (longest-standing
+  // first). A DM has exactly one; a group has every other member.
+  const convOthersMap = new Map<string, string[]>();
   for (const row of (allParticipantsRes.data ?? []) as any[]) {
     if (row.user_id !== currentUserId) {
-      convOtherUserMap.set(row.conversation_id, row.user_id);
+      const others = convOthersMap.get(row.conversation_id) ?? [];
+      others.push(row.user_id);
+      convOthersMap.set(row.conversation_id, others);
     }
   }
 
-  const otherUserIds = [...new Set([...convOtherUserMap.values()])];
+  const otherUserIds = [...new Set([...convOthersMap.values()].flat())];
   const { data: profilesData } = await supabase
     .from('profiles')
     .select('id, username, display_name, avatar_url')
@@ -104,16 +138,40 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
   const convLastAtMap = new Map<string, string>(
     (conversationsRes.data ?? []).map((c: any) => [c.id, c.last_message_at]),
   );
+  const convInfoMap = new Map<string, { kind: ConversationKind; name: string | null }>(
+    (conversationsRes.data ?? []).map((c: any) => [
+      c.id,
+      { kind: c.kind === 'group' ? 'group' : 'direct', name: (c.name as string | null) ?? null },
+    ]),
+  );
+  const nameOf = (userId: string) => {
+    const p: any = profileMap.get(userId);
+    return (p?.display_name as string | null)?.trim() || (p?.username as string | undefined) || 'user';
+  };
 
   return convIds
-    .map((convId) => {
-      const otherUserId = convOtherUserMap.get(convId) ?? '';
+    .map((convId): ConversationItem => {
+      const info = convInfoMap.get(convId) ?? { kind: 'direct' as const, name: null };
+      const isGroup = info.kind === 'group';
+      const others = convOthersMap.get(convId) ?? [];
+      const otherUserId = isGroup ? '' : (others[0] ?? '');
       const p = profileMap.get(otherUserId) ?? {};
       const lastMsg = latestMsgMap.get(convId);
       const lastMessageAtServer = convLastAtMap.get(convId) ?? null;
       const lastRead = myLastReadMap.get(convId) ?? null;
       return {
         id: convId,
+        kind: info.kind,
+        groupTitle: isGroup
+          ? groupTitle(
+              info.name,
+              others.map((id) => ({ id, displayName: nameOf(id), username: nameOf(id) })),
+              currentUserId,
+            )
+          : null,
+        groupMemberNames: isGroup ? others.map(nameOf) : [],
+        lastMessageSenderName:
+          isGroup && lastMsg && lastMsg.sender_id !== currentUserId ? nameOf(lastMsg.sender_id) : null,
         otherUserId,
         otherUsername: p.username ?? 'user',
         otherDisplayName: p.display_name ?? null,

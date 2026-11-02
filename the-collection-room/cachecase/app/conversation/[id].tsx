@@ -28,6 +28,7 @@ import { ConversationComposer } from '@/components/conversation/conversation-com
 import { ConversationHeader } from '@/components/conversation/conversation-header';
 import { DmImageAttachment } from '@/components/conversation/dm-image-attachment';
 import { DmItemAttachmentCard } from '@/components/conversation/dm-item-attachment-card';
+import { GroupAvatar } from '@/components/conversation/group-avatar';
 import { CHAT } from '@/components/conversation/conversation-theme';
 import { MessageBubble } from '@/components/conversation/message-bubble';
 import { type PhotoFlowState, type PhotoSource, PhotoConfirmSheet } from '@/components/conversation/photo-confirm-sheet';
@@ -52,6 +53,7 @@ import {
   stampSenderReadCursor,
   writeDmMessage,
 } from '@/lib/dm-send';
+import { type ConversationMeta, groupTitle, loadConversationMeta, memberName } from '@/lib/group-chat';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -147,6 +149,23 @@ export default function ConversationScreen() {
   // the existing participant-gated RLS already exposes the other
   // participant's row (the load below already selects its user_id).
   const [peerReadAt, setPeerReadAt] = useState<string | null>(null);
+  // The conversation's kind/name and members (lib/group-chat.ts). For a
+  // group, the header, sender names and Group Info come from here; a DM
+  // still uses otherUser exactly as before.
+  const [meta, setMeta] = useState<ConversationMeta | null>(null);
+  const isGroup = meta?.kind === 'group';
+  const isGroupRef = useRef(false);
+  useEffect(() => {
+    isGroupRef.current = isGroup;
+  }, [isGroup]);
+  // Profiles of people who sent messages but are no longer members (left or
+  // removed), so their old messages still show who wrote them.
+  const [formerSenders, setFormerSenders] = useState<Map<string, OtherUser>>(() => new Map());
+  const requestedSenderIdsRef = useRef<Set<string>>(new Set());
+  // The signed-in user can no longer see this conversation (removed from a
+  // group, left, or it was deleted): the thread and composer give way to an
+  // explanation.
+  const [accessLost, setAccessLost] = useState(false);
   // Display-only placeholder for the send currently in flight, so the
   // bubble can show "Sending…" before the INSERT returns. Never written to
   // `messages`/messagesRef — finalizeSentMessage still appends the durable
@@ -242,8 +261,10 @@ export default function ConversationScreen() {
 
   // Ephemeral typing state over Realtime Broadcast (see the hook) —
   // independent of the polling/read-state logic in this file.
+  // Typing broadcasts stay off for groups until Realtime channels are
+  // private (the typing topic is public) — a DM only, once its kind is known.
   const { peerTyping, notifyLocalInput, stopLocalTyping } = useConversationTyping({
-    convId,
+    convId: meta?.kind === 'direct' ? convId : undefined,
     currentUserId,
     otherUserId: otherUser?.id,
   });
@@ -369,13 +390,16 @@ export default function ConversationScreen() {
         // Peer read cursor rides the same poll — no Realtime (see the
         // polling effect below). Checked before the messages "unchanged"
         // early-return, since a read update arrives without any new rows.
-        supabase
-          .from('conversation_participants')
-          .select('last_read_at')
-          .eq('conversation_id', convId)
-          .neq('user_id', currentUserId)
-          .abortSignal(signal)
-          .maybeSingle(),
+        // DMs only: groups show no read receipts in M1.
+        isGroupRef.current
+          ? Promise.resolve({ data: null, error: null })
+          : supabase
+              .from('conversation_participants')
+              .select('last_read_at')
+              .eq('conversation_id', convId)
+              .neq('user_id', currentUserId)
+              .abortSignal(signal)
+              .maybeSingle(),
       ]);
 
       // Single caller/single controller here, so checking the signal
@@ -401,6 +425,19 @@ export default function ConversationScreen() {
 
       const fetched = (data ?? []) as Message[];
       const prev = messagesRef.current;
+      // Every message vanishing means this user lost access (removed from
+      // the group, or it was deleted) rather than the history emptying —
+      // confirm with the caller-scoped membership check before showing it.
+      if (fetched.length === 0 && prev.length > 0) {
+        const { data: stillMember } = await supabase.rpc('is_my_conversation', { p_conversation_id: convId });
+        if (signal.aborted) return;
+        if (stillMember === false) {
+          setAccessLost(true);
+          setMessages([]);
+          messagesRef.current = [];
+          return;
+        }
+      }
       const unchanged =
         fetched.length === prev.length && fetched.every((m, i) => m.id === prev[i].id);
       if (unchanged) return;
@@ -482,15 +519,12 @@ export default function ConversationScreen() {
       fetchInFlightRef.current = true;
 
       try {
-        // Parallel: find the other participant + load messages
-        const [participantRes, messagesRes] = await Promise.all([
-          supabase
-            .from('conversation_participants')
-            .select('user_id, last_read_at')
-            .eq('conversation_id', convId)
-            .neq('user_id', currentUserId)
-            .abortSignal(controller.signal)
-            .single(),
+        // Parallel: the conversation (kind, name, members) + its messages
+        const [metaRes, messagesRes] = await Promise.all([
+          loadConversationMeta(convId, controller.signal).then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          ),
           supabase
             .from('messages')
             .select(MESSAGE_COLUMNS)
@@ -502,17 +536,32 @@ export default function ConversationScreen() {
 
         if (loadControllerRef.current !== controller || controller.signal.aborted) return;
 
-        const otherUserId = (participantRes.data as any)?.user_id;
-        setPeerReadAt((participantRes.data as any)?.last_read_at ?? null);
-        if (otherUserId) {
-          const { data: profileData } = await supabase
-            .from('profiles')
-            .select('id, username, display_name, avatar_url')
-            .eq('id', otherUserId)
-            .abortSignal(controller.signal)
-            .single();
-          if (loadControllerRef.current !== controller || controller.signal.aborted) return;
-          if (profileData) setOtherUser(profileData as OtherUser);
+        if (metaRes.ok && metaRes.value === null) {
+          // Not visible to this user (never a member, removed, left, or
+          // deleted) — RLS answers all of these the same way.
+          setAccessLost(true);
+          setMessages([]);
+          return;
+        }
+        if (metaRes.ok && metaRes.value) {
+          const loadedMeta = metaRes.value;
+          setMeta(loadedMeta);
+          if (loadedMeta.kind === 'direct') {
+            const other = loadedMeta.members.find((m) => m.id !== currentUserId);
+            if (other) {
+              setOtherUser({
+                id: other.id,
+                username: other.username,
+                display_name: other.displayName,
+                avatar_url: other.avatarUrl,
+              });
+              setPeerReadAt(other.lastReadAt);
+            }
+          }
+        } else if (!metaRes.ok && __DEV__) {
+          // A failed lookup leaves the header on the route params, as
+          // before; messages below still load.
+          console.error('[Conversation] conversation details failed:', metaRes.error);
         }
 
         const loadedMessages = (messagesRes.data ?? []) as Message[];
@@ -556,6 +605,62 @@ export default function ConversationScreen() {
       refreshControllerRef.current?.abort();
     };
   }, [convId, currentUserId, refreshMessageBadge]);
+
+  // Returning to the thread (e.g. from Group Info after renaming, adding or
+  // removing people): refresh the name and members. The first focus is the
+  // initial load above. A conversation that's gone (left, removed) shows the
+  // unavailable state.
+  const metaFocusCountRef = useRef(0);
+  useFocusEffect(
+    useCallback(() => {
+      if (metaFocusCountRef.current++ === 0 || !convId) return;
+      const controller = new AbortController();
+      loadConversationMeta(convId, controller.signal)
+        .then((next) => {
+          if (controller.signal.aborted) return;
+          if (next === null) {
+            setAccessLost(true);
+            setMessages([]);
+            messagesRef.current = [];
+            return;
+          }
+          setMeta(next);
+        })
+        .catch(() => {});
+      return () => controller.abort();
+    }, [convId]),
+  );
+
+  // Group messages from someone who isn't a member any more (left or
+  // removed) still say who wrote them: their profiles (public) are fetched
+  // once. An unknown sender may instead be a newly added member, so the
+  // member list is refreshed too.
+  useEffect(() => {
+    if (!convId || !meta || meta.kind !== 'group') return;
+    const memberIds = new Set(meta.members.map((m) => m.id));
+    const missing = [...new Set(messages.map((m) => m.sender_id))].filter(
+      (id): id is string => !!id && !memberIds.has(id) && !requestedSenderIdsRef.current.has(id),
+    );
+    if (!missing.length) return;
+    missing.forEach((id) => requestedSenderIdsRef.current.add(id));
+    supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .in('id', missing)
+      .then(({ data }) => {
+        if (!data?.length) return;
+        setFormerSenders((prev) => {
+          const next = new Map(prev);
+          for (const profile of data as OtherUser[]) next.set(profile.id, profile);
+          return next;
+        });
+      });
+    loadConversationMeta(convId)
+      .then((next) => {
+        if (next) setMeta(next);
+      })
+      .catch(() => {});
+  }, [convId, meta, messages]);
 
   const onRefresh = useCallback(async () => {
     refreshControllerRef.current?.abort();
@@ -898,8 +1003,9 @@ export default function ConversationScreen() {
     }
   }
 
-  const displayTitle =
-    otherUser?.display_name ||
+  const displayTitle = isGroup && meta
+    ? groupTitle(meta.name, meta.members, currentUserId)
+    : otherUser?.display_name ||
     otherUser?.username ||
     (paramDisplayName ? String(paramDisplayName) : null) ||
     (paramUsername ? String(paramUsername) : null) ||
@@ -909,8 +1015,22 @@ export default function ConversationScreen() {
   // recently". @handle when the title is a distinct display name; otherwise
   // a plain context label.
   const knownUsername = otherUser?.username ?? (paramUsername ? String(paramUsername) : null);
-  const headerSubtitle =
-    knownUsername && displayTitle !== knownUsername ? `@${knownUsername}` : 'CacheCase collector';
+  const headerSubtitle = isGroup && meta
+    ? `${meta.members.length} ${meta.members.length === 1 ? 'member' : 'members'}`
+    : knownUsername && displayTitle !== knownUsername
+      ? `@${knownUsername}`
+      : 'CacheCase collector';
+
+  // A group message's sender: a current member, else a former one, else a
+  // neutral placeholder while that profile loads.
+  const membersById = new Map((meta?.members ?? []).map((m) => [m.id, m]));
+  function senderOf(senderId: string | null): { name: string; avatarUrl: string | null } {
+    const member = senderId ? membersById.get(senderId) : undefined;
+    if (member) return { name: memberName(member), avatarUrl: member.avatarUrl };
+    const former = senderId ? formerSenders.get(senderId) : undefined;
+    if (former) return { name: former.display_name?.trim() || former.username, avatarUrl: former.avatar_url };
+    return { name: 'Former member', avatarUrl: null };
+  }
 
   // In-flight placeholder appended for display only, and dropped as soon as
   // the durable row with the same id is in `messages`.
@@ -933,6 +1053,27 @@ export default function ConversationScreen() {
       subtitle={headerSubtitle}
       avatarUrl={otherUser?.avatar_url}
       topInset={insets.top}
+      // Their Profile V2 screen, by stable user id (the shared helper; the
+      // username only names the route). Pushed above this thread, which
+      // stays mounted — Back returns to it with the composer untouched. Not
+      // tappable until their profile row has loaded (missing/deleted
+      // profile: plain header).
+      // A group's header opens Group Info instead (app/group-info/[id].tsx).
+      onProfilePress={
+        accessLost
+          ? undefined
+          : isGroup
+            ? () => router.push({ pathname: '/group-info/[id]', params: { id: convId } })
+            : otherUser
+              ? () => navigateToProfile(router, currentUserId, otherUser.id, otherUser.username)
+              : undefined
+      }
+      avatar={
+        isGroup && meta ? (
+          <GroupAvatar names={meta.members.filter((m) => m.id !== currentUserId).map(memberName)} size={44} />
+        ) : undefined
+      }
+      pressHint={isGroup ? 'Opens group info' : undefined}
     />
   );
 
@@ -961,6 +1102,21 @@ export default function ConversationScreen() {
     );
   }
 
+  if (accessLost) {
+    return (
+      <View style={styles.container}>
+        {ambient}
+        {header}
+        <View style={styles.center}>
+          <Text style={styles.unavailableTitle}>This conversation isn’t available</Text>
+          <Text style={styles.unavailableBody}>
+            You may have left or been removed from it, or it no longer exists.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {ambient}
@@ -977,7 +1133,7 @@ export default function ConversationScreen() {
           ref={flatListRef}
           style={[styles.flex, !listRevealed && styles.listSettling]}
           data={displayMessages}
-          extraData={`${peerReadAt ?? ''}|${sendingId ?? ''}|${itemPreviews.size}`}
+          extraData={`${peerReadAt ?? ''}|${sendingId ?? ''}|${itemPreviews.size}|${meta?.members.length ?? 0}|${formerSenders.size}`}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
@@ -991,6 +1147,7 @@ export default function ConversationScreen() {
             const endsRun =
               !next || next.sender_id !== item.sender_id || !isSameDay(next.created_at, item.created_at);
             const isOwn = item.sender_id === currentUserId;
+            const sender = isGroup && !isOwn ? senderOf(item.sender_id) : null;
             // Only states the backend can back: no delivery tracking exists,
             // so there is no "Delivered".
             let status: string | undefined;
@@ -998,7 +1155,8 @@ export default function ConversationScreen() {
             if (isOwn && item.id === lastOwnId) {
               if (item.id === sendingId) {
                 status = 'Sending…';
-              } else if (peerReadMs !== null && peerReadMs >= Date.parse(item.created_at)) {
+              } else if (!isGroup && peerReadMs !== null && peerReadMs >= Date.parse(item.created_at)) {
+                // Read receipts are DM-only in M1.
                 status = 'Read';
                 statusRead = true;
               } else {
@@ -1040,8 +1198,9 @@ export default function ConversationScreen() {
                   statusRead={statusRead}
                   showAvatar={!isOwn && endsRun}
                   continuesRun={continuesRun}
-                  avatarUrl={otherUser?.avatar_url}
-                  avatarName={displayTitle}
+                  avatarUrl={isGroup ? sender?.avatarUrl : otherUser?.avatar_url}
+                  avatarName={isGroup ? (sender?.name ?? '') : displayTitle}
+                  senderName={isGroup && !isOwn && !continuesRun ? sender?.name : undefined}
                 />
               </>
             );
@@ -1144,7 +1303,7 @@ export default function ConversationScreen() {
         state={photoFlow}
         onClose={() => setPhotoFlow(null)}
         onChooseAnother={chooseAnotherPhoto}
-        recipientUsername={otherUser?.username ?? (paramUsername ? String(paramUsername) : null)}
+        recipientUsername={isGroup ? null : (otherUser?.username ?? (paramUsername ? String(paramUsername) : null))}
         draft={newMessage}
         onSend={handleSendImage}
       />
@@ -1154,7 +1313,7 @@ export default function ConversationScreen() {
       <ShareItemPicker
         visible={itemPickerOpen}
         onClose={() => setItemPickerOpen(false)}
-        recipientUsername={otherUser?.username ?? (paramUsername ? String(paramUsername) : null)}
+        recipientUsername={isGroup ? null : (otherUser?.username ?? (paramUsername ? String(paramUsername) : null))}
         draft={newMessage}
         onSend={handleSendItem}
       />
@@ -1194,6 +1353,21 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     color: PV2.textSecondary,
+  },
+  // Shown when the signed-in user can no longer see this conversation.
+  unavailableTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: PV2.textPrimary,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  unavailableBody: {
+    marginTop: 8,
+    fontSize: 14,
+    color: PV2.textSecondary,
+    textAlign: 'center',
+    paddingHorizontal: 32,
   },
   daySeparator: {
     alignSelf: 'center',

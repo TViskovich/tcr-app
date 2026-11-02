@@ -218,11 +218,14 @@ async function main() {
       await zero(`${outsider.username} cannot read ${member.username}'s notifications`, client.from('notifications').select('id').eq('user_id', member.id));
       await client.auth.signOut({ scope: 'local' });
     }
-    // Signed out: zero rows, or the intended 42501 on is_conversation_participant
-    // (docs/security-follow-ups.md). Anything else fails.
+    // Signed out: zero rows, or an intended 42501 — on is_conversation_participant
+    // before 20261101130000, on the messages table itself since (anon has no
+    // privileges there). Anything else fails.
     const anonymous = createUserClient(userConfig);
     const { data, error } = await anonymous.from('messages').select('id').eq('conversation_id', conversationId);
-    const denied = error ? error.code === '42501' && /is_conversation_participant/.test(error.message) : (data?.length ?? 0) === 0;
+    const denied = error
+      ? error.code === '42501' && /is_conversation_participant|permission denied for table messages/.test(error.message)
+      : (data?.length ?? 0) === 0;
     record('rls', 'signed-out client cannot read a run conversation', denied, error ? `${error.code} ${error.message}` : `${data?.length ?? 0} rows visible`);
   }
 

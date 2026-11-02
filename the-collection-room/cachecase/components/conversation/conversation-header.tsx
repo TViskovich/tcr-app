@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from 'react-native';
+import type { ReactNode } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { ChatAvatar } from '@/components/conversation/chat-avatar';
 import { CHAT } from '@/components/conversation/conversation-theme';
@@ -10,29 +11,62 @@ type Props = {
   subtitle: string;
   avatarUrl: string | null | undefined;
   topInset: number;
+  // Opens the other collector's profile (or, for a group, Group Info).
+  // Omitted while that isn't loaded (or no longer exists) — the avatar and
+  // name then aren't a button.
+  onProfilePress?: () => void;
+  // Replaces the single-person avatar (a group's GroupAvatar).
+  avatar?: ReactNode;
+  // VoiceOver hint for the tap target (default: "Opens their profile").
+  pressHint?: string;
 };
 
 // Compact glass conversation header — replaces the native Stack header for
 // this route (headerShown: false is set statically in app/_layout.tsx). The
 // right side is intentionally empty: no call/info actions exist yet, and the
 // subtitle is a static, truthful label — there is no presence data to back
-// an "Active recently" line.
-export function ConversationHeader({ title, subtitle, avatarUrl, topInset }: Props) {
+// an "Active recently" line. The avatar and name/username together are one
+// tap target (and one VoiceOver button) to the other collector's profile.
+export function ConversationHeader({
+  title,
+  subtitle,
+  avatarUrl,
+  topInset,
+  onProfilePress,
+  avatar,
+  pressHint = 'Opens their profile',
+}: Props) {
+  const identity = (
+    <>
+      {avatar ?? <ChatAvatar uri={avatarUrl} name={title} size={44} />}
+      <View style={styles.text}>
+        <Text style={styles.title} numberOfLines={1}>
+          {title}
+        </Text>
+        <Text style={styles.subtitle} numberOfLines={1}>
+          {subtitle}
+        </Text>
+      </View>
+    </>
+  );
   return (
     <View style={[styles.outer, { paddingTop: topInset + 6 }]}>
       <View style={styles.card}>
         {/* Fallback for deep links / no history — same destination the
             native headerLeft used before this redesign. */}
         <BackButton fallbackHref="/(tabs)/messages" size={22} />
-        <ChatAvatar uri={avatarUrl} name={title} size={44} />
-        <View style={styles.text}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>
-            {subtitle}
-          </Text>
-        </View>
+        {onProfilePress ? (
+          <Pressable
+            style={({ pressed }) => [styles.identity, pressed && styles.identityPressed]}
+            onPress={onProfilePress}
+            accessibilityRole="button"
+            accessibilityLabel={`${title}, ${subtitle}`}
+            accessibilityHint={pressHint}>
+            {identity}
+          </Pressable>
+        ) : (
+          <View style={styles.identity}>{identity}</View>
+        )}
       </View>
     </View>
   );
@@ -60,6 +94,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 16,
     elevation: 8,
+  },
+  // Avatar + name/username — the profile tap target. Same row layout and
+  // gap the card used for them directly.
+  identity: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  identityPressed: {
+    opacity: 0.6,
   },
   text: {
     flex: 1,
