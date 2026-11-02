@@ -81,6 +81,7 @@ import {
   UNSPECIFIED_FRANCHISE_MESSAGE,
 } from '@/lib/trading-card-options';
 import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
+import { recordItemView } from '@/lib/item-views';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { clearPreviousShareImages, prepareItemShareImage } from '@/lib/share/share-image';
@@ -786,6 +787,11 @@ export default function ItemDetailScreen() {
     // after it. RLS filters collection_item_images exactly as before.
   } = useItemImages(id);
 
+  // The item this screen visit already reported a view for (see fetchItem)
+  // — so a re-run of the load effect (e.g. the session resolving after the
+  // first load) never sends a second request for the same visit.
+  const viewRecordedForRef = useRef<string | null>(null);
+
   useEffect(() => {
     async function fetchItem() {
       // One request: the item plus everything the first render needs — the
@@ -807,6 +813,16 @@ export default function ItemDetailScreen() {
         setItem(data);
         setForm(itemToForm(data));
         if (owner) setOwnerProfile(owner);
+
+        // Counts toward Most Viewed: a signed-in viewer who isn't the owner
+        // opened this item and it loaded. Once per visit, fire-and-forget
+        // (lib/item-views.ts); the database dedupes repeats within 30
+        // minutes and ignores the owner and items the viewer can't see.
+        // This effect only runs on open (not on refocus or image swipes).
+        if (currentUserId && data.user_id !== currentUserId && viewRecordedForRef.current !== data.id) {
+          viewRecordedForRef.current = data.id;
+          recordItemView(data.id);
+        }
 
         // Only populated for the matching item_type, same as before.
         if (data.item_type === 'pokemon') {
