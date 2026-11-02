@@ -28,6 +28,11 @@ type Props = {
   selectedIds?: ReadonlySet<string>;
   // People not offered at all (e.g. a group's current members).
   excludeIds?: ReadonlySet<string>;
+  // 'tag' (Tag Collectors): rows show only avatar, name and @username — no
+  // message previews or conversation metadata — and the unsearched list is
+  // labelled Suggested, since it is DM partners rather than recent tags.
+  // Default 'message' keeps the DM picker as it was.
+  purpose?: 'message' | 'tag';
 };
 
 // Strips characters that carry meaning inside a PostgREST .or() filter
@@ -38,8 +43,8 @@ function sanitizeSearchTerm(term: string) {
 
 // "Choose someone" list shared by Item Detail → Send in DM
 // (send-item-dm-sheet.tsx), the inbox's New Message sheet
-// (new-message-sheet.tsx, single pick or New Group's multi-select) and Group
-// Info's Add Members: search field + Recent (existing 1:1 conversations, via
+// (new-message-sheet.tsx, single pick or New Group's multi-select), Group
+// Info's Add Members and Tag Collectors (purpose="tag"): search field + Recent (existing 1:1 conversations, via
 // the inbox's own loadInbox — never groups) or People (profile search by
 // username / display name, debounced, excluding the signed-in user).
 export function RecipientList({
@@ -49,6 +54,7 @@ export function RecipientList({
   disabled,
   selectedIds,
   excludeIds,
+  purpose = 'message',
 }: Props) {
   const [query, setQuery] = useState('');
   const [recents, setRecents] = useState<ConversationItem[]>([]);
@@ -127,6 +133,7 @@ export function RecipientList({
     (r) => !excludeIds?.has(r.id),
   );
   const multiSelect = !!selectedIds;
+  const tagging = purpose === 'tag';
 
   return (
     <>
@@ -154,7 +161,9 @@ export function RecipientList({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={[styles.list, { paddingBottom: bottomInset + 24 }]}
-        ListHeaderComponent={<Text style={styles.sectionLabel}>{showingSearch ? 'People' : 'Recent'}</Text>}
+        ListHeaderComponent={
+          <Text style={styles.sectionLabel}>{showingSearch ? 'People' : tagging ? 'Suggested' : 'Recent'}</Text>
+        }
         ItemSeparatorComponent={() => <View style={styles.divider} />}
         ListEmptyComponent={
           (showingSearch ? searching : recentsLoading) ? (
@@ -164,19 +173,25 @@ export function RecipientList({
           ) : (
             <View style={styles.center}>
               <Text style={styles.emptyText}>
-                {showingSearch ? 'No people found.' : 'No conversations yet — search for someone above.'}
+                {showingSearch
+                  ? 'No people found.'
+                  : tagging
+                    ? 'Search for a collector to tag.'
+                    : 'No conversations yet — search for someone above.'}
               </Text>
             </View>
           )
         }
         renderItem={({ item: r }) => {
-          const secondary = showingSearch
-            ? recentUserIds.has(r.id)
-              ? `@${r.username} · Recent conversation`
-              : `@${r.username}`
-            : r.preview
-              ? `@${r.username} · ${r.preview}`
-              : `@${r.username}`;
+          const secondary = tagging
+            ? `@${r.username}`
+            : showingSearch
+              ? recentUserIds.has(r.id)
+                ? `@${r.username} · Recent conversation`
+                : `@${r.username}`
+              : r.preview
+                ? `@${r.username} · ${r.preview}`
+                : `@${r.username}`;
           const selected = !!selectedIds?.has(r.id);
           return (
             <Pressable

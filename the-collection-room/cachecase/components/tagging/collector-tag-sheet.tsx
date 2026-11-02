@@ -245,6 +245,7 @@ function SheetBody({
           disabled={working}
           selectedIds={pickedIds}
           excludeIds={excludeIds}
+          purpose="tag"
         />
       </View>
     );

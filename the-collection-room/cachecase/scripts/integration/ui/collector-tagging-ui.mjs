@@ -67,6 +67,7 @@ async function eventually(name, page, fn, timeout = 15000) {
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 const run = randomUUID().replace(/-/g, '').slice(0, 5);
+const DM_PREVIEW = `See you at the card show ${run}`;
 const users = {};
 
 async function sweep() {
@@ -78,6 +79,10 @@ async function sweep() {
     if (data.users.length < 200) break;
   }
   if (!ids.length) return 0;
+  // The A↔B DM (conversations have no owner column: found via participants).
+  const { data: parts } = await admin.from('conversation_participants').select('conversation_id').in('user_id', ids);
+  const convIds = [...new Set((parts ?? []).map((r) => r.conversation_id))];
+  if (convIds.length) await admin.from('conversations').delete().in('id', convIds);
   await admin.from('notifications').delete().in('user_id', ids);
   await admin.from('notifications').delete().in('actor_id', ids);
   await admin.from('collection_items').delete().in('user_id', ids);
@@ -196,6 +201,12 @@ async function scenario(p) {
     { id: privateItem, folder_id: folder.id, user_id: A.id, title: 'Tag Test Secret', is_public: false, collection_status: 'active' },
   ]);
   if (iErr) throw iErr;
+  // An A↔B DM with a message, so B is a suggested person in A's pickers and
+  // has a message preview the Tag Collectors picker must not show.
+  const { data: dm, error: dmErr } = await A.db.rpc('get_or_create_conversation', { other_user_id: B.id });
+  if (dmErr) throw dmErr;
+  const { error: mErr } = await A.db.from('messages').insert({ id: randomUUID(), conversation_id: dm, sender_id: A.id, body: DM_PREVIEW });
+  if (mErr) throw mErr;
 
   step('0. Sign in (real login screen)');
   for (const key of ['A', 'B', 'V']) {
@@ -218,6 +229,14 @@ async function scenario(p) {
   check('sheet names the item', await bodyHas(p.A, 'Tag Test Rookie'));
   check('empty state with the owner hint', (await bodyHas(p.A, 'No one is tagged yet')) && (await bodyHas(p.A, 'Tag collectors to show this item on their profile.')));
   await tapUntil(p.A, 'label', 'Tag collectors', 'Tag Collectors');
+  await eventually('picker suggests B (an existing DM partner) before searching', p.A, () => p.A.exists('label', B.name));
+  check('suggestions are headed "Suggested", not "Recent"', (await p.A.exists('text', 'Suggested')) && !(await p.A.exists('text', 'Recent')));
+  check('suggested row: name and @username only', await p.A.exists('text', `@${B.username}`));
+  check('no DM message preview in the picker', !(await bodyHas(p.A, DM_PREVIEW)));
+  await p.A.screenshot(`${OUT}/02a-tag-picker-suggested.png`);
+  await search(p.A, B.username);
+  check('search result: @username only, no "Recent conversation"', (await p.A.exists('text', `@${B.username}`)) && !(await bodyHas(p.A, 'Recent conversation')));
+  check('search heading is "People"', await p.A.exists('text', 'People'));
   await search(p.A, A.username);
   check('the owner cannot pick themselves (not offered)', !(await p.A.exists('label', A.name)));
   await search(p.A, B.username);
@@ -479,6 +498,15 @@ async function scenario(p) {
   const newErrors = p.V.errors.slice(errorsBefore).filter((e) => /tag/i.test(String(e)));
   check('nothing logged as an error about tagging', newErrors.length === 0, newErrors.map((e) => String(e).split('\n')[0]));
   await p.V.screenshot(`${OUT}/10-no-migration.png`);
+
+  step('20. Direct Message picker keeps message previews');
+  await p.A.goto(`${APP}/messages`);
+  await p.A.waitForEl('label', 'New message', 30000);
+  await tapUntil(p.A, 'label', 'New message', 'New Message');
+  await eventually('New Message: "Recent" heading and B with the message preview', p.A, async () => (await p.A.exists('text', 'Recent')) && (await p.A.exists('text', `@${B.username} · ${DM_PREVIEW}`)));
+  await p.A.screenshot(`${OUT}/11-dm-picker.png`);
+  await search(p.A, B.username);
+  await eventually('New Message search: "Recent conversation" note kept', p.A, () => p.A.exists('text', `@${B.username} · Recent conversation`));
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
