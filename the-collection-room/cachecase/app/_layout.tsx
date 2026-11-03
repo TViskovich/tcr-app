@@ -2,11 +2,14 @@ import { DarkTheme, ThemeProvider, type Theme } from 'expo-router/react-navigati
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo } from 'react';
-import { View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { AccountStatusUnknown } from '@/components/account/account-status-unknown';
+import { DeletionNoticeScreen } from '@/components/account/deletion-notice-screen';
+import { AccountLifecycleProvider, useAccountLifecycle } from '@/lib/account-lifecycle';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { GlobalFloatingTabBar } from '@/components/navigation/global-floating-tab-bar';
@@ -47,13 +50,24 @@ function RootLayoutNav() {
   const router = useRouter();
 
   const inAuthGroup = segments[0] === '(auth)';
+  // Account lifecycle (Dashboard Milestone 2): a collector whose account is
+  // pending deletion — or being deleted — sees only the Pending Deletion
+  // screen. The database already hides and freezes the account; this keeps
+  // the app from showing an empty, failing version of itself.
+  const { status: lifecycleStatus, deletionNotice } = useAccountLifecycle();
+  const lifecycleChecking = !!session && lifecycleStatus === 'checking';
+  // The state couldn't be confirmed and this device has never seen it:
+  // don't show the app (it may be pending deletion) until it's known.
+  const lifecycleUnknown = !!session && lifecycleStatus === 'unknown';
+  const accountHidden = !!session && (lifecycleStatus === 'pending_deletion' || lifecycleStatus === 'deleting');
+  const onPendingScreen = (segments as string[])[0] === 'account' && (segments as string[])[1] === 'pending';
 
   // Single authoritative unread-DM-message source for the whole
   // authenticated session — mounted here (above both <Stack> and
   // <GlobalFloatingTabBar>) so the Tabs-group badge and the floating bar's
   // own badge, rendered outside the tabs subtree, share one query/poll
   // lifecycle and one count instead of each owning a private instance.
-  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(session?.user?.id);
+  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(accountHidden || lifecycleUnknown ? undefined : session?.user?.id);
   const messageBadgeContextValue = useMemo(
     () => ({ unreadCount, latestUnreadAt, refreshMessageBadge }),
     [unreadCount, latestUnreadAt, refreshMessageBadge],
@@ -61,12 +75,23 @@ function RootLayoutNav() {
 
   useEffect(() => {
     if (loading) return;
-    if (!session && !inAuthGroup) {
-      router.replace('/(auth)/login');
-    } else if (session && inAuthGroup) {
-      router.replace('/(tabs)');
+    if (!session) {
+      if (!inAuthGroup) router.replace('/(auth)/login');
+      return;
     }
-  }, [session, loading, inAuthGroup, router]);
+    if (lifecycleChecking || lifecycleUnknown) return;
+    if (accountHidden) {
+      // Every other route (back gesture, deep link, a stale tab) bounces
+      // here. Emptying the stack first unmounts the app's screens, so none
+      // of them keeps loading data underneath the Pending Deletion screen.
+      if (!onPendingScreen) {
+        if (router.canDismiss()) router.dismissAll();
+        router.replace('/account/pending');
+      }
+      return;
+    }
+    if (inAuthGroup || onPendingScreen) router.replace('/(tabs)');
+  }, [session, loading, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen, router]);
 
   // Withhold the route tree until the initial session restore resolves —
   // otherwise (auth) or (tabs) can paint for a frame before the redirect
@@ -112,8 +137,19 @@ function RootLayoutNav() {
                 statically (not via an inline Stack.Screen) so the native
                 header never paints for a frame before being hidden. */}
             <Stack.Screen name="conversation/[id]" options={{ headerShown: false }} />
+            <Stack.Screen name="account/delete" options={{ headerShown: false }} />
+            <Stack.Screen name="account/export" options={{ headerShown: false }} />
+            <Stack.Screen name="account/pending" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
-          {session && !inAuthGroup ? <GlobalFloatingTabBar /> : null}
+          {session && !inAuthGroup && !accountHidden && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
+            <GlobalFloatingTabBar />
+          ) : null}
+          {/* Until the account's state is known, nothing of the app shows —
+              a pending collector never sees it flash. */}
+          {lifecycleChecking ? <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000' }]} /> : null}
+          {lifecycleUnknown ? <AccountStatusUnknown /> : null}
+          {/* After a permanent deletion from this device, once signed out. */}
+          {!session && deletionNotice ? <DeletionNoticeScreen notice={deletionNotice} /> : null}
         </MessageBadgeContext.Provider>
       </TabVisibilityProvider>
       {/* "light" (not "auto") — always white/light status-bar content,
@@ -130,7 +166,9 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-        <RootLayoutNav />
+        <AccountLifecycleProvider>
+          <RootLayoutNav />
+        </AccountLifecycleProvider>
       </AuthProvider>
     </GestureHandlerRootView>
   );

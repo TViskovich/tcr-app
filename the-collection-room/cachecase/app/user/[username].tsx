@@ -78,7 +78,7 @@ export default function UserProfileScreen() {
       <>
         <Stack.Screen options={{ title: 'Not Found' }} />
         <View style={styles.center}>
-          <Text style={styles.errorText}>User not found.</Text>
+          <Text style={styles.errorText}>This collector isn’t available.</Text>
         </View>
       </>
     );

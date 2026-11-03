@@ -851,7 +851,16 @@ export function PostCard({
           tuned sizing systems that happen to look similar. Its caption
           still renders separately, after the media (see cardBody below) —
           only the outer media footprint changed here. */}
-      {isRateMyGrails ? (
+      {isRateMyGrails && post.grailCards.length === 0 ? (
+        // Every shared card came from an account that has since been
+        // deleted (its copies are removed); the post and caption remain.
+        <View style={styles.mediaContentColumn}>
+          {post.caption ? <Text style={styles.mediaCaption}>{post.caption}</Text> : null}
+          <View style={styles.cardShareUnavailable}>
+            <Text style={styles.cardShareUnavailableText}>Shared cards unavailable</Text>
+          </View>
+        </View>
+      ) : isRateMyGrails ? (
         <View style={styles.cardGrailsWrap}>
           <GrailsPostBody
             cards={post.grailCards}
@@ -863,6 +872,14 @@ export function PostCard({
             submitting={rating.submitting}
             onRate={rating.submitRating}
           />
+        </View>
+      ) : isFolderShare && !post.folderShare?.folderId && (post.folderShare?.items.length ?? 0) === 0 ? (
+        // The shared collection's owner deleted their account: its name,
+        // cover and item copies are removed; the post itself remains.
+        <View style={styles.mediaContentColumn}>
+          <View style={styles.cardShareUnavailable}>
+            <Text style={styles.cardShareUnavailableText}>Shared collection unavailable</Text>
+          </View>
         </View>
       ) : isFolderShare ? (
         // Folder share — a square collage of the folder's snapshot items
@@ -1073,7 +1090,16 @@ export function PostCard({
                 same durable, always-public surface every other post image
                 already renders from — no special signed-image branch
                 needed here. */
-            post.image_url && (
+            post.post_type === 'item' && !post.image_url ? (
+              // The shared item's owner deleted their account: the copied
+              // photo is removed; the caption and post remain.
+              <View style={styles.mediaContentColumn}>
+                {post.caption ? <Text style={styles.mediaCaption}>{post.caption}</Text> : null}
+                <View style={styles.cardShareUnavailable}>
+                  <Text style={styles.cardShareUnavailableText}>Shared item unavailable</Text>
+                </View>
+              </View>
+            ) : post.image_url && (
               <View style={[styles.mediaContentColumn, styles.mediaContentColumnFull]}>
                 {!isTextPost && (post.caption || post.item_name) && (
                   <Text style={styles.mediaCaption}>{post.caption || post.item_name}</Text>

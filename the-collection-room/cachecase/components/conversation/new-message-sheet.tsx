@@ -7,6 +7,7 @@ import { ChatAvatar } from '@/components/conversation/chat-avatar';
 import { CHAT } from '@/components/conversation/conversation-theme';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { type Recipient, RecipientList } from '@/components/share/recipient-list';
+import { accountErrorMessage } from '@/lib/account-errors';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/lib/auth';
 import {
@@ -111,7 +112,7 @@ function SheetBody({
       });
       if (rpcError || !data) {
         if (__DEV__) console.error('[NewMessageSheet] get_or_create_conversation failed:', rpcError?.message);
-        setError('Couldn’t start the conversation. Please try again.');
+        setError(accountErrorMessage(rpcError) ?? 'Couldn’t start the conversation. Please try again.');
         return;
       }
       onOpenConversation(data as string, recipient);

@@ -56,6 +56,7 @@ import type { TaggedCardEntry } from '@/hooks/use-tagged-content';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-signed-folder-covers';
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { accountErrorMessage } from '@/lib/account-errors';
 import { useAuth } from '@/lib/auth';
 import { deletePost, repostPost, undoRepost } from '@/lib/posts';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
@@ -1123,7 +1124,7 @@ export function ProfileV2Screen({ userId }: Props) {
             code: error.code,
             message: error.message,
           });
-          Alert.alert('Error', 'Unable to unfollow this user. Please try again.');
+          Alert.alert('Error', accountErrorMessage(error) ?? 'Unable to unfollow this user. Please try again.');
           return;
         }
         setIsFollowing(false);
@@ -1149,7 +1150,7 @@ export function ProfileV2Screen({ userId }: Props) {
             code: error.code,
             message: error.message,
           });
-          Alert.alert('Error', 'Unable to follow this user. Please try again.');
+          Alert.alert('Error', accountErrorMessage(error) ?? 'Unable to follow this user. Please try again.');
           return;
         }
         setIsFollowing(true);
@@ -1174,7 +1175,7 @@ export function ProfileV2Screen({ userId }: Props) {
       const { data, error } = await supabase.rpc('get_or_create_conversation', { other_user_id: userId });
       if (error || !data) {
         console.error('[handleMessage] get_or_create_conversation failed:', error?.message);
-        Alert.alert('Couldn’t start conversation', 'Please try again.');
+        Alert.alert('Couldn’t start conversation', accountErrorMessage(error) ?? 'Please try again.');
         return;
       }
       router.push({

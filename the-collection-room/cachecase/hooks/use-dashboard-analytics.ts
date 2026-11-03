@@ -39,16 +39,18 @@ export type Engagement = {
   timesTagged: number | null;
 };
 
-export type Registry = { registeredCards: number; grailSlots: number };
+// Filled Grails (Top 9) slots. Registry / transfer counts are deliberately
+// not loaded: those features aren't part of the beta.
+export type Showcase = { grailSlots: number };
 
 export type DashboardAnalytics = {
   categories: CategoryCount[] | null;
   views: ViewMetrics | null;
   engagement: Engagement | null;
-  registry: Registry | null;
+  showcase: Showcase | null;
 };
 
-const EMPTY: DashboardAnalytics = { categories: null, views: null, engagement: null, registry: null };
+const EMPTY: DashboardAnalytics = { categories: null, views: null, engagement: null, showcase: null };
 const VIEW_PAGE = 1000;
 const VIEW_MAX_PAGES = 20;
 const TOP_VIEWED = 3;
@@ -162,12 +164,13 @@ async function loadEngagement(userId: string, signal: AbortSignal): Promise<Enga
   };
 }
 
-async function loadRegistry(userId: string, signal: AbortSignal): Promise<Registry> {
-  const [cards, slots] = await Promise.all([
-    supabase.from('registered_cards').select('id', { count: 'exact', head: true }).eq('current_owner_id', userId).abortSignal(signal),
-    supabase.from('profile_grail_slots').select('id', { count: 'exact', head: true }).eq('user_id', userId).abortSignal(signal),
-  ]);
-  return { registeredCards: countOf(cards), grailSlots: countOf(slots) };
+async function loadShowcase(userId: string, signal: AbortSignal): Promise<Showcase> {
+  const slots = await supabase
+    .from('profile_grail_slots')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .abortSignal(signal);
+  return { grailSlots: countOf(slots) };
 }
 
 export function useDashboardAnalytics(userId: string | undefined) {
@@ -191,15 +194,15 @@ export function useDashboardAnalytics(userId: string | undefined) {
         }
         return null;
       });
-    const [categories, views, engagement, registry] = await Promise.all([
+    const [categories, views, engagement, showcase] = await Promise.all([
       settle(loadCategories(userId, controller.signal), 'categories'),
       settle(loadViews(userId, controller.signal), 'views'),
       settle(loadEngagement(userId, controller.signal), 'engagement'),
-      settle(loadRegistry(userId, controller.signal), 'registry'),
+      settle(loadShowcase(userId, controller.signal), 'showcase'),
     ]);
     if (controller.signal.aborted || controllerRef.current !== controller) return;
     controllerRef.current = null;
-    setData({ categories, views, engagement, registry });
+    setData({ categories, views, engagement, showcase });
     setLoading(false);
   }, [userId]);
 

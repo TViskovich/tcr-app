@@ -21,6 +21,7 @@ import { CHAT } from '@/components/conversation/conversation-theme';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { type Recipient, RecipientList } from '@/components/share/recipient-list';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { accountErrorMessage } from '@/lib/account-errors';
 import { useAuth } from '@/lib/auth';
 import { sendItemAttachment } from '@/lib/dm-send';
 import { supabase } from '@/lib/supabase';
@@ -121,7 +122,7 @@ function SheetBody({
       });
       if (convError || !conversationId) {
         if (__DEV__) console.error('[SendItemDmSheet] get_or_create_conversation failed:', convError?.message);
-        setSendError('Couldn’t send. Check your connection and try again.');
+        setSendError(accountErrorMessage(convError) ?? 'Couldn’t send. Check your connection and try again.');
         return;
       }
 
@@ -147,6 +148,8 @@ function SheetBody({
         setStep('sent');
       } else if (result.kind === 'not_shareable') {
         setSendError('This item can’t be shared right now.');
+      } else if (result.kind === 'account') {
+        setSendError(accountErrorMessage({ message: `account_${result.reason}` }));
       } else {
         setSendError('Couldn’t send. Check your connection and try again.');
       }

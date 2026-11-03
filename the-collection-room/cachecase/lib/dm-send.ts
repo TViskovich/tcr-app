@@ -1,3 +1,4 @@
+import { accountErrorKind } from '@/lib/account-errors';
 import { MESSAGE_COLUMNS, isItemNotShareableError, type MessageAttachmentType } from '@/lib/dm-attachments';
 import { supabase } from '@/lib/supabase';
 
@@ -52,6 +53,9 @@ export type DmWriteResult =
   | { kind: 'not_shareable' }
   // Any other definitive 4xx (RLS, constraint, malformed) — not committed.
   | { kind: 'rejected' }
+  // Account lifecycle: the sender is pending deletion ('inactive') or a
+  // participant is unavailable ('unavailable') — not committed.
+  | { kind: 'account'; reason: 'inactive' | 'unavailable' | 'closed' }
   // Ambiguous write AND reconciliation couldn't prove it either way. The
   // caller must retry with the SAME id (a prior commit then surfaces as a
   // 23505 → reconciled, never a duplicate row).
@@ -127,6 +131,8 @@ export async function writeDmMessage({
     // E. A definitive 4xx that isn't a duplicate-key conflict — the INSERT
     // did not commit.
     if (isItemNotShareableError(error)) return { kind: 'not_shareable' };
+    const accountKind = accountErrorKind(error);
+    if (accountKind) return { kind: 'account', reason: accountKind };
     console.error('Send failed:', error.message, { code: error.code, status });
     return { kind: 'rejected' };
   } catch (e) {

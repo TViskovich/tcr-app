@@ -1,4 +1,4 @@
-import { useCallback, useState, type ComponentProps, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,7 +17,6 @@ import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { formatCount, PV2 } from '@/components/profile-v2/profile-v2-theme';
-import { TransactionsList } from '@/components/transactions/transactions-list';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useDashboardAnalytics } from '@/hooks/use-dashboard-analytics';
 import { useIsAdmin } from '@/hooks/use-is-admin';
@@ -25,12 +24,17 @@ import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
 import { SUPPORT_CONTACT } from '@/lib/support-contact';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 // The collector's Dashboard (right-hand bottom-nav tab): Analytics,
-// Transfers, How-To & Knowledge Base, Support & Contact, Account &
-// Security, plus the admin-only Waitlist entry.
+// How-To & Knowledge Base, Support & Contact, Account & Security, plus the
+// admin-only Waitlist entry.
+//
+// Beta scope: Transfers and the CC#ID Registry are not launching in the
+// beta, so nothing here shows, counts, links to or explains them. Their
+// screens, components and data are untouched for future releases.
 //
 // Every number is read from data CacheCase already stores — profile totals
 // from useProfile (the same counts Profile V2 shows), everything else from
@@ -38,7 +42,6 @@ import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 // never shown as zero. Nothing here adds tables, events or server code.
 
 const GRAIL_SLOT_COUNT = 9;
-const TRANSFER_PREVIEW_ROWS = 3;
 
 type IconName = ComponentProps<typeof IconSymbol>['name'];
 
@@ -46,6 +49,18 @@ type IconName = ComponentProps<typeof IconSymbol>['name'];
 // Guides describe only what the app does today. Planned features are listed
 // separately (COMING_LATER) so the two are never mixed.
 type Guide = { key: string; title: string; icon: IconName; steps: string[]; note?: string };
+
+// Shown only where the database has collector tagging (useTaggingAvailable).
+const TAGGING_GUIDE: Guide = {
+  key: 'tagging',
+  title: 'Tagging collectors',
+  icon: 'tag',
+  steps: [
+    'On your own item or collection, tap Tag and choose the collectors to tag (up to 20).',
+    'Items and collections you’re tagged in appear on the Tagged tab of your profile.',
+    'You can remove yourself from anything you’ve been tagged in.',
+  ],
+};
 
 const GUIDES: Guide[] = [
   {
@@ -71,32 +86,19 @@ const GUIDES: Guide[] = [
     ],
   },
   {
-    key: 'cacheid',
-    title: 'Cache ID & provenance',
-    icon: 'checkmark.circle.fill',
+    key: 'messages',
+    title: 'Messages',
+    icon: 'message.fill',
     steps: [
-      'Register a card from its item page with Register with CacheCase. This creates a permanent CacheCase ID (CC-XXXX-XXXX) and provenance record for that physical card.',
-      'Tap the item’s CacheCase ID to open its registry page: registration status, custody status and history.',
-      'Keep the custody status current — for example On Loan, Submitted for Grading, Missing or Stolen.',
-      'The registry history stays with the card when it changes hands.',
-    ],
-    note: 'Registration is currently available for sports cards.',
-  },
-  {
-    key: 'transfers',
-    title: 'Transfers',
-    icon: 'arrow.2.squarepath',
-    steps: [
-      'Open a registered card’s registry page and tap Transfer Card. Enter the recipient’s username, optionally choose a reason (Sale, Trade, Gift or Other), and send the request.',
-      'The recipient accepts or declines it in Transfers on their Dashboard. You can cancel a request while it is pending.',
-      'After accepting, the recipient taps Add to My Collection on the registry page. The sender keeps the original as a historical item.',
+      'Start a conversation from Messages with the compose button, then choose a collector.',
+      'To send an item, open it, tap Share and choose Direct Message. Only public items can be shared in DMs.',
+      'Tap the name at the top of a conversation to open that collector’s profile.',
     ],
   },
 ];
 
 const COMING_LATER = [
   'Profile views, Top 9 / Grails impressions and link clicks in Analytics',
-  'Account deletion',
   'Account freeze',
   'Private profile',
 ];
@@ -138,11 +140,6 @@ export default function DashboardScreen() {
   // profile means the stats are real; no profile after loading = failed.
   const profileReady = profile !== null;
   const profileFailed = !profileReady && !profileLoading;
-
-  function openTransfers() {
-    if (!userId) return;
-    router.push({ pathname: '/transactions/[userId]', params: { userId } });
-  }
 
   function handleSignOut() {
     Alert.alert('Sign out', 'Are you sure you want to sign out?', [
@@ -196,7 +193,8 @@ export default function DashboardScreen() {
   ];
   const supportConfigured = supportRows.some((r) => r.onPress);
 
-  const { categories, views, engagement, registry, loading: analyticsLoading } = analytics;
+  const { categories, views, engagement, showcase, loading: analyticsLoading } = analytics;
+  const guides = taggingAvailable ? [...GUIDES, TAGGING_GUIDE] : GUIDES;
   const categoryMax = Math.max(1, ...(categories ?? []).map((c) => c.count));
 
   return (
@@ -221,12 +219,11 @@ export default function DashboardScreen() {
               <StatTile label="Items" value={profileReady ? stats.itemCount : null} />
               <StatTile label="Collections" value={profileReady ? stats.folderCount : null} />
               <StatTile label="Graded" value={profileReady ? stats.gradedCount : null} />
-              <StatTile label="Registered" value={registry?.registeredCards ?? null} failed={!analyticsLoading && !registry} />
               <StatTile
                 label="Grails"
-                value={registry?.grailSlots ?? null}
+                value={showcase?.grailSlots ?? null}
                 suffix={`/${GRAIL_SLOT_COUNT}`}
-                failed={!analyticsLoading && !registry}
+                failed={!analyticsLoading && !showcase}
               />
               <StatTile label="Posts" value={profileReady ? stats.postCount : null} />
             </View>
@@ -326,16 +323,10 @@ export default function DashboardScreen() {
           </Text>
         </Card>
 
-        {/* ── Transfers ── */}
-        <SectionHeader icon="arrow.2.squarepath" title="Transfers" />
-        <View style={styles.transfers}>
-          <TransactionsList currentUserId={userId} onViewAll={openTransfers} maxRows={TRANSFER_PREVIEW_ROWS} />
-        </View>
-
         {/* ── How-To & Knowledge Base ── */}
         <SectionHeader icon="list.bullet" title="How-To & Knowledge Base" />
         <View style={styles.card}>
-          {GUIDES.map((g, i) => {
+          {guides.map((g, i) => {
             const open = openGuide === g.key;
             return (
               <View key={g.key} style={i > 0 && styles.listRowBorder}>
@@ -415,22 +406,34 @@ export default function DashboardScreen() {
             <Bullet>When you’re tagged, the tag is visible to anyone who can see that item or collection.</Bullet>
           )}
         </Card>
-        <Card title="Provenance">
-          <Bullet>A Cache ID is a permanent record for a physical card, not just a post or listing.</Bullet>
-          <Bullet>
-            Registration, custody status changes and ownership transfers form the card’s history, which stays with the
-            card when it changes hands.
-          </Bullet>
-          <Bullet>
-            Removing an item from your collection doesn’t erase a registered card’s history. When account deletion
-            becomes available, it will explain what happens to your registry history before anything is deleted.
-          </Bullet>
-        </Card>
         <View style={styles.card}>
-          {['Delete Account', 'Freeze Account', 'Private Profile'].map((label, i) => (
+          <Pressable
+            onPress={() => router.push('/account/delete')}
+            style={({ pressed }) => [styles.navRow, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Delete Account"
+            accessibilityHint="Explains the 14-day recovery period before anything is scheduled">
+            <View style={styles.navRowText}>
+              <Text style={[styles.navRowTitle, styles.deleteText]}>Delete Account</Text>
+              <Text style={styles.navRowDetail}>Hidden right away, deleted after 14 days unless you cancel</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/account/export')}
+            style={({ pressed }) => [styles.navRow, styles.listRowBorder, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Download My Data">
+            <View style={styles.navRowText}>
+              <Text style={styles.navRowTitle}>Download My Data</Text>
+              <Text style={styles.navRowDetail}>A ZIP of your collections, items, photos and more</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+          </Pressable>
+          {['Freeze Account', 'Private Profile'].map((label) => (
             <View
               key={label}
-              style={[styles.navRow, i > 0 && styles.listRowBorder]}
+              style={[styles.navRow, styles.listRowBorder]}
               accessible
               accessibilityLabel={`${label}, not available yet`}>
               <Text style={[styles.navRowTitle, styles.disabledText, styles.flex]}>{label}</Text>
@@ -460,6 +463,7 @@ export default function DashboardScreen() {
               </View>
               <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
             </TouchableOpacity>
+            <AccountDeletionHealth />
           </>
         ) : null}
       </ScrollView>
@@ -468,6 +472,42 @@ export default function DashboardScreen() {
 }
 
 // ── Pieces ─────────────────────────────────────────────────────────────────
+
+// Admin-only: permanent account deletions that failed and need attention
+// (server: account_deletion_admin_summary, which checks admin membership
+// itself and returns no identities). Details are in the server logs.
+type DeletionSummary = { failed: number; in_progress: number; failure_codes: Record<string, number> };
+function AccountDeletionHealth() {
+  const [summary, setSummary] = useState<DeletionSummary | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    supabase.rpc('account_deletion_admin_summary').then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) setFailed(true);
+      else setSummary(data as DeletionSummary);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const attention = (summary?.failed ?? 0) > 0;
+  const detail = failed
+    ? 'Couldn’t load deletion status.'
+    : !summary
+      ? 'Checking…'
+      : attention
+        ? `${summary.failed} failed — ${Object.entries(summary.failure_codes).map(([code, n]) => `${code} (${n})`).join(', ')}. See server logs.`
+        : `No failed deletions${summary.in_progress ? ` · ${summary.in_progress} in progress` : ''}.`;
+  return (
+    <View style={[styles.adminRow, styles.adminRowSpaced]} accessible accessibilityLabel={`Account deletions. ${detail}`}>
+      <View style={styles.navRowText}>
+        <Text style={[styles.navRowTitle, attention && styles.deleteText]}>Account Deletions</Text>
+        <Text style={styles.navRowDetail}>{detail}</Text>
+      </View>
+    </View>
+  );
+}
 function SectionHeader({ icon, title }: { icon: IconName; title: string }) {
   return (
     <View style={styles.sectionHeader}>
@@ -713,9 +753,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginTop: 10,
   },
-  transfers: {
-    marginTop: -16,
-  },
   guideHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -802,6 +839,9 @@ const styles = StyleSheet.create({
   disabledText: {
     color: PV2.textTertiary,
   },
+  deleteText: {
+    color: PV2.statusNegative,
+  },
   email: {
     color: PV2.textPrimary,
     fontSize: 16,
@@ -838,6 +878,9 @@ const styles = StyleSheet.create({
     color: PV2.statusNegative,
     fontSize: 16,
     fontWeight: '600',
+  },
+  adminRowSpaced: {
+    marginTop: 10,
   },
   adminRow: {
     flexDirection: 'row',

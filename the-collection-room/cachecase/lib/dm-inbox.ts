@@ -156,6 +156,10 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
       const others = convOthersMap.get(convId) ?? [];
       const otherUserId = isGroup ? '' : (others[0] ?? '');
       const p = profileMap.get(otherUserId) ?? {};
+      // A direct conversation whose other participant no longer exists:
+      // their account was permanently deleted (the conversation is kept,
+      // read-only, with the survivor's own messages).
+      const counterpartDeleted = !isGroup && others.length === 0;
       const lastMsg = latestMsgMap.get(convId);
       const lastMessageAtServer = convLastAtMap.get(convId) ?? null;
       const lastRead = myLastReadMap.get(convId) ?? null;
@@ -173,9 +177,9 @@ export async function loadInbox(currentUserId: string, signal: AbortSignal): Pro
         lastMessageSenderName:
           isGroup && lastMsg && lastMsg.sender_id !== currentUserId ? nameOf(lastMsg.sender_id) : null,
         otherUserId,
-        otherUsername: p.username ?? 'user',
-        otherDisplayName: p.display_name ?? null,
-        otherAvatarUrl: p.avatar_url ?? null,
+        otherUsername: counterpartDeleted ? '' : (p.username ?? 'user'),
+        otherDisplayName: counterpartDeleted ? 'Deleted account' : (p.display_name ?? null),
+        otherAvatarUrl: counterpartDeleted ? null : (p.avatar_url ?? null),
         // Attachment-only messages have a NULL body (see lib/dm-attachments.ts).
         lastMessageBody: lastMsg ? messagePreviewText(lastMsg) : null,
         lastMessageAt: lastMsg?.created_at ?? convLastAtMap.get(convId) ?? new Date().toISOString(),

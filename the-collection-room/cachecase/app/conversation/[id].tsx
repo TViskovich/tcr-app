@@ -38,6 +38,7 @@ import { ItemPhotoViewerModal } from '@/components/item-detail/item-photo-viewer
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useConversationTyping } from '@/hooks/use-conversation-typing';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { accountErrorMessage } from '@/lib/account-errors';
 import { useAuth } from '@/lib/auth';
 import {
   type DmItemPreviewState,
@@ -166,6 +167,9 @@ export default function ConversationScreen() {
   // group, left, or it was deleted): the thread and composer give way to an
   // explanation.
   const [accessLost, setAccessLost] = useState(false);
+  // A send was refused because the conversation is read-only (the other
+  // account was permanently deleted after this screen loaded).
+  const [sendClosed, setSendClosed] = useState(false);
   // Display-only placeholder for the send currently in flight, so the
   // bubble can show "Sending…" before the INSERT returns. Never written to
   // `messages`/messagesRef — finalizeSentMessage still appends the durable
@@ -839,6 +843,18 @@ export default function ConversationScreen() {
           // retry rather than being discarded or guessed at.
           setPendingSend({ id: sendId, body, attachment });
           return 'pending';
+        case 'account':
+          // Account lifecycle: the other collector became unavailable (the
+          // conversation is no longer readable either) or this account is
+          // pending deletion — not committed; show the unavailable state.
+          if (result.reason === 'inactive') accountErrorMessage({ message: 'account_inactive' });
+          setNewMessage(body ?? '');
+          setPendingSend(null);
+          // The other account was permanently deleted: still readable,
+          // just read-only. Otherwise the conversation is unavailable.
+          if (result.reason === 'closed') setSendClosed(true);
+          else setAccessLost(true);
+          return 'failed';
         default:
           // absent / not_shareable / rejected — definitively not committed.
           setNewMessage(body ?? '');
@@ -1003,7 +1019,13 @@ export default function ConversationScreen() {
     }
   }
 
-  const displayTitle = isGroup && meta
+  // A direct conversation whose other participant no longer exists: their
+  // account was permanently deleted. Kept for the survivor, read-only.
+  const counterpartDeleted = sendClosed || (!!meta && meta.kind === 'direct' && !meta.members.some((m) => m.id !== currentUserId));
+
+  const displayTitle = counterpartDeleted
+    ? 'Deleted account'
+    : isGroup && meta
     ? groupTitle(meta.name, meta.members, currentUserId)
     : otherUser?.display_name ||
     otherUser?.username ||
@@ -1015,7 +1037,9 @@ export default function ConversationScreen() {
   // recently". @handle when the title is a distinct display name; otherwise
   // a plain context label.
   const knownUsername = otherUser?.username ?? (paramUsername ? String(paramUsername) : null);
-  const headerSubtitle = isGroup && meta
+  const headerSubtitle = counterpartDeleted
+    ? 'This account no longer exists'
+    : isGroup && meta
     ? `${meta.members.length} ${meta.members.length === 1 ? 'member' : 'members'}`
     : knownUsername && displayTitle !== knownUsername
       ? `@${knownUsername}`
@@ -1110,7 +1134,7 @@ export default function ConversationScreen() {
         <View style={styles.center}>
           <Text style={styles.unavailableTitle}>This conversation isn’t available</Text>
           <Text style={styles.unavailableBody}>
-            You may have left or been removed from it, or it no longer exists.
+            It may no longer exist, you may have left it, or someone in it isn’t available right now.
           </Text>
         </View>
       </View>
@@ -1279,6 +1303,13 @@ export default function ConversationScreen() {
               onPhotos={() => launchPhotoSource('library')}
             />
           ) : null}
+          {counterpartDeleted ? (
+            <View
+              style={[styles.readOnlyNotice, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
+              accessibilityRole="text">
+              <Text style={styles.readOnlyText}>This account has been deleted. You can read your messages, but can’t reply.</Text>
+            </View>
+          ) : (
           <ConversationComposer
           value={newMessage}
           onChangeText={(text) => {
@@ -1296,6 +1327,7 @@ export default function ConversationScreen() {
           attachActive={attachOpen}
           onInputFocus={() => setAttachOpen(false)}
         />
+          )}
         </View>
       </KeyboardAvoidingView>
 
@@ -1355,6 +1387,18 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
   },
   // Shown when the signed-in user can no longer see this conversation.
+  readOnlyNotice: {
+    paddingTop: 12,
+    paddingHorizontal: 20,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: PV2.dividerColor,
+  },
+  readOnlyText: {
+    color: PV2.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
   unavailableTitle: {
     fontSize: 17,
     fontWeight: '700',
