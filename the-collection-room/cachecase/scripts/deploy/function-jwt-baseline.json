@@ -1,0 +1,108 @@
+{
+  "description": "Intended gateway JWT verification (verify_jwt) for every Edge Function. Existing functions match production project izlrxenomerfeqhmlyre as audited read-only on 2026-11-03 (supabase functions list). Checked by scripts/deploy/check-function-jwt.mjs against supabase/config.toml (and, with --remote, against a hosted project). Change a value here only together with config.toml, after confirming the function authorizes its callers itself.",
+  "audited": "2026-11-03",
+  "functions": {
+    "get-collection-item-image-signed-url": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "anonymous viewers of public folders; checks any session itself"
+    },
+    "get-folder-cover-signed-url": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "anonymous viewers of public folders; checks any session itself"
+    },
+    "get-public-registry-card": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "public registry card page"
+    },
+    "get-registry-snapshot-image-url": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "anonymous viewers; checks any session itself"
+    },
+    "join-waitlist": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "website sign-up, no account"
+    },
+    "redeem-waitlist-invite": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "pre-sign-up invite redemption"
+    },
+    "validate-waitlist-invite": {
+      "verify_jwt": false,
+      "deployed": true,
+      "why": "pre-sign-up invite check"
+    },
+    "backfill-share-snapshots": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "cleanup-share-snapshots": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "copy-post-photo-to-share-snapshots": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "copy-registry-snapshot-image": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "copy-share-snapshot-image": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "create-snapshot-post": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "delete-post": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "grant-waitlist-access": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "list-waitlist-signups": {
+      "verify_jwt": true,
+      "deployed": true
+    },
+    "account-maintenance": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "called by pg_cron/pg_net with ACCOUNT_MAINTENANCE_SECRET (not a JWT); checks it itself"
+    },
+    "account-monitor": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "called by pg_cron/pg_net and operators with ACCOUNT_MAINTENANCE_SECRET; checks it itself"
+    },
+    "account-deletion-status": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "callers' accounts and sessions are gone; requires a single-purpose status capability on every request, answers processing/completed/failed only"
+    },
+    "account-deletion": {
+      "verify_jwt": true,
+      "deployed": false,
+      "why": "signed-in callers only; signed-out completion is confirmed through account-deletion-status"
+    },
+    "account-export": {
+      "verify_jwt": true,
+      "deployed": false,
+      "note": "the maintenance worker calls action sweep with the service role key; with verify_jwt = true that key must be a JWT (legacy API keys enabled) — verify in §3."
+    }
+  },
+  "production_only": {
+    "testflight-feedback-webhook": {
+      "verify_jwt": false,
+      "why": "deployed outside this repo; never deploy with --prune, which would delete it"
+    }
+  }
+}

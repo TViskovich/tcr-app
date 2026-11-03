@@ -25,6 +25,11 @@ const COPY: Record<DeletionNotice['state'], { title: string; body: string; done:
     body: 'Something stopped your account deletion from finishing. Our team can see this and will finish it. Until then your account stays hidden from everyone.',
     done: true,
   },
+  unconfirmed: {
+    title: 'We couldn’t confirm your deletion',
+    body: 'This device can no longer check on your account deletion. Once started, permanent deletion continues on our side and can’t be undone.',
+    done: true,
+  },
   unknown: {
     title: 'Checking your account deletion…',
     body: 'We couldn’t confirm its status yet. We’ll keep checking.',
@@ -42,7 +47,7 @@ export function DeletionNoticeScreen({ notice }: { notice: DeletionNotice }) {
         {copy.title}
       </Text>
       <Text style={styles.body}>{copy.body}</Text>
-      {notice.state === 'failed' ? (
+      {notice.state === 'failed' || notice.state === 'unconfirmed' ? (
         <SupportEmailLine prefix="Questions? Contact" subject="CacheCase account deletion" style={styles.body} />
       ) : null}
       {copy.done ? (

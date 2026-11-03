@@ -1,10 +1,9 @@
 // Account deletion — Dashboard Milestone 2, Checkpoints 2 and 4.
 //
-//   POST { action: 'status' }
+//   POST { action: 'status', want_status_token?: true }
 //   POST { action: 'schedule', confirmation: 'DELETE' }     14-day recovery window
 //   POST { action: 'cancel' }
 //   POST { action: 'delete_now', confirmation: 'DELETE' }   permanent, no recovery window
-//   POST { action: 'job_status', job_id }                   after the account is gone
 //
 // The collector is ALWAYS the owner of the verified access token — no user
 // id is ever read from the request. State changes go through the
@@ -23,15 +22,19 @@
 //   repeat (an active account reports restored: false).
 // status: the collector's own state and exact scheduled time; while the
 //   account is being deleted, the deletion job's progress; and whether
-//   Delete Now is available (the deletion worker is configured).
+//   Delete Now is available (the deletion worker is configured). While
+//   deleting, want_status_token: true issues a new status capability (an app
+//   that lost the Delete Now answer, or no longer holds one).
 // delete_now: recent sign-in + the typed word; refused when the deletion
 //   worker or its scheduler isn't configured and active, so an account is never left in 'deleting' with
 //   nothing to finish it. Moves the account to 'deleting' (cancellation
-//   impossible from then on), queues the job and asks the worker to start.
-//   Repeating it returns the same job.
-// job_status: { state: in_progress | completed | failed } for a job id the
-//   app received — the only way to confirm completion once the account (and
-//   its session) no longer exist. Reveals nothing else.
+//   impossible from then on), queues the job, issues a status capability
+//   and only then asks the worker to start. Repeating it returns the same
+//   job (and a new capability).
+// Status capability (status_token): a random single-purpose secret the app
+//   keeps to learn the outcome once the account and its session are gone —
+//   accepted only by account-deletion-status, which answers processing /
+//   completed / failed. Only its SHA-256 is stored; it can't change anything.
 //
 // Responses are { status: 'ok', … } or { status: 'failed', reason } with a
 // controlled reason — never a raw database or auth error.
@@ -52,7 +55,26 @@ const MAINTENANCE_SECRET = (() => {
 })();
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const KICK_AFTER_MS = 20_000;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// A new status capability for the caller's latest deletion job: 32 random
+// bytes (base64url) returned once; only the SHA-256 is stored.
+async function issueStatusToken(
+  client: ReturnType<typeof serviceRoleClient>,
+  userId: string,
+): Promise<{ status_token: string; status_token_expires_at: string } | null> {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+  const { data, error } = await client.rpc('account_deletion_issue_status_token', {
+    p_user_id: userId,
+    p_token_hash: `\\x${[...digest].map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+  });
+  if (error || !data) {
+    if (error) console.error(JSON.stringify({ fn: 'account-deletion', outcome: 'status_token_failed', db_code: error.code }));
+    return null;
+  }
+  return { status_token: token, status_token_expires_at: data as string };
+}
 
 type JobRow = { id: string; status: string; objects_total: number | null; objects_deleted: number; updated_at: string };
 
@@ -91,26 +113,18 @@ Deno.serve(async (req: Request) => {
   if (preflight) return preflight;
   if (req.method !== 'POST') return failed('method_not_allowed', 405);
 
-  let body: { action?: unknown; confirmation?: unknown; job_id?: unknown };
+  let body: { action?: unknown; confirmation?: unknown; want_status_token?: unknown };
   try {
     body = await req.json();
   } catch {
     return failed('invalid_body', 400);
   }
   const action = body.action;
-  if (!['status', 'schedule', 'cancel', 'delete_now', 'job_status'].includes(action as string)) {
+  if (!['status', 'schedule', 'cancel', 'delete_now'].includes(action as string)) {
     return failed('invalid_action', 400);
   }
 
   const client = serviceRoleClient();
-
-  if (action === 'job_status') {
-    if (typeof body.job_id !== 'string' || !UUID_RE.test(body.job_id)) return failed('invalid_job', 400);
-    const { data } = await client.from('account_deletion_jobs').select('status').eq('id', body.job_id).maybeSingle();
-    const status = (data as { status?: string } | null)?.status;
-    const state = !status ? 'unknown' : status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'in_progress';
-    return jsonResponse({ status: 'ok', state }, 200);
-  }
 
   const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim() ?? '';
   if (!token) return failed('invalid_token', 401);
@@ -152,11 +166,15 @@ Deno.serve(async (req: Request) => {
     const current = await readState();
     if (!current) return failed('server_error', 500);
     let job: JobRow | null = null;
+    let capability: Awaited<ReturnType<typeof issueStatusToken>> = null;
     if (current.row?.state === 'deleting') {
       job = await latestJob();
       if (job && job.status !== 'completed' && Date.now() - Date.parse(job.updated_at) > KICK_AFTER_MS) kickWorker(job.id);
+      if (job && body.want_status_token === true) capability = await issueStatusToken(client, userId);
     }
-    return jsonResponse({ status: 'ok', ...describe(current.row), job: publicJob(job), delete_now_available: await deletionAvailable() }, 200);
+    return jsonResponse({
+      status: 'ok', ...describe(current.row), job: publicJob(job), delete_now_available: await deletionAvailable(), ...(capability ?? {}),
+    }, 200);
   }
 
   if (action === 'delete_now') {
@@ -171,10 +189,13 @@ Deno.serve(async (req: Request) => {
       return failed('server_error', 500);
     }
     const job = data as JobRow;
+    // Issued before the worker starts, so it exists before the account can
+    // disappear. If it can't be issued, the app asks again via status.
+    const capability = await issueStatusToken(client, userId);
     kickWorker(job.id);
     console.log(JSON.stringify({ fn: 'account-deletion', action, outcome: 'deleting', job_id: job.id }));
     const after = await readState();
-    return jsonResponse({ status: 'ok', ...describe(after?.row ?? null), job: publicJob(job) }, 200);
+    return jsonResponse({ status: 'ok', ...describe(after?.row ?? null), job: publicJob(job), ...(capability ?? {}) }, 200);
   }
 
   if (action === 'cancel') {

@@ -414,12 +414,84 @@ enabled = true
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
 
+# ── Edge Function gateway JWT verification ─────────────────────────────────
+# EVERY function is listed explicitly. `supabase functions deploy` uses these
+# values and silently defaults an unlisted function to verify_jwt = true —
+# which would switch the check ON for production functions that must accept
+# callers without a session. The production baseline (audited 2026-11-03) is
+# scripts/deploy/function-jwt-baseline.json; `npm run check:function-jwt`
+# fails on any difference, and `-- --remote <ref>` compares a hosted project.
+#
+# verify_jwt = false: the function authorizes every request itself.
+
 # Account maintenance worker (pg_cron → pg_net). It authenticates its caller
-# itself with ACCOUNT_MAINTENANCE_SECRET (constant-time compare), so the
-# gateway JWT check is off for these two functions only.
+# itself with ACCOUNT_MAINTENANCE_SECRET (constant-time compare).
 [functions.account-maintenance]
 verify_jwt = false
 
 # Account deletion monitoring alerts (pg_cron → pg_net), same secret.
 [functions.account-monitor]
 verify_jwt = false
+
+# Production baseline: these accept anonymous / pre-sign-up callers (the app
+# sends a publishable key, not a JWT) and check any session themselves.
+[functions.get-collection-item-image-signed-url]
+verify_jwt = false
+
+[functions.get-folder-cover-signed-url]
+verify_jwt = false
+
+[functions.get-public-registry-card]
+verify_jwt = false
+
+[functions.get-registry-snapshot-image-url]
+verify_jwt = false
+
+[functions.join-waitlist]
+verify_jwt = false
+
+[functions.redeem-waitlist-invite]
+verify_jwt = false
+
+[functions.validate-waitlist-invite]
+verify_jwt = false
+
+# Production baseline: signed-in callers only.
+[functions.backfill-share-snapshots]
+verify_jwt = true
+
+[functions.cleanup-share-snapshots]
+verify_jwt = true
+
+[functions.copy-post-photo-to-share-snapshots]
+verify_jwt = true
+
+[functions.copy-registry-snapshot-image]
+verify_jwt = true
+
+[functions.copy-share-snapshot-image]
+verify_jwt = true
+
+[functions.create-snapshot-post]
+verify_jwt = true
+
+[functions.delete-post]
+verify_jwt = true
+
+[functions.grant-waitlist-access]
+verify_jwt = true
+
+[functions.list-waitlist-signups]
+verify_jwt = true
+
+# Signed-out deletion status (new). Its callers' accounts and sessions are
+# gone; the single-purpose status capability is checked on every request.
+[functions.account-deletion-status]
+verify_jwt = false
+
+# New in this release (not yet deployed). Signed-in callers only.
+[functions.account-deletion]
+verify_jwt = true
+
+[functions.account-export]
+verify_jwt = true

@@ -182,6 +182,52 @@ async function scenario(p, A, A2, B) {
   check('no failure message was shown', !(await bodyHas(p.A2, 'Couldn’t reach CacheCase')) && !(await bodyHas(p.A2, 'Something went wrong')));
   await p.A2.fakeRequests([]);
 
+  step('1c. Signed-out confirmation with the status capability, across a relaunch');
+  // The lost Delete Now answer carried A2's status capability; the app must
+  // have asked for a new one while still signed in.
+  const stored = async () => JSON.parse(await p.A2.eval(`JSON.stringify({ cap: localStorage.getItem('cachecase.account-deletion-status'), legacy: localStorage.getItem('cachecase.account-deletion-job') })`));
+  await eventually('this device holds a status capability (not a job id)', p.A2, async () => {
+    const s = await stored();
+    return !!s.cap && /^[A-Za-z0-9_-]{43}$/.test(JSON.parse(s.cap).token) && s.legacy === null;
+  }, 30000);
+  const a2Job = async () => (await admin.from('account_deletion_jobs').select('status').eq('user_id', A2.id).maybeSingle()).data?.status;
+  for (let i = 0; i < 90 && (await a2Job()) !== 'completed'; i++) await sleep(1000);
+  check('A2’s deletion completes on the server', (await a2Job()) === 'completed');
+  await eventually('signed out, the app confirms completion with the capability', p.A2, () => bodyHas(p.A2, 'Your account has been deleted'), 60000);
+  await p.A2.fakeRequests([]); // record requests from here on
+  // Close and reopen the app: a full reload, nothing in memory survives.
+  await p.A2.goto(`${APP}/login`);
+  await eventually('after a relaunch the final notice is shown again', p.A2, () => bodyHas(p.A2, 'Your account has been deleted'), 30000);
+  const urls = p.A2.requestUrls.filter((u) => u.includes('/functions/v1/'));
+  check('…read from account-deletion-status, never from account-deletion', urls.some((u) => u.includes('/functions/v1/account-deletion-status'))
+    && !urls.some((u) => /\/functions\/v1\/account-deletion(\?|$)/.test(u)), urls);
+  // Backgrounding: coming back to the foreground checks at once.
+  await p.A2.fakeRequests([{ match: /\/functions\/v1\/account-deletion-status/, status: 200, body: { status: 'ok', state: 'processing' } }]);
+  await p.A2.goto(`${APP}/login`);
+  await eventually('a deletion still running reads "being deleted"', p.A2, () => bodyHas(p.A2, 'Your account is being deleted'), 30000);
+  const before = p.A2.fakedUrls.length;
+  await p.A2.eval(`(() => { const set = (v) => Object.defineProperty(document, 'visibilityState', { value: v, configurable: true });
+    set('hidden'); document.dispatchEvent(new Event('visibilitychange')); set('visible'); document.dispatchEvent(new Event('visibilitychange')); })()`);
+  await sleep(1200);
+  check('returning to the foreground checks again straight away (before the next poll)', p.A2.fakedUrls.length > before, { before, after: p.A2.fakedUrls.length });
+  // A failed deletion, and a capability the server no longer accepts.
+  await p.A2.fakeRequests([{ match: /\/functions\/v1\/account-deletion-status/, status: 200, body: { status: 'ok', state: 'failed' } }]);
+  await p.A2.goto(`${APP}/login`);
+  await eventually('failed: "Deletion isn’t finished yet", with support', p.A2, async () => (await bodyHas(p.A2, 'Deletion isn’t finished yet'))
+    && (await bodyHas(p.A2, 'info@cachecase.com')), 30000);
+  await p.A2.fakeRequests([{ match: /\/functions\/v1\/account-deletion-status/, status: 401, body: { status: 'failed', reason: 'invalid_capability' } }]);
+  await p.A2.goto(`${APP}/login`);
+  await eventually('an expired or revoked capability: "We couldn’t confirm your deletion" (never "deleted")', p.A2, async () =>
+    (await bodyHas(p.A2, 'We couldn’t confirm your deletion')) && !(await bodyHas(p.A2, 'Your account has been deleted')), 30000);
+  await p.A2.fakeRequests([]);
+  await p.A2.goto(`${APP}/login`);
+  await eventually('back to the real answer: deleted', p.A2, () => bodyHas(p.A2, 'Your account has been deleted'), 30000);
+  await tapLabel(p.A2, 'OK');
+  await eventually('OK forgets the capability', p.A2, async () => (await stored()).cap === null);
+  await p.A2.goto(`${APP}/login`);
+  await sleep(1500);
+  check('with no capability, no deletion notice is shown', !(await bodyHas(p.A2, 'Your account has been deleted')) && !(await bodyHas(p.A2, 'being deleted')));
+
   step('2. A chooses Delete Permanently Now');
   await p.A.goto(`${APP}/dashboard`);
   await tapLabel(p.A, 'Delete Account');

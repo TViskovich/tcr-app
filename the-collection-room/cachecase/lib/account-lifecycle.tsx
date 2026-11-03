@@ -44,8 +44,10 @@ export type DeleteNowFailure = ScheduleFailure | 'deletion_unavailable';
 // sees it. Completion is only ever taken from the server.
 export type DeletionJob = { id: string; status: string; objects_total: number | null; objects_deleted: number };
 // Shown after the account (and its session) is gone: the job's outcome,
-// read by job id. 'completed' only when the server says so.
-export type DeletionNotice = { jobId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown' };
+// read with this device's status capability. 'completed' only when the
+// server says so; 'unconfirmed' when the capability is no longer accepted
+// (expired or revoked), so this device can't learn the outcome any more.
+export type DeletionNotice = { state: 'in_progress' | 'completed' | 'failed' | 'unconfirmed' | 'unknown' };
 
 type ContextValue = Snapshot & {
   refresh: () => Promise<void>;
@@ -66,9 +68,16 @@ const UNKNOWN: Snapshot = { status: 'unknown', scheduledFor: null, requestedAt: 
 const UNKNOWN_RETRY_MS = 5000;
 const DELETION_POLL_MS = 4000;
 const cacheKey = (userId: string) => `cachecase.account-lifecycle.${userId}`;
-// Device-wide: the permanent-deletion job started from this device, so its
-// outcome can still be shown after the account and session are gone.
-const DELETION_JOB_KEY = 'cachecase.account-deletion-job';
+// Device-wide: the status capability for the permanent deletion started from
+// this device (server: account-deletion issues it; account-deletion-status
+// accepts it), so the outcome can still be shown after the account and
+// session are gone — including after the app is closed and reopened. It can
+// only read processing / completed / failed.
+const DELETION_STATUS_KEY = 'cachecase.account-deletion-status';
+// Before status capabilities: a bare job id. Removed on sight.
+const LEGACY_DELETION_JOB_KEY = 'cachecase.account-deletion-job';
+type StatusCapability = { token: string; expiresAt: string };
+type StatusPayload = { status_token?: string; status_token_expires_at?: string };
 
 const AccountLifecycleContext = createContext<ContextValue>({
   ...ACTIVE,
@@ -83,10 +92,28 @@ const AccountLifecycleContext = createContext<ContextValue>({
   dismissDeletionNotice: () => {},
 });
 
-async function rememberDeletionJob(jobId: string) {
+// Stores a capability the server just issued; returns whether one was stored.
+async function rememberStatusCapability(payload: StatusPayload | null | undefined): Promise<boolean> {
+  if (!payload?.status_token || !payload.status_token_expires_at) return false;
+  const capability: StatusCapability = { token: payload.status_token, expiresAt: payload.status_token_expires_at };
   try {
-    await AsyncStorage.setItem(DELETION_JOB_KEY, jobId);
-  } catch {}
+    await AsyncStorage.setItem(DELETION_STATUS_KEY, JSON.stringify(capability));
+    await AsyncStorage.removeItem(LEGACY_DELETION_JOB_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readStatusCapability(): Promise<StatusCapability | null> {
+  try {
+    void AsyncStorage.removeItem(LEGACY_DELETION_JOB_KEY);
+    const raw = await AsyncStorage.getItem(DELETION_STATUS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StatusCapability;
+    return typeof parsed?.token === 'string' && typeof parsed.expiresAt === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 type RemoteRow = { state: 'pending_deletion' | 'deleting'; scheduled_for: string | null; requested_at: string | null };
@@ -235,24 +262,26 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
   // Server-side status: Delete Now availability and, while deleting, the
   // job's progress.
   const loadDeletionInfo = useCallback(async () => {
-    const result = await invokeEdge<{ delete_now_available?: boolean; job?: DeletionJob | null; state?: string }>('account-deletion', {
+    // While deleting, make sure this device holds a status capability (the
+    // Delete Now answer may have been lost, or the app reinstalled).
+    const wantToken = deletingRef.current && !(await readStatusCapability());
+    const result = await invokeEdge<{ delete_now_available?: boolean; job?: DeletionJob | null; state?: string } & StatusPayload>('account-deletion', {
       action: 'status',
+      ...(wantToken ? { want_status_token: true } : {}),
     });
     if (!result.ok) {
       if (result.reason === 'unavailable') setDeleteNowAvailable(false);
       // While deleting, a token that no longer verifies means the account
-      // is gone: sign out on this device; the outcome is then confirmed by
-      // job id (deletionNotice), never assumed.
+      // is gone: sign out on this device; the outcome is then confirmed with
+      // the status capability (deletionNotice), never assumed.
       if (result.reason === 'invalid_token' && deletingRef.current) {
         await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
       }
       return;
     }
     setDeleteNowAvailable(result.data.delete_now_available === true);
-    if (result.data.job) {
-      setDeletionJob(result.data.job);
-      void rememberDeletionJob(result.data.job.id);
-    }
+    if (result.data.job) setDeletionJob(result.data.job);
+    await rememberStatusCapability(result.data);
   }, []);
 
   const deleteNow = useCallback<ContextValue['deleteNow']>(
@@ -261,7 +290,7 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
       if (!forUser || !email) return { ok: false, reason: 'session_expired' };
       const signedIn = await confirmPassword(email, password);
       if (signedIn !== 'ok') return { ok: false, reason: signedIn };
-      const result = await invokeEdgeWithFreshSession<{ job?: DeletionJob }>('account-deletion', { action: 'delete_now', confirmation });
+      const result = await invokeEdgeWithFreshSession<{ job?: DeletionJob } & StatusPayload>('account-deletion', { action: 'delete_now', confirmation });
       if (!result.ok) {
         const known: DeleteNowFailure[] = ['reauthentication_required', 'confirmation_required', 'session_expired', 'network', 'deletion_unavailable'];
         if (result.reason === 'deletion_unavailable') setDeleteNowAvailable(false);
@@ -270,22 +299,23 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
         // came back: ask before reporting a failure, so a deletion that did
         // start is followed, never shown as "not started".
         if (reason === 'network' || reason === 'server') {
-          const check = await invokeEdge<{ state?: string; job?: DeletionJob | null }>('account-deletion', { action: 'status' });
+          // want_status_token: the lost answer carried this device's status
+          // capability, so ask for a new one.
+          const check = await invokeEdge<{ state?: string; job?: DeletionJob | null } & StatusPayload>('account-deletion', {
+            action: 'status',
+            want_status_token: true,
+          });
           if (check.ok && check.data.state === 'deleting') {
-            if (check.data.job) {
-              setDeletionJob(check.data.job);
-              await rememberDeletionJob(check.data.job.id);
-            }
+            if (check.data.job) setDeletionJob(check.data.job);
+            await rememberStatusCapability(check.data);
             commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null });
             return { ok: true };
           }
         }
         return { ok: false, reason };
       }
-      if (result.data.job) {
-        setDeletionJob(result.data.job);
-        await rememberDeletionJob(result.data.job.id);
-      }
+      if (result.data.job) setDeletionJob(result.data.job);
+      await rememberStatusCapability(result.data);
       commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null });
       return { ok: true };
     },
@@ -313,33 +343,62 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
   }, [deleting, loadDeletionInfo]);
 
   // Signed out (the account is gone, or the collector signed out while it
-  // was being deleted): show the outcome of the job started on this device.
+  // was being deleted): show the outcome of the deletion started on this
+  // device, read with its status capability. Runs again on every launch and
+  // when the app returns to the foreground, until the outcome is final.
   useEffect(() => {
     if (userId) return;
     let stopped = false;
+    let running = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = (ms: number) => {
+      if (timer) clearTimeout(timer);
+      if (!stopped) timer = setTimeout(() => void check(), ms);
+    };
     const check = async () => {
-      let jobId: string | null = null;
+      if (stopped || running) return;
+      running = true;
       try {
-        jobId = await AsyncStorage.getItem(DELETION_JOB_KEY);
-      } catch {}
-      if (stopped || !jobId) return;
-      const result = await invokeEdge<{ state: DeletionNotice['state'] }>('account-deletion', { action: 'job_status', job_id: jobId });
-      if (stopped) return;
-      const state = result.ok ? result.data.state : 'unknown';
-      setDeletionNotice({ jobId, state });
-      if (state !== 'completed') timer = setTimeout(check, DELETION_POLL_MS);
+        const capability = await readStatusCapability();
+        if (stopped || !capability) return;
+        if (Date.parse(capability.expiresAt) <= Date.now()) {
+          setDeletionNotice({ state: 'unconfirmed' });
+          return;
+        }
+        const result = await invokeEdge<{ state: 'processing' | 'completed' | 'failed' }>('account-deletion-status', { token: capability.token });
+        if (stopped) return;
+        if (result.ok) {
+          const state = result.data.state === 'processing' ? 'in_progress' : result.data.state;
+          setDeletionNotice({ state });
+          if (state !== 'completed') schedule(DELETION_POLL_MS);
+        } else if (result.reason === 'invalid_capability') {
+          setDeletionNotice({ state: 'unconfirmed' });
+        } else {
+          // Offline, rate limited or a server error: keep what's shown and
+          // look again shortly (the poll interval is above the server's
+          // per-capability limit).
+          setDeletionNotice((prev) => prev ?? { state: 'unknown' });
+          schedule(DELETION_POLL_MS);
+        }
+      } finally {
+        running = false;
+      }
     };
     void check();
+    const foreground = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void check();
+    });
     return () => {
       stopped = true;
+      foreground.remove();
       if (timer) clearTimeout(timer);
     };
   }, [userId]);
 
   const dismissDeletionNotice = useCallback(() => {
     setDeletionNotice(null);
-    void AsyncStorage.removeItem(DELETION_JOB_KEY).catch(() => {});
+    void AsyncStorage.removeItem(DELETION_STATUS_KEY).catch(() => {});
+    void AsyncStorage.removeItem(LEGACY_DELETION_JOB_KEY).catch(() => {});
   }, []);
 
   const value = useMemo<ContextValue>(

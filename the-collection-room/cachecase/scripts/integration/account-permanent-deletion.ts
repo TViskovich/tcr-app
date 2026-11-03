@@ -193,8 +193,8 @@ async function main() {
   check('…and nothing started', (await jobOf(A.id)) === null);
   const spoof = await fn('account-deletion', { action: 'status', user_id: A.id }, B.token);
   check('a supplied user_id is ignored (B sees B’s own state)', spoof.json?.state === 'active' && spoof.json?.job === null);
-  check('job_status rejects malformed ids', (await fn('account-deletion', { action: 'job_status', job_id: 'x' }, null)).status === 400);
-  check('job_status of an unknown job says unknown', (await fn('account-deletion', { action: 'job_status', job_id: randomUUID() }, null)).json?.state === 'unknown');
+  check('the old job-id lookup is gone (no status by job id)', (await fn('account-deletion', { action: 'job_status', job_id: randomUUID() }, B.token)).json?.reason === 'invalid_action');
+  check('signed-out status needs a capability', (await fn('account-deletion-status', {}, null)).status === 401);
 
   step('2. Delete Now');
   const exportFiles = await listAll('account-exports', A.id);
@@ -216,6 +216,8 @@ async function main() {
   const del = await fn('account-deletion', { action: 'delete_now', confirmation: 'DELETE' }, A.token);
   check('accepted: the account is deleting, with a job', del.json?.state === 'deleting' && typeof del.json?.job?.id === 'string', del.json);
   const jobId = del.json?.job?.id as string;
+  const aStatusToken = del.json?.status_token as string;
+  check('Delete Now issues a status capability', /^[A-Za-z0-9_-]{43}$/.test(aStatusToken ?? ''), del.json);
   const again = await fn('account-deletion', { action: 'delete_now', confirmation: 'DELETE' }, A.token);
   check('repeating returns the same job', again.json?.job?.id === jobId, again.json);
   const cancel = await fn('account-deletion', { action: 'cancel' }, A.token);
@@ -260,7 +262,7 @@ async function main() {
   step('5. A is gone; others are intact');
   const { data: gone } = await admin.auth.admin.getUserById(A.id);
   check('A’s auth account is gone', !gone?.user);
-  check('job_status reports completed for the app', (await fn('account-deletion', { action: 'job_status', job_id: jobId }, null)).json?.state === 'completed');
+  check('the status capability reports completed for the app', (await fn('account-deletion-status', { token: aStatusToken }, null)).json?.state === 'completed');
   check('A’s own files are all removed', (await listAll('item-images', A.id)).length === 0 && (await listAll('avatars', A.id)).length === 0
     && (await listAll('account-exports', A.id)).length === 0);
   check('the copy of A’s photo in B’s post is removed', !(await listAll('share-snapshots', B.id)).includes(snapPath));
@@ -311,9 +313,11 @@ async function main() {
   await signIn(G);
   storageDown();
   let gJob = '';
+  let gStatusToken = '';
   try {
     const gDel = await fn('account-deletion', { action: 'delete_now', confirmation: 'DELETE' }, G.token);
     gJob = gDel.json?.job?.id as string;
+    gStatusToken = gDel.json?.status_token as string;
     // Wait for the triggered run to fail and release its lease; never
     // override a live lease.
     for (let i = 0; i < 120; i++) {
@@ -329,7 +333,7 @@ async function main() {
   const failedJob = (await admin.from('account_deletion_jobs').select('*').eq('id', gJob).single()).data;
   check('after repeated failures the job is failed — never reported as deleted', failedJob?.status === 'failed' && !!failedJob?.last_error_code, failedJob);
   check('G’s account still exists (nothing half-reported)', !!(await admin.auth.admin.getUserById(G.id)).data?.user);
-  check('job_status says failed', (await fn('account-deletion', { action: 'job_status', job_id: gJob }, null)).json?.state === 'failed');
+  check('the status capability says failed', (await fn('account-deletion-status', { token: gStatusToken }, null)).json?.state === 'failed');
   must(await admin.from('admin_users').insert({ user_id: C.id }), 'admin');
   const summary = await C.db.rpc('account_deletion_admin_summary');
   check('the admin indicator shows the failure without identities', (summary.data as any)?.failed >= 1 && !JSON.stringify(summary.data).includes(G.id), summary);

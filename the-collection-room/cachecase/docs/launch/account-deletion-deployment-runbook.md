@@ -33,6 +33,7 @@ The order guarantees that no scheduled or user-triggered deletion can run before
 | 0.4 | Pending migrations | `supabase migration list --linked` | The only remote-missing entries are the expected ones (see step 2). |
 | 0.5 | Schema preconditions | SQL editor, read-only queries below | All return the expected result. |
 | 0.6 | Direct conversations with fewer than 2 participants | Query below | Note the count. These become read-only "Deleted account" threads after migration. Expected: 0. |
+| 0.7 | Edge Function JWT settings | `npm run check:function-jwt -- --remote <ref>` (read-only) | `OK`: config.toml, the baseline and the hosted settings agree. Any `✗` line is a stop. |
 
 ```sql
 -- 0.5 (expect: 1 row, 'posts_item_requires_image')
@@ -127,8 +128,20 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    - `20261107130000_lifecycle_query_performance` (adds 7 indexes; tables are small, brief locks)
    - `20261108120000_account_deletion_monitoring` (monitoring tables, the extended admin summary, and the `account-deletion-monitor` cron job, created **inactive**; it is activated in §7.1)
    - `20261109120000_account_monitoring_test_email` (the server-side rate limit for the §7.1 test email)
+   - `20261110120000_account_deletion_status_capability` (hashed, single-purpose status capabilities, so the app can confirm a completed deletion after sign-out; new private tables only)
 
-2. Apply:
+2. **Choose a quiet window.** Announce it, and have nobody else running SQL or long jobs.
+   - `20261103120000` adds a restrictive read guard and a write trigger to **every** `public` table in one transaction. It holds strong locks on all of them until it commits.
+   - `20261107130000` builds seven indexes without `CONCURRENTLY`, which blocks writes to `posts`, `likes`, `comments`, `messages`, `follows` and `notifications` while they build.
+   - At current size (19 MB, audited 2026-11-03) both take well under a second. But a long-running query on any table makes the migration wait for its lock, and every new query queues behind the migration. Before pushing, check that nothing is long-running:
+
+     ```sql
+     SELECT pid, now() - xact_start AS age, state, left(query, 60)
+     FROM pg_stat_activity WHERE xact_start < now() - interval '30 seconds' AND pid <> pg_backend_pid();
+     -- expect no rows (or only idle platform connections)
+     ```
+
+3. Apply:
 
    ```sh
    supabase db push --linked
@@ -138,7 +151,19 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    - A failure stops at that migration, with nothing from it applied.
    - **Never use `migration repair`.**
 
-3. **Verify:**
+   **The scheduler activation window:**
+   - `20261106140000` creates the `account-maintenance` cron job **active**, and the next migration, `20261107120000`, deactivates it. Between the two commits, the job is briefly active.
+   - It is harmless in a normal push: a tick in that moment finds no lifecycle rows and nothing to delete. At worst it calls an Edge Function that isn't deployed yet (a 404).
+   - **If the push fails after `20261106140000` and before `20261107120000` completes, the job stays active.** Deactivate it at once, then investigate the failure:
+
+     ```sql
+     SELECT cron.alter_job(job_id := jobid, active := false) FROM cron.job WHERE jobname = 'account-maintenance';
+     ```
+
+   - Fix the cause and re-run `supabase db push --linked`. Applied migrations are skipped and the rest apply in order.
+   - **Do not deploy functions (§3) until every migration is applied.**
+
+4. **Verify.** The cron check is mandatory: both jobs must be inactive before you go on.
 
    ```sql
    SELECT public.account_deletion_preflight();
@@ -146,6 +171,9 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    SELECT jobname, schedule, active FROM cron.job;
    -- expect: account-maintenance | */10 * * * * | f
    --         account-deletion-monitor | */15 * * * * | f
+   -- If either shows t, deactivate it now and do not continue until both are f:
+   --   SELECT cron.alter_job(job_id := jobid, active := false) FROM cron.job
+   --   WHERE jobname IN ('account-maintenance', 'account-deletion-monitor');
    SELECT count(*) FROM public.account_lifecycle;   -- expect 0
    SELECT count(*) FROM pg_policies
    WHERE policyname IN ('account_lifecycle_read_guard', 'account_lifecycle_conversation_guard');
@@ -153,21 +181,78 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
 
 **What is live from this moment (with no lifecycle rows, there is no visible change):**
 - **Lifecycle read and write guards.**
-- **The final-deletion trigger on `auth.users`.** Any user deleted from the Dashboard now also gets the retention policy applied, though not a username reservation.
+- **The final-deletion trigger on `auth.users`.** Deleting a user by hand (Dashboard → Authentication → Delete user, or `auth.admin.deleteUser`) now runs the account-retention steps in the same transaction:
+  - their registry cards are made private and marked `owner_account_deleted`, and the card photos' records are removed;
+  - pending transfers involving them are cancelled;
+  - copies of their items in other collectors' posts are removed, and those posts are left in place;
+  - their waitlist records are deleted;
+  - the usual cascades then remove the rest.
+
+  A manual deletion does **not** reserve the username, and it does **not** remove their Storage files. Only the deletion worker does that, from its manifest.
+  - **Don't delete collectors by hand.** Use the app's Delete Account flow, or an operator-started job, so files are removed and the username is reserved.
+  - If a manual deletion is ever unavoidable, remove their `item-images/<user id>/`, `avatars/<user id>/` and `share-snapshots/<user id>/` folders yourself afterwards.
 - **Fail-closed username reservations.** None exist yet.
 - **The read-only rule for direct conversations with one participant.**
 
 ## 3. Edge Functions — **APPROVAL**
 
-Deploy **all** functions: every one imports `_shared/registry-image.ts`, which changed.
+Deploy **all** functions: every one imports `_shared/registry-image.ts`, which changed. Only deploy after §2 has fully applied: the new `resolveCaller` reads `account_lifecycle` and fails closed without it.
 
-```sh
-supabase functions deploy --project-ref <ref>
-```
+1. **Check the JWT settings first.** The gateway JWT check (`verify_jwt`) comes from `supabase/config.toml`, and **the CLI defaults any function not listed there to `verify_jwt = true`**. It does not keep the hosted value. Every function is now listed explicitly. The production baseline, audited 2026-11-03, is `scripts/deploy/function-jwt-baseline.json`.
 
-- `account-maintenance` deploys with gateway JWT verification **off**, from `supabase/config.toml`. It checks its own secret in constant time.
-- `account-monitor` (alert delivery) also deploys with JWT verification **off**, and checks the same secret.
-- Confirm in Dashboard → Edge Functions that `account-maintenance` and `account-monitor` show **Verify JWT: off** and that every other function is unchanged (on, unless already configured otherwise).
+   ```sh
+   npm run check:function-jwt                                  # config.toml = baseline
+   npm run check:function-jwt -- --remote <ref>                # hosted = baseline (read-only)
+   ```
+
+   Both must print `OK`. Expected settings:
+
+   | Function | verify_jwt | Why |
+   |---|---|---|
+   | `get-collection-item-image-signed-url`, `get-folder-cover-signed-url`, `get-registry-snapshot-image-url` | **false** | Anonymous viewers of public content; any session is checked inside |
+   | `get-public-registry-card` | **false** | Public registry card page |
+   | `join-waitlist`, `validate-waitlist-invite`, `redeem-waitlist-invite` | **false** | Before sign-up, no session |
+   | `account-maintenance`, `account-monitor` (new) | **false** | Called with `ACCOUNT_MAINTENANCE_SECRET` (not a JWT), checked inside |
+   | `account-deletion-status` (new) | **false** | Its callers' accounts and sessions are gone; it requires a status capability on every request and answers processing / completed / failed only |
+   | `backfill-share-snapshots`, `cleanup-share-snapshots`, `copy-post-photo-to-share-snapshots`, `copy-registry-snapshot-image`, `copy-share-snapshot-image`, `create-snapshot-post`, `delete-post`, `grant-waitlist-access`, `list-waitlist-signups` | true | Signed-in callers |
+   | `account-deletion`, `account-export` (new) | true | Signed-in callers (see the notes below) |
+   | `testflight-feedback-webhook` | false (hosted) | **Production-only, not in this repo.** Never touched by this deploy. |
+
+2. **Deploy.** Run exactly this:
+
+   ```sh
+   supabase functions deploy --project-ref <ref>
+   ```
+
+   - **Never add `--prune`.** It deletes every hosted function that isn't in the repo, which includes the production-only `testflight-feedback-webhook`.
+   - Don't add `--no-verify-jwt` either. It applies to every function in the command and would turn the check off for all of them.
+
+3. **Verify the hosted settings straight after the deploy:**
+
+   ```sh
+   npm run check:function-jwt -- --remote <ref>
+   ```
+
+   - It must print `OK`, with no functions listed as "not deployed yet".
+   - Also compare Dashboard → Edge Functions against the table above. All 21 repo functions, plus `testflight-feedback-webhook`, must be present.
+   - Check that `account-deletion-status` refuses a request without a capability:
+
+     ```sh
+     curl -s -X POST https://<ref>.supabase.co/functions/v1/account-deletion-status \
+       -H "apikey: <publishable key>" -H 'Content-Type: application/json' -d '{}'
+     # expect 401 {"status":"failed","reason":"invalid_capability"}
+     ```
+   - **If any setting is wrong,** redeploy just that function with the right setting at once (for example `supabase functions deploy <name> --no-verify-jwt --project-ref <ref>` for a `false` function), then fix `config.toml` before any further deploy.
+
+4. **Notes on the new functions:**
+   - **Signed-out confirmation:** `account-deletion` stays signed-in only. It has no job-id lookup any more.
+     - Delete Now issues the app a **status capability** while the collector is still signed in. If that answer is lost, the app asks again with `status` and `want_status_token: true`.
+     - The capability is 32 random bytes, stored only as a SHA-256, bound to that collector's deletion job, valid 72 hours, with at most 5 live per job.
+     - After the Auth account is deleted, the app reads the outcome from `account-deletion-status` with that capability. It answers processing, completed or failed only.
+     - It can't schedule, cancel, restart or perform anything, and it reveals no ids or personal data.
+     - Rate limits: one check per capability every 2 s, and 20 failed checks per client per 10 minutes.
+     - Capabilities are purged with their job's records.
+   - `account-export`: the maintenance worker calls its `sweep` with the service role key. With `verify_jwt = true` that key must be a JWT, which means the legacy API keys must be enabled (Settings → API Keys). After §4, the worker's run must show `"exports":{"status":"ok"…}`. A 401 there means the legacy keys are disabled.
 
 **Version compatibility:**
 - The new functions need the step 2 schema. They must never be deployed before it.
