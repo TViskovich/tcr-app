@@ -84,6 +84,29 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
 
 5. **Do NOT set `ACCOUNT_RECENT_AUTH_SECONDS`.** It is a test-only override and can only shorten the 10-minute window.
 
+6. **Alert delivery (monitoring, §7).** Configure at least one channel. With none, alerts are only logged and shown to admins in the Dashboard.
+   - **Email, through the existing Resend account:**
+
+     ```sh
+     supabase secrets set ACCOUNT_ALERT_EMAIL_TO='<ops address>[,<second address>]' --project-ref <ref>   # up to 5
+     supabase secrets set ACCOUNT_ALERT_FROM_EMAIL='<verified sender>' --project-ref <ref>              # optional
+     ```
+
+     - `RESEND_API_KEY` is already set for the waitlist.
+     - Without `ACCOUNT_ALERT_FROM_EMAIL`, alerts are sent from `WAITLIST_FROM_EMAIL`.
+     - The sender's domain must be verified in Resend.
+   - **Webhook** (optional; for example a Slack incoming webhook or your own endpoint):
+
+     ```sh
+     supabase secrets set ACCOUNT_ALERT_WEBHOOK_URL='https://…' --project-ref <ref>
+     supabase secrets set ACCOUNT_ALERT_WEBHOOK_SECRET="$(openssl rand -hex 32)" --project-ref <ref>   # optional: signs the body
+     ```
+
+     - The URL must use https.
+     - With a secret, each request carries `X-CacheCase-Signature: sha256=<HMAC-SHA256 of the body>`.
+   - **Label** (optional): `supabase secrets set ACCOUNT_ALERT_ENVIRONMENT=production --project-ref <ref>` adds the label to the subject line.
+   - Alerts are sent through the same Vault values as the scheduler (`project_url`, `account_maintenance_secret`). Nothing extra is needed in Vault.
+
 ## 2. Database migrations (forward-only) — **APPROVAL**
 
 1. Dry run, and confirm the list:
@@ -101,6 +124,7 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    - `20261106140000_account_maintenance_schedule` (enables `pg_cron` and `pg_net`; creates the job)
    - `20261107120000_account_deletion_launch_hardening` (deactivates the job)
    - `20261107130000_lifecycle_query_performance` (adds 7 indexes; tables are small, brief locks)
+   - `20261108120000_account_deletion_monitoring` (monitoring tables, the extended admin summary, and the `account-deletion-monitor` cron job, created **inactive**; it is activated in §7.1)
 
 2. Apply:
 
@@ -119,6 +143,7 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    -- expect {"ready": false, "scheduler_configured": false, "username_key_configured": true}
    SELECT jobname, schedule, active FROM cron.job;
    -- expect: account-maintenance | */10 * * * * | f
+   --         account-deletion-monitor | */15 * * * * | f
    SELECT count(*) FROM public.account_lifecycle;   -- expect 0
    SELECT count(*) FROM pg_policies
    WHERE policyname IN ('account_lifecycle_read_guard', 'account_lifecycle_conversation_guard');
@@ -139,7 +164,8 @@ supabase functions deploy --project-ref <ref>
 ```
 
 - `account-maintenance` deploys with gateway JWT verification **off**, from `supabase/config.toml`. It checks its own secret in constant time.
-- Confirm in Dashboard → Edge Functions that `account-maintenance` shows **Verify JWT: off** and that every other function is unchanged (on, unless already configured otherwise).
+- `account-monitor` (alert delivery) also deploys with JWT verification **off**, and checks the same secret.
+- Confirm in Dashboard → Edge Functions that `account-maintenance` and `account-monitor` show **Verify JWT: off** and that every other function is unchanged (on, unless already configured otherwise).
 
 **Version compatibility:**
 - The new functions need the step 2 schema. They must never be deployed before it.
@@ -200,17 +226,98 @@ ORDER BY created DESC LIMIT 3;                          -- expect 200
 6. **Delete T2 the same way.**
 7. **Record the job ids.** They are purged automatically after 30 days.
 
-## 7. Monitoring
+## 7. Monitoring and alerts
+
+### 7.1 Activate monitoring — **APPROVAL**
+
+Only after the worker is verified (§4), the scheduler is active (§5), the smoke test has passed (§6), and the alert secrets are set (§1.6).
+
+1. **Check the channels.** Call the alert function by hand. With nothing due it sends nothing, and only reports its channels:
+
+   ```sh
+   curl -s -X POST https://<ref>.supabase.co/functions/v1/account-monitor \
+     -H "Authorization: Bearer $ACCOUNT_MAINTENANCE_SECRET" -d '{}'
+   # expect {"status":"ok","notices":0,"channels":{"email":"configured", …}}
+   ```
+
+   - **Pass:** at least one of `email` / `webhook` is `configured`.
+   - **`missing_recipients`:** set `ACCOUNT_ALERT_EMAIL_TO` (§1.6).
+   - **`missing_sender`:** set `ACCOUNT_ALERT_FROM_EMAIL` or `WAITLIST_FROM_EMAIL`.
+   - **`invalid_url`:** the webhook URL must use https.
+   - **`not_configured`:** that channel is not in use.
+   - **A 403** means the Vault and Edge Function secrets differ.
+2. **Confirm in SQL:**
+
+   ```sql
+   SELECT private.account_monitoring_snapshot() -> 'alerts';
+   -- expect "channel_configured": true, "monitor_active": false
+   SELECT private.account_monitoring_snapshot() ->> 'status';   -- expect healthy
+   ```
+
+3. **Activate:**
+
+   ```sql
+   SELECT cron.alter_job(job_id := jobid, active := true) FROM cron.job WHERE jobname = 'account-deletion-monitor';
+   SELECT private.account_monitoring_snapshot() #>> '{alerts,monitor_active}';   -- expect true
+   ```
+
+   The Dashboard's Account Deletions row now reads "Alerts on · via …".
+4. **Verify an alert end to end:**
+   1. While a §6 test account is pending deletion, deactivate `account-maintenance` (§9).
+   2. Within 15 minutes, expect a `scheduler_inactive` notice on every configured channel. `last_delivery_channels` in the snapshot names the channels that accepted it.
+   3. Re-activate the scheduler (§5). Expect a resolved notice within 15–30 minutes.
+   4. Cancel or delete the test account as in §6.
+
+**How it works:**
+- **Every 15 minutes** the `account-deletion-monitor` cron job checks health in SQL. The check does not depend on the maintenance worker or its Edge Function.
+- **It records each issue** as an open or resolved alert.
+- **It calls `account-monitor`**, which sends one digest through every configured channel (§1.6), when:
+  - an issue opens;
+  - an issue is still open after 24 h;
+  - an issue resolves.
+- **A failed delivery** is retried after 1 hour.
+  - A notice counts as delivered only when a channel accepts it (2xx).
+  - Otherwise `last_delivery_error` gives the reason: `alert_recipients_missing`, `alert_sender_missing`, `alert_webhook_invalid`, `alert_channel_not_configured`, `webhook_rejected`, `webhook_unreachable`, `resend_rejected` or `resend_unreachable`.
+- **Channel report:** `account-monitor` reports its channel status on every call, and at least every 6 hours. Admins see it as "Alerts on/off · via email + webhook" or "no delivery channel configured".
+- **Alerts contain only** issue codes, counts and times: no emails, usernames or account ids.
+
+**Where to look:**
+- **Admins:** App Dashboard → Admin Tools → **Account Deletions**. It shows:
+  - the status and open issues;
+  - the last successful maintenance run;
+  - overdue, in-progress (over 1 h) and failed deletions;
+  - failed and abandoned exports;
+  - undelivered alerts.
+- **From SQL:** `SELECT private.account_monitoring_snapshot();`
+- **Delivery check:** `SELECT * FROM private.account_monitoring_alerts;` shows each alert with `notified_at` and `last_delivery_error`.
+
+| Issue code | Raised when | Action |
+|---|---|---|
+| `scheduler_not_configured` | Vault `project_url` / `account_maintenance_secret` (≥ 32 characters) or the username key is missing, while the scheduler is active or deletions are pending | Restore the values (§1.1–1.2). |
+| `scheduler_inactive` | The `account-maintenance` job is inactive while deletions are pending | Re-activate it (§5) once the cause is fixed. |
+| `maintenance_runs_missing` | Active, but no successful run for 30 min | Check `cron.job_run_details`, the `account-maintenance` function logs and its deployment. |
+| `maintenance_calls_failing` | The last 3 scheduled calls failed (non-2xx, timeout, or no answer) | A 403 means the Vault and Edge Function secrets differ. A 5xx means the function logs show the cause. |
+| `deletions_failed` | Any deletion job is `failed` | Follow §8. |
+| `deletions_overdue` | A recovery window ended over 1 h ago and deletion hasn't started | The scheduler isn't enqueueing. See the issues above. |
+| `deletions_stuck` | A deletion has been in progress for over 1 h | Check the job's `last_error_code` and `step_failures` (§8). |
+| `deletion_leases_expired` | A job's lease ended over 15 min ago and no run picked it up | Runs are crashing mid-job, or none are running. Check the function logs. |
+| `exports_failing` | 3 or more Download My Data exports failed (not abandoned) in 24 h | Check the `account-export` function logs and Storage. |
+| `exports_stuck` | An export has been untouched in progress for over 25 h | The maintenance sweep isn't running. See the scheduler issues. |
+
+**Log lines:**
 
 | Signal | Where | Action |
 |---|---|---|
-| **Account Deletions** row (failed / in progress) | App Dashboard (admins only) | Check daily during the beta. |
-| `"alert":"account_deletion_failed"` | Edge Function logs, `account-maintenance` | Follow §8. |
-| `"alert":"account_deletion_not_configured"` | same | Username key missing: restore it (§1.1). |
+| `"alert":"account_deletion_monitoring"` | `account-monitor` logs | One line per digest, with `delivered` / `delivery_error`. |
+| `"alert":"account_monitoring_no_channel"` | same | No channel can deliver. Fix §1.6. |
+| `"alert":"account_deletion_failed"` | `account-maintenance` logs | Follow §8. |
+| `"alert":"account_deletion_not_configured"` | same | The username key is missing: restore it (§1.1). |
 | `"alert":"account_deletion_late_files_failed"` | same | Check Storage health; the next run retries. |
-| `cron.job_run_details` status ≠ succeeded, or `net._http_response` ≠ 200 | SQL | Check the Vault values and the function deployment. |
 
-**No email or paging alerts exist yet.** Someone must look at the indicator.
+**Limits:**
+- **Notices are not instant.** They arrive within 15 minutes of an issue, and an answer from pg_net is kept for 6 h only.
+- **If the database or pg_cron is down, nothing alerts.** Use Supabase's own project health notifications for that.
+- **If Edge Functions are down entirely,** issues are still recorded and shown in the Dashboard, but no notice is sent.
 
 ## 8. Failure recovery
 
@@ -248,6 +355,7 @@ The migrations are forward-only. Mitigate rather than revert:
 | Deletions misbehaving | `SELECT cron.alter_job(job_id := jobid, active := false) FROM cron.job WHERE jobname = 'account-maintenance';` | Processing pauses. Delete Now becomes unavailable within one status check. Jobs resume safely when re-activated. |
 | Need to stop Delete Now only | Unset `ACCOUNT_MAINTENANCE_SECRET` | Delete Now is unavailable. **Warning:** the kick-off and the scheduler's 403 also stop, so pair this with deactivating cron. |
 | A bad function deploy | Redeploy the previous commit's function source. Earlier versions of the new functions don't exist, so deactivate cron instead. | — |
+| Alerts too noisy or misdirected | `SELECT cron.alter_job(job_id := jobid, active := false) FROM cron.job WHERE jobname = 'account-deletion-monitor';` or unset the alert secrets | Monitoring stops; deletion is unaffected. |
 | A guard hides too much or too little | A forward-fix migration. Pending accounts can be cancelled by an operator. | — |
 | Data deleted wrongly | The only recovery is a whole-project restore from a daily backup (≤ 7 days). **APPROVAL**: it is destructive for every other change since then. | — |
 

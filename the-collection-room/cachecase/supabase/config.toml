@@ -416,6 +416,10 @@ enabled = true
 
 # Account maintenance worker (pg_cron → pg_net). It authenticates its caller
 # itself with ACCOUNT_MAINTENANCE_SECRET (constant-time compare), so the
-# gateway JWT check is off for this function only.
+# gateway JWT check is off for these two functions only.
 [functions.account-maintenance]
+verify_jwt = false
+
+# Account deletion monitoring alerts (pg_cron → pg_net), same secret.
+[functions.account-monitor]
 verify_jwt = false

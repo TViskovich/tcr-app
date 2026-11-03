@@ -473,10 +473,59 @@ export default function DashboardScreen() {
 
 // ── Pieces ─────────────────────────────────────────────────────────────────
 
-// Admin-only: permanent account deletions that failed and need attention
-// (server: account_deletion_admin_summary, which checks admin membership
-// itself and returns no identities). Details are in the server logs.
-type DeletionSummary = { failed: number; in_progress: number; failure_codes: Record<string, number> };
+// Admin-only: health of account deletion and Download My Data (server:
+// account_deletion_admin_summary, which checks admin membership itself and
+// returns counts, times and codes only — no identities). Details are in the
+// server logs and the deployment runbook.
+type DeletionSummary = {
+  status: 'healthy' | 'attention';
+  issues: string[];
+  scheduler: { active: boolean; configured: boolean; last_successful_run_at: string | null; consecutive_failed_calls: number };
+  deletions: { overdue_scheduled: number; in_progress: number; stuck_over_1h: number; expired_leases: number; failed: number; failure_codes: Record<string, number> };
+  exports: { failed_24h: number; abandoned_24h: number; stuck: number };
+  alerts: {
+    monitor_active: boolean;
+    channel_configured: boolean | null; // null until the alert function has reported
+    email: string | null;
+    webhook: string | null;
+    open: number;
+    undelivered: number;
+    last_delivery_error: string | null;
+  };
+};
+const CHANNEL_PROBLEMS: Record<string, string> = {
+  missing_recipients: 'email recipients missing',
+  missing_sender: 'email sender missing',
+  invalid_url: 'webhook URL invalid',
+};
+function alertsLine(a: DeletionSummary['alerts']): string {
+  const monitor = a.monitor_active ? 'Alerts on' : 'Alerts off (monitor job inactive)';
+  if (a.channel_configured === null) return `${monitor} · delivery not checked yet`;
+  const configured = [a.email === 'configured' && 'email', a.webhook === 'configured' && 'webhook'].filter(Boolean);
+  const problems = [a.email, a.webhook].map((v) => (v ? CHANNEL_PROBLEMS[v] : undefined)).filter(Boolean);
+  const channels = configured.length ? `via ${configured.join(' + ')}` : 'no delivery channel configured';
+  return `${monitor} · ${channels}${problems.length ? ` (${problems.join(', ')})` : ''}`;
+}
+const ISSUE_LABELS: Record<string, string> = {
+  scheduler_not_configured: 'Scheduler not configured',
+  scheduler_inactive: 'Scheduler inactive with deletions pending',
+  maintenance_runs_missing: 'No successful maintenance run in 30 min',
+  maintenance_calls_failing: 'Maintenance calls failing',
+  deletions_failed: 'Failed deletions',
+  deletions_overdue: 'Overdue scheduled deletions',
+  deletions_stuck: 'Deletions in progress over 1 h',
+  deletion_leases_expired: 'Expired deletion leases',
+  exports_failing: 'Exports failing',
+  exports_stuck: 'Exports stuck',
+};
+function ago(iso: string | null): string {
+  if (!iso) return 'never';
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
+}
 function AccountDeletionHealth() {
   const [summary, setSummary] = useState<DeletionSummary | null>(null);
   const [failed, setFailed] = useState(false);
@@ -491,19 +540,32 @@ function AccountDeletionHealth() {
       cancelled = true;
     };
   }, []);
-  const attention = (summary?.failed ?? 0) > 0;
-  const detail = failed
-    ? 'Couldn’t load deletion status.'
-    : !summary
-      ? 'Checking…'
-      : attention
-        ? `${summary.failed} failed — ${Object.entries(summary.failure_codes).map(([code, n]) => `${code} (${n})`).join(', ')}. See server logs.`
-        : `No failed deletions${summary.in_progress ? ` · ${summary.in_progress} in progress` : ''}.`;
+  const attention = summary?.status === 'attention';
+  let lines: string[];
+  if (failed) lines = ['Couldn’t load deletion status.'];
+  else if (!summary) lines = ['Checking…'];
+  else {
+    const { scheduler: s, deletions: d, exports: e, alerts: a } = summary;
+    lines = [
+      attention ? `Needs attention: ${summary.issues.map((c) => ISSUE_LABELS[c] ?? c).join(', ')}.` : 'Healthy.',
+      `Scheduler ${s.active ? 'active' : 'inactive'}${s.configured ? '' : ', not configured'} · last successful run ${ago(s.last_successful_run_at)}${
+        s.consecutive_failed_calls ? ` · ${s.consecutive_failed_calls} failed calls` : ''}`,
+      `Deletions: ${d.overdue_scheduled} overdue · ${d.in_progress} in progress (${d.stuck_over_1h} over 1 h) · ${d.failed} failed${
+        d.failed ? ` (${Object.entries(d.failure_codes).map(([code, n]) => `${code} ${n}`).join(', ')})` : ''}`,
+      `Exports (24 h): ${e.failed_24h} failed · ${e.abandoned_24h} abandoned${e.stuck ? ` · ${e.stuck} stuck` : ''}`,
+      alertsLine(a),
+      ...(a.undelivered ? [`${a.undelivered} alert${a.undelivered === 1 ? '' : 's'} not delivered${a.last_delivery_error ? ` (${a.last_delivery_error})` : ''}`] : []),
+    ];
+  }
   return (
-    <View style={[styles.adminRow, styles.adminRowSpaced]} accessible accessibilityLabel={`Account deletions. ${detail}`}>
+    <View style={[styles.adminRow, styles.adminRowSpaced]} accessible accessibilityLabel={`Account deletions. ${lines.join(' ')}`}>
       <View style={styles.navRowText}>
         <Text style={[styles.navRowTitle, attention && styles.deleteText]}>Account Deletions</Text>
-        <Text style={styles.navRowDetail}>{detail}</Text>
+        {lines.map((line) => (
+          <Text key={line} style={styles.navRowDetail}>
+            {line}
+          </Text>
+        ))}
       </View>
     </View>
   );

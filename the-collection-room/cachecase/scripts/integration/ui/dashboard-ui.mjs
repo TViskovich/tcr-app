@@ -310,11 +310,34 @@ async function scenario(p) {
     check(`${l}: not available yet (no control)`, (await hasLabel(p.A, `${l}, not available yet`)) && !(await p.A.eval(`[...document.querySelectorAll('[role="button"],[role="switch"],button')].some(e => e.textContent.trim() === ${JSON.stringify(l)})`)));
   }
   check('non-admin sees no Admin Tools', !(await bodyHas(p.A, 'Waitlist Management')));
+  check('…and no account deletion monitoring', !(await bodyHas(p.A, 'Account Deletions')));
   await p.A.screenshot(`${OUT}/03-account.png`);
 
-  step('10. Admin-only Waitlist entry preserved');
+  step('10. Admin Tools: Waitlist entry and account deletion health');
   await openDashboard(p.C);
   await eventually('admin C sees Waitlist Management', p.C, () => bodyHas(p.C, 'Waitlist Management'));
+  await eventually('admin C sees account deletion health (real summary)', p.C, async () => (await bodyHas(p.C, 'Account Deletions'))
+    && (await bodyHas(p.C, 'last successful run')) && ((await bodyHas(p.C, 'Healthy.')) || (await bodyHas(p.C, 'Needs attention:'))));
+  check('with the real monitor state (inactive by default)', await bodyHas(p.C, 'Alerts off (monitor job inactive)'));
+  // An unhealthy summary, as the server would return it.
+  await p.C.fakeRequests([{ match: /\/rest\/v1\/rpc\/account_deletion_admin_summary/, status: 200, body: {
+    status: 'attention', issues: ['deletions_failed', 'deletions_overdue'], failed: 1, in_progress: 2, failure_codes: { auth_delete_failed: 1 },
+    scheduler: { active: true, configured: true, last_successful_run_at: new Date(Date.now() - 12 * 60_000).toISOString(), consecutive_failed_calls: 0 },
+    deletions: { overdue_scheduled: 1, in_progress: 2, stuck_over_1h: 1, expired_leases: 0, failed: 1, failure_codes: { auth_delete_failed: 1 } },
+    exports: { failed_24h: 3, abandoned_24h: 1, stuck: 0 },
+    alerts: { monitor_active: true, channel_configured: true, email: 'missing_recipients', webhook: 'configured', open: 2, undelivered: 1, last_delivery_error: 'webhook_unreachable' },
+  } }]);
+  await openDashboard(p.C);
+  await eventually('attention: the issues are named', p.C, () => bodyHas(p.C, 'Needs attention: Failed deletions, Overdue scheduled deletions.'));
+  check('last successful run, overdue, stuck and failed counts shown', (await bodyHas(p.C, 'last successful run 12 min ago'))
+    && (await bodyHas(p.C, 'Deletions: 1 overdue · 2 in progress (1 over 1 h) · 1 failed (auth_delete_failed 1)')));
+  check('failed and abandoned exports shown', await bodyHas(p.C, 'Exports (24 h): 3 failed · 1 abandoned'));
+  check('an undelivered alert is flagged', await bodyHas(p.C, '1 alert not delivered (webhook_unreachable)'));
+  check('alert setup shown: monitor on, channel, and a channel problem', await bodyHas(p.C, 'Alerts on · via webhook (email recipients missing)'));
+  await p.C.screenshot(`${OUT}/05-deletion-health.png`);
+  await p.C.fakeRequests([]);
+  await openDashboard(p.C);
+  await eventually('admin C sees Waitlist Management again', p.C, () => bodyHas(p.C, 'Waitlist Management'));
   await p.C.eval(`[...document.querySelectorAll('div')].filter(e => e.textContent.trim() === 'Waitlist Management').pop()?.scrollIntoView({ block: 'center' })`);
   await sleep(400);
   await p.C.tap('text', 'Waitlist Management');

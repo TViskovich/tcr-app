@@ -24,7 +24,10 @@
 //   4. removes files found in a recently completed deletion's folders (an
 //      upload that was in flight while the account was deleted);
 //   5. deletes job records 30 days after completion and expired username
-//      reservations.
+//      reservations;
+//   6. records the run (outcome, duration, controlled error codes) for
+//      monitoring (20261108120000_account_deletion_monitoring), after the
+//      work; a failure to record never fails the run.
 // A deletion waits while one of the collector's Download My Data steps
 // still holds its lease (no new step can start once the account is
 // deleting), and the manifest is rebuilt once more after the auth user is
@@ -186,21 +189,30 @@ async function run(onlyJob: string | null) {
   const started = Date.now();
   const deadline = started + RUN_BUDGET_MS;
   const summary: Record<string, unknown> = { started: 0, processed: [] as unknown[] };
+  // Infrastructure problems this run hit (per-job failures are tracked on
+  // the jobs themselves).
+  const runErrors = new Set<string>();
+  let jobErrors = 0;
 
   // Never start destructive work without the username-reservation key.
-  const { data: preflight } = await client.rpc('account_deletion_preflight');
+  const { data: preflight, error: preflightError } = await client.rpc('account_deletion_preflight');
+  if (preflightError) runErrors.add('preflight_failed');
   const ready = (preflight as { username_key_configured?: boolean } | null)?.username_key_configured === true;
   summary.ready = ready;
   if (!ready) log({ alert: 'account_deletion_not_configured', reason: 'username_reservation_key_missing' });
 
   if (ready) {
     const { data: started_count, error } = await client.rpc('account_deletion_enqueue_due', { p_limit: 50 });
-    if (error) log({ outcome: 'enqueue_failed', db_code: error.code });
+    if (error) {
+      runErrors.add('enqueue_failed');
+      log({ outcome: 'enqueue_failed', db_code: error.code });
+    }
     summary.started = Number(started_count ?? 0);
 
     while (Date.now() < deadline) {
       const { data: claimed, error: claimError } = await client.rpc('account_deletion_claim', { p_limit: CLAIM_LIMIT, p_lease_seconds: LEASE_SECONDS });
       if (claimError) {
+        runErrors.add('claim_failed');
         log({ outcome: 'claim_failed', db_code: claimError.code });
         break;
       }
@@ -223,6 +235,7 @@ async function run(onlyJob: string | null) {
           (summary.processed as unknown[]).push({ job_id: job.id, outcome });
         } catch (e) {
           const code = e instanceof StepError ? e.message : 'unexpected_error';
+          jobErrors++;
           const failures = job.step_failures + 1;
           if (failures >= MAX_FAILURES) {
             await setJob(job.id, { status: 'failed', failed_at: new Date().toISOString(), last_error_code: code, step_failures: failures, lease_until: null });
@@ -245,7 +258,10 @@ async function run(onlyJob: string | null) {
   // Files that appeared in a completed deletion's folders afterwards.
   if (ready && !onlyJob && Date.now() < deadline) {
     const { data: late, error: lateError } = await client.rpc('account_deletion_late_files', { p_limit: 10 });
-    if (lateError) log({ outcome: 'late_files_check_failed', db_code: lateError.code });
+    if (lateError) {
+      runErrors.add('late_files_check_failed');
+      log({ outcome: 'late_files_check_failed', db_code: lateError.code });
+    }
     for (const jobId of (late ?? []) as string[]) {
       try {
         const { error } = await client.rpc('account_deletion_build_manifest', { p_job_id: jobId });
@@ -253,6 +269,7 @@ async function run(onlyJob: string | null) {
         const clean = await cleanStorage({ id: jobId } as Job, deadline);
         log({ outcome: clean ? 'late_files_removed' : 'late_files_in_progress', job_id: jobId });
       } catch (e) {
+        runErrors.add('late_files_failed');
         log({ alert: 'account_deletion_late_files_failed', job_id: jobId, code: e instanceof StepError ? e.message : 'unexpected_error' });
       }
     }
@@ -267,16 +284,36 @@ async function run(onlyJob: string | null) {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     summary.exports = res.ok ? await res.json() : { status: res.status };
+    if (!res.ok) runErrors.add('export_sweep_failed');
   } catch {
     summary.exports = { status: 'unreachable' };
+    runErrors.add('export_sweep_failed');
     log({ outcome: 'export_sweep_failed' });
   }
 
-  const { data: housekeeping } = await client.rpc('account_deletion_housekeeping');
+  const { data: housekeeping, error: housekeepingError } = await client.rpc('account_deletion_housekeeping');
+  if (housekeepingError) runErrors.add('housekeeping_failed');
   summary.housekeeping = housekeeping;
   summary.ms = Date.now() - started;
   log({ outcome: 'run', ...summary, processed: (summary.processed as unknown[]).length });
+  // A Delete Now kick-off (onlyJob) is not a maintenance run.
+  if (!onlyJob) {
+    await recordRun(!ready ? 'not_ready' : runErrors.size ? 'degraded' : 'ok', summary.ms as number,
+      (summary.processed as unknown[]).length, jobErrors, [...runErrors]);
+  }
   return summary;
+}
+
+// Monitoring only: never throws, never delays the next run.
+async function recordRun(outcome: 'ok' | 'degraded' | 'not_ready' | 'failed', ms: number, processed: number, errors: number, codes: string[]) {
+  try {
+    const { error } = await client.rpc('account_maintenance_record_run', {
+      p_outcome: outcome, p_duration_ms: ms, p_jobs_processed: processed, p_job_errors: errors, p_error_codes: codes,
+    });
+    if (error) log({ outcome: 'run_record_failed', db_code: error.code });
+  } catch {
+    log({ outcome: 'run_record_failed' });
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -294,6 +331,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ status: 'ok', ...(await run(onlyJob)) }, 200);
   } catch (e) {
     log({ outcome: 'run_failed', error: (e as Error).message.slice(0, 160) });
+    if (!onlyJob) await recordRun('failed', 0, 0, 0, ['run_failed']);
     return jsonResponse({ status: 'failed', reason: 'server_error' }, 500);
   }
 });

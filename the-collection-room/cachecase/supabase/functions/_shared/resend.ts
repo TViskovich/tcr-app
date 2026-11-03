@@ -1,9 +1,11 @@
-// Minimal Resend sender for server-side waitlist email (grant-waitlist-
-// access). join-waitlist still has its own inline sender and is untouched.
+// Minimal Resend sender for server-side email: waitlist access (grant-
+// waitlist-access) and account deletion monitoring alerts (account-monitor).
+// join-waitlist still has its own inline sender and is untouched.
 //
 // Never throws, never logs: returns a result the caller reports and logs
 // with its own context. RESEND_API_KEY / WAITLIST_FROM_EMAIL are Edge
-// Function secrets and never leave this module. Message content (which can
+// Function secrets and never leave this module (a caller may pass its own
+// verified sender as `from`). Message content (which can
 // carry an invite code) is never logged; neither is Resend's error message,
 // which can echo the recipient address.
 
@@ -17,13 +19,14 @@ export type EmailResult =
     };
 
 export async function sendResendEmail(message: {
-  to: string;
+  to: string | string[];
   subject: string;
   text: string;
   html: string;
+  from?: string;
 }): Promise<EmailResult> {
   const apiKey = Deno.env.get('RESEND_API_KEY');
-  const from = Deno.env.get('WAITLIST_FROM_EMAIL');
+  const from = message.from || Deno.env.get('WAITLIST_FROM_EMAIL');
   if (!apiKey || !from) return { sent: false, reason: 'email_not_configured' };
 
   let res: Response;
@@ -34,7 +37,7 @@ export async function sendResendEmail(message: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ from, ...message }),
+      body: JSON.stringify({ ...message, from }),
     });
   } catch {
     return { sent: false, reason: 'resend_unreachable' };
