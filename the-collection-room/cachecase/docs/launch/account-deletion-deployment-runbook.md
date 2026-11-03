@@ -83,6 +83,7 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    ```
 
 5. **Do NOT set `ACCOUNT_RECENT_AUTH_SECONDS`.** It is a test-only override and can only shorten the 10-minute window.
+   **Do NOT set `RESEND_API_URL`** either. It is a test-only mock-provider override, and any host other than localhost is ignored anyway.
 
 6. **Alert delivery (monitoring, §7).** Configure at least one channel. With none, alerts are only logged and shown to admins in the Dashboard.
    - **Email, through the existing Resend account:**
@@ -125,6 +126,7 @@ WHERE (SELECT count(*) FROM public.conversation_participants p WHERE p.conversat
    - `20261107120000_account_deletion_launch_hardening` (deactivates the job)
    - `20261107130000_lifecycle_query_performance` (adds 7 indexes; tables are small, brief locks)
    - `20261108120000_account_deletion_monitoring` (monitoring tables, the extended admin summary, and the `account-deletion-monitor` cron job, created **inactive**; it is activated in §7.1)
+   - `20261109120000_account_monitoring_test_email` (the server-side rate limit for the §7.1 test email)
 
 2. Apply:
 
@@ -262,11 +264,27 @@ Only after the worker is verified (§4), the scheduler is active (§5), the smok
    ```
 
    The Dashboard's Account Deletions row now reads "Alerts on · via …".
-4. **Verify an alert end to end:**
-   1. While a §6 test account is pending deletion, deactivate `account-maintenance` (§9).
-   2. Within 15 minutes, expect a `scheduler_inactive` notice on every configured channel. `last_delivery_channels` in the snapshot names the channels that accepted it.
-   3. Re-activate the scheduler (§5). Expect a resolved notice within 15–30 minutes.
-   4. Cancel or delete the test account as in §6.
+4. **Send one test email.** This uses the test action, which needs no deletion, test account or synthetic alert:
+
+   ```sh
+   curl -s -X POST https://<ref>.supabase.co/functions/v1/account-monitor \
+     -H "Authorization: Bearer $ACCOUNT_MAINTENANCE_SECRET" -H 'Content-Type: application/json' \
+     -d '{"action":"test"}'
+   # expect 200 {"status":"ok","test":true,"accepted":["email"],"failed":[],"channels":{…}}
+   ```
+
+   - **What arrives:** one email, subject `[CacheCase production] Monitoring Test`, body "This is a test of CacheCase's account-deletion monitoring alerts. No account deletion or data changes were triggered." It goes to `ACCOUNT_ALERT_EMAIL_TO`, from `ACCOUNT_ALERT_FROM_EMAIL` if set, otherwise from `WAITLIST_FROM_EMAIL`. If a webhook is configured, it gets the same text.
+   - **Check delivery:** look in the inbox, and in spam. Resend → Emails shows the delivery status.
+   - **What it touches:** only the rate-limit log. No alert, monitoring, deletion or collector record is read or written.
+   - **Authorization:** only the maintenance secret works. Any other credential, including the service role key, gets 403, and nothing is sent.
+   - **Responses:**
+
+     | Response | Meaning | Fix |
+     |---|---|---|
+     | 409 `alert_recipients_missing` / `alert_sender_missing` / `alert_channel_not_configured` / `alert_webhook_invalid` | Nothing was sent; no rate-limit slot was used | Fix §1.6 |
+     | 502, `failed: ["resend_rejected"]` | Resend refused | Check Resend → Logs: the API key, sender domain verification, or the recipient |
+     | 502, `failed: ["resend_unreachable"]` | Resend could not be reached | Retry later |
+     | 429 `rate_limited` | At most 1 test per 10 minutes and 5 per 24 hours (failed attempts count) | Wait `retry_after_seconds` |
 
 **How it works:**
 - **Every 15 minutes** the `account-deletion-monitor` cron job checks health in SQL. The check does not depend on the maintenance worker or its Edge Function.

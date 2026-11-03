@@ -18,6 +18,20 @@ export type EmailResult =
       resendError?: string; // Resend's error `name`, e.g. "validation_error"
     };
 
+// Local testing only: RESEND_API_URL may point the sender at a mock provider
+// on this machine (localhost, 127.0.0.1 or host.docker.internal). Any other
+// value is ignored, so the API key is never sent anywhere but Resend.
+const RESEND_ENDPOINT = 'https://api.resend.com/emails';
+function resendEndpoint(): string {
+  const override = Deno.env.get('RESEND_API_URL');
+  if (!override) return RESEND_ENDPOINT;
+  try {
+    const url = new URL(override);
+    if (['localhost', '127.0.0.1', 'host.docker.internal'].includes(url.hostname)) return url.toString();
+  } catch {}
+  return RESEND_ENDPOINT;
+}
+
 export async function sendResendEmail(message: {
   to: string | string[];
   subject: string;
@@ -31,7 +45,7 @@ export async function sendResendEmail(message: {
 
   let res: Response;
   try {
-    res = await fetch('https://api.resend.com/emails', {
+    res = await fetch(resendEndpoint(), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,

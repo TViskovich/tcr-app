@@ -21,6 +21,14 @@
 //            the body is signed, X-CacheCase-Signature: sha256=<hex HMAC>
 //   label    ACCOUNT_ALERT_ENVIRONMENT, e.g. "production" (subject line)
 //
+// {"action":"test"} (operators verifying delivery): sends one clearly
+// labelled test notice through the configured channels and nothing else —
+// no alert, job, monitoring or collector record is read or written. Only
+// the maintenance secret is accepted; the service role key is not. Rate
+// limited in the database (1 per 10 minutes, 5 per 24 hours;
+// 20261109120000_account_monitoring_test_email.sql). The response names
+// the channels that accepted it — never recipients, URLs or keys.
+//
 // Content: issue codes, counts and timestamps only — never emails,
 // usernames, account or job ids. Recipients and URLs are never logged.
 //
@@ -182,12 +190,94 @@ async function deliver(notices: Notice[], snap: Snapshot): Promise<{ delivered: 
   return { delivered, failed };
 }
 
+const TEST_BODY = 'This is a test of CacheCase\'s account-deletion monitoring alerts. No account deletion or data changes were triggered.';
+
+function testMessage() {
+  const env = (Deno.env.get('ACCOUNT_ALERT_ENVIRONMENT') ?? '').replace(/[^\w .-]/g, '').slice(0, 30);
+  const subject = `[CacheCase${env ? ` ${env}` : ''}] Monitoring Test`;
+  const escape = (v: string) => v.replace(/[&<>']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;' })[c]!);
+  return { subject, text: TEST_BODY, html: `<p>${escape(TEST_BODY)}</p>` };
+}
+
+// The test operation: takes a rate-limit slot, sends, records the outcome.
+async function sendTest(): Promise<Response> {
+  const email = emailConfig();
+  const webhook = webhookConfig();
+  const channels = { email: email.status, webhook: webhook.status };
+  if (email.status !== 'configured' && webhook.status !== 'configured') {
+    // Nothing would be sent: answer without taking a slot.
+    const reason = email.status === 'missing_recipients' ? 'alert_recipients_missing'
+      : email.status === 'missing_sender' ? 'alert_sender_missing'
+      : webhook.status === 'invalid_url' ? 'alert_webhook_invalid'
+      : 'alert_channel_not_configured';
+    log({ outcome: 'test_not_configured', reason, ...channels });
+    return jsonResponse({ status: 'failed', test: true, reason, accepted: [], failed: [], channels }, 409);
+  }
+
+  const { data: slot, error: slotError } = await client.rpc('account_monitoring_take_test_slot');
+  if (slotError) {
+    log({ outcome: 'test_slot_failed', db_code: slotError.code });
+    return jsonResponse({ status: 'failed', test: true, reason: 'server_error' }, 500);
+  }
+  const s = slot as { allowed: boolean; slot?: number; retry_after_seconds?: number };
+  if (!s.allowed) {
+    log({ outcome: 'test_rate_limited', retry_after_seconds: s.retry_after_seconds });
+    return new Response(JSON.stringify({ status: 'failed', test: true, reason: 'rate_limited', retry_after_seconds: s.retry_after_seconds }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': String(s.retry_after_seconds ?? 600) },
+    });
+  }
+
+  const message = testMessage();
+  const accepted: string[] = [];
+  const failed: string[] = [];
+  if (email.status === 'configured') {
+    const result = await sendResendEmail({ to: email.to, from: email.from, ...message });
+    if (result.sent) accepted.push('email');
+    else failed.push(result.reason);
+  }
+  if (webhook.url) {
+    const body = JSON.stringify({ source: 'cachecase-account-monitoring', test: true, subject: message.subject, text: message.text, content: message.text });
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const secret = webhookSecret();
+    if (secret) headers['X-CacheCase-Signature'] = `sha256=${await sign(body, secret)}`;
+    try {
+      const res = await fetch(webhook.url, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      await res.body?.cancel();
+      if (res.ok) accepted.push('webhook');
+      else failed.push('webhook_rejected');
+    } catch {
+      failed.push('webhook_unreachable');
+    }
+  }
+  const outcome = accepted.length ? 'delivered' : failed[0] ?? 'not_delivered';
+  const { error: recordError } = await client.rpc('account_monitoring_record_test', { p_slot: s.slot, p_outcome: outcome, p_channels: accepted });
+  if (recordError) log({ outcome: 'test_record_failed', db_code: recordError.code });
+  log({ outcome: 'test', delivered: accepted, failed });
+  return jsonResponse({ status: accepted.length ? 'ok' : 'failed', test: true, accepted, failed, channels }, accepted.length ? 200 : 502);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return jsonResponse({ status: 'failed', reason: 'method_not_allowed' }, 405);
   const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim() ?? '';
+  let body: { action?: unknown } = {};
+  try {
+    body = await req.json();
+  } catch {}
+  if (body?.action === 'test') {
+    // Maintenance secret only; checked before anything else happens.
+    if (!sameSecret(token, MAINTENANCE_SECRET)) return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
+    try {
+      return await sendTest();
+    } catch (e) {
+      log({ outcome: 'test_failed', error: (e as Error).message.slice(0, 160) });
+      return jsonResponse({ status: 'failed', test: true, reason: 'server_error' }, 500);
+    }
+  }
   if (!sameSecret(token, MAINTENANCE_SECRET) && !sameSecret(token, SERVICE_KEY)) {
     return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
   }
+  if (body?.action !== undefined) return jsonResponse({ status: 'failed', reason: 'invalid_action' }, 400);
   try {
     const email = emailConfig().status;
     const webhook = webhookConfig().status;
