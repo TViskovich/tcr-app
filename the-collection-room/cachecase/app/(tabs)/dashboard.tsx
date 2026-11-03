@@ -25,7 +25,7 @@ import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar'
 import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import { SUPPORT_CONTACT } from '@/lib/support-contact';
+import { SUPPORT_CONTACT, supportMailto } from '@/lib/support-contact';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 // The collector's Dashboard (right-hand bottom-nav tab): Analytics,
@@ -156,7 +156,8 @@ export default function DashboardScreen() {
     }
   }
   async function openMail(address: string, subject?: string) {
-    const url = `mailto:${address}${subject ? `?subject=${encodeURIComponent(subject)}` : ''}`;
+    const url = supportMailto(subject);
+    if (!url) return;
     try {
       await Linking.openURL(url);
     } catch {

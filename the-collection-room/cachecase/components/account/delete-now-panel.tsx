@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { SupportEmailLine } from '@/components/account/support-email-line';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { type DeleteNowFailure, useAccountLifecycle } from '@/lib/account-lifecycle';
 
@@ -117,6 +118,9 @@ export function DeleteNowPanel() {
           {error ? (
             <View style={styles.errorBox} accessibilityRole="alert">
               <Text style={styles.errorText}>{ERRORS[error]}</Text>
+              {error === 'server' ? (
+                <SupportEmailLine prefix="If this keeps happening, contact" subject="CacheCase account deletion" style={styles.errorText} />
+              ) : null}
             </View>
           ) : null}
           <Pressable

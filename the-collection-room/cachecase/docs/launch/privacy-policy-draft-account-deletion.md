@@ -117,4 +117,6 @@ You can download a copy of your data at any time from **Dashboard → Download M
 
 ## Contact
 
-**[CONFIRM]** Add the support contact for deletion questions. None is configured in the app yet.
+For questions about deleting your account, your data or this policy, email **info@cachecase.com**. The same address appears in the app under **Dashboard → Support & Contact**, and on screens where a deletion or a Download My Data request fails.
+
+**[LEGAL REVIEW]** Confirm whether a postal address, a named data-protection contact, or a separate privacy-request channel is also required where the policy applies.

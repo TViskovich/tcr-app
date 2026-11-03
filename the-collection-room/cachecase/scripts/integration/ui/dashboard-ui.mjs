@@ -294,12 +294,25 @@ async function scenario(p) {
   check('expanded state is announced', await p.A.eval(`[...document.querySelectorAll('[aria-label="Top 9 / Grails guide"]')].some(e => e.getAttribute('aria-expanded') === 'true')`));
   check('planned features listed separately as "Planned"', (await bodyHas(p.A, 'Coming later')) && (await bodyHas(p.A, 'Account freeze')) && (await bodyHas(p.A, 'Planned')));
 
-  step('8. Support & Contact: no invented destinations');
-  for (const s of ['Help Center', 'Contact Support', 'Report a Problem']) {
-    check(`${s}: shown as not available yet`, await hasLabel(p.A, `${s}, not available yet`));
-  }
-  check('no mailto or http link on the page', await p.A.eval(`![...document.querySelectorAll('a[href]')].some(a => /^(mailto:|https?:)/.test(a.getAttribute('href')))`));
-  check('placeholder note shown', await bodyHas(p.A, 'Support contact details are being finalized'));
+  step('8. Support & Contact: the official email, no invented pages');
+  // Capture what Linking.openURL opens on web (window.open) instead of
+  // handing a mailto: link to the OS.
+  const captureOpens = `window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; }; true`;
+  const opened = async () => JSON.parse(await p.A.eval('JSON.stringify(window.__opened ?? [])'));
+  check('Help Center: still not available yet (no page exists)', await hasLabel(p.A, 'Help Center, not available yet'));
+  check('Contact Support is enabled', await hasLabel(p.A, 'Contact Support'));
+  check('Report a Problem is enabled', await hasLabel(p.A, 'Report a Problem'));
+  check('the support address is shown', await bodyHas(p.A, 'info@cachecase.com'));
+  check('the "being finalized" placeholder is gone', !(await bodyHas(p.A, 'Support contact details are being finalized')));
+  check('no web link on the page (no invented help or report URL)', await p.A.eval(`![...document.querySelectorAll('a[href]')].some(a => /^https?:/.test(a.getAttribute('href')))`));
+  await p.A.eval(captureOpens);
+  await tapLabel(p.A, 'Contact Support');
+  await eventually('Contact Support opens an email draft to info@cachecase.com', p.A, async () => (await opened()).length === 1);
+  check('…with the support subject', (await opened())[0] === 'mailto:info@cachecase.com?subject=CacheCase%20support', await opened());
+  await tapLabel(p.A, 'Report a Problem');
+  await eventually('Report a Problem opens an email draft too', p.A, async () => (await opened()).length === 2);
+  check('…addressed to info@cachecase.com with the problem-report subject', (await opened())[1] === 'mailto:info@cachecase.com?subject=CacheCase%20problem%20report', await opened());
+  check('nothing else was opened', (await opened()).every((u) => u.startsWith('mailto:info@cachecase.com')));
 
   step('9. Account & Security');
   check('signed-in email shown', await bodyHas(p.A, A.email));

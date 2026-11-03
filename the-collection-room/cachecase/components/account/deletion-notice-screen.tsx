@@ -2,7 +2,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { type DeletionNotice, useAccountLifecycle } from '@/lib/account-lifecycle';
-import { SUPPORT_CONTACT } from '@/lib/support-contact';
+import { SupportEmailLine } from '@/components/account/support-email-line';
 
 // After a permanent deletion started on this device, once the account and
 // its session are gone (app/_layout.tsx shows this over sign-in). The state
@@ -42,8 +42,8 @@ export function DeletionNoticeScreen({ notice }: { notice: DeletionNotice }) {
         {copy.title}
       </Text>
       <Text style={styles.body}>{copy.body}</Text>
-      {notice.state === 'failed' && SUPPORT_CONTACT.email ? (
-        <Text style={styles.body}>Questions? Contact {SUPPORT_CONTACT.email}.</Text>
+      {notice.state === 'failed' ? (
+        <SupportEmailLine prefix="Questions? Contact" subject="CacheCase account deletion" style={styles.body} />
       ) : null}
       {copy.done ? (
         <Pressable

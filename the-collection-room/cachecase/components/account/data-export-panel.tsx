@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { SupportEmailLine } from '@/components/account/support-email-line';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { type RequestFailure, useAccountExport } from '@/lib/account-export';
 
@@ -185,6 +186,7 @@ export function DataExportPanel({ compact = false }: { compact?: boolean }) {
         <>
           <Text style={[styles.status, styles.failed]}>Failed</Text>
           <Text style={styles.body}>We couldn’t prepare your data. Nothing was shared. Please try again.</Text>
+          <SupportEmailLine prefix="If it keeps failing, contact" subject="CacheCase Download My Data" style={styles.body} />
           {startButton('Try again')}
         </>
       ) : null}
@@ -204,6 +206,9 @@ export function DataExportPanel({ compact = false }: { compact?: boolean }) {
       {error ? (
         <View style={styles.errorBox} accessibilityRole="alert">
           <Text style={styles.errorText}>{error}</Text>
+          {error === REQUEST_ERRORS.server ? (
+            <SupportEmailLine prefix="If this keeps happening, contact" subject="CacheCase Download My Data" style={styles.errorText} />
+          ) : null}
         </View>
       ) : null}
     </View>

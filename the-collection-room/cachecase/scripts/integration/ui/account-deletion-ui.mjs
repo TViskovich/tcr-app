@@ -269,10 +269,17 @@ async function scenario(p) {
   await tapLabel(p.A, 'Cancel deletion');
   await eventually('a network failure is explained; A stays on Pending Deletion', p.A, async () =>
     (await bodyHas(p.A, 'Couldn’t reach CacheCase')) && (await path(p.A)) === '/account/pending');
+  check('…without a support line (a connection problem, not ours)', !(await hasLabel(p.A, 'Email support at info@cachecase.com')));
   await p.A.fakeRequests([{ match: /\/functions\/v1\/account-deletion/, status: 500, body: { status: 'failed', reason: 'server_error' } }]);
   await tapLabel(p.A, 'Cancel deletion');
   await eventually('a server failure is explained; nothing changed', p.A, async () =>
     (await bodyHas(p.A, 'Something went wrong')) && (await admin.from('account_lifecycle').select('state').eq('user_id', A.id)).data?.[0]?.state === 'pending_deletion');
+  check('a server failure offers the support email', (await bodyHas(p.A, 'If this keeps happening, contact info@cachecase.com.'))
+    && (await hasLabel(p.A, 'Email support at info@cachecase.com')));
+  await p.A.eval(`(() => { window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; }; })()`);
+  await tapLabel(p.A, 'Email support at info@cachecase.com');
+  await eventually('tapping it opens an email draft to info@cachecase.com', p.A, async () =>
+    (await p.A.eval('JSON.stringify(window.__opened)')) === JSON.stringify(['mailto:info@cachecase.com?subject=CacheCase%20account%20deletion']));
   await p.A.fakeRequests([
     { match: /\/functions\/v1\/account-deletion/, status: 401, body: { status: 'failed', reason: 'invalid_token' } },
     { match: /\/auth\/v1\/token/, status: 400, body: { error: 'invalid_grant', error_description: 'Refresh Token Not Found' } },

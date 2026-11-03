@@ -170,6 +170,11 @@ async function scenario(p, A) {
   await admin.from('account_exports').update({ status: 'failed', last_error_code: 'export_failed', object_path: null }).eq('id', job.id);
   await p.A.goto(`${APP}/account/export`);
   await eventually('a failed export shows Failed with Try again', p.A, async () => (await bodyHas(p.A, 'Failed')) && (await hasLabel(p.A, 'Try again')));
+  check('…and the support email', await bodyHas(p.A, 'If it keeps failing, contact info@cachecase.com.'));
+  await captureOpens(p.A);
+  await tapLabel(p.A, 'Email support at info@cachecase.com');
+  await eventually('tapping it opens an email draft to info@cachecase.com', p.A, async () =>
+    (await p.A.eval('JSON.stringify(window.__opened)')) === JSON.stringify(['mailto:info@cachecase.com?subject=CacheCase%20Download%20My%20Data']));
   await p.A.fakeRequests([{ match: /\/functions\/v1\/account-export/, status: 404, body: { message: 'Function not found' } }]);
   await p.A.goto(`${APP}/account/export`);
   await eventually('when the backend isn’t available the feature says so (no working-looking button)', p.A, async () =>

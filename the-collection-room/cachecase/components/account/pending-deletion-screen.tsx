@@ -9,7 +9,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { type CancelFailure, useAccountLifecycle } from '@/lib/account-lifecycle';
 import { useAuth } from '@/lib/auth';
-import { SUPPORT_CONTACT } from '@/lib/support-contact';
+import { SupportEmailLine } from '@/components/account/support-email-line';
 
 // Shown INSTEAD of the app (app/_layout.tsx) while the signed-in collector's
 // account is pending deletion or being deleted. The database already hides
@@ -109,6 +109,9 @@ export function PendingDeletionScreen() {
                 signed out when it’s finished.
               </Text>
               <Text style={styles.progress}>{deletionProgressLabel(deletionJob)}</Text>
+              {deletionJob?.status === 'failed' ? (
+                <SupportEmailLine prefix="Questions? Contact" subject="CacheCase account deletion" style={styles.progress} />
+              ) : null}
             </View>
           ) : (
             <>
@@ -123,6 +126,9 @@ export function PendingDeletionScreen() {
         {error ? (
           <View style={styles.errorBox} accessibilityRole="alert">
             <Text style={styles.errorText}>{CANCEL_ERRORS[error]}</Text>
+            {error === 'server' ? (
+              <SupportEmailLine prefix="If this keeps happening, contact" subject="CacheCase account deletion" style={styles.errorText} />
+            ) : null}
           </View>
         ) : null}
 
@@ -173,7 +179,7 @@ function deletionProgressLabel(job: { status: string; objects_total: number | nu
   }
   if (job.status === 'deleting_account') return 'Finishing — removing your account…';
   if (job.status === 'failed') {
-    return `This is taking longer than expected. Our team can see it and will finish it.${SUPPORT_CONTACT.email ? ` Questions? Contact ${SUPPORT_CONTACT.email}.` : ''}`;
+    return 'This is taking longer than expected. Our team can see it and will finish it.';
   }
   return 'Finishing…';
 }

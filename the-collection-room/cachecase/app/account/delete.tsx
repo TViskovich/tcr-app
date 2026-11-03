@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DeleteNowPanel } from '@/components/account/delete-now-panel';
+import { SupportEmailLine } from '@/components/account/support-email-line';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { type ScheduleFailure, useAccountLifecycle } from '@/lib/account-lifecycle';
@@ -135,6 +136,9 @@ export default function DeleteAccountScreen() {
               {error ? (
                 <View style={styles.errorBox} accessibilityRole="alert">
                   <Text style={styles.errorText}>{ERRORS[error]}</Text>
+                  {error === 'server' ? (
+                    <SupportEmailLine prefix="If this keeps happening, contact" subject="CacheCase account deletion" style={styles.errorText} />
+                  ) : null}
                 </View>
               ) : null}
               <Pressable
