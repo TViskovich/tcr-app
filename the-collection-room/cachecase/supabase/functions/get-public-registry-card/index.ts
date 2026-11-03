@@ -29,7 +29,7 @@
 // comes only from completed 'ownership_transferred' registry_events rows,
 // which is itself already public-safe), or any collection_item data.
 
-import { CORS_HEADERS, handleCorsPreflight, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
+import { CORS_HEADERS, handleCorsPreflight, hiddenAccountIds, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
 
 const SIGNED_URL_TTL_SECONDS = 300;
 
@@ -182,6 +182,17 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ status: 'not_found' }, 200);
   }
 
+  // Account lifecycle (20261103120000): this function reads with the service
+  // role, so it applies the database's rule itself — a card whose current
+  // owner is pending deletion is hidden like the rest of their content (the
+  // same not_found response), and a hidden collector's name never appears
+  // in a card's history. A failed lookup fails closed.
+  const ownerId = (card as unknown as { current_owner_id: string | null }).current_owner_id;
+  const ownerHidden = ownerId ? await hiddenAccountIds(client, [ownerId]) : new Set<string>();
+  if (ownerHidden === null || (ownerId && ownerHidden.has(ownerId))) {
+    return jsonResponse({ status: 'not_found' }, 200);
+  }
+
   // Current owner's public-safe display info only (username/display_name —
   // both already fully public columns; never current_owner_id itself).
   let currentOwner: { display_name: string | null; username: string | null } | null = null;
@@ -226,8 +237,10 @@ Deno.serve(async (req: Request) => {
     ),
   ];
   const names: NameMap = {};
-  if (referencedIds.length > 0) {
-    const { data: profiles } = await client.from('profiles').select('id, username, display_name').in('id', referencedIds);
+  const hiddenIds = await hiddenAccountIds(client, referencedIds);
+  const nameableIds = hiddenIds === null ? [] : referencedIds.filter((id) => !hiddenIds.has(id));
+  if (nameableIds.length > 0) {
+    const { data: profiles } = await client.from('profiles').select('id, username, display_name').in('id', nameableIds);
     for (const p of (profiles ?? []) as { id: string; username: string; display_name: string | null }[]) {
       names[p.id] = { username: p.username, display_name: p.display_name };
     }

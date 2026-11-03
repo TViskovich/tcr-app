@@ -60,12 +60,20 @@ export function serviceRoleClient(): SupabaseClient {
 //   - no Authorization header at all      -> { userId: null, invalid: false }
 //   - a present but invalid/expired JWT   -> { userId: null, invalid: true }
 //   - a valid JWT                         -> { userId: <uid>, invalid: false }
+//   - a valid JWT for an account that is pending deletion or being deleted
+//                                         -> { userId: null, invalid: true, inactive: true }
 // Callers MUST reject invalid:true outright — never silently treat an
 // invalid/expired token the same as "no token provided."
+//
+// The inactive case matters because these functions use the service role,
+// which bypasses the database's own account-lifecycle guards
+// (supabase/migrations/20261103120000_add_account_lifecycle.sql): every
+// function that resolves its caller here therefore refuses a hidden
+// collector, for reads and writes alike.
 export async function resolveCaller(
   client: SupabaseClient,
   req: Request,
-): Promise<{ userId: string | null; invalid: boolean }> {
+): Promise<{ userId: string | null; invalid: boolean; inactive?: boolean }> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) {
     return { userId: null, invalid: false };
@@ -81,7 +89,30 @@ export async function resolveCaller(
     return { userId: null, invalid: true };
   }
 
+  const hidden = await hiddenAccountIds(client, [data.user.id]);
+  if (hidden === null) {
+    return { userId: null, invalid: true }; // fail closed on a lookup error
+  }
+  if (hidden.has(data.user.id)) {
+    return { userId: null, invalid: true, inactive: true };
+  }
+
   return { userId: data.user.id, invalid: false };
+}
+
+// Which of `userIds` are pending deletion or being deleted (rows in
+// account_lifecycle). Needs the service-role client. null = the lookup
+// failed and the caller must fail closed. A database without the lifecycle
+// migration has no hidden accounts, so it reports none.
+export async function hiddenAccountIds(client: SupabaseClient, userIds: string[]): Promise<Set<string> | null> {
+  if (userIds.length === 0) return new Set();
+  const { data, error } = await client.from('account_lifecycle').select('user_id').in('user_id', userIds);
+  if (error) {
+    if (error.code === 'PGRST205' || error.code === '42P01') return new Set();
+    console.error('[hiddenAccountIds] lookup failed:', error.code);
+    return null;
+  }
+  return new Set(((data ?? []) as { user_id: string }[]).map((r) => r.user_id));
 }
 
 // Mirrors registered_cards_select_visible's RLS condition exactly. Kept in

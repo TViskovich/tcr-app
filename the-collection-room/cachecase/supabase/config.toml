@@ -413,3 +413,9 @@ enabled = true
 # formatted with uppercase keywords, indent 2, max width 180, trailing commas,
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
+
+# Account maintenance worker (pg_cron → pg_net). It authenticates its caller
+# itself with ACCOUNT_MAINTENANCE_SECRET (constant-time compare), so the
+# gateway JWT check is off for this function only.
+[functions.account-maintenance]
+verify_jwt = false

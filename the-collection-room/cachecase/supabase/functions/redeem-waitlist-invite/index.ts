@@ -114,6 +114,21 @@ async function usernameOwner(username: string): Promise<string | null> {
   return (data as { id: string } | null)?.id ?? null;
 }
 
+// A deleted account's username stays reserved for 90 days (supabase/
+// migrations/20261106120000_account_permanent_deletion.sql). Reported as an
+// ordinary taken username, so nothing about the deleted account is revealed.
+// A database without the reservation function reports nothing reserved.
+// Fails closed: if reservations can't be checked (e.g. the key is
+// missing) the answer is 'unknown' and nothing is created.
+async function usernameReserved(username: string): Promise<boolean | 'unknown'> {
+  const { data, error } = await serviceRoleClient().rpc('username_is_reserved', { p_username: username });
+  if (error) {
+    log({ outcome: 'reservation_check_failed', db_code: error.code, reason: error.message === 'username_reservation_unavailable' ? 'key_missing' : 'error' });
+    return 'unknown';
+  }
+  return data === true;
+}
+
 async function redeem(codeHash: string, userId: string): Promise<RedeemOutcome | null> {
   const client = serviceRoleClient();
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -187,6 +202,9 @@ Deno.serve(async (req: Request) => {
   // 2. Create the account (or prove ownership of an existing one).
   let userId: string;
   let createdHere = false;
+  const reserved = await usernameReserved(names.username);
+  if (reserved === 'unknown') return failed('retry', 503);
+  if (reserved) return failed('username_taken', 409);
   try {
     const { data, error } = await admin.auth.admin.createUser({
       email,
