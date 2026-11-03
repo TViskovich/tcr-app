@@ -112,8 +112,22 @@ class Page {
     } else if (method === 'Page.fileChooserOpened') {
       this.fileChooser?.(params);
     } else if (method === 'Fetch.requestPaused') {
+      const atResponse = params.responseStatusCode !== undefined || params.responseErrorReason !== undefined;
+      const rule = this.fakeResponses?.find((r) => r.match.test(params.request.url)
+        && (!r.bodyMatch || r.bodyMatch.test(params.request.postData ?? ''))
+        && !!r.dropResponse === atResponse);
+      if (atResponse) {
+        // `dropResponse: true`: the request reached the server and was
+        // processed, but its answer is lost on the way back.
+        if (rule && params.request.method !== 'OPTIONS') {
+          this.fakedUrls.push(params.request.url);
+          void this.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'ConnectionReset' });
+        } else {
+          void this.send('Fetch.continueRequest', { requestId: params.requestId });
+        }
+        return;
+      }
       this.requestUrls.push(`${params.request.method} ${params.request.url}`);
-      const rule = this.fakeResponses?.find((r) => r.match.test(params.request.url));
       if (rule && params.request.method === 'OPTIONS') {
         // CORS preflight for a faked request: allow it.
         void this.send('Fetch.fulfillRequest', {
@@ -125,6 +139,10 @@ class Page {
             { name: 'access-control-allow-methods', value: 'GET,POST,PATCH,DELETE,OPTIONS' },
           ],
         });
+      } else if (rule?.fail) {
+        // Simulates a dropped connection: the request never gets an answer.
+        this.fakedUrls.push(params.request.url);
+        void this.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'InternetDisconnected' });
       } else if (rule) {
         this.fakedUrls.push(params.request.url);
         void this.send('Fetch.fulfillRequest', {
@@ -143,12 +161,17 @@ class Page {
   }
 
   // Answers matching requests with a canned response (e.g. a database
-  // without some table) instead of sending them. Call before goto().
+  // without some table) instead of sending them — or, for a rule with
+  // `fail: true`, fails them as a dropped connection. Call before goto().
+  // Rules may also carry `bodyMatch` (a regex for the request body) and
+  // `dropResponse: true` (send the request for real, then lose the answer).
   async fakeRequests(rules) {
     this.fakeResponses = rules;
     this.fakedUrls = [];
     this.requestUrls = [];
-    await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+    const patterns = [{ urlPattern: '*', requestStage: 'Request' }];
+    if (rules.some((r) => r.dropResponse)) patterns.push({ urlPattern: '*', requestStage: 'Response' });
+    await this.send('Fetch.enable', { patterns });
   }
 
   async goto(url) {

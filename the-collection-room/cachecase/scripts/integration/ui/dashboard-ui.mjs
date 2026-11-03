@@ -1,12 +1,14 @@
-// User Dashboard (Milestone 1) — UI test of the real Dashboard tab (web
+// User Dashboard (beta scope) — UI test of the real Dashboard tab (web
 // build) against the LOCAL Supabase stack. Three temporary collectors:
 //   A — the dashboard owner under test
 //   B — engages with A's content (follow, likes, comments, a view, a tag)
-//   C — views A's items, trades CC#ID transfers with A, and is an admin
+//   C — views A's items and is an admin
 // Every fixture row is written through that collector's OWN signed-in client
-// with the app's own tables/functions (register_card,
-// initiate_ownership_transfer, record_item_view…); the service role only
-// creates/deletes the accounts and grants C's admin row.
+// with the app's own tables/functions (record_item_view…); the service role
+// only creates/deletes the accounts and grants C's admin row.
+//
+// Transfers and the CC#ID Registry are not part of the beta: the test
+// checks the Dashboard neither shows nor queries them.
 //
 // Prerequisites: same as group-messaging-ui.mjs (supabase start, local-only
 // Metro on :8090, shell-proxy.mjs on :8091).
@@ -157,24 +159,6 @@ const hasLabel = (page, label) =>
   page.eval(`[...document.querySelectorAll('[aria-label]')].some(e => e.getAttribute('aria-label') === ${JSON.stringify(label)} && e.getBoundingClientRect().width > 0)`);
 const labelsStarting = (page, prefix) =>
   page.eval(`[...document.querySelectorAll('[aria-label]')].filter(e => e.getBoundingClientRect().width > 0).map(e => e.getAttribute('aria-label')).filter(l => l.startsWith(${JSON.stringify(prefix)}))`);
-// Clicks the element labelled `label` inside the transfer row for `ccId`.
-async function tapInRow(page, ccId, label) {
-  const pt = await page.eval(`(() => {
-    const card = [...document.querySelectorAll('[aria-label]')].find(e => e.getAttribute('aria-label') === ${JSON.stringify(`Open registry card ${ccId}`)});
-    let row = card;
-    while (row && !row.querySelector('[aria-label=${JSON.stringify(label)}]')) row = row.parentElement;
-    const el = row?.querySelector('[aria-label=${JSON.stringify(label)}]');
-    if (!el) return null;
-    el.scrollIntoView({ block: 'center' });
-    const r = el.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`);
-  if (!pt) throw new Error(`[${page.label}] no "${label}" in the row for ${ccId}`);
-  await sleep(300);
-  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
-    await page.send('Input.dispatchMouseEvent', { type, x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-  }
-}
 async function tapLabel(page, label) {
   await page.waitFor(`[...document.querySelectorAll('[aria-label]')].some(e => e.getAttribute('aria-label') === ${JSON.stringify(label)})`, 20000, label);
   // Content above can still be loading and move the target, and the
@@ -239,32 +223,6 @@ async function scenario(p) {
     if (counted !== true) throw new Error(`view by ${u.key} not counted`);
   }
 
-  // Registry: A registers Rookie and Auto; C registers two of C's own cards.
-  const register = async (u, itemId) => {
-    const r = must(await u.db.rpc('register_card', { p_collection_item_id: itemId, p_visibility: 'public' }), 'register_card');
-    const id = typeof r === 'string' ? r : (r?.id ?? r?.[0]?.id);
-    const { data } = await admin.from('registered_cards').select('id, cc_id').eq('id', id).single();
-    return data;
-  };
-  const cFolder = randomUUID();
-  const [c1, c2] = [randomUUID(), randomUUID()];
-  must(await C.db.from('folders').insert({ id: cFolder, user_id: C.id, name: 'Cam Binder', is_public: true }), 'C folder');
-  must(await C.db.from('collection_items').insert([
-    { id: c1, folder_id: cFolder, user_id: C.id, title: 'Cam Rookie', item_type: 'sports_card', is_public: true, collection_status: 'active' },
-    { id: c2, folder_id: cFolder, user_id: C.id, title: 'Cam Auto', item_type: 'sports_card', is_public: true, collection_status: 'active' },
-  ]), 'C items');
-  const cardA1 = await register(A, i1);
-  const cardA2 = await register(A, i2);
-  const cardC1 = await register(C, c1);
-  const cardC2 = await register(C, c2);
-  // Four pending transfers, oldest first: A→C (A2), C→A (C2), A→C (A1), C→A (C1).
-  must(await A.db.rpc('initiate_ownership_transfer', { p_registered_card_id: cardA2.id, p_recipient_username: C.username, p_reason: 'trade' }), 'transfer A2');
-  await sleep(50);
-  must(await C.db.rpc('initiate_ownership_transfer', { p_registered_card_id: cardC2.id, p_recipient_username: A.username, p_reason: 'gift' }), 'transfer C2');
-  await sleep(50);
-  must(await A.db.rpc('initiate_ownership_transfer', { p_registered_card_id: cardA1.id, p_recipient_username: C.username, p_reason: 'sale' }), 'transfer A1');
-  await sleep(50);
-  must(await C.db.rpc('initiate_ownership_transfer', { p_registered_card_id: cardC1.id, p_recipient_username: A.username, p_reason: 'trade' }), 'transfer C1');
   must(await admin.from('admin_users').insert({ user_id: C.id }), 'admin row');
 
   step('0. Sign in');
@@ -273,6 +231,7 @@ async function scenario(p) {
   check('A and C signed in', true);
 
   step('1. Tab and header');
+  await p.A.fakeRequests([]); // records request URLs (nothing is faked)
   await openDashboard(p.A);
   check('bottom tab is labelled "Dashboard"', await hasLabel(p.A, 'Dashboard'));
   check('no tab is labelled "Profile"', !(await hasLabel(p.A, 'Profile')));
@@ -282,8 +241,8 @@ async function scenario(p) {
   step('2. Analytics: collection totals (real counts)');
   await eventually('Items 5, Collections 2, Graded 1, Posts 1', p.A, async () =>
     (await hasLabel(p.A, 'Items: 5')) && (await hasLabel(p.A, 'Collections: 2')) && (await hasLabel(p.A, 'Graded: 1')) && (await hasLabel(p.A, 'Posts: 1')));
-  await eventually('Registered 2 (CC#IDs A currently owns)', p.A, () => hasLabel(p.A, 'Registered: 2'));
-  check('Grails 1/9', await hasLabel(p.A, 'Grails: 1/9'));
+  await eventually('Grails 1/9', p.A, () => hasLabel(p.A, 'Grails: 1/9'));
+  check('no Registered (CC#ID) tile', !(await labelsStarting(p.A, 'Registered')).length);
   check('categories: Sports card 3 (incl. private), Pokémon card 1, Comic book 1; none invented',
     (await hasLabel(p.A, 'Sports card: 3')) && (await hasLabel(p.A, 'Pokémon card: 1')) && (await hasLabel(p.A, 'Comic book: 1')) &&
     !(await hasLabel(p.A, 'Figurine: 0')) && !(await bodyHas(p.A, 'Uncategorized')));
@@ -302,79 +261,58 @@ async function scenario(p) {
   }
   check('untracked metrics are named as not recorded', await bodyHas(p.A, 'Profile views, Top 9 / Grails impressions and link clicks aren’t recorded yet'));
 
-  step('5. Transfers preview (reused TransactionsList)');
-  await eventually('summary: 4 total, 4 pending', p.A, () =>
-    p.A.eval(`(() => { const t = document.body.innerText; return /\\b4\\s+Total\\b/i.test(t) && /\\b4\\s+Pending\\b/i.test(t); })()`));
-  check('only 3 rows shown, with "Showing 3 of 4"', (await labelsStarting(p.A, 'Open registry card')).length === 3 && (await bodyHas(p.A, 'Showing 3 of 4')));
-  check('View All present', await hasLabel(p.A, 'Open full transfer history'));
-  await p.A.screenshot(`${OUT}/02-transfers.png`);
+  step('5. Beta scope: no Transfers or Registry anywhere on the Dashboard');
+  await eventually('all analytics loaded', p.A, () => hasLabel(p.A, 'Post likes: 1'));
+  for (const g of ['Collections', 'Top 9 / Grails', 'Messages', 'Tagging collectors']) {
+    check(`guide offered: ${g}`, await hasLabel(p.A, `${g} guide`));
+  }
+  for (const g of ['Cache ID & provenance guide', 'Transfers guide']) check(`no "${g}"`, !(await hasLabel(p.A, g)));
+  const text = await p.A.eval('document.body.innerText');
+  for (const word of ['Transfer', 'TRANSFER', 'Cache ID', 'CC#', 'CC-', 'Registry', 'REGISTRY', 'Register', 'provenance', 'Provenance', 'escrow', 'title']) {
+    check(`page text never mentions "${word}"`, !text.includes(word));
+  }
+  // Open every guide too, so their steps are checked as well.
+  for (const g of ['Collections', 'Top 9 / Grails', 'Messages', 'Tagging collectors']) await tapLabel(p.A, `${g} guide`);
+  const expanded = await p.A.eval('document.body.innerText');
+  check('expanded guides never mention transfers, Cache IDs or registration', !/transfer|cache id|cc#|regist|provenance|escrow/i.test(expanded));
+  const dataRequests = p.A.requestUrls.filter((u) => u.includes('/rest/v1/'));
+  check('no transfer or registry queries', dataRequests.length > 0 && !dataRequests.some((u) => /ownership_transfers|registered_cards|registry_events|ownership_events/.test(u)), dataRequests.filter((u) => /ownership|regist/.test(u)));
+  check('no View All / transfer history entry', !(await hasLabel(p.A, 'Open full transfer history')));
+  await p.A.screenshot(`${OUT}/02-guides.png`);
 
-  step('6. Accept / Decline / Cancel still work from the Dashboard');
-  await queueAlert(p.A, 'Accept');
-  await tapInRow(p.A, cardC1.cc_id, 'Accept transfer');
-  await eventually('Accept: C1 now owned by A (server)', p.A, async () => {
-    const { data } = await admin.from('registered_cards').select('current_owner_id').eq('id', cardC1.id).single();
-    return data.current_owner_id === A.id;
-  });
-  await queueAlert(p.A, 'Cancel Transfer');
-  await tapInRow(p.A, cardA1.cc_id, 'Cancel transfer');
-  await eventually('Cancel: A1 transfer cancelled (server)', p.A, async () => {
-    const { data } = await admin.from('ownership_transfers').select('status').eq('registered_card_id', cardA1.id).single();
-    return data.status === 'cancelled';
-  });
-  await queueAlert(p.A, 'Decline');
-  await tapInRow(p.A, cardC2.cc_id, 'Decline transfer');
-  await eventually('Decline: C2 transfer declined (server)', p.A, async () => {
-    const { data } = await admin.from('ownership_transfers').select('status').eq('registered_card_id', cardC2.id).single();
-    return data.status === 'declined';
-  });
-  const titles = (await alerts(p.A)).map((a) => a.title);
-  check('each action asked for confirmation first', ['Accept transfer?', 'Cancel this transfer?', 'Decline transfer?'].every((t) => titles.includes(t)), titles);
-  await openDashboard(p.A);
-  await eventually('after refresh: Registered 3 (accepted card counted)', p.A, () => hasLabel(p.A, 'Registered: 3'));
-
-  step('7. Registry and history navigation');
-  await tapLabel(p.A, `Open registry card ${cardC1.cc_id}`);
-  await eventually('row opens that card’s registry page', p.A, async () => (await p.A.eval('location.pathname')) === `/registry/${cardC1.id}`);
-  await openDashboard(p.A);
-  await tapLabel(p.A, 'Open full transfer history');
-  await eventually('View All opens the full transfer history', p.A, async () => (await p.A.eval('location.pathname')) === `/transactions/${A.id}`);
-  await eventually('full history lists all 4 transfers', p.A, async () => (await labelsStarting(p.A, 'Open registry card')).length === 4);
-
-  step('8. Most viewed opens the item');
+  step('6. Most viewed opens the item');
   await openDashboard(p.A);
   await eventually('Most viewed row present', p.A, () => hasLabel(p.A, 'Dash Rookie, 2 views'));
   await tapLabel(p.A, 'Dash Rookie, 2 views');
   await eventually('opens Item Detail for Rookie', p.A, async () => (await p.A.eval('location.pathname')) === `/item/${i1}`);
 
-  step('9. How-To & Knowledge Base');
+  step('7. How-To & Knowledge Base');
   await openDashboard(p.A);
-  for (const g of ['Collections', 'Top 9 / Grails', 'Cache ID & provenance', 'Transfers']) {
-    check(`guide: ${g}`, await hasLabel(p.A, `${g} guide`));
-  }
   check('guides start collapsed', !(await bodyHas(p.A, 'Tap an empty slot and choose Single Item or Collection')));
   await tapLabel(p.A, 'Top 9 / Grails guide');
   await eventually('tapping expands the Grails guide', p.A, () => bodyHas(p.A, 'Tap an empty slot and choose Single Item or Collection'));
   check('expanded state is announced', await p.A.eval(`[...document.querySelectorAll('[aria-label="Top 9 / Grails guide"]')].some(e => e.getAttribute('aria-expanded') === 'true')`));
-  check('planned features listed separately as "Planned"', (await bodyHas(p.A, 'Coming later')) && (await bodyHas(p.A, 'Account deletion')) && (await bodyHas(p.A, 'Planned')));
+  check('planned features listed separately as "Planned"', (await bodyHas(p.A, 'Coming later')) && (await bodyHas(p.A, 'Account freeze')) && (await bodyHas(p.A, 'Planned')));
 
-  step('10. Support & Contact: no invented destinations');
+  step('8. Support & Contact: no invented destinations');
   for (const s of ['Help Center', 'Contact Support', 'Report a Problem']) {
     check(`${s}: shown as not available yet`, await hasLabel(p.A, `${s}, not available yet`));
   }
   check('no mailto or http link on the page', await p.A.eval(`![...document.querySelectorAll('a[href]')].some(a => /^(mailto:|https?:)/.test(a.getAttribute('href')))`));
   check('placeholder note shown', await bodyHas(p.A, 'Support contact details are being finalized'));
 
-  step('11. Account & Security');
+  step('9. Account & Security');
   check('signed-in email shown', await bodyHas(p.A, A.email));
-  check('privacy and provenance information', (await bodyHas(p.A, 'Private ones are visible only to you')) && (await bodyHas(p.A, 'A Cache ID is a permanent record')));
-  for (const l of ['Delete Account', 'Freeze Account', 'Private Profile']) {
+  check('privacy information', await bodyHas(p.A, 'Private ones are visible only to you'));
+  check('Delete Account is a working entry (opens the 14-day flow)', await p.A.eval(`[...document.querySelectorAll('[aria-label="Delete Account"]')].some(e => e.getAttribute('role') === 'button')`));
+  check('Download My Data is a working entry', await p.A.eval(`[...document.querySelectorAll('[aria-label="Download My Data"]')].some(e => e.getAttribute('role') === 'button')`));
+  for (const l of ['Freeze Account', 'Private Profile']) {
     check(`${l}: not available yet (no control)`, (await hasLabel(p.A, `${l}, not available yet`)) && !(await p.A.eval(`[...document.querySelectorAll('[role="button"],[role="switch"],button')].some(e => e.textContent.trim() === ${JSON.stringify(l)})`)));
   }
   check('non-admin sees no Admin Tools', !(await bodyHas(p.A, 'Waitlist Management')));
   await p.A.screenshot(`${OUT}/03-account.png`);
 
-  step('12. Admin-only Waitlist entry preserved');
+  step('10. Admin-only Waitlist entry preserved');
   await openDashboard(p.C);
   await eventually('admin C sees Waitlist Management', p.C, () => bodyHas(p.C, 'Waitlist Management'));
   await p.C.eval(`[...document.querySelectorAll('div')].filter(e => e.textContent.trim() === 'Waitlist Management').pop()?.scrollIntoView({ block: 'center' })`);
@@ -382,7 +320,7 @@ async function scenario(p) {
   await p.C.tap('text', 'Waitlist Management');
   await eventually('opens /admin/waitlist', p.C, async () => (await p.C.eval('location.pathname')) === '/admin/waitlist');
 
-  step('13. A failed count shows an error, never zero');
+  step('11. A failed count shows an error, never zero');
   await p.A.fakeRequests([{ match: /\/rest\/v1\/item_likes/, status: 500, body: { code: 'XX000', message: 'test failure', details: null, hint: null } }]);
   await openDashboard(p.A);
   await eventually('Engagement shows "Couldn’t load" with Retry', p.A, async () => (await bodyHas(p.A, 'Couldn’t load this right now.')) && (await hasLabel(p.A, 'Retry')));
@@ -391,7 +329,7 @@ async function scenario(p) {
   await p.A.screenshot(`${OUT}/04-failed-group.png`);
   await p.A.fakeRequests([]);
 
-  step('14. Sign Out');
+  step('12. Sign Out');
   await openDashboard(p.A);
   await queueAlert(p.A, 'Sign out');
   await tapLabel(p.A, 'Sign out');
