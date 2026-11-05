@@ -3,11 +3,14 @@
 // Deliberately minimal — CORS, JSON responses, JWT/caller resolution,
 // controlled error codes, and the service-role client factory only.
 //
-// SUPABASE_SERVICE_ROLE_KEY is read from Deno.env (an Edge Function
-// secret set via `supabase secrets set`) and never appears in any
-// committed file, the Expo app bundle, or a client response.
+// The privileged key (SUPABASE_SECRET_KEYS' default secret key, or the
+// legacy SUPABASE_SERVICE_ROLE_KEY) is resolved by _shared/service-key.ts from
+// the platform-provided environment and never appears in any committed file,
+// the Expo app bundle, or a client response.
 
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2';
+
+import { resolveServiceKey } from './service-key.ts';
 
 export const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -44,13 +47,15 @@ export type SnapshotImageErrorCode =
   | 'database_update_failed'
   | 'state_changed';
 
+// A privileged (RLS-bypassing) client, keyed by the shared resolver
+// (_shared/service-key.ts): the default secret API key, or the legacy
+// service-role JWT during the transition. Throws (fails closed) when no
+// usable key is configured; the key itself never appears in the error.
 export function serviceRoleClient(): SupabaseClient {
   const url = Deno.env.get('SUPABASE_URL');
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !serviceRoleKey) {
-    throw new Error('Edge Function misconfigured: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
-  }
-  return createClient(url, serviceRoleKey, {
+  if (!url) throw new Error('Edge Function misconfigured: missing SUPABASE_URL');
+  const { key } = resolveServiceKey();
+  return createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }

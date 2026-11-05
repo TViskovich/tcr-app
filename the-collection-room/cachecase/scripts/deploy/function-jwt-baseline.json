@@ -96,7 +96,7 @@
     "account-export": {
       "verify_jwt": true,
       "deployed": false,
-      "note": "the maintenance worker calls action sweep with the service role key; with verify_jwt = true that key must be a JWT (legacy API keys enabled) — verify in §3."
+      "why": "signed-in collectors only; export expiry and abandoned-job cleanup run inside account-maintenance, so no server key ever needs to pass this gateway"
     }
   },
   "production_only": {

@@ -252,7 +252,18 @@ Deploy **all** functions: every one imports `_shared/registry-image.ts`, which c
      - It can't schedule, cancel, restart or perform anything, and it reveals no ids or personal data.
      - Rate limits: one check per capability every 2 s, and 20 failed checks per client per 10 minutes.
      - Capabilities are purged with their job's records.
-   - `account-export`: the maintenance worker calls its `sweep` with the service role key. With `verify_jwt = true` that key must be a JWT, which means the legacy API keys must be enabled (Settings → API Keys). After §4, the worker's run must show `"exports":{"status":"ok"…}`. A 401 there means the legacy keys are disabled.
+   - **`account-export`:** collectors only (`verify_jwt = true`). It has no `sweep` action any more. Export expiry (7 days) and abandoned-export cleanup (24 h) run inside the maintenance worker, from `_shared/account-export-cleanup.ts`, with no call between functions.
+
+5. **Server API keys (secret keys and the legacy JWT):**
+   - Every function gets its privileged key from `_shared/service-key.ts`.
+     - It prefers the default secret key in the platform-provided `SUPABASE_SECRET_KEYS`, and falls back to the legacy `SUPABASE_SERVICE_ROLE_KEY`.
+     - With neither, functions fail closed: 500 `server_misconfigured`, logged as `server_key_unavailable`.
+     - Production already provides `SUPABASE_SECRET_KEYS`. **So after this deploy, the functions use the secret key.** The legacy key stays a fallback.
+   - **Raw Storage and resumable-upload calls** send the key on `apikey`. They add `Authorization: Bearer` only for a legacy JWT, because Storage rejects a secret key as a Bearer token.
+   - **Only `ACCOUNT_MAINTENANCE_SECRET`** authorizes `account-maintenance` and `account-monitor`. No Supabase API key does, legacy or secret.
+   - **Don't set** `CACHECASE_LOCAL_SECRET_KEYS`, `CACHECASE_LOCAL_DISABLE_SECRET_KEYS` or `CACHECASE_LOCAL_DISABLE_LEGACY_KEY`. They are local-test switches, ignored on hosted projects.
+   - **Don't deactivate the legacy API keys yet.** The deployed functions no longer need them, but deactivate only after a production week with the worker logging `"key_source":"SUPABASE_SECRET_KEYS"`, and after the mobile app no longer uses the legacy anon key.
+   - **Check:** `npm run check:server-keys` must print `OK` before deploying.
 
 **Version compatibility:**
 - The new functions need the step 2 schema. They must never be deployed before it.
@@ -273,7 +284,8 @@ curl -s -X POST https://<ref>.supabase.co/functions/v1/account-maintenance \
 **Pass when:**
 - the wrong secret returns 403;
 - the real secret returns `{"status":"ok","ready":true,"started":0,"processed":[], "exports":{"status":"ok",…}, "housekeeping":{…}}`;
-- the function logs show one `{"fn":"account-maintenance","outcome":"run",…}` line with no `alert`.
+- the function logs show one `{"fn":"account-maintenance","outcome":"run",…}` line, with no `alert`, and with `"key_kind":"secret","key_source":"SUPABASE_SECRET_KEYS"`. A `legacy_jwt` here means the platform didn't provide a secret key; it still works.
+- **The service role key no longer authorizes a run:** a call with `Authorization: Bearer <service role key>` returns 403.
 
 ## 5. Activate the scheduler — **APPROVAL**
 
@@ -361,7 +373,7 @@ Only after the worker is verified (§4), the scheduler is active (§5), the smok
    - **What arrives:** one email, subject `[CacheCase production] Monitoring Test`, body "This is a test of CacheCase's account-deletion monitoring alerts. No account deletion or data changes were triggered." It goes to `ACCOUNT_ALERT_EMAIL_TO`, from `ACCOUNT_ALERT_FROM_EMAIL` if set, otherwise from `WAITLIST_FROM_EMAIL`. If a webhook is configured, it gets the same text.
    - **Check delivery:** look in the inbox, and in spam. Resend → Emails shows the delivery status.
    - **What it touches:** only the rate-limit log. No alert, monitoring, deletion or collector record is read or written.
-   - **Authorization:** only the maintenance secret works. Any other credential, including the service role key, gets 403, and nothing is sent.
+   - **Authorization:** only the maintenance secret works. Any other credential, including any Supabase API key, gets 403, and nothing is sent.
    - **Responses:**
 
      | Response | Meaning | Fix |

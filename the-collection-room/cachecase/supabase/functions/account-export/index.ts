@@ -4,7 +4,6 @@
 //   POST { action: 'request' }   start a new export (recent sign-in required)
 //   POST { action: 'advance' }   do one bounded step of the export in progress
 //   POST { action: 'download' }  short-lived signed URLs for every part
-//   POST { action: 'sweep' }     service role only: expire / clean up overdue jobs
 //
 // The collector is ALWAYS the owner of the verified access token; no export
 // id, user id or path is accepted from the request, so nobody can reach
@@ -24,14 +23,23 @@
 //   resumable upload; when a part's files are in, its ZIP directory
 //   completes it. Memory stays bounded whatever the collection size.
 // The app drives the steps while its export screen is open ('advance');
-// the account-maintenance worker runs 'sweep' on a schedule.
+// expiry and abandoned-job cleanup run in the account-maintenance worker
+// itself (_shared/account-export-cleanup.ts) — no call into this function.
+//
+// Server key: _shared/service-key.ts (a secret API key, or the legacy
+// service-role JWT during the transition). Resumable uploads present it the
+// way Storage accepts for its kind (apikey header; Bearer only for a JWT).
 
-import { handleCorsPreflight, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+import { EXPORT_ACTIVE_STATES, exportCleanup } from '../_shared/account-export-cleanup.ts';
+import { handleCorsPreflight, jsonResponse } from '../_shared/registry-image.ts';
 import { signedInRecently } from '../_shared/recent-auth.ts';
+import { tryResolveServiceKey } from '../_shared/service-key.ts';
 import { collectData, mediaName, README, type OwnedObject } from './collect.ts';
 import { centralDirectory, concat, crc32, localEntry, localEntrySize, nameBytes, ZIP_MAX_BYTES, ZIP_MAX_ENTRIES } from './zip.ts';
 
-const BUCKET = 'account-exports';
+const BUCKET = 'account-exports'; // = EXPORT_BUCKET
 const EXPORT_DAYS = 7;
 const SIGNED_URL_SECONDS = 300;
 const LEASE_SECONDS = 90;
@@ -39,7 +47,7 @@ const STEP_TARGET_BYTES = 6 * 1024 * 1024;
 const STEP_TIME_BUDGET_MS = 20_000;
 const MAX_ATTEMPTS = 3; // archive (re)builds
 const MAX_STEP_FAILURES = 5; // consecutive failed steps
-const ACTIVE = ['queued', 'collecting', 'archiving'];
+const ACTIVE = EXPORT_ACTIVE_STATES;
 
 // Largest part, in bytes. Default stays under Supabase's default 50 MB
 // upload limit; set ACCOUNT_EXPORT_PART_BYTES to match the project's limit.
@@ -89,10 +97,17 @@ type Part = {
   completed: boolean;
 };
 
-const client = serviceRoleClient();
-const STORAGE_URL = `${Deno.env.get('SUPABASE_URL')}/storage/v1`;
-const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const tusHeaders = { Authorization: `Bearer ${SERVICE_KEY}`, 'Tus-Resumable': '1.0.0' };
+// No usable server key → every request fails closed (server_misconfigured).
+const SERVICE_KEY = tryResolveServiceKey();
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const client = createClient(SUPABASE_URL, SERVICE_KEY?.key ?? 'unconfigured', {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
+const cleanup = exportCleanup<Job>({
+  client, supabaseUrl: SUPABASE_URL, serviceKey: SERVICE_KEY, log: (f) => log(f),
+});
+const STORAGE_URL = cleanup.storageUrl;
+const tusHeaders = cleanup.tusHeaders;
 const encoder = new TextEncoder();
 
 const failed = (reason: string, status: number) => jsonResponse({ status: 'failed', reason }, status);
@@ -129,12 +144,7 @@ async function latestJob(userId: string): Promise<Job | null> {
   return data as Job | null;
 }
 
-async function update(id: string, fields: Record<string, unknown>): Promise<Job> {
-  const { data, error } = await client.from('account_exports')
-    .update({ ...fields, updated_at: new Date().toISOString() }).eq('id', id).select('*').single();
-  if (error) throw new Error(`job_update_failed: ${error.code}`);
-  return data as Job;
-}
+const update = cleanup.update;
 
 async function partsOf(exportId: string): Promise<Part[]> {
   const { data, error } = await client.from('account_export_parts').select('*').eq('export_id', exportId).order('part');
@@ -143,26 +153,7 @@ async function partsOf(exportId: string): Promise<Part[]> {
 }
 
 // ── Storage helpers ─────────────────────────────────────────────────────────
-async function removePrefix(prefix: string) {
-  const stack = [prefix];
-  while (stack.length) {
-    const dir = stack.pop()!;
-    for (;;) {
-      const { data } = await client.storage.from(BUCKET).list(dir, { limit: 1000 });
-      const files = (data ?? []).filter((o) => o.id).map((o) => `${dir}/${o.name}`);
-      for (const folder of (data ?? []).filter((o) => !o.id)) stack.push(`${dir}/${folder.name}`);
-      if (files.length) await client.storage.from(BUCKET).remove(files);
-      if (files.length < 1000) break;
-    }
-  }
-}
-
-async function terminateUpload(url: string | null) {
-  if (!url) return;
-  try {
-    await fetch(url, { method: 'DELETE', headers: tusHeaders });
-  } catch {}
-}
+// removePrefix / terminateUpload: _shared/account-export-cleanup.ts.
 
 async function createUpload(objectPath: string, length: number): Promise<string> {
   const meta = [`bucketName ${btoa(BUCKET)}`, `objectName ${btoa(objectPath)}`, `contentType ${btoa('application/zip')}`].join(',');
@@ -211,25 +202,8 @@ async function readSource(entry: Entry): Promise<Uint8Array> {
   return bytes;
 }
 
-// ── Cleanup / terminal states ───────────────────────────────────────────────
-async function discardArchive(job: Job) {
-  for (const part of await partsOf(job.id)) await terminateUpload(part.upload_url);
-  await removePrefix(`${job.user_id}/${job.id}`);
-  await client.from('account_export_entries').delete().eq('export_id', job.id);
-  await client.from('account_export_parts').delete().eq('export_id', job.id);
-}
-
-async function failJob(job: Job, code: string): Promise<Job> {
-  await discardArchive(job);
-  log({ outcome: 'failed', export_id: job.id, code });
-  return update(job.id, { status: 'failed', last_error_code: code, object_path: null, lease_until: null });
-}
-
-async function expireJob(job: Job): Promise<Job> {
-  await discardArchive(job);
-  log({ outcome: 'expired', export_id: job.id });
-  return update(job.id, { status: 'expired', object_path: null, lease_until: null });
-}
+// ── Cleanup / terminal states (shared with the maintenance sweep) ───────────
+const { discardArchive, failJob, expireJob, removePrefix } = cleanup;
 
 const isOverdue = (job: Job) => job.status === 'ready' && !!job.expires_at && Date.parse(job.expires_at) <= Date.now();
 
@@ -515,15 +489,6 @@ async function advance(job: Job): Promise<Job> {
   }
 }
 
-function sameSecret(a: string, b: string): boolean {
-  if (!a || !b) return false;
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  return diff === 0;
-}
-
 async function accountIsDeleting(userId: string): Promise<boolean> {
   const { data } = await client.from('account_lifecycle').select('state').eq('user_id', userId).maybeSingle();
   return (data as { state?: string } | null)?.state === 'deleting';
@@ -542,23 +507,17 @@ Deno.serve(async (req: Request) => {
     return failed('invalid_body', 400);
   }
   const action = body.action;
-  if (!['status', 'request', 'advance', 'download', 'sweep'].includes(action as string)) return failed('invalid_action', 400);
+  if (!['status', 'request', 'advance', 'download'].includes(action as string)) return failed('invalid_action', 400);
 
   const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim() ?? '';
   if (!token) return failed('invalid_token', 401);
 
-  try {
-    if (action === 'sweep') {
-      if (!sameSecret(token, SERVICE_KEY)) return failed('forbidden', 403);
-      const { data: overdue } = await client.from('account_exports').select('*').eq('status', 'ready')
-        .lte('expires_at', new Date().toISOString()).limit(100);
-      for (const job of (overdue ?? []) as Job[]) await expireJob(job);
-      const stale = new Date(Date.now() - 24 * 3_600_000).toISOString(); // resumable uploads last 24 h
-      const { data: stuck } = await client.from('account_exports').select('*').in('status', ACTIVE).lt('updated_at', stale).limit(100);
-      for (const job of (stuck ?? []) as Job[]) await failJob(job, 'export_abandoned');
-      return jsonResponse({ status: 'ok', expired: (overdue ?? []).length, abandoned: (stuck ?? []).length }, 200);
-    }
+  if (!SERVICE_KEY) {
+    log({ outcome: 'server_key_unavailable' });
+    return failed('server_misconfigured', 500);
+  }
 
+  try {
     // Deliberately not resolveCaller: that refuses accounts pending
     // deletion, and exporting their data is exactly what they may still do.
     const { data: userData, error: userError } = await client.auth.getUser(token);

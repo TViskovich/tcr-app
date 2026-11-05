@@ -10,7 +10,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "check:function-jwt": "node scripts/deploy/check-function-jwt.mjs"
+    "check:function-jwt": "node scripts/deploy/check-function-jwt.mjs",
+    "check:server-keys": "node scripts/deploy/check-server-key-usage.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

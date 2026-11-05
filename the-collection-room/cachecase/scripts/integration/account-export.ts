@@ -260,7 +260,7 @@ async function main() {
   check('no user token is rejected', (await fn({ action: 'status' }, null)).json?.reason === 'invalid_token');
   check('status: no export yet', (await fn({ action: 'status' }, A.token)).json?.export === null);
   check('download without a ready export → no_ready_export', (await fn({ action: 'download' }, A.token)).json?.reason === 'no_ready_export');
-  check('sweep is service-role only', (await fn({ action: 'sweep' }, A.token)).status === 403);
+  check('there is no sweep action any more (cleanup runs inside the maintenance worker)', (await fn({ action: 'sweep' }, A.token)).json?.reason === 'invalid_action');
   await signIn(A); // a known sign-in time, then let it go stale
   await sleep((WINDOW_SECONDS + 2) * 1000);
   const stale = await fn({ action: 'request' }, A.token);

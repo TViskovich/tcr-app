@@ -20,7 +20,9 @@
 //      Failures back off (30 s … 1 h); after MAX_FAILURES consecutive
 //      failures the job is 'failed' and an alert is logged (admins also
 //      see it in the Dashboard).
-//   3. expires Download My Data archives and abandoned exports;
+//   3. expires Download My Data archives and abandoned exports — in this
+//      process (_shared/account-export-cleanup.ts), not by calling
+//      account-export;
 //   4. removes files found in a recently completed deletion's folders (an
 //      upload that was in flight while the account was deleted);
 //   5. deletes job records 30 days after completion and expired username
@@ -33,13 +35,18 @@
 // deleting), and the manifest is rebuilt once more after the auth user is
 // deleted, so no file of theirs can land after the last check unnoticed.
 //
-// Authorization: the ACCOUNT_MAINTENANCE_SECRET (sent by the scheduler; at
-// least 32 characters, otherwise treated as unset) or the service role key.
-// Logs never contain emails or usernames.
+// Authorization: ONLY the ACCOUNT_MAINTENANCE_SECRET (sent by the scheduler,
+// the Delete Now kick-off and operators; at least 32 characters, otherwise
+// treated as unset). No Supabase API key — legacy JWT or secret key —
+// authorizes a run.
+// Server key: _shared/service-key.ts; without a usable one every run fails
+// closed. Logs never contain emails, usernames or key values.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
+import { exportCleanup } from '../_shared/account-export-cleanup.ts';
 import { jsonResponse } from '../_shared/registry-image.ts';
+import { tryResolveServiceKey } from '../_shared/service-key.ts';
 
 const RUN_BUDGET_MS = 40_000;
 const CLAIM_LIMIT = 3;
@@ -62,8 +69,9 @@ type Job = {
   objects_deleted: number;
 };
 
-const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const client = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_KEY, {
+const SERVICE_KEY = tryResolveServiceKey();
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const client = createClient(SUPABASE_URL, SERVICE_KEY?.key ?? 'unconfigured', {
   auth: { autoRefreshToken: false, persistSession: false },
   global: { fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }) },
 });
@@ -71,8 +79,11 @@ const MAINTENANCE_SECRET = (() => {
   const value = Deno.env.get('ACCOUNT_MAINTENANCE_SECRET') ?? '';
   return value.length >= 32 ? value : '';
 })();
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const log = (fields: Record<string, unknown>) => console.log(JSON.stringify({ fn: 'account-maintenance', ...fields }));
+const exportsCleanup = exportCleanup({
+  client, supabaseUrl: SUPABASE_URL, serviceKey: SERVICE_KEY,
+  log: (fields) => log({ area: 'exports', ...fields }),
+});
 
 class StepError extends Error {}
 
@@ -275,18 +286,11 @@ async function run(onlyJob: string | null) {
     }
   }
 
-  // Download My Data: expiry and abandoned jobs.
+  // Download My Data: expiry and abandoned jobs (in this process).
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/account-export`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
-      body: JSON.stringify({ action: 'sweep' }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    summary.exports = res.ok ? await res.json() : { status: res.status };
-    if (!res.ok) runErrors.add('export_sweep_failed');
+    summary.exports = { status: 'ok', ...(await exportsCleanup.sweep()) };
   } catch {
-    summary.exports = { status: 'unreachable' };
+    summary.exports = { status: 'failed' };
     runErrors.add('export_sweep_failed');
     log({ outcome: 'export_sweep_failed' });
   }
@@ -295,7 +299,7 @@ async function run(onlyJob: string | null) {
   if (housekeepingError) runErrors.add('housekeeping_failed');
   summary.housekeeping = housekeeping;
   summary.ms = Date.now() - started;
-  log({ outcome: 'run', ...summary, processed: (summary.processed as unknown[]).length });
+  log({ outcome: 'run', ...summary, processed: (summary.processed as unknown[]).length, key_kind: SERVICE_KEY?.kind, key_source: SERVICE_KEY?.source });
   // A Delete Now kick-off (onlyJob) is not a maintenance run.
   if (!onlyJob) {
     await recordRun(!ready ? 'not_ready' : runErrors.size ? 'degraded' : 'ok', summary.ms as number,
@@ -319,8 +323,12 @@ async function recordRun(outcome: 'ok' | 'degraded' | 'not_ready' | 'failed', ms
 Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return jsonResponse({ status: 'failed', reason: 'method_not_allowed' }, 405);
   const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim() ?? '';
-  if (!sameSecret(token, MAINTENANCE_SECRET) && !sameSecret(token, SERVICE_KEY)) {
+  if (!sameSecret(token, MAINTENANCE_SECRET)) {
     return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
+  }
+  if (!SERVICE_KEY) {
+    log({ outcome: 'server_key_unavailable' });
+    return jsonResponse({ status: 'failed', reason: 'server_misconfigured' }, 500);
   }
   let body: { job_id?: unknown } = {};
   try {

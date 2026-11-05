@@ -32,17 +32,20 @@
 // Content: issue codes, counts and timestamps only — never emails,
 // usernames, account or job ids. Recipients and URLs are never logged.
 //
-// Authorization: ACCOUNT_MAINTENANCE_SECRET (≥ 32 characters) or the
-// service role key; gateway JWT verification is off (config.toml).
+// Authorization: ONLY ACCOUNT_MAINTENANCE_SECRET (≥ 32 characters), for
+// every action; no Supabase API key (legacy JWT or secret key) authorizes
+// anything. Gateway JWT verification is off (config.toml). Server key:
+// _shared/service-key.ts (fails closed without one).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { jsonResponse } from '../_shared/registry-image.ts';
 import { sendResendEmail } from '../_shared/resend.ts';
+import { tryResolveServiceKey } from '../_shared/service-key.ts';
 
 const REQUEST_TIMEOUT_MS = 10_000;
-const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const client = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_KEY, {
+const SERVICE_KEY = tryResolveServiceKey();
+const client = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_KEY?.key ?? 'unconfigured', {
   auth: { autoRefreshToken: false, persistSession: false },
   global: { fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }) },
 });
@@ -264,18 +267,19 @@ Deno.serve(async (req: Request) => {
   try {
     body = await req.json();
   } catch {}
+  // Maintenance secret only, for every action; checked before anything else.
+  if (!sameSecret(token, MAINTENANCE_SECRET)) return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
+  if (!SERVICE_KEY) {
+    log({ outcome: 'server_key_unavailable' });
+    return jsonResponse({ status: 'failed', reason: 'server_misconfigured' }, 500);
+  }
   if (body?.action === 'test') {
-    // Maintenance secret only; checked before anything else happens.
-    if (!sameSecret(token, MAINTENANCE_SECRET)) return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
     try {
       return await sendTest();
     } catch (e) {
       log({ outcome: 'test_failed', error: (e as Error).message.slice(0, 160) });
       return jsonResponse({ status: 'failed', test: true, reason: 'server_error' }, 500);
     }
-  }
-  if (!sameSecret(token, MAINTENANCE_SECRET) && !sameSecret(token, SERVICE_KEY)) {
-    return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
   }
   if (body?.action !== undefined) return jsonResponse({ status: 'failed', reason: 'invalid_action' }, 400);
   try {

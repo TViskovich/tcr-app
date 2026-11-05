@@ -98,6 +98,7 @@ import {
   validateItemImagesStoragePath,
 } from '../_shared/registry-image.ts';
 import { IMAGE_TIER_TRANSFORMS, parseImageTier, type ImageTier } from '../_shared/image-tiers.ts';
+import { tryResolveServiceKey } from '../_shared/service-key.ts';
 
 const SIGNED_URL_TTL_SECONDS = 300;
 
@@ -108,7 +109,10 @@ const SIGNED_URL_TTL_SECONDS = 300;
 // folders row carries no client-visible signal of WHICH image is resolved.
 //
 // HMAC-SHA256 of the resolved storage path, keyed with a server-only secret
-// (derived from the service-role key, never sent anywhere) and truncated to
+// (derived from the server API key via _shared/service-key.ts, never sent
+// anywhere; when that key changes — e.g. from the legacy service-role JWT to
+// a secret key — tokens change once and clients simply re-cache) and
+// truncated to
 // 128 bits. Same image -> same token across every re-sign; a different
 // resolved image (new first card, new primary image, new upload — each
 // always a distinct storage path) -> a different token. It reveals nothing
@@ -118,7 +122,7 @@ const SIGNED_URL_TTL_SECONDS = 300;
 // authorized, resolved cover — never for an 'unavailable' one. Omitted if
 // the key material is somehow unavailable (clients then fall back to
 // URL-keyed caching, exactly as before).
-const IMAGE_TOKEN_SECRET = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const IMAGE_TOKEN_SECRET = tryResolveServiceKey()?.key ?? '';
 let imageTokenKey: Promise<CryptoKey> | null = null;
 
 async function imageTokenFor(storagePath: string): Promise<string | undefined> {
