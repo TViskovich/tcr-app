@@ -31,6 +31,12 @@ const PART_LIMIT = 45 * 1024 * 1024;
 const UPLOAD_LIMIT = 50 * 1024 * 1024;
 // Sizes in MB: typical phone photos, a few large scans, one very large one.
 const PHOTO_MB = [3.2, 4.1, 5.6, 2.4, 6.8, 4.9, 3.7, 7.5, 5.2, 4.4, 18.3, 3.9, 6.1, 2.8];
+const DM_MB = [9.5, 8.7, 9.8]; // sent DM photos, just under the 10 MiB dm-attachments limit
+const dmNames: string[] = [];
+let peerId = '';
+let conv = '';
+let receivedSha = '';
+let receivedName = '';
 const work = mkdtempSync(join(tmpdir(), 'cachecase-export-large-'));
 
 const results: { name: string; ok: boolean }[] = [];
@@ -91,7 +97,31 @@ try {
     originals.set(`media/item-images/${item}/photo-${i}.jpg`, sha256(bytes));
     total += bytes.length;
   }
-  console.log(`Seeded ${PHOTO_MB.length} photos, ${(total / 1048576).toFixed(1)} MiB.`);
+  // Sent DM photos (near the 10 MiB bucket limit), and one received that must not appear.
+  const peer = await admin.auth.admin.createUser({ email: `p${email}`, password, email_confirm: true, user_metadata: { username: `p${username}`.slice(0, 15) } });
+  if (peer.error || !peer.data.user) throw new Error(`peer: ${peer.error?.message}`);
+  peerId = peer.data.user.id;
+  const peerDb = createClient(st.API_URL, st.ANON_KEY, opts);
+  { const r = await peerDb.auth.signInWithPassword({ email: `p${email}`, password }); if (r.error) throw new Error(`peer sign in: ${r.error.message}`); }
+  conv = must(await db.rpc('get_or_create_conversation', { other_user_id: peerId }), 'conversation') as string;
+  const sendPhoto = async (client: typeof db, sender: string, mb: number) => {
+    const id = randomUUID();
+    const path = `${conv}/${id}/image.jpg`;
+    const bytes = randomBytes(Math.round(mb * 1024 * 1024));
+    must(await client.storage.from('dm-attachments').upload(path, bytes, { contentType: 'image/jpeg', upsert: false }), 'dm upload');
+    must(await client.from('messages').insert({ id, conversation_id: conv, sender_id: sender, attachment_type: 'image', attachment_storage_path: path }), 'dm message');
+    return { id, bytes };
+  };
+  for (const mb of DM_MB) {
+    const d = await sendPhoto(db, userId, mb);
+    originals.set(`media/dm-attachments/${d.id}.jpg`, sha256(d.bytes));
+    dmNames.push(`media/dm-attachments/${d.id}.jpg`);
+    total += d.bytes.length;
+  }
+  const received = await sendPhoto(peerDb, peerId, 1.5);
+  receivedSha = sha256(received.bytes);
+  receivedName = `media/dm-attachments/${received.id}.jpg`;
+  console.log(`Seeded ${PHOTO_MB.length} photos and ${DM_MB.length} sent DM photos, ${(total / 1048576).toFixed(1)} MiB.`);
   check('the collection is larger than 50 MB', total > 50 * 1000 * 1000);
 
   must(await fn({ action: 'request' }, token).then((r) => ({ data: r.json, error: r.status === 200 ? null : { message: JSON.stringify(r.json) } })), 'request');
@@ -135,11 +165,19 @@ try {
     && manifest.parts.every((m: any, i: number) => m.bytes === parts[i].bytes && m.file_name === parts[i].file_name));
   const listed = new Map<string, any>((manifest?.files ?? []).map((f: any) => [f.name, f]));
   check('the manifest lists exactly the files in the parts', listed.size + 1 === inZips.size && [...listed.keys()].every((n) => inZips.has(n)));
+  check('multipart manifest carries the transparency sections and accurate media count', manifest?.format_version === 3
+    && Array.isArray(manifest.not_included) && manifest.not_included.length === 5 && manifest.excluded_records?.tags_received_not_visible_omitted?.count === 0
+    && manifest.counts?.media_files === [...listed.keys()].filter((n) => n.startsWith('media/')).length, manifest && { v: manifest.format_version, counts: manifest.counts });
   check('every photo is byte-identical to the original (SHA-256)', [...originals].every(([n, h]) => inZips.get(n) === h),
     [...originals].filter(([n, h]) => inZips.get(n) !== h).map(([n]) => n));
   const big = `media/item-images/${item}/photo-${PHOTO_MB.indexOf(18.3)}.jpg`;
   check('the 18 MB photo is stored whole, in one part', !!inZips.get(big) && listed.get(big)?.bytes === Math.round(18.3 * 1024 * 1024));
   check('the manifest’s byte counts match the photos', [...originals.keys()].every((n) => typeof listed.get(n)?.bytes === 'number'));
+  check('every sent DM photo is in the archive, byte-identical, with its part recorded', dmNames.length === 3
+    && dmNames.every((n) => inZips.get(n) === originals.get(n) && listed.get(n)?.part >= 1), dmNames.map((n) => listed.get(n)));
+  check('sent DM photos span parts beyond part 1', dmNames.some((n) => listed.get(n)?.part >= 2), dmNames.map((n) => listed.get(n)?.part));
+  check('the photo the other collector sent is absent', !inZips.has(receivedName) && ![...inZips.values()].includes(receivedSha));
+  check('manifest counts the sent DM photos', manifest?.counts?.sent_message_photos === 3 && manifest.counts.sent_message_photos_unavailable === 0, manifest?.counts);
 } catch (e) {
   fatal = e;
   console.error(`Aborted: ${(e as Error).message}`);
@@ -155,6 +193,16 @@ try {
       stack.push(...(data ?? []).filter((o) => !o.id).map((o) => `${prefix}/${o.name}`));
     }
   }
+  if (conv) {
+    const { data } = await admin.storage.from('dm-attachments').list(conv, { limit: 1000 });
+    for (const folder of data ?? []) {
+      const { data: files } = await admin.storage.from('dm-attachments').list(`${conv}/${folder.name}`, { limit: 10 });
+      const paths = (files ?? []).map((f) => `${conv}/${folder.name}/${f.name}`);
+      if (paths.length) await admin.storage.from('dm-attachments').remove(paths);
+    }
+    await admin.from('conversations').delete().eq('id', conv);
+  }
+  if (peerId) await admin.auth.admin.deleteUser(peerId);
   await admin.auth.admin.deleteUser(userId);
   rmSync(work, { recursive: true, force: true });
 }

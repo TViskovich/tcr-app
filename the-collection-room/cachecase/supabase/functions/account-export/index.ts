@@ -36,7 +36,7 @@ import { EXPORT_ACTIVE_STATES, exportCleanup } from '../_shared/account-export-c
 import { handleCorsPreflight, jsonResponse } from '../_shared/registry-image.ts';
 import { signedInRecently } from '../_shared/recent-auth.ts';
 import { tryResolveServiceKey } from '../_shared/service-key.ts';
-import { collectData, mediaName, README, type OwnedObject } from './collect.ts';
+import { collectData, dmPhotoName, mediaName, NOT_INCLUDED, README, type DmPhoto, type OwnedObject } from './collect.ts';
 import { centralDirectory, concat, crc32, localEntry, localEntrySize, nameBytes, ZIP_MAX_BYTES, ZIP_MAX_ENTRIES } from './zip.ts';
 
 const BUCKET = 'account-exports'; // = EXPORT_BUCKET
@@ -262,14 +262,34 @@ async function collect(job: Job): Promise<Job> {
     after = { bucket: page[page.length - 1].bucket_id, name: page[page.length - 1].name };
   }
 
+  // Photos the collector SENT in direct messages (dm-attachments paths are
+  // per conversation, so ownership comes from the message — see
+  // export_sent_message_attachments). Kept apart from `owned`, so post image
+  // references can never resolve to a DM photo.
+  const dmPhotos: DmPhoto[] = [];
+  let afterMessage: string | null = null;
+  for (;;) {
+    const { data, error } = await client.rpc('export_sent_message_attachments', {
+      p_user_id: userId, p_after_message_id: afterMessage, p_limit: 1000,
+    });
+    if (error) throw new Error(`dm_photos_failed: ${error.code}`);
+    const page = (data ?? []) as { message_id: string; bucket_id: string; name: string; size: number }[];
+    for (const o of page) {
+      if (o.bucket_id !== 'dm-attachments') continue; // the function guarantees this; never trust a widening
+      dmPhotos.push({ messageId: o.message_id, bucket: o.bucket_id, path: o.name, size: Number(o.size), archiveName: dmPhotoName(o.message_id) });
+    }
+    if (page.length < 1000) break;
+    afterMessage = page[page.length - 1].message_id;
+  }
+
   const generatedAt = new Date().toISOString();
   const date = generatedAt.slice(0, 10);
-  const { files, counts } = await collectData(client, userId, owned);
+  const { files, counts, withheld } = await collectData(client, userId, owned, dmPhotos);
   const { data: excluded } = await client.rpc('account_export_unreleased_records', { p_user_id: userId });
   const readme = encoder.encode(README(generatedAt));
   const staging = `${userId}/${job.id}/staging`;
   const dataFiles = files.map((f) => ({ name: f.name, bucket: BUCKET, path: `${staging}/${f.name}`, size: f.bytes.length }));
-  const media = owned.map((o) => ({ name: o.archiveName, bucket: o.bucket, path: o.path, size: o.size }));
+  const media = [...owned, ...dmPhotos].map((o) => ({ name: o.archiveName, bucket: o.bucket, path: o.path, size: o.size }));
 
   // The manifest lists every file and its part, and lives in part 1, so its
   // size is reserved first and the manifest padded to exactly that size.
@@ -286,20 +306,35 @@ async function collect(job: Job): Promise<Job> {
     plan = assignParts(ordered);
     const partCount = plan.partBytes.length;
     const manifest = {
-      format_version: 2,
+      format_version: 3,
       export_id: job.id,
       generated_at: generatedAt,
       parts: plan.partBytes.map((bytes, i) => ({ part: i + 1, file_name: partFileName(date, i + 1, partCount), bytes })),
-      counts: { ...counts, media_files: owned.length },
+      counts: { ...counts, media_files: media.length },
       files: plan.planned.filter((p) => p.name !== 'manifest.json').map((p) => ({ name: p.name, bytes: p.size, part: p.part })),
       how_to_use: partCount > 1
         ? `This export has ${partCount} parts. Download every part; each is a complete ZIP you can open on its own. files[].part says which part holds each file.`
         : 'This export is a single ZIP.',
-      not_included: [
-        'Messages other collectors sent you',
-        'Photos attached to direct messages',
-        'Other collectors’ content, including posts you reposted or quoted',
-      ],
+      // Records that exist but were deliberately left out, counted only.
+      // null = could not be counted for this export.
+      excluded_records: {
+        tags_received_not_visible_omitted: {
+          count: withheld.tags_received_not_visible_omitted,
+          meaning: 'Tags other collectors added to their items or collections that you cannot see. Not listed in activity/tags.json; no details about them are included.',
+        },
+        notifications_omitted: {
+          unreleased_features: withheld.notifications_unreleased_features,
+          other_types: withheld.notifications_other_types,
+          not_visible_content: withheld.notifications_not_visible_content,
+          meaning: 'Notifications not listed in notifications/notifications.json: those of unreleased features (Registry and Transfers), of types this export does not include, and tags on items or collections you can no longer see. No details about them are included.',
+        },
+        unreleased_registry_and_transfers: {
+          counts: excluded ?? null,
+          meaning: 'Registry and Transfers records that involve you, in features that are not released. Not included in this archive.',
+        },
+      },
+      not_included: NOT_INCLUDED,
+      completeness: 'This archive contains the files listed in "files". It is not a copy of every record CacheCase systems hold; "not_included" and "excluded_records" describe what is left out.',
     };
     const text = encoder.encode(JSON.stringify(manifest, null, 2) + '\n');
     if (text.length <= reserve) {
