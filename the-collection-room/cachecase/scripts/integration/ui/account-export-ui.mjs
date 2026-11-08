@@ -140,7 +140,12 @@ async function scenario(p, A) {
   await p.A.goto(`${APP}/dashboard`);
   await tapLabel(p.A, 'Download My Data');
   await eventually('the export screen offers a request', p.A, async () => (await path(p.A)) === '/account/export' && (await hasLabel(p.A, 'Request my data')));
-  check('it explains what is (and isn’t) included', (await bodyHas(p.A, 'original photos')) && (await bodyHas(p.A, 'Messages other collectors sent you aren’t included')));
+  check('it explains what is (and isn’t) included', (await bodyHas(p.A, 'original photos')) && (await bodyHas(p.A, 'What’s included'))
+    && (await bodyHas(p.A, 'Messages you sent, including photos you attached')) && (await bodyHas(p.A, 'Your notifications and conversation details'))
+    && (await bodyHas(p.A, 'What’s not included')) && (await bodyHas(p.A, 'Messages and photos other collectors sent you'))
+    && (await bodyHas(p.A, 'not of every record CacheCase keeps')) && (await bodyHas(p.A, 'Each copy is kept for 7 days')));
+  check('the screen makes no “everything” promise and names no unreleased feature',
+    !(await p.A.eval(`/all (of )?your (personal )?(data|information)|everything (about you|we (hold|have|keep))|registry|transfer/i.test(document.body.textContent)`)));
   await tapLabel(p.A, 'Request my data');
   await fill(p.A, 'Password for Download My Data', 'wrong-password');
   await tapLabel(p.A, 'Prepare my data');
@@ -153,6 +158,20 @@ async function scenario(p, A) {
   await eventually('Ready to Download (driven by the open screen)', p.A, () => bodyHas(p.A, 'Ready to Download'), 90000);
   check('size and "available until" date are shown', await p.A.eval(`/KB|MB/.test(document.body.textContent) && document.body.textContent.includes('available until')`));
   await p.A.screenshot(`${OUT}/02-ready.png`);
+  // The longer included/not-included copy must end above the floating tab bar
+  // when scrolled to the bottom (screen pads by TAB_BAR_HEIGHT + inset + 24).
+  const clearance = await p.A.eval(`(() => {
+    const note = [...document.querySelectorAll('div,span')].filter((e) => e.childElementCount === 0 && e.textContent.includes('Each copy is kept for 7 days')).pop();
+    if (!note) return 'no-note';
+    for (let el = note.parentElement; el; el = el.parentElement) if (el.scrollHeight > el.clientHeight + 1) el.scrollTop = el.scrollHeight;
+    const tabs = [...document.querySelectorAll('[aria-label]')].filter((e) => ['Feed', 'CacheCase', 'Dashboard'].includes(e.getAttribute('aria-label')))
+      .map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0 && r.top < window.innerHeight);
+    const tabTop = tabs.length ? Math.min(...tabs.map((r) => r.top)) : window.innerHeight;
+    const bottom = note.getBoundingClientRect().bottom;
+    return bottom <= tabTop ? 'clear' : 'covered ' + Math.round(bottom) + ' > ' + Math.round(tabTop);
+  })()`);
+  await p.A.screenshot(`${OUT}/02b-ready-bottom.png`);
+  check('scrolled to the end, the last note sits above the floating tab bar', clearance === 'clear', clearance);
   await captureOpens(p.A);
   await tapLabel(p.A, 'Download my data');
   await eventually('Download opens a short-lived signed link', p.A, async () => (await p.A.eval('(window.__opened ?? []).length')) === 1);

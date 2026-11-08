@@ -227,6 +227,7 @@ async function scenario(p) {
   check('the remaining recovery time is shown', await p.A.eval(`/1[34] days.*left to recover your account/.test(document.body.textContent)`));
   check('Cancel Deletion and Sign Out are offered', (await hasLabel(p.A, 'Cancel deletion')) && (await hasLabel(p.A, 'Sign out')));
   await eventually('Download My Data is available on the Pending screen', p.A, () => hasLabel(p.A, 'Request my data'));
+  check('the Pending screen summarises what the download contains', await bodyHas(p.A, 'Get a ZIP file of your profile, collections, items, photos, posts, messages you sent and more.'));
   // Checkpoint 4: Delete Permanently Now is offered (the backend is ready).
   await eventually('Delete Permanently Now is offered on the Pending screen', p.A, () => hasLabel(p.A, 'Delete permanently now'));
   check('no tab bar on the Pending Deletion screen', !(await showsLabel(p.A, 'Dashboard')));

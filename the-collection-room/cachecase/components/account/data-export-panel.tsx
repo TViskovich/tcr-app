@@ -133,12 +133,14 @@ export function DataExportPanel({ compact = false }: { compact?: boolean }) {
         <>
           {!compact ? (
             <Text style={styles.body}>
-              Get one ZIP file with your profile, collections (with nesting), items with all their details, original
-              photos, Grails, posts, comments, messages you sent and the collectors you follow — as JSON, plus CSV for
-              collections and items.
+              Get a ZIP file of your CacheCase data: your profile, collections, items and their original photos,
+              Grails, posts, comments, likes, saves, ratings and tags, who you follow and who follows you, the messages
+              and photos you sent, your notifications and your conversation details.
             </Text>
           ) : (
-            <Text style={styles.body}>Get one ZIP file with your profile, collections, items, photos and more.</Text>
+            <Text style={styles.body}>
+              Get a ZIP file of your profile, collections, items, photos, posts, messages you sent and more.
+            </Text>
           )}
           {startButton('Request my data')}
         </>
