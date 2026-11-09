@@ -409,8 +409,19 @@ export default function DashboardScreen() {
         </Card>
         <View style={styles.card}>
           <Pressable
-            onPress={() => router.push('/account/delete')}
+            onPress={() => router.push('/account/password')}
             style={({ pressed }) => [styles.navRow, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Change Password">
+            <View style={styles.navRowText}>
+              <Text style={styles.navRowTitle}>Change Password</Text>
+              <Text style={styles.navRowDetail}>Confirm your current password to choose a new one</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/account/delete')}
+            style={({ pressed }) => [styles.navRow, styles.listRowBorder, pressed && styles.pressed]}
             accessibilityRole="button"
             accessibilityLabel="Delete Account"
             accessibilityHint="Explains the 14-day recovery period before anything is scheduled">

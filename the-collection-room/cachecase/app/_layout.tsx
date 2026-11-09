@@ -45,11 +45,18 @@ const CACHECASE_NAV_THEME: Theme = {
 };
 
 function RootLayoutNav() {
-  const { session, loading } = useAuth();
+  const { session, loading, recoveryHold } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
   const inAuthGroup = segments[0] === '(auth)';
+  // Password recovery (lib/auth.tsx): a session created by verifying a
+  // recovery code is HELD on the reset screen until the new password is
+  // saved or the reset is cancelled — no tabs, no account screens (Delete
+  // Account, Download My Data, Pending Deletion), whatever route is asked for
+  // (back gesture, deep link, relaunch).
+  const held = !!session && recoveryHold;
+  const onResetScreen = inAuthGroup && (segments as string[])[1] === 'reset-password';
   // Account lifecycle (Dashboard Milestone 2): a collector whose account is
   // pending deletion — or being deleted — sees only the Pending Deletion
   // screen. The database already hides and freezes the account; this keeps
@@ -67,7 +74,7 @@ function RootLayoutNav() {
   // <GlobalFloatingTabBar>) so the Tabs-group badge and the floating bar's
   // own badge, rendered outside the tabs subtree, share one query/poll
   // lifecycle and one count instead of each owning a private instance.
-  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(accountHidden || lifecycleUnknown ? undefined : session?.user?.id);
+  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(accountHidden || lifecycleUnknown || held ? undefined : session?.user?.id);
   const messageBadgeContextValue = useMemo(
     () => ({ unreadCount, latestUnreadAt, refreshMessageBadge }),
     [unreadCount, latestUnreadAt, refreshMessageBadge],
@@ -77,6 +84,13 @@ function RootLayoutNav() {
     if (loading) return;
     if (!session) {
       if (!inAuthGroup) router.replace('/(auth)/login');
+      return;
+    }
+    if (held) {
+      if (!onResetScreen) {
+        if (router.canDismiss()) router.dismissAll();
+        router.replace('/(auth)/reset-password');
+      }
       return;
     }
     if (lifecycleChecking || lifecycleUnknown) return;
@@ -91,7 +105,7 @@ function RootLayoutNav() {
       return;
     }
     if (inAuthGroup || onPendingScreen) router.replace('/(tabs)');
-  }, [session, loading, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen, router]);
+  }, [session, loading, held, onResetScreen, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen, router]);
 
   // Withhold the route tree until the initial session restore resolves —
   // otherwise (auth) or (tabs) can paint for a frame before the redirect
@@ -139,15 +153,16 @@ function RootLayoutNav() {
             <Stack.Screen name="conversation/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="account/delete" options={{ headerShown: false }} />
             <Stack.Screen name="account/export" options={{ headerShown: false }} />
+            <Stack.Screen name="account/password" options={{ headerShown: false }} />
             <Stack.Screen name="account/pending" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
-          {session && !inAuthGroup && !accountHidden && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
+          {session && !held && !inAuthGroup && !accountHidden && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
             <GlobalFloatingTabBar />
           ) : null}
           {/* Until the account's state is known, nothing of the app shows —
               a pending collector never sees it flash. */}
-          {lifecycleChecking ? <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000' }]} /> : null}
-          {lifecycleUnknown ? <AccountStatusUnknown /> : null}
+          {lifecycleChecking && !held ? <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000' }]} /> : null}
+          {lifecycleUnknown && !held ? <AccountStatusUnknown /> : null}
           {/* After a permanent deletion from this device, once signed out. */}
           {!session && deletionNotice ? <DeletionNoticeScreen notice={deletionNotice} /> : null}
         </MessageBadgeContext.Provider>

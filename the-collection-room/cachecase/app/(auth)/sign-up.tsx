@@ -17,6 +17,7 @@ import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { usePendingInvite } from '@/lib/pending-invite';
 import { supabase } from '@/lib/supabase';
+import { passwordProblem, PASSWORD_HINT } from '@/lib/password-policy';
 import { redeemInvite, type RedeemResult } from '@/lib/waitlist-invite';
 
 type FailReason = Extract<RedeemResult, { kind: 'failed' }>['reason'];
@@ -32,7 +33,7 @@ const REDEEM_ERROR_COPY: Record<FailReason, string> = {
   account_exists: 'An account already exists for this email. Sign in instead.',
   invalid_email: 'Enter a valid email address.',
   invalid_username: 'Usernames are 3–15 letters, numbers, or underscores.',
-  invalid_password: 'Password must be 6–72 characters.',
+  invalid_password: 'Use a password of at least 8 characters.',
   retry: 'We couldn’t create your account. Try again.',
   signup_failed: 'Something went wrong creating your account. Try again.',
 };
@@ -73,8 +74,9 @@ export default function SignUpScreen() {
       setError(REDEEM_ERROR_COPY.invalid_username);
       return;
     }
-    if (password.length < 6 || password.length > 72) {
-      setError(REDEEM_ERROR_COPY.invalid_password);
+    const passwordIssue = passwordProblem(password);
+    if (passwordIssue) {
+      setError(passwordIssue);
       return;
     }
 
@@ -157,7 +159,7 @@ export default function SignUpScreen() {
         {reserved ? <Text style={styles.hint}>This username is reserved for your invite.</Text> : null}
         <TextInput
           style={styles.input}
-          placeholder="Password (min. 6 characters)"
+          placeholder={`Password (${PASSWORD_HINT.toLowerCase()})`}
           placeholderTextColor={PV2.textTertiary}
           value={password}
           onChangeText={setPassword}

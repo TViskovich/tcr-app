@@ -11,16 +11,26 @@ import {
   View,
 } from 'react-native';
 
-import { Link } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const { setRecoveryEmail } = useAuth();
+
+  // Forgot Password starts with whatever email was typed here (kept in
+  // memory only, never in the URL).
+  function forgotPassword() {
+    setRecoveryEmail(email.trim() ? email.trim().toLowerCase() : null);
+    router.push('/(auth)/forgot-password');
+  }
 
   async function signIn() {
     if (!email.trim() || !password) return;
@@ -81,6 +91,10 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
+        <TouchableOpacity onPress={forgotPassword} accessibilityRole="button" accessibilityLabel="Forgot password?">
+          <Text style={styles.forgot}>Forgot password?</Text>
+        </TouchableOpacity>
+
         <Link href="/(auth)/invite" style={styles.link}>
           Have an invite? Create account
         </Link>
@@ -131,5 +145,11 @@ const styles = StyleSheet.create({
     color: PV2.link,
     marginTop: 8,
     fontSize: 15,
+  },
+  forgot: {
+    textAlign: 'center',
+    color: PV2.link,
+    fontSize: 15,
+    paddingVertical: 4,
   },
 });
