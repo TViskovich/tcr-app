@@ -1,7 +1,12 @@
 // "Recently signed in" for sensitive account actions (scheduling deletion,
-// requesting a data export): the latest sign-in recorded in the access
-// token's amr claim must be within RECENT_AUTH_SECONDS. Refreshing a token
-// doesn't renew that time, so the app asks for the password again.
+// Delete Now, requesting a data export): the access token's amr claim must
+// record a PASSWORD sign-in within RECENT_AUTH_SECONDS. Only amr entries
+// with method "password" count — a session from an emailed one-time code
+// (password recovery, amr "otp") or any other, unknown or malformed method
+// never does, so a half-finished password reset can't authorize these
+// actions. The app asks for the password right before each of them
+// (lib/edge-functions.ts confirmPassword), which records a fresh "password"
+// entry. Refreshing a token doesn't renew that time.
 //
 // Product rule: 10 minutes. The optional ACCOUNT_RECENT_AUTH_SECONDS secret
 // can only make the window SHORTER (local tests use a few seconds); it can
@@ -26,12 +31,18 @@ function tokenClaims(token: string): { amr?: { method?: string; timestamp?: numb
   }
 }
 
-// true when the verified token's most recent sign-in is within the window.
+// Clock skew allowed for a sign-in time slightly in the future.
+const CLOCK_SKEW_SECONDS = 60;
+
+// true when the verified token records a password sign-in within the window.
 export function signedInRecently(token: string): boolean {
   const amr = tokenClaims(token)?.amr;
-  if (!Array.isArray(amr) || amr.length === 0) return false;
-  const latest = Math.max(...amr.map((m) => (typeof m?.timestamp === 'number' ? m.timestamp : 0)));
-  if (!latest) return false;
-  const age = Math.floor(Date.now() / 1000) - latest;
-  return age >= -60 && age <= RECENT_AUTH_SECONDS;
+  if (!Array.isArray(amr)) return false;
+  const passwordTimes = amr
+    .filter((m) => !!m && typeof m === 'object' && m.method === 'password')
+    .map((m) => m.timestamp)
+    .filter((t): t is number => typeof t === 'number' && Number.isFinite(t) && t > 0);
+  if (passwordTimes.length === 0) return false;
+  const age = Math.floor(Date.now() / 1000) - Math.max(...passwordTimes);
+  return age >= -CLOCK_SKEW_SECONDS && age <= RECENT_AUTH_SECONDS;
 }
