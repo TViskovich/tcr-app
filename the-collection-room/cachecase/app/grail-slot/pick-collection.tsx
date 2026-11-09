@@ -14,6 +14,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
+import { GrailsPublicNote } from '@/components/profile-v2/grails-public-note';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { resolveCovers } from '@/hooks/use-collection';
@@ -324,6 +325,7 @@ export default function PickGrailCollectionScreen() {
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.grid}>
+            <GrailsPublicNote kind="collection" style={styles.publicNote} />
             {folders.map((folder) => {
               const disabled = assignedElsewhere.has(folder.id);
               const selected = selectedId === folder.id;
@@ -406,6 +408,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: PV2.textPrimary,
+  },
+  publicNote: {
+    width: '100%',
   },
   grid: {
     paddingHorizontal: HORIZONTAL_PADDING,

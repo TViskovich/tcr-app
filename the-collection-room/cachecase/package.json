@@ -10,6 +10,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "check:app-permissions": "node scripts/deploy/check-app-permissions.mjs",
     "check:function-jwt": "node scripts/deploy/check-function-jwt.mjs",
     "check:server-keys": "node scripts/deploy/check-server-key-usage.mjs"
   },

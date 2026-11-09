@@ -18,6 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CollectionPreviewCard } from '@/components/collection/collection-preview-card';
 import { CollectionSearchBar } from '@/components/collection/collection-search-bar';
+import { GrailsPublicNote } from '@/components/profile-v2/grails-public-note';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { itemMatchesSearch, useAllItems } from '@/hooks/use-collection';
@@ -273,6 +274,7 @@ export default function PickGrailItemScreen() {
               placeholder="Search your items"
               style={styles.searchBar}
             />
+            <GrailsPublicNote kind="item" style={styles.publicNote} />
             <ScrollView
               contentContainerStyle={styles.grid}
               keyboardShouldPersistTaps="handled"
@@ -367,6 +369,10 @@ const styles = StyleSheet.create({
     color: PV2.textPrimary,
   },
   searchBar: {
+    marginHorizontal: HORIZONTAL_PADDING,
+    marginBottom: 10,
+  },
+  publicNote: {
     marginHorizontal: HORIZONTAL_PADDING,
     marginBottom: 10,
   },
