@@ -409,8 +409,9 @@ async function main() {
       && (await downloadSha('moderation-quarantine', qpath(id))) === sha(data), { o, state: jobState(id) });
   }
   if (PERF) {
-    // Beyond the worker's in-memory capacity (256 MB runtime limit): it must
-    // fail safe, be flagged, and not stall the queue.
+    // The supported maximum. Before M2.3e this exceeded the worker's 256 MB
+    // memory; it must complete, and in any case never lose the file or stall
+    // the queue.
     const big = sized(50 * 1048576 - 4096, `big-${run}`);
     const it = await newItem('perf-50mb', big);
     must(await rpc(M2, 'admin_remove_content', { p_report_id: await report('collection_item', it.id, 'child_safety'), p_reason_code: 'child_safety', p_include_related: false }) as any, 'big cs');
@@ -427,7 +428,9 @@ async function main() {
     const killed = seen.filter((x) => x.startsWith('546')).length;
     const final = jobState(bigJob);
     info(`item image 50 MB: runs ${seen.join(', ')}; worker killed ${killed}x by the 256 MB limit; final ${final}`);
-    check('item image 50 MB: the memory limit kills the worker mid-job at least once (beyond reliable capacity)', killed >= 1);
+    // M2.3e (streaming worker): a 50 MB file is now quarantined in a single
+    // run without the runtime killing the worker.
+    check('item image 50 MB: quarantined in one run, the worker never killed', killed === 0 && seen[0] === '200:quarantined', seen);
     const quarantinedIntact = final.startsWith('quarantined') && !exists('item-images', it.path)
       && (await downloadSha('moderation-quarantine', qpath(bigJob))) === sha(big);
     const flaggedIntact = final.endsWith('|true') && exists('item-images', it.path);

@@ -17,7 +17,7 @@
 
 import { requireAdmin } from '../_shared/admin-auth.ts';
 import { handleCorsPreflight, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
-import { Interrupted, requestFault, Worker, type ClaimedJob, type Outcome } from '../_shared/media-quarantine-worker.ts';
+import { HASH_BUDGET_BYTES, Interrupted, measured, requestFault, Worker, type ClaimedJob, type Outcome } from '../_shared/media-quarantine-worker.ts';
 
 const LEASE_SECONDS = 120;
 const TIME_BUDGET_MS = 25_000;
@@ -44,17 +44,22 @@ Deno.serve(async (req: Request) => {
   const { data: auth, error: authError } = await client.rpc('media_quarantine_authorize', { p_admin: admin.userId, p_action: 'quarantine' });
   if (authError || !auth?.ok) return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
 
-  const worker = new Worker(client, admin.userId, requestFault(req));
+  const worker = new Worker(client, admin.userId, requestFault(req), LEASE_SECONDS);
   const deadline = Date.now() + TIME_BUDGET_MS;
   const results: { id: string; outcome: Outcome }[] = [];
-  while (results.length < limit && Date.now() < deadline) {
+  // Bounded by job count, time AND bytes hashed (the runtime limits CPU per
+  // request); whatever is left waits for the next run.
+  while (results.length < limit && Date.now() < deadline && worker.bytesHashed < HASH_BUDGET_BYTES) {
     const { data: claimed, error } = await client.rpc('media_quarantine_claim', { p_limit: 1, p_lease_seconds: LEASE_SECONDS });
     if (error) return jsonResponse({ status: 'failed', reason: 'claim_failed', results }, 200);
     const job = (claimed as ClaimedJob[] | null)?.[0];
     if (!job) break;
+    worker.claimed(job);
     let outcome: Outcome;
     try {
-      outcome = await worker.quarantine(job);
+      const m = await measured(() => worker.quarantine(job));
+      outcome = m.value;
+      console.log(JSON.stringify({ fn: 'admin-media-quarantine', job: job.id, outcome, ms: m.ms, size_bytes: (job as { size_bytes?: number }).size_bytes ?? null }));
     } catch (e) {
       // An interruption leaves the job leased in its recorded state; the
       // lease expires and the next run resumes it.

@@ -53,6 +53,16 @@
 //
 // Never deletes the source item-images object — it may still be
 // referenced by the live collection item during this pre-cutover phase.
+//
+// Moderation (Phase 2B M2.3d, 20261121120000_media_security_hardening.sql):
+// before copying, and again before the row is re-pointed, the database
+// (backfill_snapshot_check) must agree the row may be republished — its post,
+// item and source image are not restricted or held, and its destination is
+// not held for quarantine. A refused row is skipped (reported with a code);
+// a copy made just before a restriction landed is removed again. The database
+// also refuses, at the Storage layer, any write to a held path whatever the
+// caller, so even a stale deployment of this function cannot recreate a
+// quarantined file.
 
 import { jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
 import { copyHistoricalUrlIntoShareSnapshots } from '../_shared/share-snapshot.ts';
@@ -60,7 +70,7 @@ import { copyHistoricalUrlIntoShareSnapshots } from '../_shared/share-snapshot.t
 const ITEM_IMAGES_URL_PATTERN = '%/storage/v1/object/public/item-images/%';
 const CONCURRENCY_LIMIT = 5;
 
-type RowOutcome = { id: string; outcome: 'migrated' | 'failed'; reason?: string };
+type RowOutcome = { id: string; outcome: 'migrated' | 'failed' | 'skipped'; reason?: string };
 type TableSummary = { scanned: number; migrated: number; skipped: number; failed: number };
 
 async function mapWithConcurrency<T, R>(
@@ -92,9 +102,26 @@ async function processRow(
   const currentUrl = row[urlColumn] as string;
   const rowId = row[idColumn] as string;
 
+  const check = async () => {
+    const { data, error } = await client.rpc('backfill_snapshot_check', {
+      p_table: table, p_row_id: rowId, p_source_url: currentUrl, p_dest_base: destinationPath,
+    });
+    return error ? 'check_failed' : (data as string | null);
+  };
+  const before = await check();
+  if (before) return { id: rowId, outcome: 'skipped', reason: before };
+
   const result = await copyHistoricalUrlIntoShareSnapshots(client, currentUrl, destinationPath);
   if (!result.ok) {
     return { id: rowId, outcome: 'failed', reason: 'copy_failed' };
+  }
+  // A restriction may have landed during the copy: re-check before the row is
+  // re-pointed, and take back the fresh copy (only that exact object, and
+  // never a held one — the database refuses that delete anyway).
+  const after = await check();
+  if (after) {
+    if (after !== 'destination_held') await client.storage.from('share-snapshots').remove([result.storagePath]);
+    return { id: rowId, outcome: 'skipped', reason: after };
   }
 
   // Guarded by the URL still matching what was just read — defends
@@ -168,6 +195,13 @@ Deno.serve(async (req: Request) => {
 
   const client = serviceRoleClient();
   const failures: { table: string; id: string; reason: string }[] = [];
+  const skippedRows: { table: string; id: string; reason: string }[] = [];
+  const note = (table: string, outcomes: RowOutcome[]) => {
+    for (const o of outcomes) {
+      if (o.outcome === 'failed') failures.push({ table, id: o.id, reason: o.reason ?? 'unknown' });
+      if (o.outcome === 'skipped') skippedRows.push({ table, id: o.id, reason: o.reason ?? 'unknown' });
+    }
+  };
 
   // ---- posts.image_url ----------------------------------------------
   const { data: posts } = await client
@@ -185,9 +219,7 @@ Deno.serve(async (req: Request) => {
       `${row.user_id}/historical-post/${row.id}`,
     ),
   );
-  for (const o of postOutcomes) {
-    if (o.outcome === 'failed') failures.push({ table: 'posts', id: o.id, reason: o.reason ?? 'unknown' });
-  }
+  note('posts', postOutcomes);
 
   // ---- card_share_items.snapshot_image_url ---------------------------
   const { data: cardShareItems } = await client
@@ -211,9 +243,7 @@ Deno.serve(async (req: Request) => {
       );
     },
   );
-  for (const o of cardShareOutcomes) {
-    if (o.outcome === 'failed') failures.push({ table: 'card_share_items', id: o.id, reason: o.reason ?? 'unknown' });
-  }
+  note('card_share_items', cardShareOutcomes);
 
   // ---- rate_my_grail_cards.snapshot_image_url -------------------------
   const { data: grailCards } = await client
@@ -237,9 +267,7 @@ Deno.serve(async (req: Request) => {
       );
     },
   );
-  for (const o of grailOutcomes) {
-    if (o.outcome === 'failed') failures.push({ table: 'rate_my_grail_cards', id: o.id, reason: o.reason ?? 'unknown' });
-  }
+  note('rate_my_grail_cards', grailOutcomes);
 
   const postsSummary = summarize((posts ?? []).length, postOutcomes);
   const cardShareSummary = summarize((cardShareItems ?? []).length, cardShareOutcomes);
@@ -257,6 +285,7 @@ Deno.serve(async (req: Request) => {
         failed: postsSummary.failed + cardShareSummary.failed + grailSummary.failed,
       },
       failures,
+      skipped_rows: skippedRows,
     },
     200,
   );

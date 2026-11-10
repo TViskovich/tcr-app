@@ -86,6 +86,19 @@ const jobFor = (bucket: string, path: string) =>
 const expireLease = (id: string) =>
   psql(`UPDATE private.media_quarantine SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE id = ${lit(id)} AND lease_token IS NOT NULL`);
 const due = (id: string) => psql(`UPDATE private.media_quarantine SET next_attempt_at = NULL WHERE id = ${lit(id)}`);
+// Drift outside the app, as only a database operator can now cause it at a
+// held path (20261121120000 refuses every API role, the service role
+// included): the object row via SQL as postgres, and its blob in the local
+// file backend.
+const SAFE = /^[A-Za-z0-9._\/-]+$/;
+const operatorDelete = (bucket: string, path: string) => {
+  if (!SAFE.test(bucket) || !SAFE.test(path) || path.includes('..')) throw new Error('unsafe path');
+  psql(`BEGIN; SET LOCAL storage.allow_delete_query = 'true';
+        DELETE FROM storage.objects WHERE bucket_id = ${lit(bucket)} AND name = ${lit(path)}; COMMIT;`);
+  execFileSync('docker', ['exec', 'supabase_storage_cachecase', 'rm', '-rf', `/mnt/stub/stub/${bucket}/${path}`]);
+};
+const operatorReplace = (bucket: string, path: string) =>
+  psql(`UPDATE storage.objects SET version = gen_random_uuid()::text WHERE bucket_id = ${lit(bucket)} AND name = ${lit(path)}`);
 const quarantinePaths: string[] = [];
 const deletedPrefixes: string[] = [];
 
@@ -244,12 +257,16 @@ async function main() {
   check('a record pointing at another collector\'s file is refused', outcome(r3, s3.jobId)?.outcome === 'needs_attention' && job(s3.jobId).error === 'invalid_source', job(s3.jobId));
   check('…and that file is untouched', exists('avatars', cFile) && (await publicStatus('avatars', cFile)) === 200);
   const s4 = await scenario();
-  must(await service.storage.from('share-snapshots').remove([s4.snap]), 'remove source');
+  const svcRemove = await service.storage.from('share-snapshots').remove([s4.snap]);
+  check('even the service role cannot delete a held file', !!svcRemove.error && exists('share-snapshots', s4.snap), svcRemove.error?.message);
+  operatorDelete('share-snapshots', s4.snap);
   const r4 = await runQ();
   check('missing source → source_missing, no copy made', outcome(r4, s4.jobId)?.outcome === 'source_missing' && !exists('moderation-quarantine', job(s4.jobId).qpath));
   check('…and the path stays reserved', !!(await B.db.storage.from('share-snapshots').upload(s4.snap, jpeg('x'), { contentType: 'image/jpeg' })).error);
   const s5 = await scenario();
-  must(await service.storage.from('share-snapshots').upload(s5.snap, jpeg('replaced'), { contentType: 'image/jpeg', upsert: true }), 'replace source');
+  check('even the service role cannot overwrite a held file',
+    !!(await service.storage.from('share-snapshots').upload(s5.snap, jpeg('replaced'), { contentType: 'image/jpeg', upsert: true })).error);
+  operatorReplace('share-snapshots', s5.snap);
   const r5 = await runQ();
   check('a source replaced since it was queued → flagged, not removed',
     outcome(r5, s5.jobId)?.outcome === 'needs_attention' && job(s5.jobId).error === 'source_changed' && exists('share-snapshots', s5.snap));
@@ -363,12 +380,13 @@ async function main() {
   const s13 = await scenario();
   await runQ();
   must(await rpc(M1, 'admin_restore_content', { p_moderation_id: s13.moderation, p_reason_code: 'resolved_in_error', p_disposition: 'overturn' }) as any, 'restore s13');
-  must(await service.storage.from('share-snapshots').upload(s13.snap, jpeg('occupier'), { contentType: 'image/jpeg' }), 'occupy');
+  check('even the service role cannot occupy a path awaiting restore',
+    !!(await service.storage.from('share-snapshots').upload(s13.snap, jpeg('occupier'), { contentType: 'image/jpeg' })).error);
+  psql(`INSERT INTO storage.objects (bucket_id, name, metadata) VALUES ('share-snapshots', ${lit(s13.snap)}, '{"size": 1, "mimetype": "image/jpeg"}')`);
   const r13 = await restoreQ([s13.jobId]);
   check('restore into an occupied path → flagged, the occupant untouched',
     outcome(r13, s13.jobId)?.outcome === 'needs_attention' && job(s13.jobId).error === 'destination_occupied', job(s13.jobId));
-  const occ = await service.storage.from('share-snapshots').download(s13.snap);
-  check('…still the other object', !!occ.data && sha(new Uint8Array(await occ.data.arrayBuffer())) === sha(jpeg('occupier')));
+  check('…still the other object', psql(`SELECT metadata->>'size' FROM storage.objects WHERE bucket_id = 'share-snapshots' AND name = ${lit(s13.snap)}`) === '1');
 
   const s14 = await scenario();
   await runQ();

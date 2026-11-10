@@ -14,11 +14,12 @@
 // The destination must be empty (nothing is ever overwritten) and the bytes
 // written back must hash to the verified original before the job is marked
 // restored. The private copy is kept (no purge here; retention is M4).
-// Concurrent requests for the same job are serialized by its lease.
+// Concurrent requests for the same job are serialized by its lease; a request
+// that reaches its hashing budget reports the remaining jobs as 'deferred'.
 
 import { requireAdmin } from '../_shared/admin-auth.ts';
 import { handleCorsPreflight, jsonResponse, serviceRoleClient } from '../_shared/registry-image.ts';
-import { Interrupted, requestFault, Worker, type ClaimedJob, type Outcome } from '../_shared/media-quarantine-worker.ts';
+import { HASH_BUDGET_BYTES, Interrupted, measured, requestFault, Worker, type ClaimedJob, type Outcome } from '../_shared/media-quarantine-worker.ts';
 
 const LEASE_SECONDS = 120;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,23 +53,30 @@ Deno.serve(async (req: Request) => {
   if (authError || !auth?.ok) return jsonResponse({ status: 'failed', reason: 'forbidden' }, 403);
 
   const decisions = (auth.jobs ?? []) as { id: string; allowed: boolean; reason: string | null }[];
-  const results: { id: string; outcome: Outcome | 'refused' | 'busy'; reason?: string }[] = decisions
+  const results: { id: string; outcome: Outcome | 'refused' | 'busy' | 'deferred' | 'claim_failed'; reason?: string }[] = decisions
     .filter((d) => !d.allowed).map((d) => ({ id: d.id, outcome: 'refused', reason: d.reason ?? 'not_restorable' }));
   const allowed = decisions.filter((d) => d.allowed).map((d) => d.id);
   if (allowed.length) {
-    const { data: claimed, error } = await client.rpc('media_quarantine_claim_restore', { p_job_ids: allowed, p_lease_seconds: LEASE_SECONDS });
-    if (error) return jsonResponse({ status: 'failed', reason: 'claim_failed' }, 200);
-    const jobs = (claimed ?? []) as ClaimedJob[];
-    const worker = new Worker(client, admin.userId, requestFault(req));
+    // One job at a time, so a request that reaches its hashing budget leaves
+    // the rest unclaimed (reported 'deferred') rather than leased and idle.
+    const worker = new Worker(client, admin.userId, requestFault(req), LEASE_SECONDS);
     for (const id of allowed) {
-      const job = jobs.find((j) => j.id === id);
-      if (!job) {
-        results.push({ id, outcome: 'busy' }); // another request holds its lease
+      if (worker.bytesHashed >= HASH_BUDGET_BYTES) {
+        results.push({ id, outcome: 'deferred' });
         continue;
       }
+      const { data: claimed, error } = await client.rpc('media_quarantine_claim_restore', { p_job_ids: [id], p_lease_seconds: LEASE_SECONDS });
+      const job = (claimed as ClaimedJob[] | null)?.[0];
+      if (error || !job) {
+        results.push({ id, outcome: error ? 'claim_failed' : 'busy' }); // another request holds its lease
+        continue;
+      }
+      worker.claimed(job);
       let outcome: Outcome;
       try {
-        outcome = await worker.restore(job);
+        const m = await measured(() => worker.restore(job));
+        outcome = m.value;
+        console.log(JSON.stringify({ fn: 'admin-media-restore', job: id, outcome, ms: m.ms, size_bytes: (job as { size_bytes?: number }).size_bytes ?? null }));
       } catch (e) {
         outcome = 'interrupted';
         if (!(e instanceof Interrupted)) console.error(JSON.stringify({ fn: 'admin-media-restore', job: id, outcome, error: 'unexpected' }));

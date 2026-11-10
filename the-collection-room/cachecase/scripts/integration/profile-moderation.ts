@@ -193,9 +193,13 @@ async function main() {
   check('the owner cannot delete their held, cleared avatar (evidence)',
     !ownerRemove.error && (ownerRemove.data ?? []).length === 0
       && (await service.storage.from('avatars').list(P.id)).data?.some((f) => avatarPath.endsWith(f.name)) === true, ownerRemove);
-  // …but the object can still disappear outside the app (simulated here with
-  // the service role), and restore must then refuse rather than link nothing.
-  must(await service.storage.from('avatars').remove([avatarPath]), 'avatar object removed outside the app');
+  // …nor can the service role (20261121120000). The object can still
+  // disappear outside the app — simulated as a database operator would — and
+  // restore must then refuse rather than link nothing.
+  check('the service role cannot delete it either', !!(await service.storage.from('avatars').remove([avatarPath])).error);
+  if (!/^[A-Za-z0-9._\/-]+$/.test(avatarPath)) throw new Error('unsafe path');
+  psql(`BEGIN; SET LOCAL storage.allow_delete_query = 'true'; DELETE FROM storage.objects WHERE bucket_id = 'avatars' AND name = '${avatarPath}'; COMMIT;`);
+  execFileSync('docker', ['exec', 'supabase_storage_cachecase', 'rm', '-rf', `/mnt/stub/stub/avatars/${avatarPath}`]);
   check('restore refuses an image whose object is gone',
     refused(await rpc(M1, 'admin_restore_profile_fields', { p_user_id: P.id, p_fields: ['avatar_url'], p_reason_code: 'appeal_granted' }), 'original_media_missing', 409));
   check('release the avatar instead (stays cleared, unlocked)',

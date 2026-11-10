@@ -164,7 +164,14 @@ async function main() {
   const I1 = await item(A, F, 'i1', 30), I2 = await item(A, F, 'i2', 20), I3 = await item(A, F, 'i3', 10);
   const IG = await item(A, G, 'ig', 5), I5 = await item(A, FM, 'i5', 5), IM = await item(A, FM, 'missing', 4, true, false);
   const ZI = await item(Z, ZF, 'zi', 5, false);
-  must(await A.db.from('folders').insert({ id: H3, user_id: A.id, name: `ms foreign cover ${run}`, is_public: true, cover_source: 'item', cover_item_id: ZI.id }), 'foreign cover folder');
+  // M2.3d (20261121120000) refuses another collector's item as a cover; the
+  // signing checks below still cover a legacy row that predates that guard,
+  // created as a database operator would have (triggers suspended).
+  const refusedCover = await A.db.from('folders').insert({ id: H3, user_id: A.id, name: `ms foreign cover ${run}`, is_public: true, cover_source: 'item', cover_item_id: ZI.id });
+  if (!refusedCover.error || !(refusedCover.error.message ?? '').includes('invalid_cover_item')) throw new Error('foreign cover was not refused');
+  psql(`BEGIN; SET LOCAL session_replication_role = replica;
+        INSERT INTO public.folders (id, user_id, name, is_public, cover_source, cover_item_id)
+        VALUES ('${H3}', '${A.id}', 'ms foreign cover ${run}', true, 'item', '${ZI.id}'); COMMIT;`);
   must(await A.db.from('profile_grail_slots').insert({ user_id: A.id, slot_index: 0, entry_type: 'collection', collection_id: G }), 'grail slot');
 
   step('1. Input validation and unauthorized calls');

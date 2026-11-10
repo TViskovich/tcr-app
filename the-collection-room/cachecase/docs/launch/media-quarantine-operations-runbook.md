@@ -8,7 +8,7 @@ For CacheCase admins and the on-call operator. It covers how moderated media lea
 
 1. An admin restricts content or clears a profile field (M2.1 or M2.2). In the same database transaction, every affected file is **queued** as a quarantine job: public avatars, hero images, badges and share snapshots always; private item images, folder covers and DM photos only for child-safety restrictions.
 2. From that moment collectors cannot delete, overwrite, move or re-link the file. Child-safety files are also no longer signed, exported or readable by anyone.
-3. **The file is still publicly reachable until the worker runs.** The worker (`admin-media-quarantine`) copies the file into the private `moderation-quarantine` bucket, verifies the copy byte for byte (SHA-256 and size), removes the public original, and confirms the original is gone.
+3. **The file is still publicly reachable until the worker runs.** The worker (`admin-media-quarantine`) has Storage copy the file into the private `moderation-quarantine` bucket (server-side; the file never passes through the worker's memory), verifies the copy byte for byte (streamed SHA-256 and size), removes the public original, and confirms the original is gone.
 4. When every restriction holding a file is lifted, the job waits in `restore_pending`. Nothing is restored automatically. An admin runs `admin-media-restore`, which writes the exact original bytes back and verifies them.
 5. Private copies are never deleted by these functions. Ordinary copies get a 90-day retention date for the future M4 purge. Child-safety copies carry a legal hold with no end date.
 
@@ -17,7 +17,8 @@ For CacheCase admins and the on-call operator. It covers how moderated media lea
 All three functions need a signed-in **admin** session token (an account in `admin_users` that is not pending deletion). Never paste the service-role key or a secret into these calls.
 
 ```sh
-# Process up to 10 queued jobs (each run stops after about 25 seconds).
+# Process up to 10 queued jobs. A run stops after about 25 seconds, or once it
+# has hashed about 64 MB (one 50 MB file), whichever comes first.
 curl -X POST "$PROJECT_URL/functions/v1/admin-media-quarantine" \
   -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" -H "apikey: $ANON_KEY" \
   -H "Content-Type: application/json" -d '{"limit": 10}'
@@ -52,6 +53,8 @@ To inspect the queue, call these as the admin (PostgREST RPC, same token):
 | `retry_scheduled` | A temporary failure; it will back off and retry (30 s doubling up to 1 h, at most 5 attempts) | Watch it |
 | `needs_attention` | Flagged; it leaves the queue until an admin acts | See section 4 |
 | `interrupted` / HTTP 546 | The worker was stopped mid-job (crash or runtime limit). The job resumes from its recorded step after its 2-minute lease expires. | Run again; repeated kills flag the job |
+| `lease_lost` | The job's lease was about to expire, so the worker started no deletion or restore write | Run again after 2 minutes |
+| `deferred` (restore) | The restore request reached its hashing budget before this job | Run the restore again for the remaining ids |
 
 ## 4. Flagged jobs (`needs_attention`)
 
@@ -95,7 +98,7 @@ Each candidate is re-checked under a per-path lock immediately before removal. H
 
 ## 7. Known limits
 
-- **File size.** The worker holds the file in memory several times over. In local testing (256 MB runtime memory limit) files up to 25 MB complete in under a second. A 50 MB file kills the worker one or two times before completing through resume. Larger files, or a busier runtime, can exhaust attempts and be flagged. Until the worker streams, treat any large child-safety file as urgent and escalate if flagged.
+- **File size.** Since M2.3e the worker streams: Storage copies the file server-side and checksums are computed chunk by chunk, so memory use does not grow with file size. In local testing every size up to the supported 50 MB was quarantined in a single run (a 50 MB file in about 0.8 s) and restored byte-identical. The runtime's CPU limit (2 s per request) is why a run stops taking work after about 64 MB of hashing; a 50 MB job uses roughly a third of it. Confirm these figures on staging.
 - **CDN and caches.** Removal is verified at the Storage origin only. CDN copies, browser caches (`max-age=3600` on public files) and anything already downloaded may persist. Staging must confirm CDN purge timing before beta.
 - **No scheduler.** Until one is approved, an admin must run the worker. Queued public files stay public until then.
 

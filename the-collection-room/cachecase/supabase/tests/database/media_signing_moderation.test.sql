@@ -95,8 +95,14 @@ INSERT INTO public.collection_items (id, folder_id, user_id, title, is_public, c
   ('00000000-0000-4000-8000-0000bee0000c', '00000000-0000-4000-8000-0000bef00005', '00000000-0000-4000-8000-0000be000005', 'm23 H item', true, 'active', 'sports_card', now());
 -- F3: a public folder whose picked cover is Z's PRIVATE item; F8: a public
 -- folder whose picked cover is I5, an item inside the (soon moderated) F2.
+-- (20261121120000 now refuses F3's cover outright; it is inserted as a legacy
+-- row predating that guard, with triggers suspended for this one statement, so
+-- the signing defense in depth stays tested.)
+SET LOCAL session_replication_role = replica;
 INSERT INTO public.folders (id, user_id, name, is_public, cover_source, cover_item_id) VALUES
-  ('00000000-0000-4000-8000-0000bef00003', '00000000-0000-4000-8000-0000be000001', 'm23 foreign cover', true, 'item', '00000000-0000-4000-8000-0000bee0000b'),
+  ('00000000-0000-4000-8000-0000bef00003', '00000000-0000-4000-8000-0000be000001', 'm23 foreign cover', true, 'item', '00000000-0000-4000-8000-0000bee0000b');
+SET LOCAL session_replication_role = origin;
+INSERT INTO public.folders (id, user_id, name, is_public, cover_source, cover_item_id) VALUES
   ('00000000-0000-4000-8000-0000bef00008', '00000000-0000-4000-8000-0000be000001', 'm23 cover from grail folder', true, 'item', '00000000-0000-4000-8000-0000bee00005');
 INSERT INTO public.collection_item_images (id, item_id, user_id, image_url, storage_path, sort_order, is_primary) VALUES
   ('00000000-0000-4000-8000-0000beb00001', '00000000-0000-4000-8000-0000bee00001', '00000000-0000-4000-8000-0000be000001', 'https://x.invalid/1', '00000000-0000-4000-8000-0000be000001/m23/1.jpg', 0, true),

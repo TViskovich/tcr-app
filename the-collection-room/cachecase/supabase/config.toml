@@ -474,6 +474,9 @@ verify_jwt = true
 [functions.admin-media-restore]
 verify_jwt = true
 
+[functions.admin-snapshot-reconcile]
+verify_jwt = true
+
 [functions.backfill-share-snapshots]
 verify_jwt = true
 
