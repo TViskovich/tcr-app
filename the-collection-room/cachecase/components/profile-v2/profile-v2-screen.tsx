@@ -64,6 +64,13 @@ import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import {
+  fetchLockedProfileFields,
+  isProfileFieldLockedError,
+  keepLockedProfileFields,
+  PROFILE_MODERATION_COPY,
+  type ModeratedProfileField,
+} from '@/lib/profile-moderation';
+import {
   invalidateOwnProfileCache,
   peekOwnProfileCacheSync,
   writeOwnProfileCache,
@@ -1059,6 +1066,24 @@ export function ProfileV2Screen({ userId }: Props) {
   // updates. This ref is set the instant handleSave starts, before any
   // await, so a second call in the same tick is rejected immediately.
   const savingRef = useRef(false);
+  // Profile fields an admin has cleared and locked (lib/profile-moderation.ts).
+  // Own profile only; the server enforces the lock — this just keeps the
+  // editor from offering or sending a change it would refuse.
+  const [lockedProfileFields, setLockedProfileFields] = useState<ReadonlySet<ModeratedProfileField>>(() => new Set());
+  const refreshLockedProfileFields = useCallback(async () => {
+    if (!isOwnProfile) return;
+    setLockedProfileFields(await fetchLockedProfileFields());
+  }, [isOwnProfile]);
+  useEffect(() => {
+    if (!isOwnProfile) return;
+    let active = true;
+    void fetchLockedProfileFields().then((locked) => {
+      if (active) setLockedProfileFields(locked);
+    });
+    return () => {
+      active = false;
+    };
+  }, [isOwnProfile, userId]);
 
   // Follow/message state — only ever meaningful (and only ever loaded)
   // when viewing someone else's profile.
@@ -1707,6 +1732,7 @@ export function ProfileV2Screen({ userId }: Props) {
     setSelectedGrailsEffect(resolveGrailsShowcaseEffect(profile));
     setDetailsExpanded(false);
     setEditMode(true);
+    void refreshLockedProfileFields();
   }
 
   // Every editable field compared against the CURRENTLY persisted profile
@@ -1978,6 +2004,11 @@ export function ProfileV2Screen({ userId }: Props) {
     // that releases it), so acquiring before them would permanently lock
     // out every future save after the first validation failure.
     if (savingRef.current) return false;
+    // A locked profile photo can't be changed (the server would refuse).
+    if (directAvatar && lockedProfileFields.has('avatar_url')) {
+      Alert.alert('Profile photo', PROFILE_MODERATION_COPY.photoLocked);
+      return false;
+    }
     savingRef.current = true;
 
     // Full validation pass BEFORE setSaving/any upload/any DB write, in the
@@ -2064,8 +2095,11 @@ export function ProfileV2Screen({ userId }: Props) {
       let avatarUrl: string | null;
       let heroUrl: string | null;
       try {
-        const avatarUriChoice = directAvatar ? directAvatar.uri : newAvatarUri;
-        const avatarRemoveChoice = directAvatar ? directAvatar.remove : removeAvatar;
+        // A locked image is never uploaded or removed (keepLockedProfileFields
+        // below also pins its URL to the stored value).
+        const avatarLocked = lockedProfileFields.has('avatar_url');
+        const avatarUriChoice = avatarLocked ? null : directAvatar ? directAvatar.uri : newAvatarUri;
+        const avatarRemoveChoice = avatarLocked ? false : directAvatar ? directAvatar.remove : removeAvatar;
         if (avatarUriChoice) {
           try {
             avatarUrl = await uploadAvatar(avatarUriChoice, userId);
@@ -2080,7 +2114,8 @@ export function ProfileV2Screen({ userId }: Props) {
           avatarUrl = profile?.avatar_url ?? null;
         }
 
-        if (newHeroUri) {
+        const heroLocked = lockedProfileFields.has('hero_image_url');
+        if (newHeroUri && !heroLocked) {
           try {
             heroUrl = await uploadHeroImage(newHeroUri, userId);
           } catch (uploadErr: unknown) {
@@ -2088,7 +2123,7 @@ export function ProfileV2Screen({ userId }: Props) {
             throw new Error(`Banner upload failed: ${detail}`);
           }
           uploadedThisAttempt.push({ url: heroUrl, kind: 'hero' });
-        } else if (removeHero) {
+        } else if (removeHero && !heroLocked) {
           heroUrl = null;
         } else {
           heroUrl = profile?.hero_image_url ?? null;
@@ -2119,7 +2154,8 @@ export function ProfileV2Screen({ userId }: Props) {
       // session, and a direct-avatar save must never touch any field it
       // isn't actually changing. Echoing the persisted value back is a
       // true no-op for those columns either way.
-      const intendedProfileFields: IntendedProfileFields = directAvatar
+      // Locked fields (profile moderation) always carry their stored value.
+      const intendedProfileFields: IntendedProfileFields = keepLockedProfileFields<IntendedProfileFields>(directAvatar
         ? {
             hero_display_name: profile?.hero_display_name ?? null,
             display_name: profile?.display_name ?? null,
@@ -2155,7 +2191,7 @@ export function ProfileV2Screen({ userId }: Props) {
             banner_variant: selectedBanner,
             profile_logo_variant: selectedLogo,
             grails_showcase_effect: selectedGrailsEffect,
-          };
+          }, profile as Partial<Record<keyof IntendedProfileFields, unknown>> | null, lockedProfileFields);
 
       // Shared by every branch below that has proven (either directly or
       // via reconciliation) that the row was NOT updated to
@@ -2311,6 +2347,12 @@ export function ProfileV2Screen({ userId }: Props) {
             });
           }
           await cleanupUploadedThisAttempt();
+          if (isProfileFieldLockedError(error)) {
+            // A field was locked after this form loaded: pick up the lock so
+            // the next save keeps it, instead of repeating the refused write.
+            await refreshLockedProfileFields();
+            throw new Error(PROFILE_MODERATION_COPY.saveRefused);
+          }
           throw new Error(
             __DEV__
               ? `Failed to save profile: ${error.message}${error.code ? ` (${error.code})` : ''}`
@@ -2775,6 +2817,11 @@ export function ProfileV2Screen({ userId }: Props) {
                  enterEdit early-returns and nothing renders the trigger
                  for a public view) ── */
             <View style={styles.editSection}>
+              {lockedProfileFields.size > 0 ? (
+                <Text style={styles.fieldHint} accessibilityRole="text" testID="profile-moderation-notice">
+                  {PROFILE_MODERATION_COPY.notice}
+                </Text>
+              ) : null}
               <Text style={styles.fieldLabel}>Display Name</Text>
               <TextInput
                 style={styles.fieldInput}
@@ -2784,6 +2831,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={DISPLAY_NAME_MAX_LENGTH}
                 accessibilityLabel="Display name"
+                editable={!lockedProfileFields.has('display_name')}
               />
               <Text style={styles.displayNameCounter}>
                 {editForm.displayName.length} / {DISPLAY_NAME_MAX_LENGTH}
@@ -2798,6 +2846,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={40}
                 accessibilityLabel="Hero display name"
+                editable={!lockedProfileFields.has('hero_display_name')}
               />
               <Text style={styles.fieldHint}>
                 Shown large on your profile. Leave blank to use your display name.
@@ -2824,6 +2873,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 textAlignVertical="top"
                 maxLength={160}
                 accessibilityLabel="Bio"
+                editable={!lockedProfileFields.has('bio')}
               />
 
               <Text style={styles.fieldLabel}>Location</Text>
@@ -2835,6 +2885,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 maxLength={LOCATION_MAX_LENGTH}
                 accessibilityLabel="Location"
+                editable={!lockedProfileFields.has('location')}
               />
               <Text style={styles.fieldHint}>City/region only — never precise coordinates.</Text>
 
@@ -2849,6 +2900,7 @@ export function ProfileV2Screen({ userId }: Props) {
                 autoCorrect={false}
                 keyboardType="url"
                 accessibilityLabel="Website"
+                editable={!lockedProfileFields.has('website')}
               />
 
               <Text style={styles.sectionHeader}>Profile Banner</Text>
