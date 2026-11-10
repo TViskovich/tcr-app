@@ -28,7 +28,7 @@ import { useSignedRegistryImages } from '@/hooks/use-signed-registry-images';
 import { useAuth } from '@/lib/auth';
 import { formatCustodyStatus, updateRegistryCustodyStatus } from '@/lib/registry-custody-status';
 import { getRegistryPublicUrl } from '@/lib/registry-links';
-import { fetchPendingTransferForCard, formatTransferReason, initiateOwnershipTransfer } from '@/lib/ownership-transfer';
+import { fetchPendingTransferForCard, formatTransferReason, initiateOwnershipTransfer, transferErrorMessage } from '@/lib/ownership-transfer';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, CustodyStatus, OwnershipTransferReason, RegisteredCard, RegisteredCardStatus } from '@/types';
@@ -498,7 +498,7 @@ export default function RegistryDetailScreen() {
       }
 
       if (!data) {
-        Alert.alert('Unable to send transfer', originalErrorMessage);
+        Alert.alert('Unable to send transfer', transferErrorMessage(originalErrorMessage));
         return;
       }
 

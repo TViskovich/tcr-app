@@ -154,6 +154,7 @@ function RootLayoutNav() {
             <Stack.Screen name="account/delete" options={{ headerShown: false }} />
             <Stack.Screen name="account/export" options={{ headerShown: false }} />
             <Stack.Screen name="account/password" options={{ headerShown: false }} />
+            <Stack.Screen name="account/blocked" options={{ headerShown: false }} />
             <Stack.Screen name="account/pending" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
           {session && !held && !inAuthGroup && !accountHidden && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (

@@ -6,6 +6,7 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -78,6 +79,7 @@ import { clearPreviousShareImages } from '@/lib/share/share-image';
 import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { recordRecentProfile } from '@/lib/recent-profiles';
+import { BLOCK_COPY, blockCollector, getBlockStatus, subscribeBlockChanges, unblockCollector } from '@/lib/user-blocks';
 import { peekVisitedProfile, rememberVisitedProfile } from '@/lib/visited-profile-cache';
 import { saveFolderOrder, saveProfileItemMove } from '@/lib/profile-ordering';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
@@ -98,6 +100,7 @@ import { ProfileV2Identity } from './profile-v2-identity';
 import { ProfileV2IdentityCard } from './profile-v2-identity-card';
 import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
+import { ProfileV2VisitorMenu } from './profile-v2-visitor-menu';
 import { ProfileV2CollectionSearchSheet } from './profile-v2-collection-search-sheet';
 import { ProfileV2ItemSearchSheet } from './profile-v2-item-search-sheet';
 import { ProfileV2ReorderCollections, ProfileV2ReorderItems } from './profile-v2-reorder';
@@ -1165,6 +1168,79 @@ export function ProfileV2Screen({ userId }: Props) {
       }
     } finally {
       setFollowLoading(false);
+    }
+  }
+
+  // ── Collector blocking (lib/user-blocks.ts) ─────────────────────────────
+  // Only "did I block them?" is ever known here — never whether they blocked
+  // the viewer (a profile hidden that way doesn't load at all; see
+  // app/user/[username].tsx). null = not yet known.
+  const [blockedByMe, setBlockedByMe] = useState<boolean | null>(null);
+  const [blockBusy, setBlockBusy] = useState(false);
+  const blockBusyRef = useRef(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isOwnProfile || !currentUserId || !userId) return;
+      let cancelled = false;
+      getBlockStatus(userId).then((result) => {
+        if (!cancelled && result.ok) setBlockedByMe(result.value.blockedByMe);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [isOwnProfile, currentUserId, userId]),
+  );
+
+  // A block or unblock made elsewhere (a conversation, Blocked Collectors).
+  useEffect(() => {
+    if (isOwnProfile) return;
+    return subscribeBlockChanges((change) => {
+      if (change.userId === userId) setBlockedByMe(change.blocked);
+    });
+  }, [isOwnProfile, userId]);
+
+  // After a change, reload what the database now lets this viewer see.
+  function refreshAfterBlockChange() {
+    refresh();
+    refreshGrailSlots();
+    refreshFolders();
+    refreshAllItems();
+    refreshPosts();
+  }
+
+  function confirmBlock() {
+    const name = profile?.username ?? '';
+    Alert.alert(BLOCK_COPY.confirmTitle(name), BLOCK_COPY.confirmBody, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: BLOCK_COPY.confirmAction, style: 'destructive', onPress: () => void runBlockChange(true) },
+    ]);
+  }
+
+  function confirmUnblock() {
+    const name = profile?.username ?? '';
+    Alert.alert(BLOCK_COPY.unblockTitle(name), BLOCK_COPY.unblockBody, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: BLOCK_COPY.unblockAction, onPress: () => void runBlockChange(false) },
+    ]);
+  }
+
+  async function runBlockChange(block: boolean) {
+    if (!currentUserId || !userId || isOwnProfile || blockBusyRef.current) return;
+    blockBusyRef.current = true;
+    setBlockBusy(true);
+    try {
+      const result = block ? await blockCollector(currentUserId, userId) : await unblockCollector(currentUserId, userId);
+      if (!result.ok) {
+        Alert.alert(block ? 'Couldn’t block' : 'Couldn’t unblock', result.message);
+        return;
+      }
+      setBlockedByMe(block);
+      if (block) setIsFollowing(false); // the database removed follows both ways
+      refreshAfterBlockChange();
+    } finally {
+      blockBusyRef.current = false;
+      setBlockBusy(false);
     }
   }
 
@@ -2407,6 +2483,8 @@ export function ProfileV2Screen({ userId }: Props) {
                     state/data source as always, only the position and bare
                     (no ownerIconBtn pill) styling changed. */}
                 {currentUserId && (
+                  <View style={styles.publicActions}>
+                  {!blockedByMe && (
                   <TouchableOpacity
                     onPress={toggleGrailsSave}
                     disabled={savingGrails}
@@ -2424,6 +2502,15 @@ export function ProfileV2Screen({ userId }: Props) {
                       accessible={false}
                     />
                   </TouchableOpacity>
+                  )}
+                  <ProfileV2VisitorMenu
+                    username={profile?.username ?? ''}
+                    blockedByMe={profile ? blockedByMe : null}
+                    busy={blockBusy}
+                    onBlock={confirmBlock}
+                    onUnblock={confirmUnblock}
+                  />
+                  </View>
                 )}
               </View>
             )}
@@ -2441,6 +2528,24 @@ export function ProfileV2Screen({ userId }: Props) {
                 onPress={!editMode ? () => setDetailsExpanded((v) => !v) : undefined}
                 expanded={detailsExpanded}
               />
+            )}
+
+            {/* Collector blocking: the viewer blocked this collector. Their
+                posts and collection are hidden by the database; this says why
+                and keeps Unblock one tap away. */}
+            {!isOwnProfile && blockedByMe && profile && (
+              <View style={styles.blockedNotice} accessibilityRole="summary" testID="profile-blocked-notice">
+                <Text style={styles.blockedNoticeText}>{BLOCK_COPY.blockedNotice(profile.username)}</Text>
+                <Pressable
+                  onPress={confirmUnblock}
+                  disabled={blockBusy}
+                  style={({ pressed }) => [styles.blockedNoticeButton, (pressed || blockBusy) && { opacity: 0.6 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Unblock @${profile.username}`}
+                  accessibilityState={{ disabled: blockBusy, busy: blockBusy }}>
+                  {blockBusy ? <ActivityIndicator size="small" color={PV2.textPrimary} /> : <Text style={styles.blockedNoticeButtonText}>Unblock</Text>}
+                </Pressable>
+              </View>
             )}
 
             {/* Expandable profile-details panel — opens directly beneath
@@ -2464,8 +2569,8 @@ export function ProfileV2Screen({ userId }: Props) {
                   following={stats.followingCount}
                   mode={isOwnProfile ? 'owner' : 'public'}
                   onEditPress={isOwnProfile ? enterEdit : undefined}
-                  onToggleFollow={isOwnProfile ? undefined : toggleFollow}
-                  onMessagePress={isOwnProfile ? undefined : handleMessage}
+                  onToggleFollow={isOwnProfile || blockedByMe ? undefined : toggleFollow}
+                  onMessagePress={isOwnProfile || blockedByMe ? undefined : handleMessage}
                   isFollowing={isFollowing}
                   followLoading={followLoading}
                   messageLoading={msgLoading}
@@ -2872,8 +2977,8 @@ export function ProfileV2Screen({ userId }: Props) {
                       createdAt={profile?.created_at ?? null}
                       mode={isOwnProfile ? 'owner' : 'public'}
                       onEditPress={isOwnProfile ? enterEdit : undefined}
-                      onFollowPress={isOwnProfile ? undefined : toggleFollow}
-                      onMessagePress={isOwnProfile ? undefined : handleMessage}
+                      onFollowPress={isOwnProfile || blockedByMe ? undefined : toggleFollow}
+                      onMessagePress={isOwnProfile || blockedByMe ? undefined : handleMessage}
                       isFollowing={isFollowing}
                       followLoading={followLoading}
                       messageLoading={msgLoading}
@@ -3215,6 +3320,38 @@ const styles = StyleSheet.create({
   // only needs a small amount of its own breathing room above
   // ProfileV2IdentityCard (borderWrap.marginTop: 12 in
   // profile-v2-identity-card.tsx) below it.
+  publicActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  blockedNotice: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 14,
+    gap: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PV2.border,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  blockedNoticeText: {
+    color: PV2.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  blockedNoticeButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  blockedNoticeButtonText: {
+    color: PV2.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
   publicBackRow: {
     flexDirection: 'row',
     alignItems: 'center',

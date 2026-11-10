@@ -6,7 +6,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { ProfileV2Screen } from '@/components/profile-v2/profile-v2-screen';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { supabase } from '@/lib/supabase';
-import { peekProfileUserId, rememberProfileUserId } from '@/lib/visited-profile-cache';
+import { forgetProfileUserId, peekProfileUserId, rememberProfileUserId } from '@/lib/visited-profile-cache';
 
 // Resolves the route's :username to the profile's real id, then hands off
 // entirely to the shared redesigned profile screen — the exact same
@@ -37,17 +37,25 @@ export default function UserProfileScreen() {
       .from('profiles')
       .select('id')
       .eq('username', username)
-      .single()
-      .then(({ data }) => {
+      .maybeSingle()
+      .then(({ data, error }) => {
         if (cancelled) return;
         if (data) {
           rememberProfileUserId(username, data.id);
           setResolved((prev) =>
             prev && prev.username === username && prev.userId === data.id ? prev : { username, userId: data.id },
           );
+        } else if (!error) {
+          // The server answered: no profile with this username is visible
+          // to this viewer (it doesn't exist, or isn't available to them —
+          // e.g. its owner blocked them). Forget the remembered id so a
+          // cached snapshot is never shown in its place.
+          forgetProfileUserId(username);
+          setResolved({ username, userId: null });
         } else {
-          // A failed lookup never discards an id this username already
-          // resolved to; it only reports "not found" when nothing is known.
+          // A failed lookup (offline etc.) never discards an id this
+          // username already resolved to; it only reports "not found" when
+          // nothing is known.
           setResolved((prev) => (prev && prev.username === username && prev.userId ? prev : { username, userId: null }));
         }
       });

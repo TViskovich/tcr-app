@@ -19,6 +19,8 @@ type Props = {
   avatar?: ReactNode;
   // VoiceOver hint for the tap target (default: "Opens their profile").
   pressHint?: string;
+  // Optional trailing control (the 1:1 conversation's ⋯ menu).
+  trailing?: ReactNode;
 };
 
 // Compact glass conversation header — replaces the native Stack header for
@@ -35,6 +37,7 @@ export function ConversationHeader({
   onProfilePress,
   avatar,
   pressHint = 'Opens their profile',
+  trailing,
 }: Props) {
   const identity = (
     <>
@@ -67,6 +70,7 @@ export function ConversationHeader({
         ) : (
           <View style={styles.identity}>{identity}</View>
         )}
+        {trailing}
       </View>
     </View>
   );

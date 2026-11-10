@@ -296,3 +296,15 @@ export function formatTransferParticipantLine(transfer: OwnershipTransferView): 
   const wording = isSent ? SENT_WORDING : RECEIVED_WORDING;
   return wording[transfer.status](counterpartLabel);
 }
+
+// Words for a refused transfer request. The database's own messages are
+// shown as-is except the neutral recipient errors: an unknown username, a
+// collector who isn't available (pending deletion), and — deliberately
+// indistinguishable from those — a block in either direction
+// (20261113120000_block_ownership_transfers.sql).
+export function transferErrorMessage(raw: string): string {
+  if (raw === 'Recipient not found') return 'We couldn’t find a collector with that username.';
+  if (raw.includes('account_unavailable')) return 'This collector isn’t available right now.';
+  if (raw.includes('account_inactive')) return 'Your account is scheduled for deletion, so transfers aren’t available.';
+  return raw;
+}

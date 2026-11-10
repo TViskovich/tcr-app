@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Keyboard,
@@ -24,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { AttachmentSheet } from '@/components/conversation/attachment-sheet';
+import { ConversationBlockMenu } from '@/components/conversation/conversation-block-menu';
 import { ConversationComposer } from '@/components/conversation/conversation-composer';
 import { ConversationHeader } from '@/components/conversation/conversation-header';
 import { DmImageAttachment } from '@/components/conversation/dm-image-attachment';
@@ -57,6 +59,7 @@ import {
 import { type ConversationMeta, groupTitle, loadConversationMeta, memberName } from '@/lib/group-chat';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
+import { BLOCK_COPY, blockCollector, getBlockStatus, subscribeBlockChanges, unblockCollector } from '@/lib/user-blocks';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 // Extra clearance so the composer sits above the globally-rendered floating
@@ -170,6 +173,18 @@ export default function ConversationScreen() {
   // A send was refused because the conversation is read-only (the other
   // account was permanently deleted after this screen loaded).
   const [sendClosed, setSendClosed] = useState(false);
+  // Collector blocking (lib/user-blocks.ts), direct conversations only.
+  // blockedByMe: the viewer blocked the other collector (null = unknown).
+  // peerHidden: the other collector's profile isn't visible while this
+  // conversation still is — only possible when they blocked the viewer
+  // (an unavailable account hides the conversation too). sendUnavailable:
+  // a send was refused as unavailable but the history is still readable.
+  // Any of these makes the thread read-only; history is never removed.
+  const [blockedByMe, setBlockedByMe] = useState<boolean | null>(null);
+  const [peerHidden, setPeerHidden] = useState(false);
+  const [sendUnavailable, setSendUnavailable] = useState(false);
+  const [blockBusy, setBlockBusy] = useState(false);
+  const blockBusyRef = useRef(false);
   // Display-only placeholder for the send currently in flight, so the
   // bubble can show "Sending…" before the INSERT returns. Never written to
   // `messages`/messagesRef — finalizeSentMessage still appends the durable
@@ -853,6 +868,7 @@ export default function ConversationScreen() {
           // The other account was permanently deleted: still readable,
           // just read-only. Otherwise the conversation is unavailable.
           if (result.reason === 'closed') setSendClosed(true);
+          else if (result.reason === 'unavailable' && (await conversationStillReadable())) setSendUnavailable(true);
           else setAccessLost(true);
           return 'failed';
         default:
@@ -865,6 +881,80 @@ export default function ConversationScreen() {
       sendingRef.current = false;
       setSending(false);
       setInFlight(null);
+    }
+  }
+
+  // ── Collector blocking ──────────────────────────────────────────────────
+  const otherId = meta?.kind === 'direct' ? (otherUser?.id ?? null) : null;
+
+  // After a send is refused as unavailable: is the history still readable?
+  // Yes → a block (read-only thread). No → the existing unavailable screen.
+  async function conversationStillReadable(): Promise<boolean> {
+    const { data, error } = await supabase.from('conversations').select('id').eq('id', convId).maybeSingle();
+    return !error && !!data;
+  }
+
+  useEffect(() => {
+    if (!otherId || !currentUserId) return;
+    let cancelled = false;
+    getBlockStatus(otherId).then((result) => {
+      if (!cancelled && result.ok) setBlockedByMe(result.value.blockedByMe);
+    });
+    // The other collector's profile row: hidden while this conversation is
+    // still readable only when they blocked the viewer.
+    supabase
+      .from('profiles')
+      .select('id')
+      .eq('id', otherId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!cancelled && !error) setPeerHidden(!data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [otherId, currentUserId]);
+
+  useEffect(
+    () =>
+      subscribeBlockChanges((change) => {
+        if (change.userId === otherId) {
+          setBlockedByMe(change.blocked);
+          if (!change.blocked) setSendUnavailable(false);
+        }
+      }),
+    [otherId],
+  );
+
+  function confirmBlockChange(block: boolean) {
+    const username = otherUser?.username && !peerHidden ? otherUser.username : null;
+    const title = username
+      ? block ? BLOCK_COPY.confirmTitle(username) : BLOCK_COPY.unblockTitle(username)
+      : block ? 'Block this collector?' : 'Unblock this collector?';
+    Alert.alert(title, block ? BLOCK_COPY.confirmBody : BLOCK_COPY.unblockBody, [
+      { text: 'Cancel', style: 'cancel' },
+      block
+        ? { text: BLOCK_COPY.confirmAction, style: 'destructive', onPress: () => void runBlockChange(true) }
+        : { text: BLOCK_COPY.unblockAction, onPress: () => void runBlockChange(false) },
+    ]);
+  }
+
+  async function runBlockChange(block: boolean) {
+    if (!otherId || !currentUserId || blockBusyRef.current) return;
+    blockBusyRef.current = true;
+    setBlockBusy(true);
+    try {
+      const result = block ? await blockCollector(currentUserId, otherId) : await unblockCollector(currentUserId, otherId);
+      if (!result.ok) {
+        Alert.alert(block ? 'Couldn’t block' : 'Couldn’t unblock', result.message);
+        return;
+      }
+      setBlockedByMe(block);
+      if (!block) setSendUnavailable(false);
+      if (block) setAttachOpen(false);
+    } finally {
+      blockBusyRef.current = false;
+      setBlockBusy(false);
     }
   }
 
@@ -1022,9 +1112,13 @@ export default function ConversationScreen() {
   // A direct conversation whose other participant no longer exists: their
   // account was permanently deleted. Kept for the survivor, read-only.
   const counterpartDeleted = sendClosed || (!!meta && meta.kind === 'direct' && !meta.members.some((m) => m.id !== currentUserId));
+  // Collector blocking: read-only, history kept (see the state above).
+  const blockReadOnly = !counterpartDeleted && !isGroup && (blockedByMe === true || peerHidden || sendUnavailable);
 
   const displayTitle = counterpartDeleted
     ? 'Deleted account'
+    : peerHidden && !isGroup
+    ? 'Unavailable collector'
     : isGroup && meta
     ? groupTitle(meta.name, meta.members, currentUserId)
     : otherUser?.display_name ||
@@ -1039,6 +1133,8 @@ export default function ConversationScreen() {
   const knownUsername = otherUser?.username ?? (paramUsername ? String(paramUsername) : null);
   const headerSubtitle = counterpartDeleted
     ? 'This account no longer exists'
+    : peerHidden && !isGroup
+    ? 'CacheCase collector'
     : isGroup && meta
     ? `${meta.members.length} ${meta.members.length === 1 ? 'member' : 'members'}`
     : knownUsername && displayTitle !== knownUsername
@@ -1075,7 +1171,7 @@ export default function ConversationScreen() {
     <ConversationHeader
       title={displayTitle}
       subtitle={headerSubtitle}
-      avatarUrl={otherUser?.avatar_url}
+      avatarUrl={peerHidden ? null : otherUser?.avatar_url}
       topInset={insets.top}
       // Their Profile V2 screen, by stable user id (the shared helper; the
       // username only names the route). Pushed above this thread, which
@@ -1088,9 +1184,19 @@ export default function ConversationScreen() {
           ? undefined
           : isGroup
             ? () => router.push({ pathname: '/group-info/[id]', params: { id: convId } })
-            : otherUser
+            : otherUser && !peerHidden
               ? () => navigateToProfile(router, currentUserId, otherUser.id, otherUser.username)
               : undefined
+      }
+      trailing={
+        !isGroup && otherId && !counterpartDeleted && !accessLost ? (
+          <ConversationBlockMenu
+            blockedByMe={blockedByMe}
+            busy={blockBusy}
+            onBlock={() => confirmBlockChange(true)}
+            onUnblock={() => confirmBlockChange(false)}
+          />
+        ) : undefined
       }
       avatar={
         isGroup && meta ? (
@@ -1295,7 +1401,7 @@ export default function ConversationScreen() {
             TAB_BAR_CLEARANCE's comment. With the keyboard open the home
             indicator is covered, so only a small gap is kept. */}
         <View>
-          {attachOpen ? (
+          {attachOpen && !blockReadOnly ? (
             <AttachmentSheet
               onClose={() => setAttachOpen(false)}
               onShareItem={openItemPicker}
@@ -1308,6 +1414,25 @@ export default function ConversationScreen() {
               style={[styles.readOnlyNotice, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
               accessibilityRole="text">
               <Text style={styles.readOnlyText}>This account has been deleted. You can read your messages, but can’t reply.</Text>
+            </View>
+          ) : blockReadOnly ? (
+            <View
+              style={[styles.readOnlyNotice, { paddingBottom: Math.max(insets.bottom, 8) + TAB_BAR_CLEARANCE }]}
+              testID="conversation-read-only-notice">
+              <Text style={styles.readOnlyText} accessibilityLiveRegion="polite">
+                {blockedByMe ? BLOCK_COPY.dmBlockedByMe : BLOCK_COPY.dmUnavailable}
+              </Text>
+              {blockedByMe ? (
+                <Pressable
+                  onPress={() => confirmBlockChange(false)}
+                  disabled={blockBusy}
+                  style={({ pressed }) => [styles.readOnlyAction, (pressed || blockBusy) && { opacity: 0.6 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Unblock Collector"
+                  accessibilityState={{ disabled: blockBusy, busy: blockBusy }}>
+                  {blockBusy ? <ActivityIndicator size="small" color={PV2.textPrimary} /> : <Text style={styles.readOnlyActionText}>Unblock</Text>}
+                </Pressable>
+              ) : null}
             </View>
           ) : (
           <ConversationComposer
@@ -1392,6 +1517,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: PV2.dividerColor,
+  },
+  readOnlyAction: {
+    alignSelf: 'center',
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: PV2.border,
+  },
+  readOnlyActionText: {
+    color: PV2.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
   },
   readOnlyText: {
     color: PV2.textSecondary,

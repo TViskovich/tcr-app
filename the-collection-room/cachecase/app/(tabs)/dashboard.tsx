@@ -420,6 +420,17 @@ export default function DashboardScreen() {
             <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
           </Pressable>
           <Pressable
+            onPress={() => router.push('/account/blocked')}
+            style={({ pressed }) => [styles.navRow, styles.listRowBorder, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Blocked Collectors">
+            <View style={styles.navRowText}>
+              <Text style={styles.navRowTitle}>Blocked Collectors</Text>
+              <Text style={styles.navRowDetail}>See who you’ve blocked and unblock them</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+          </Pressable>
+          <Pressable
             onPress={() => router.push('/account/delete')}
             style={({ pressed }) => [styles.navRow, styles.listRowBorder, pressed && styles.pressed]}
             accessibilityRole="button"

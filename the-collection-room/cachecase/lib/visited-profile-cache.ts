@@ -50,6 +50,18 @@ export function rememberProfileUserId(username: string, userId: string) {
   userIdsByUsername.set(username, userId);
 }
 
+// Drops one profile from this viewer's memory (and any username pointing at
+// it), e.g. after a block or unblock changes what the viewer may see, or
+// when the server says the profile is no longer available.
+export function forgetVisitedProfile(viewerId: string, profileUserId: string) {
+  snapshots.delete(key(viewerId, profileUserId));
+  for (const [username, id] of userIdsByUsername) if (id === profileUserId) userIdsByUsername.delete(username);
+}
+
+export function forgetProfileUserId(username: string) {
+  userIdsByUsername.delete(username);
+}
+
 export function clearVisitedProfiles() {
   snapshots.clear();
   userIdsByUsername.clear();
