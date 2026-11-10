@@ -68,7 +68,11 @@ import {
   resolveCaller,
   serviceRoleClient,
 } from '../_shared/registry-image.ts';
-import { copyFolderCoverIntoShareSnapshots, copyItemImageIntoShareSnapshots } from '../_shared/share-snapshot.ts';
+import {
+  copyFolderCoverIntoShareSnapshots,
+  copyItemImageIntoShareSnapshots,
+  discardShareSnapshotCopies,
+} from '../_shared/share-snapshot.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MULTI_ITEM_POST_TYPES = new Set(['card_share', 'rate_my_grails']);
@@ -160,7 +164,11 @@ Deno.serve(async (req: Request) => {
     ),
   );
 
+  // Every copy this request made, so ANY later failure removes exactly these
+  // objects (Phase 2B M2.3a) — a failed post never leaves a public copy behind.
+  const madeCopies = copyIdsOf(copyResults);
   if (copyResults.some((r) => !r.ok)) {
+    await discardShareSnapshotCopies(client, madeCopies);
     return jsonResponse({ status: 'failed', reason: 'copy_failed' }, 200);
   }
   const copied = copyResults as { ok: true; publicUrl: string; storagePath: string }[];
@@ -174,6 +182,7 @@ Deno.serve(async (req: Request) => {
     .single();
 
   if (postError || !postRow) {
+    await discardShareSnapshotCopies(client, madeCopies);
     return jsonResponse({ status: 'failed', reason: 'insert_failed' }, 200);
   }
 
@@ -194,11 +203,16 @@ Deno.serve(async (req: Request) => {
     // imageless post. Compensate by deleting it (safe: this request is
     // the only thing that could reference this just-created row so far).
     await client.from('posts').delete().eq('id', postRow.id);
+    await discardShareSnapshotCopies(client, madeCopies);
     return jsonResponse({ status: 'failed', reason: 'insert_failed' }, 200);
   }
 
   return jsonResponse({ status: 'ok', post_id: postRow.id }, 200);
 });
+
+function copyIdsOf(results: { ok: boolean; copyId?: string }[]): string[] {
+  return results.flatMap((r) => (r.ok && r.copyId ? [r.copyId] : []));
+}
 
 // ── folder_share ────────────────────────────────────────────────────────────
 // "Share Folder" feed post: a snapshot of up to FOLDER_SHARE_MAX_ITEMS of a
@@ -272,7 +286,17 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false });
 
-  const candidateIds = (candidateItems ?? []).map((i: any) => i.id as string);
+  // Moderation and blocks (Phase 2B M2.3a): restricted items — moderated, in a
+  // moderated folder tree, with a moderated image — and every item of an owner
+  // the caller has a block with are dropped here, before anything is picked
+  // or copied. (Each copy is still revalidated by the database.) A lookup
+  // failure fails closed: no items.
+  const allCandidateIds = (candidateItems ?? []).map((i: any) => i.id as string);
+  const { data: eligibleRows, error: eligibleError } = allCandidateIds.length
+    ? await client.rpc('share_snapshot_eligible_items', { p_caller: userId, p_item_ids: allCandidateIds })
+    : { data: [], error: null };
+  const republishable = new Set(eligibleError ? [] : ((eligibleRows ?? []) as string[]));
+  const candidateIds = allCandidateIds.filter((id) => republishable.has(id));
   if (candidateIds.length === 0) {
     return jsonResponse({ status: 'failed', reason: 'no_eligible_items' }, 200);
   }
@@ -283,7 +307,7 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
     .eq('is_primary', true)
     .in('item_id', candidateIds);
   const photographed = new Set((primaries ?? []).map((r: any) => r.item_id as string));
-  const eligible = (candidateItems ?? []).filter((i: any) => photographed.has(i.id));
+  const eligible = (candidateItems ?? []).filter((i: any) => republishable.has(i.id) && photographed.has(i.id));
   if (eligible.length === 0) {
     return jsonResponse({ status: 'failed', reason: 'no_eligible_items' }, 200);
   }
@@ -294,8 +318,14 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
   const copyResults = await Promise.all(
     picked.map((item) => copyItemImageIntoShareSnapshots(client, userId, item.id, 'folder_share', groupId)),
   );
+  // Every copy this request made — removed on ANY later failure (see above).
+  const madeCopies = copyIdsOf(copyResults);
+  const fail = async (reason: string) => {
+    await discardShareSnapshotCopies(client, madeCopies);
+    return jsonResponse({ status: 'failed', reason }, 200);
+  };
   if (copyResults.some((r) => !r.ok)) {
-    return jsonResponse({ status: 'failed', reason: 'copy_failed' }, 200);
+    return fail('copy_failed');
   }
   const copied = copyResults as { ok: true; publicUrl: string; storagePath: string }[];
 
@@ -313,8 +343,9 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
   let coverSnapshotUrl: string | null = null;
   if (folder.cover_source === 'upload') {
     if (folder.cover_storage_path) {
-      const cover = await copyFolderCoverIntoShareSnapshots(client, userId, folder.cover_storage_path as string, groupId);
-      if (!cover.ok) return jsonResponse({ status: 'failed', reason: 'copy_failed' }, 200);
+      const cover = await copyFolderCoverIntoShareSnapshots(client, userId, folderId, folder.cover_storage_path as string, groupId);
+      if (!cover.ok) return fail('copy_failed');
+      madeCopies.push(...copyIdsOf([cover]));
       coverSnapshotUrl = cover.publicUrl;
     }
   } else {
@@ -326,7 +357,8 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
           )[0];
     if (coverItem) {
       const cover = await copyItemImageIntoShareSnapshots(client, userId, coverItem.id, 'folder_share', groupId);
-      if (!cover.ok) return jsonResponse({ status: 'failed', reason: 'copy_failed' }, 200);
+      if (!cover.ok) return fail('copy_failed');
+      madeCopies.push(...copyIdsOf([cover]));
       coverSnapshotUrl = cover.publicUrl;
     }
   }
@@ -345,7 +377,7 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
     .select('id')
     .single();
   if (postError || !postRow) {
-    return jsonResponse({ status: 'failed', reason: 'insert_failed' }, 200);
+    return fail('insert_failed');
   }
 
   const { error: childError } = await client.from('folder_share_items').insert(
@@ -360,7 +392,7 @@ async function handleFolderShare(req: Request, body: { folder_id?: unknown }, ca
   );
   if (childError) {
     await client.from('posts').delete().eq('id', postRow.id);
-    return jsonResponse({ status: 'failed', reason: 'insert_failed' }, 200);
+    return fail('insert_failed');
   }
 
   return jsonResponse({ status: 'ok', post_id: postRow.id }, 200);

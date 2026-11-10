@@ -79,6 +79,16 @@
 //
 // storage_path itself is never included in the response — only the signed
 // URL the client actually needs to render the image.
+//
+// Blocks (Phase 2B M2.3a, supabase/migrations/20261118120000_media_signing_
+// moderation.sql): the service role bypasses the blocking read guards, so a
+// signed-in caller who blocked, or was blocked by, an image's owner gets the
+// same 'unavailable' as for anything else they can't see. The caller-specific
+// lookup (signing_blocked_image_ids) runs speculatively alongside caller
+// verification, keyed on the token's claimed id, and is re-run for the
+// verified id if they differ. A failed lookup fails closed for every image the
+// caller doesn't own. (Moderation itself is already folded into
+// resolve_item_images_for_signing by M2.1.)
 
 import { IMAGE_TIER_TRANSFORMS, parseImageTier, type ImageTier } from '../_shared/image-tiers.ts';
 import {
@@ -87,10 +97,27 @@ import {
   resolveCaller,
   serviceRoleClient,
 } from '../_shared/registry-image.ts';
+import { unverifiedTokenSubject } from '../_shared/media-signing.ts';
 
 const SIGNED_URL_TTL_SECONDS = 300;
 const MAX_BATCH_SIZE = 50;
 const UNAVAILABLE = { status: 'unavailable' as const };
+
+// Image ids among `imageIds` whose owner has a block with `callerId` in
+// either direction; null when the lookup failed (callers fail closed).
+async function blockedImageIds(
+  client: ReturnType<typeof serviceRoleClient>,
+  imageIds: string[],
+  callerId: string | null,
+): Promise<Set<string> | null> {
+  if (!callerId) return new Set();
+  const { data, error } = await client.rpc('signing_blocked_image_ids', { p_caller: callerId, p_image_ids: imageIds });
+  if (error) {
+    console.error('[get-collection-item-image-signed-url] block lookup failed:', error.code);
+    return null;
+  }
+  return new Set((data ?? []) as string[]);
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -189,13 +216,17 @@ Deno.serve(async (req: Request) => {
   // canViewItem below remains the ONLY authorization boundary — nothing about
   // a row being returned implies the caller may view it. An invalid token is
   // still rejected with 401 before anything is returned.
-  const [{ userId, invalid }, { data: rows, error: lookupError }] = await Promise.all([
+  const speculativeCallerId = unverifiedTokenSubject(req);
+  const [{ userId, invalid }, { data: rows, error: lookupError }, speculativeBlocked] = await Promise.all([
     resolveCaller(client, req),
     client.rpc('resolve_item_images_for_signing', { p_image_ids: imageIds }),
+    blockedImageIds(client, imageIds, speculativeCallerId),
   ]);
   if (invalid) {
     return jsonResponse({ error: 'invalid_token' }, 401);
   }
+  const blocked =
+    speculativeCallerId === userId ? speculativeBlocked : await blockedImageIds(client, imageIds, userId);
 
   if (lookupError) {
     // A query-level failure must not be reported per-row (that would imply
@@ -238,6 +269,9 @@ Deno.serve(async (req: Request) => {
     imageIds.map(async (id) => {
       const row = resolved.get(id);
       if (!row || !canViewItem(row, userId)) {
+        return { id, ...UNAVAILABLE };
+      }
+      if (row.owner_id !== userId && (blocked === null || blocked.has(id))) {
         return { id, ...UNAVAILABLE };
       }
 

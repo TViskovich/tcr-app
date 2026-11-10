@@ -211,13 +211,13 @@ async function main() {
   check('owner: may still edit it, and it stays hidden',
     !(await A.db.from('collection_items').update({ title: `cmitem${run} edited` }).eq('id', I)).error && (await count(O, 'collection_items', 'id', I)) === 0);
 
-  step('5. Known gap (Edge Function gate): folder covers');
+  step('5. Folder covers (gap closed by M2.3a, 20261118120000_media_signing_moderation.sql)');
   check('cover item removed', (await rpc(M2, 'admin_remove_content', { p_report_id: rCover, p_reason_code: 'hate' })).data?.state === 'removed');
   check('O: the cover item and its image row are hidden in the database',
     (await count(O, 'collection_items', 'id', J)) === 0 && (await imageStatus(O.token, imgJ)) === 'unavailable');
-  const gap = await coverStatus(O.token, F);
-  console.log(`  INFO  get-folder-cover-signed-url still signs a removed cover item for others: ${gap === 'ok' ? 'YES (documented gap)' : gap}`);
-  check('documented gap reproduced: the folder-cover Edge Function bypasses item moderation', gap === 'ok', gap);
+  const cover = await coverStatus(O.token, F);
+  check('folder cover: a removed cover item is no longer signed for others', cover === 'unavailable', cover);
+  check('folder cover: the owner still gets it', (await coverStatus(A.token, F)) === 'ok');
   check('hiding the folder itself closes the cover', (await rpc(M1, 'admin_hide_content', { p_report_id: rFolder, p_reason_code: 'pending_review' })).data?.state === 'hidden'
     && (await coverStatus(O.token, F)) === 'unavailable' && (await coverStatus(A.token, F)) === 'ok');
   check('owner: moving an item out of the hidden folder → refused',

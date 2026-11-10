@@ -32,11 +32,106 @@ export type CopyFailureReason =
   | 'download_failed' // the source object doesn't exist or Storage download errored
   | 'file_too_large' // over MAX_IMAGE_BYTES
   | 'unsupported_type' // content-type not in ALLOWED_IMAGE_MIME_TYPES
-  | 'upload_failed'; // share-snapshots upload itself errored
+  | 'upload_failed' // share-snapshots upload itself errored
+  | 'ledger_failed'; // the copy ledger RPC itself errored (fail closed)
 
+// copyId is set for every ledgered copy (all collector-facing paths): pass it
+// to discardShareSnapshotCopies if the operation that asked for the copy
+// fails afterwards. deleteSource is set only for a staging upload the
+// database confirmed is still unreferenced.
 export type CopyItemImageResult =
-  | { ok: true; publicUrl: string; storagePath: string }
+  | { ok: true; publicUrl: string; storagePath: string; copyId?: string; deleteSource?: boolean }
   | { ok: false; reason: CopyFailureReason };
+
+// ── Copy ledger (Phase 2B M2.3a) ────────────────────────────────────────────
+// Every collector-facing copy into the PUBLIC share-snapshots bucket goes
+// through private.share_snapshot_copies (supabase/migrations/
+// 20261118120000_media_signing_moderation.sql):
+//   1. share_snapshot_copy_begin    — the database validates the source
+//      (moderation of the item, its folder tree and its images; blocks; hidden
+//      owners; for a staging upload, that nothing references the path) for
+//      owners and non-owners alike, and reserves a destination derived from
+//      the new row's id. Nothing is downloaded or copied if it refuses.
+//   2. download / validate / upload to that exact destination (never upsert).
+//   3. share_snapshot_copy_publish  — revalidates everything AFTER the upload
+//      and BEFORE the URL is returned, so moderation that lands mid-copy is
+//      caught; a refusal marks the copy rejected and it is discarded.
+//   discardShareSnapshotCopies      — removes only the objects the ledger says
+//      that copy created (its own destination), never a prefix.
+// Refusal reasons stay in server logs; callers only ever see a generic failure.
+type LedgerKind =
+  | { kind: 'item'; itemId: string; snapshotType: string; targetId: string }
+  | { kind: 'folder_cover'; folderId: string; targetId: string }
+  | { kind: 'post_photo' };
+
+async function ledgeredCopy(
+  client: SupabaseClient,
+  callerId: string,
+  spec: LedgerKind,
+  sourcePath: string,
+): Promise<CopyItemImageResult> {
+  const { data: begun, error: beginError } = await client.rpc('share_snapshot_copy_begin', {
+    p_caller: callerId,
+    p_kind: spec.kind,
+    p_item_id: spec.kind === 'item' ? spec.itemId : null,
+    p_folder_id: spec.kind === 'folder_cover' ? spec.folderId : null,
+    p_source_path: sourcePath,
+    p_snapshot_type: spec.kind === 'item' ? spec.snapshotType : spec.kind === 'folder_cover' ? 'folder_share' : null,
+    p_target_id: spec.kind === 'post_photo' ? null : spec.targetId,
+  });
+  if (beginError) {
+    console.error('[ledgeredCopy] begin failed:', beginError.code);
+    return { ok: false, reason: 'ledger_failed' };
+  }
+  const reservation = begun as { ok: boolean; reason?: string; copy_id?: string; destination?: string };
+  if (!reservation?.ok || !reservation.copy_id || !reservation.destination) {
+    console.error('[ledgeredCopy] refused before copy:', { kind: spec.kind, reason: reservation?.reason });
+    return { ok: false, reason: 'unauthorized' };
+  }
+  const copyId = reservation.copy_id;
+
+  const result = await downloadValidateUpload(client, sourcePath, reservation.destination);
+  if (!result.ok) {
+    await discardShareSnapshotCopies(client, [copyId]);
+    return result;
+  }
+
+  const { data: published, error: publishError } = await client.rpc('share_snapshot_copy_publish', {
+    p_copy_id: copyId,
+    p_dest_path: result.storagePath,
+  });
+  const outcome = published as { ok: boolean; reason?: string; delete_source?: boolean } | null;
+  if (publishError || !outcome?.ok) {
+    console.error('[ledgeredCopy] refused after copy:', { kind: spec.kind, reason: outcome?.reason ?? publishError?.code });
+    await discardShareSnapshotCopies(client, [copyId]);
+    return { ok: false, reason: publishError ? 'ledger_failed' : 'unauthorized' };
+  }
+  return { ...result, copyId, deleteSource: outcome.delete_source === true };
+}
+
+// Compensation for an operation that made copies and then failed: removes
+// exactly the objects the ledger attributes to these copies (and nothing
+// else), then records the removal. A copy whose removal fails stays
+// 'discarded' in the ledger with its paths, for reconciliation. Never throws.
+export async function discardShareSnapshotCopies(client: SupabaseClient, copyIds: string[]): Promise<void> {
+  if (copyIds.length === 0) return;
+  try {
+    const { data, error } = await client.rpc('share_snapshot_copy_discard', { p_copy_ids: copyIds });
+    if (error) {
+      console.error('[discardShareSnapshotCopies] discard failed:', error.code);
+      return;
+    }
+    const removed: string[] = [];
+    for (const row of (data ?? []) as { copy_id: string; paths: string[] }[]) {
+      const { error: removeError } = await client.storage.from('share-snapshots').remove(row.paths);
+      if (removeError) console.error('[discardShareSnapshotCopies] remove failed:', removeError.message);
+      else removed.push(row.copy_id);
+    }
+    if (removed.length) await client.rpc('share_snapshot_copy_removed', { p_copy_ids: removed });
+  } catch (e) {
+    console.error('[discardShareSnapshotCopies] unexpected failure:', e instanceof Error ? e.message : String(e));
+  }
+}
 
 // Downloads `sourcePath` from item-images via the given (service-role)
 // client, validates size/MIME, and uploads it to `destinationPath` in
@@ -246,8 +341,10 @@ export async function copyItemImageIntoShareSnapshots(
     return { ok: false, reason: 'invalid_source' };
   }
 
-  const destinationPath = `${callerId}/${snapshotType}/${targetId}/${itemId}-${crypto.randomUUID()}`;
-  const result = await downloadValidateUpload(client, sourcePath, destinationPath);
+  // The database revalidates this copy for EVERY caller, the owner included
+  // (moderation, blocks, hidden owners, and that sourcePath really is this
+  // item's image) — see ledgeredCopy.
+  const result = await ledgeredCopy(client, callerId, { kind: 'item', itemId, snapshotType, targetId }, sourcePath);
   console.log('[copyItemImageIntoShareSnapshots] downloadValidateUpload result', {
     itemId,
     ok: result.ok,
@@ -319,10 +416,14 @@ export async function copyOwnedItemImageIntoShareSnapshots(
     return { ok: false, reason: 'unauthorized' };
   }
 
-  const destinationPath = `${callerId}/post-upload/${crypto.randomUUID()}`;
-  const result = await downloadValidateUpload(client, sourcePath, destinationPath);
+  // Phase 2B M2.3a: the database refuses any path that something still
+  // references (an item image, a cover, a post or snapshot row, report
+  // evidence, an export in progress …), so this can neither republish an
+  // existing — possibly moderated — image nor delete one. It re-checks that
+  // when publishing, and only then allows the staging object's deletion.
+  const result = await ledgeredCopy(client, callerId, { kind: 'post_photo' }, sourcePath);
 
-  if (result.ok) {
+  if (result.ok && result.deleteSource) {
     const { error: removeError } = await client.storage.from('item-images').remove([sourcePath]);
     if (removeError) {
       console.error('[copyOwnedItemImageIntoShareSnapshots] source cleanup failed:', removeError.message);
@@ -334,12 +435,15 @@ export async function copyOwnedItemImageIntoShareSnapshots(
 
 // Copies a folder's explicit UPLOADED cover (folders.cover_storage_path, an
 // item-images object) into share-snapshots for a folder_share post. Callers
-// must already have verified the caller owns the folder and that the folder
-// is effectively public; the path itself is re-validated against this
-// project's own item-images bucket shape here, never trusted as given.
+// must already have verified that the folder is effectively public; the path
+// itself is re-validated against this project's own item-images bucket shape
+// here, never trusted as given, and the database re-checks that it is still
+// this folder's cover and that the folder tree isn't moderated or the owner
+// blocked (see ledgeredCopy).
 export async function copyFolderCoverIntoShareSnapshots(
   client: SupabaseClient,
   callerId: string,
+  folderId: string,
   coverStoragePath: string,
   targetId: string,
 ): Promise<CopyItemImageResult> {
@@ -347,6 +451,5 @@ export async function copyFolderCoverIntoShareSnapshots(
   if (!sourcePath) {
     return { ok: false, reason: 'invalid_source' };
   }
-  const destinationPath = `${callerId}/folder_share/${targetId}/cover-${crypto.randomUUID()}`;
-  return downloadValidateUpload(client, sourcePath, destinationPath);
+  return ledgeredCopy(client, callerId, { kind: 'folder_cover', folderId, targetId }, sourcePath);
 }

@@ -89,6 +89,20 @@
 // cover_item_id, no active items, no PUBLIC active item for a non-owner
 // caller, no primary gallery image, or a signing failure) resolves to the
 // same 'unavailable' outcome as an unauthorized one.
+//
+// Moderation and blocks (Phase 2B M2.3a, supabase/migrations/
+// 20261118120000_media_signing_moderation.sql): this function runs as the
+// service role, so the database's moderation and blocking read guards never
+// apply to it. Authorization therefore comes from ONE service-role RPC,
+// folder_cover_eligibility(folder_ids, caller), which replaces the plain
+// visibility RPC and the separate Grail-slot read. For anyone but the owner it
+// refuses a moderated folder tree (including through the Grail exception), a
+// hidden owner and a block in either direction, and it lists the restricted
+// items (moderated item, moderated primary image, moderated folder tree) that
+// the 'item' and 'first_card' paths must skip — 'first_card' then falls back to
+// the next eligible item. The owner still gets their own moderated content
+// (as in M2.1). A picked cover item must belong to the folder's own owner for
+// every caller. Every refusal is the same 'unavailable' result.
 
 import {
   handleCorsPreflight,
@@ -99,6 +113,7 @@ import {
 } from '../_shared/registry-image.ts';
 import { IMAGE_TIER_TRANSFORMS, parseImageTier, type ImageTier } from '../_shared/image-tiers.ts';
 import { tryResolveServiceKey } from '../_shared/service-key.ts';
+import { unverifiedTokenSubject } from '../_shared/media-signing.ts';
 
 const SIGNED_URL_TTL_SECONDS = 300;
 
@@ -167,47 +182,46 @@ type FirstCardRow = {
   primary: { storage_path: string | null }[] | null;
 };
 
-// The user id a bearer token CLAIMS (its JWT `sub`), decoded without
-// verification — used only to start the visibility RPC before verification
-// finishes, and only ever trusted if resolveCaller then verifies that exact
-// id (see the handler). null for no/malformed token, which is also correct
-// speculation for an anonymous caller.
-function unverifiedTokenSubject(req: Request): string | null {
-  const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim();
-  const payload = token?.split('.')[1];
-  if (!payload) return null;
-  try {
-    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '='));
-    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
-    return typeof sub === 'string' && UUID_RE.test(sub) ? sub : null;
-  } catch {
-    return null;
-  }
-}
+// Per-folder authorization and the moderation facts cover resolution needs,
+// from folder_cover_eligibility (see the module comment). One batched call
+// per request. Any RPC failure resolves to an empty map — every folder then
+// fails closed as 'unavailable'.
+type CoverEligibility = {
+  authorized: boolean;
+  coverItemOwned: boolean;
+  coverPathRestricted: boolean;
+  restrictedItemIds: Set<string>;
+};
 
-// Ancestor-aware folder visibility — delegates to the recursive
-// folder_effective_visibility_batch() RPC (supabase/migrations/
-// 20260902120000_recursive_folder_hierarchy_privacy.sql) rather than
-// re-implementing a parent_folder_id walk here. One batched call per
-// request (up to MAX_BATCH_SIZE ids), not one round trip per folder. This
-// runs via the service-role client, so the RPC's own SECURITY DEFINER
-// helper is what actually authorizes each id — nothing about this
-// function's own role bypasses or replaces that.
-async function resolveVisibleFolderIds(
+async function resolveCoverEligibility(
   client: ReturnType<typeof serviceRoleClient>,
   folderIds: string[],
   callerId: string | null,
-): Promise<Set<string>> {
-  const { data, error } = await client.rpc('folder_effective_visibility_batch', {
-    folder_ids: folderIds,
-    caller: callerId,
+): Promise<Map<string, CoverEligibility>> {
+  const { data, error } = await client.rpc('folder_cover_eligibility', {
+    p_folder_ids: folderIds,
+    p_caller: callerId,
   });
-  if (error || !data) return new Set();
-  return new Set(
-    (data as { folder_id: string; visible: boolean }[])
-      .filter((row) => row.visible)
-      .map((row) => row.folder_id),
-  );
+  const result = new Map<string, CoverEligibility>();
+  if (error || !data) {
+    if (error) console.error('[get-folder-cover-signed-url] eligibility lookup failed:', error.code);
+    return result;
+  }
+  for (const row of data as {
+    folder_id: string;
+    authorized: boolean;
+    cover_item_owned: boolean;
+    cover_path_restricted: boolean;
+    restricted_item_ids: string[] | null;
+  }[]) {
+    result.set(row.folder_id, {
+      authorized: row.authorized === true,
+      coverItemOwned: row.cover_item_owned === true,
+      coverPathRestricted: row.cover_path_restricted === true,
+      restrictedItemIds: new Set(row.restricted_item_ids ?? []),
+    });
+  }
+  return result;
 }
 
 // Shared by both item-privacy checks below ('item' and, as of this pass,
@@ -267,18 +281,18 @@ Deno.serve(async (req: Request) => {
   //   - the folders read, with each folder's picked cover item AND that
   //     item's primary-image path embedded (no separate picked-item or
   //     image lookups for 'item' covers);
-  //   - the ancestor-aware visibility RPC, started SPECULATIVELY for the
+  //   - the eligibility RPC (visibility, Grail exception, moderation and
+  //     blocks — see the module comment), started SPECULATIVELY for the
   //     caller id the bearer token claims (decoded, not yet verified). Its
   //     result is used only if verification confirms that exact id;
   //     otherwise it is re-run for the verified id below. So authorization
   //     is always decided for the VERIFIED caller — the speculation only
-  //     saves waiting for verification first;
-  //   - the Grail-slot exception rows (depend only on the requested ids).
+  //     saves waiting for verification first.
   // Every read here is service-role and feeds server-side resolution only;
   // nothing about any row is returned unless the authorization checks after
   // this stage pass.
   const speculativeCallerId = unverifiedTokenSubject(req);
-  const [caller, { data: folders, error: foldersError }, speculativeVisibleIds, grailRows] = await Promise.all([
+  const [caller, { data: folders, error: foldersError }, speculativeEligibility] = await Promise.all([
     resolveCaller(client, req),
     client
       .from('folders')
@@ -288,20 +302,7 @@ Deno.serve(async (req: Request) => {
       )
       .in('id', folderIds)
       .eq('cover_item.primary.is_primary', true),
-    resolveVisibleFolderIds(client, folderIds, speculativeCallerId),
-    // Grail-slot visibility exception ("Grail placement = implicit
-    // publish" — supabase/migrations/20260910120000_grail_slot_visibility_
-    // exception.sql): a folder referenced by its own owner's
-    // entry_type='collection' profile_grail_slots row authorizes resolving
-    // THAT folder's cover, independent of folder_effective_visibility_batch's
-    // normal ancestor-chain result. Scoped to the exact folder id only, and
-    // cross-checked against the folder's own owner below.
-    client
-      .from('profile_grail_slots')
-      .select('collection_id, user_id')
-      .eq('entry_type', 'collection')
-      .in('collection_id', folderIds)
-      .then(({ data }) => (data ?? []) as { collection_id: string | null; user_id: string }[]),
+    resolveCoverEligibility(client, folderIds, speculativeCallerId),
   ]);
 
   const { userId, invalid } = caller;
@@ -321,26 +322,19 @@ Deno.serve(async (req: Request) => {
 
   // Speculation check: only a result computed for the verified caller id is
   // ever used.
-  const visibleFolderIds =
+  const eligibility =
     speculativeCallerId === userId
-      ? speculativeVisibleIds
-      : await resolveVisibleFolderIds(client, folderIds, userId);
+      ? speculativeEligibility
+      : await resolveCoverEligibility(client, folderIds, userId);
 
   const folderMap = new Map<string, ResolvedFolder>();
   for (const f of (folders ?? []) as ResolvedFolder[]) {
     folderMap.set(f.id, f);
   }
 
-  const grailShowcasedFolderIds = new Set<string>();
-  for (const row of grailRows) {
-    if (!row.collection_id) continue;
-    const folder = folderMap.get(row.collection_id);
-    if (folder && folder.user_id === row.user_id) grailShowcasedFolderIds.add(row.collection_id);
-  }
-
-  const authorizedIds = folderIds.filter(
-    (id) => folderMap.has(id) && (visibleFolderIds.has(id) || grailShowcasedFolderIds.has(id)),
-  );
+  const authorizedIds = folderIds.filter((id) => folderMap.has(id) && eligibility.get(id)?.authorized === true);
+  // Only ever read for an authorized id.
+  const restrictionsOf = (id: string) => eligibility.get(id)!;
 
   // A folder can be internally inconsistent — cover_source claims a
   // specific explicit cover but the field that source actually needs is
@@ -365,6 +359,7 @@ Deno.serve(async (req: Request) => {
   const folderToStoragePath = new Map<string, string>();
 
   for (const id of uploadIds) {
+    if (restrictionsOf(id).coverPathRestricted) continue; // a moderated item image used as the upload cover
     const path = folderMap.get(id)!.cover_storage_path;
     if (path) folderToStoragePath.set(id, path);
   }
@@ -379,6 +374,8 @@ Deno.serve(async (req: Request) => {
     const folder = folderMap.get(folderId)!;
     const item = folder.cover_item;
     if (!item) continue; // referenced item no longer exists/resolvable
+    if (!restrictionsOf(folderId).coverItemOwned) continue; // another collector's item — never a cover
+    if (restrictionsOf(folderId).restrictedItemIds.has(item.id)) continue; // moderated, for a non-owner
     if (!item.is_public && !isOwnerCaller(folder, userId)) continue; // most-restrictive-wins
     const path = item.primary?.[0]?.storage_path;
     if (path) folderToStoragePath.set(folderId, path);
@@ -390,7 +387,8 @@ Deno.serve(async (req: Request) => {
   // first-card folders, with each item's primary-image path embedded (no
   // separate image lookup). Items arrive newest-first, so this is a linear
   // scan taking the first (owner) or first-public (non-owner) match per
-  // folder — semantics unchanged.
+  // folder. Restricted items (non-owner callers only) are skipped the same
+  // way a private one is, so the next eligible item becomes the cover.
   if (firstCardIds.length) {
     const { data: items } = await client
       .from('collection_items')
@@ -405,6 +403,7 @@ Deno.serve(async (req: Request) => {
       if (resolvedFirstCard.has(item.folder_id)) continue; // already resolved this folder
       const folder = folderMap.get(item.folder_id)!;
       if (!item.is_public && !isOwnerCaller(folder, userId)) continue; // most-restrictive-wins
+      if (restrictionsOf(item.folder_id).restrictedItemIds.has(item.id)) continue; // moderated: next eligible item
       resolvedFirstCard.add(item.folder_id);
       const path = item.primary?.[0]?.storage_path;
       if (path) folderToStoragePath.set(item.folder_id, path);
