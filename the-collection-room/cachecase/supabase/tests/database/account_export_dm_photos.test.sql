@@ -27,8 +27,10 @@ SELECT ok(NOT EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a
   'no PUBLIC execute grant');
 SELECT ok(has_function_privilege('service_role', 'public.export_sent_message_attachments(uuid,uuid,integer)', 'EXECUTE'),
   'service_role can execute it');
-SELECT is((SELECT count(*)::int FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
-             AND (coalesce(qual, '') || coalesce(with_check, '')) LIKE '%dm-attachments%'), 4,
+-- Only PERMISSIVE policies grant access; restrictive guards (lifecycle,
+-- content moderation 20261116120000) can only narrow it.
+SELECT is((SELECT count(*)::int FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND permissive = 'PERMISSIVE'
+             AND (coalesce(qual, '') || coalesce(with_check, '')) LIKE '%dm-attachments%'), 3,
   'Storage policies for dm-attachments are unchanged (no new read access)');
 
 -- ── Fixtures ────────────────────────────────────────────────────────────
