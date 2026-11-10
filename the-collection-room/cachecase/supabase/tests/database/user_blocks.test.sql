@@ -54,11 +54,11 @@ SELECT ok(NOT has_function_privilege('authenticated', 'private.reject_blocked_in
   'the trigger functions are not callable by clients');
 
 SELECT is((SELECT string_agg(c.relname, ', ') FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-           WHERE t.tgname = 'interaction_target_guard' AND c.relname <> 'ownership_transfers'
+           WHERE t.tgname = 'interaction_target_guard'
              AND NOT EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgrelid = t.tgrelid AND g.tgname = 'user_block_guard')), NULL,
-  'every lifecycle-guarded interaction table (except Transfers) also has user_block_guard');
-SELECT ok(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.ownership_transfers'::regclass AND tgname LIKE 'user_block%'),
-  'Transfers is deliberately not guarded (release dependency)');
+  'every lifecycle-guarded interaction table, Transfers included (20261113120000), also has user_block_guard');
+SELECT is((SELECT count(*)::int FROM pg_trigger WHERE tgrelid = 'public.ownership_transfers'::regclass AND tgname IN ('user_block_guard', 'user_block_guard_accept')), 2,
+  'Transfers: new requests and acceptance are guarded (see user_blocks_transfers.test.sql)');
 SELECT is((SELECT count(*)::int FROM pg_trigger WHERE tgrelid = 'public.posts'::regclass AND tgname IN ('user_block_guard_repost', 'user_block_guard_quote')), 2,
   'reposts and quotes are guarded');
 SELECT ok(EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.messages'::regclass AND tgname = 'user_block_guard_attachment'),
