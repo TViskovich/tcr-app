@@ -6,7 +6,7 @@
 -- Everything happens inside one transaction that is rolled back.
 
 BEGIN;
-SELECT plan(126);
+SELECT plan(128);
 
 CREATE FUNCTION pg_temp.login(p_user uuid) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -422,28 +422,36 @@ CREATE TEMP TABLE sn AS SELECT q.id, l.lease FROM private.media_quarantine q JOI
 GRANT SELECT ON av, sn TO service_role;
 SET LOCAL ROLE service_role;
 SELECT is(public.media_quarantine_advance((SELECT id FROM av), gen_random_uuid(), 'copied') ->> 'reason', 'lease', 'a wrong lease is refused');
-SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'quarantined', '{"source_removed": "true"}') ->> 'reason',
-  'invalid_transition', 'pending → quarantined (skipping copy and verify) is refused');
+-- (20261120120000) Every step is checked against Storage itself.
+SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'quarantined', '{"source_removed": "true"}') ->> 'ok',
+  'false', 'pending → quarantined (skipping copy and verify) is refused');
 SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'copied',
-            jsonb_build_object('source_sha256', repeat('a', 64), 'quarantine_sha256', repeat('a', 64))) ->> 'ok', 'true', 'pending → copied');
+            jsonb_build_object('source_sha256', repeat('a', 64), 'size_bytes', 1234)) ->> 'reason', 'copy_missing',
+  '"copied" is refused while no private copy exists');
+RESET ROLE;
+INSERT INTO storage.objects (bucket_id, name, metadata) SELECT 'moderation-quarantine', quarantine_path, '{"size": 1234}'::jsonb
+  FROM private.media_quarantine WHERE id IN ((SELECT id FROM sn), (SELECT id FROM av));
+SET LOCAL ROLE service_role;
+SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'copied',
+            jsonb_build_object('source_sha256', repeat('a', 64), 'size_bytes', 1234)) ->> 'ok', 'true', 'pending → copied once the copy exists');
 SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'restored') ->> 'reason',
   'invalid_transition', 'copied → restored is refused');
-RESET ROLE;
-UPDATE private.media_quarantine SET quarantine_sha256 = repeat('b', 64) WHERE id = (SELECT id FROM sn);
-SET LOCAL ROLE service_role;
-SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'verified') ->> 'reason',
+SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'verified', jsonb_build_object('quarantine_sha256', repeat('b', 64))) ->> 'reason',
   'invalid_transition', 'verified needs matching checksums');
 SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'verified', jsonb_build_object('quarantine_sha256', repeat('a', 64))) ->> 'ok',
   'true', 'copied → verified once the copy''s checksum matches');
 SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'quarantined') ->> 'reason', 'source_not_removed',
   'no "quarantined" until the worker confirms the source was removed');
+SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'quarantined', '{"source_removed": "true"}') ->> 'reason',
+  'source_still_present', '…and the worker''s word is not enough: the source must really be gone');
 SELECT throws_ok($$ SELECT state FROM private.media_quarantine $$, '42501', NULL, 'the service role cannot read job rows directly');
 RESET ROLE;
 SELECT is((SELECT state FROM private.media_quarantine WHERE id = (SELECT id FROM sn)), 'verified', '…which are still verified, not quarantined');
 SELECT is(public.media_quarantine_advance((SELECT id FROM sn), (SELECT lease FROM sn), 'verified', '{"error": "storage_timeout"}') ->> 'ok', 'true',
   'a failed attempt is recorded without changing state');
-SELECT ok((SELECT next_attempt_at > clock_timestamp() AND last_error = 'storage_timeout' FROM private.media_quarantine WHERE id = (SELECT id FROM sn)),
-  '…with a retry back-off');
+SELECT ok((SELECT next_attempt_at > clock_timestamp() AND last_error = 'storage_timeout' AND lease_token IS NULL AND NOT needs_attention
+             FROM private.media_quarantine WHERE id = (SELECT id FROM sn)),
+  '…with a retry back-off, its lease released');
 SELECT throws_ok($$ UPDATE private.media_quarantine SET source_path = 'x/y' WHERE id = (SELECT id FROM sn) $$, '42501', 'media_quarantine_immutable',
   'a job''s source cannot be rewritten');
 SELECT throws_ok($$ DELETE FROM private.media_quarantine WHERE id = (SELECT id FROM sn) $$, '42501', 'media_quarantine_immutable', 'jobs cannot be deleted');
@@ -456,13 +464,15 @@ SELECT throws_ok($$ UPDATE private.media_quarantine SET child_safety = false WHE
 -- Simulate the worker quarantining A's avatar (source removed).
 SET LOCAL ROLE service_role;
 SELECT is(public.media_quarantine_advance((SELECT id FROM av), (SELECT lease FROM av), 'copied',
-            jsonb_build_object('source_sha256', repeat('c', 64), 'quarantine_sha256', repeat('c', 64))) ->> 'ok', 'true', 'avatar: copied');
+            jsonb_build_object('source_sha256', repeat('c', 64), 'quarantine_sha256', repeat('c', 64), 'size_bytes', 1234)) ->> 'ok', 'true', 'avatar: copied');
 SELECT is(public.media_quarantine_advance((SELECT id FROM av), (SELECT lease FROM av), 'verified') ->> 'ok', 'true', 'avatar: verified');
-SELECT is(public.media_quarantine_advance((SELECT id FROM av), (SELECT lease FROM av), 'quarantined', '{"source_removed": "true"}') ->> 'ok', 'true',
-  'avatar: quarantined once the source is gone');
 RESET ROLE;
 SET LOCAL storage.allow_delete_query = 'true';
 DELETE FROM storage.objects WHERE bucket_id = 'avatars' AND name = '00000000-0000-4000-8000-0000bf000001/av.jpg';
+SET LOCAL ROLE service_role;
+SELECT is(public.media_quarantine_advance((SELECT id FROM av), (SELECT lease FROM av), 'quarantined', '{"source_removed": "true"}') ->> 'ok', 'true',
+  'avatar: quarantined once the source is gone');
+RESET ROLE;
 SELECT ok((SELECT quarantined_at IS NOT NULL AND source_removed_at IS NOT NULL AND lease_token IS NULL FROM private.media_quarantine WHERE id = (SELECT id FROM av)),
   'quarantined: timestamps set, lease released');
 
@@ -531,7 +541,8 @@ SELECT ok(EXISTS (SELECT 1 FROM private.media_quarantine WHERE owner_id = '00000
 -- ── 16. Queueing never touched a file ───────────────────────────────────
 SELECT is((SELECT count(*)::int FROM fixture_objects f WHERE NOT EXISTS (SELECT 1 FROM storage.objects o WHERE o.bucket_id = f.bucket_id AND o.name = f.name)), 2,
   'only the two objects this test removed itself are gone');
-SELECT is((SELECT count(*)::int FROM storage.objects WHERE bucket_id = 'moderation-quarantine'), 1, 'the quarantine bucket holds only the test''s own object');
+SELECT is((SELECT count(*)::int FROM storage.objects WHERE bucket_id = 'moderation-quarantine'), 3,
+  'the quarantine bucket holds only the test''s own objects (one fixture, two simulated copies)');
 
 SELECT * FROM finish();
 ROLLBACK;

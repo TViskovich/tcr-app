@@ -468,6 +468,12 @@ verify_jwt = false
 verify_jwt = false
 
 # Production baseline: signed-in callers only.
+[functions.admin-media-quarantine]
+verify_jwt = true
+
+[functions.admin-media-restore]
+verify_jwt = true
+
 [functions.backfill-share-snapshots]
 verify_jwt = true
 

@@ -37,6 +37,16 @@
       "deployed": true,
       "why": "pre-sign-up invite check"
     },
+    "admin-media-quarantine": {
+      "verify_jwt": true,
+      "deployed": false,
+      "why": "admin only (Phase 2B M2.3c); checks admin_users and the account lifecycle itself"
+    },
+    "admin-media-restore": {
+      "verify_jwt": true,
+      "deployed": false,
+      "why": "admin only (Phase 2B M2.3c); checks admin_users and the account lifecycle itself"
+    },
     "backfill-share-snapshots": {
       "verify_jwt": true,
       "deployed": true
