@@ -348,17 +348,19 @@ SELECT is((SELECT array_agg(status ORDER BY status) FROM private.share_snapshot_
 
 -- ── 7. Discarding ───────────────────────────────────────────────────────
 SET LOCAL ROLE service_role;
-SELECT is((SELECT paths FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'item')])),
-  ARRAY[(SELECT dest FROM c WHERE k = 'item') || '.jpg'], 'discard: a published copy yields exactly its own object');
+-- (M2.3b, 20261119120000) The race above moderated I3 after its 'item' copy was
+-- published, so that copy is now held for quarantine: discard must leave it.
+SELECT is((SELECT count(*)::int FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'item')])), 0,
+  'discard: a published copy held for quarantine (its item was moderated since) is never handed out');
 SELECT is((SELECT paths FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'cover')])),
   ARRAY(SELECT (SELECT dest FROM c WHERE k = 'cover') || '.' || e FROM unnest(ARRAY['jpg', 'png', 'webp', 'heic', 'heif']) e),
   'discard: an unpublished copy yields only its own destination, per allowed extension');
 SELECT is((SELECT paths FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'race')])),
   ARRAY[(SELECT dest FROM c WHERE k = 'race') || '.jpg'], 'discard: a rejected copy yields its object');
 SELECT is((SELECT count(*)::int FROM public.share_snapshot_copy_discard(ARRAY[gen_random_uuid()])), 0, 'discard: an unknown copy yields nothing');
-SELECT is(public.share_snapshot_copy_removed(ARRAY[(SELECT id FROM c WHERE k = 'item'), (SELECT id FROM c WHERE k = 'cover'), (SELECT id FROM c WHERE k = 'staging')]), 2,
+SELECT is(public.share_snapshot_copy_removed(ARRAY[(SELECT id FROM c WHERE k = 'race'), (SELECT id FROM c WHERE k = 'cover'), (SELECT id FROM c WHERE k = 'staging')]), 2,
   'removed: only discarded copies are marked');
-SELECT is((SELECT count(*)::int FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'item')])), 0,
+SELECT is((SELECT count(*)::int FROM public.share_snapshot_copy_discard(ARRAY[(SELECT id FROM c WHERE k = 'cover')])), 0,
   'discard: a removed copy is never handed out again');
 SELECT is((SELECT count(*)::int FROM public.share_snapshot_copy_discard(ARRAY(SELECT gen_random_uuid() FROM generate_series(1, 51)))), 0,
   'discard: more than 50 ids is refused');

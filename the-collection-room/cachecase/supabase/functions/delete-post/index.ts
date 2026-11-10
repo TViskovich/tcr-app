@@ -72,6 +72,7 @@ import {
   resolveCaller,
   serviceRoleClient,
 } from '../_shared/registry-image.ts';
+import { withoutHeldPaths } from '../_shared/media-holds.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -208,10 +209,14 @@ Deno.serve(async (req: Request) => {
   // only the share-snapshots storage cleanup is left, best-effort, and
   // must never turn an already-successful deletion into a reported
   // failure.
-  if (storagePaths.length > 0) {
-    const { error: storageError } = await client.storage.from('share-snapshots').remove(storagePaths);
+  // Phase 2B M2.3b: a snapshot held for moderation quarantine is evidence and
+  // stays in place (the quarantine worker moves it); if the held-path check
+  // itself fails, nothing is deleted.
+  const removablePaths = await withoutHeldPaths(client, 'share-snapshots', storagePaths);
+  if (removablePaths && removablePaths.length > 0) {
+    const { error: storageError } = await client.storage.from('share-snapshots').remove(removablePaths);
     if (storageError) {
-      console.error('[delete-post] share-snapshots cleanup failed:', storageError.message, { postId, storagePaths });
+      console.error('[delete-post] share-snapshots cleanup failed:', storageError.message, { postId, storagePaths: removablePaths });
     }
   }
 

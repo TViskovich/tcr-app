@@ -423,10 +423,17 @@ export async function copyOwnedItemImageIntoShareSnapshots(
   // when publishing, and only then allows the staging object's deletion.
   const result = await ledgeredCopy(client, callerId, { kind: 'post_photo' }, sourcePath);
 
+  // Phase 2B M2.3b: publish marked the staging path "deleting" under a
+  // per-path lock, so no new reference to it can be committed now; report the
+  // removal so the reservation is released. If removal fails the path stays
+  // reserved (unreferenceable) for reconciliation — never orphaning a row.
   if (result.ok && result.deleteSource) {
     const { error: removeError } = await client.storage.from('item-images').remove([sourcePath]);
     if (removeError) {
       console.error('[copyOwnedItemImageIntoShareSnapshots] source cleanup failed:', removeError.message);
+    } else if (result.copyId) {
+      const { error: markError } = await client.rpc('share_snapshot_copy_source_removed', { p_copy_id: result.copyId });
+      if (markError) console.error('[copyOwnedItemImageIntoShareSnapshots] source-removed mark failed:', markError.code);
     }
   }
 

@@ -42,6 +42,7 @@ import {
   resolveCaller,
   serviceRoleClient,
 } from '../_shared/registry-image.ts';
+import { withoutHeldPaths } from '../_shared/media-holds.ts';
 
 const MAX_URLS = 20;
 
@@ -83,15 +84,20 @@ Deno.serve(async (req: Request) => {
     .map((url) => parseShareSnapshotsStoragePath(url, projectUrl))
     .filter((path): path is string => !!path && path.split('/')[0] === userId);
 
-  if (ownedPaths.length === 0) {
+  // Phase 2B M2.3b: never delete an object held for moderation quarantine.
+  const removablePaths = await withoutHeldPaths(client, 'share-snapshots', ownedPaths);
+  if (removablePaths === null) {
+    return jsonResponse({ status: 'failed', reason: 'delete_failed' }, 200);
+  }
+  if (removablePaths.length === 0) {
     return jsonResponse({ status: 'ok', deleted: 0 }, 200);
   }
 
-  const { error } = await client.storage.from('share-snapshots').remove(ownedPaths);
+  const { error } = await client.storage.from('share-snapshots').remove(removablePaths);
   if (error) {
-    console.error('[cleanup-share-snapshots] remove failed:', error.message, { userId, count: ownedPaths.length });
+    console.error('[cleanup-share-snapshots] remove failed:', error.message, { userId, count: removablePaths.length });
     return jsonResponse({ status: 'failed', reason: 'delete_failed' }, 200);
   }
 
-  return jsonResponse({ status: 'ok', deleted: ownedPaths.length }, 200);
+  return jsonResponse({ status: 'ok', deleted: removablePaths.length }, 200);
 });

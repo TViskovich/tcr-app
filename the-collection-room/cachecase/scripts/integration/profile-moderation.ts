@@ -65,6 +65,13 @@ async function sweep() {
   psql(`BEGIN; SET LOCAL session_replication_role = replica;
         CREATE TEMP TABLE fx ON COMMIT DROP AS SELECT id FROM public.content_reports WHERE details LIKE '${MARK}%';
         DELETE FROM public.moderation_actions WHERE report_id IN (SELECT id FROM fx);
+        -- M2.3b: this fixture's quarantine jobs (queued by its restrictions).
+        CREATE TEMP TABLE fq ON COMMIT DROP AS SELECT DISTINCT h.quarantine_id AS id FROM private.media_quarantine_holds h
+          WHERE h.moderation_id IN (SELECT m.id FROM public.moderated_content m WHERE m.report_id IN (SELECT id FROM fx));
+        DELETE FROM private.media_quarantine_events WHERE quarantine_id IN (SELECT id FROM fq)
+          OR moderation_id IN (SELECT m.id FROM public.moderated_content m WHERE m.report_id IN (SELECT id FROM fx));
+        DELETE FROM private.media_quarantine_holds WHERE quarantine_id IN (SELECT id FROM fq);
+        DELETE FROM private.media_quarantine WHERE id IN (SELECT id FROM fq);
         DELETE FROM public.moderated_profile_fields WHERE report_id IN (SELECT id FROM fx);
         DELETE FROM public.moderated_content WHERE report_id IN (SELECT id FROM fx);
         DELETE FROM public.content_reports WHERE id IN (SELECT id FROM fx);
@@ -180,8 +187,15 @@ async function main() {
   step('5. Admin inspection, restore, release');
   const status = await rpc(M1, 'admin_profile_moderation_status', { p_user_id: P.id });
   check('admin status shows the active originals', (status.data?.fields ?? []).some((f: any) => f.field === 'bio' && f.original_value === `pm bad bio ${run}`), status.error);
-  // P deletes their own avatar object (allowed by avatars_delete_own).
-  must(await P.db.storage.from('avatars').remove([avatarPath]), 'owner removes avatar object');
+  // M2.3b (20261119120000): the cleared avatar is held for quarantine, so the
+  // owner can no longer delete the evidence…
+  const ownerRemove = await P.db.storage.from('avatars').remove([avatarPath]);
+  check('the owner cannot delete their held, cleared avatar (evidence)',
+    !ownerRemove.error && (ownerRemove.data ?? []).length === 0
+      && (await service.storage.from('avatars').list(P.id)).data?.some((f) => avatarPath.endsWith(f.name)) === true, ownerRemove);
+  // …but the object can still disappear outside the app (simulated here with
+  // the service role), and restore must then refuse rather than link nothing.
+  must(await service.storage.from('avatars').remove([avatarPath]), 'avatar object removed outside the app');
   check('restore refuses an image whose object is gone',
     refused(await rpc(M1, 'admin_restore_profile_fields', { p_user_id: P.id, p_fields: ['avatar_url'], p_reason_code: 'appeal_granted' }), 'original_media_missing', 409));
   check('release the avatar instead (stays cleared, unlocked)',

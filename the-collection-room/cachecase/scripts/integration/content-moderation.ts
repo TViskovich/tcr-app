@@ -68,6 +68,13 @@ async function sweep() {
   psql(`BEGIN; SET LOCAL session_replication_role = replica;
         CREATE TEMP TABLE fx ON COMMIT DROP AS SELECT id FROM public.content_reports WHERE details LIKE '${MARK}%';
         DELETE FROM public.moderation_actions WHERE report_id IN (SELECT id FROM fx);
+        -- M2.3b: this fixture's quarantine jobs (queued by its restrictions).
+        CREATE TEMP TABLE fq ON COMMIT DROP AS SELECT DISTINCT h.quarantine_id AS id FROM private.media_quarantine_holds h
+          WHERE h.moderation_id IN (SELECT m.id FROM public.moderated_content m WHERE m.report_id IN (SELECT id FROM fx));
+        DELETE FROM private.media_quarantine_events WHERE quarantine_id IN (SELECT id FROM fq)
+          OR moderation_id IN (SELECT m.id FROM public.moderated_content m WHERE m.report_id IN (SELECT id FROM fx));
+        DELETE FROM private.media_quarantine_holds WHERE quarantine_id IN (SELECT id FROM fq);
+        DELETE FROM private.media_quarantine WHERE id IN (SELECT id FROM fq);
         DELETE FROM public.moderated_content WHERE report_id IN (SELECT id FROM fx);
         DELETE FROM public.content_reports WHERE id IN (SELECT id FROM fx);
         COMMIT;`);
