@@ -11,8 +11,13 @@ const MAX_EMAIL_LENGTH = 254; // RFC 5321
 const USERNAME_RE = /^[a-z0-9_]+$/;
 const MIN_USERNAME_LENGTH = 3;
 const MAX_USERNAME_LENGTH = 15;
-const MIN_PASSWORD_LENGTH = 6; // current sign-up rule
-const MAX_PASSWORD_LENGTH = 72; // bcrypt input limit enforced by Supabase Auth
+// Password limits match the app (lib/password-policy.ts): at least 8
+// characters, counted as the app counts them (JavaScript string length), and
+// at most 72 UTF-8 bytes — the bcrypt input limit Supabase Auth uses; longer
+// passwords would be silently truncated, so they are refused. A password of
+// only whitespace (String.prototype.trim, as the app checks) is refused.
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_BYTES = 72;
 
 // Hash of the normalized code, or null if the input can't be a code. The
 // plaintext never leaves the caller's scope.
@@ -37,7 +42,8 @@ export function normalizeUsername(raw: unknown): { username: string; displayName
 }
 
 export function validPassword(raw: unknown): raw is string {
-  return typeof raw === 'string' && raw.length >= MIN_PASSWORD_LENGTH && raw.length <= MAX_PASSWORD_LENGTH;
+  return typeof raw === 'string' && raw.length >= MIN_PASSWORD_LENGTH && raw.trim() !== ''
+    && new TextEncoder().encode(raw).length <= MAX_PASSWORD_BYTES;
 }
 
 export type InviteCheckRow = {
