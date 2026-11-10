@@ -32,6 +32,7 @@ import {
   type FeedPost,
   type SourceOwnerAttribution,
 } from '@/components/feed/post-card';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { RepostMenu } from '@/components/feed/repost-menu';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { RepostHeader } from '@/components/feed/repost-header';
@@ -202,11 +203,13 @@ function ImmersiveHeaderBar({
   isOwner,
   deletingPost,
   onDeletePress,
+  onReportPress,
 }: {
   insetTop: number;
   isOwner: boolean;
   deletingPost: boolean;
   onDeletePress: () => void;
+  onReportPress?: () => void;
 }) {
   return (
     <View style={[styles.immersiveTopBar, { paddingTop: insetTop + 6 }]}>
@@ -226,6 +229,15 @@ function ImmersiveHeaderBar({
             <IconSymbol name="ellipsis" size={20} color={PV2.textPrimary} />
           </TouchableOpacity>
         )
+      ) : onReportPress ? (
+        <TouchableOpacity
+          onPress={onReportPress}
+          hitSlop={10}
+          style={styles.immersiveOverflowBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Report post">
+          <IconSymbol name="ellipsis" size={20} color={PV2.textPrimary} />
+        </TouchableOpacity>
       ) : (
         <View style={styles.immersiveOverflowBtn} />
       )}
@@ -765,10 +777,13 @@ function CommentRow({
   comment,
   isOwn,
   onDelete,
+  onReport,
 }: {
   comment: Comment;
   isOwn: boolean;
   onDelete: (id: string) => void;
+  // Someone else's comment: report THIS comment (its own id).
+  onReport?: (comment: Comment) => void;
 }) {
   const displayName = comment.display_name || comment.username;
   return (
@@ -789,11 +804,20 @@ function CommentRow({
         </View>
         <Text style={styles.commentBody}>{comment.body}</Text>
       </View>
-      {isOwn && (
+      {isOwn ? (
         <TouchableOpacity onPress={() => onDelete(comment.id)} hitSlop={8} style={styles.deleteBtn}>
           <Text style={styles.deleteText}>✕</Text>
         </TouchableOpacity>
-      )}
+      ) : onReport ? (
+        <TouchableOpacity
+          onPress={() => onReport(comment)}
+          hitSlop={8}
+          style={styles.deleteBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Report comment by @${comment.username}`}>
+          <IconSymbol name="ellipsis" size={14} color={PV2.textTertiary} accessible={false} />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -805,6 +829,7 @@ export default function PostDetailScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
+  const report = useReportFlow(currentUserId);
   const insets = useSafeAreaInsets();
   // A single-post detail view, not a browsing list — no scroll-hide effect,
   // but still resets the shared navbar to visible on focus.
@@ -1626,6 +1651,11 @@ export default function PostDetailScreen() {
   const availableImmersiveMediaHeight = Math.max(IMMERSIVE_MEDIA_MIN_HEIGHT, windowHeight - reservedForChrome);
   const mediaFrame = { height: Math.round(availableImmersiveMediaHeight * POST_DETAIL_MEDIA_HEIGHT_SCALE) };
   const isOwner = post.user_id === currentUserId;
+  const canReportPost = !!currentUserId && !isOwner;
+  const openPostReport = () =>
+    report.open({ type: 'post', id: post.id, label: `Post by @${post.username}`, ownerId: post.user_id, ownerUsername: post.username });
+  const openCommentReport = (comment: Comment) =>
+    report.open({ type: 'comment', id: comment.id, label: `Comment by @${comment.username}`, ownerId: comment.user_id, ownerUsername: comment.username });
   // Simplified interaction row — text, card_share, and item posts (with or
   // without immersive media above; hasImmersiveMedia doesn't factor in here).
   // rate_my_grails is the only post type still on the old separate bottom
@@ -1653,7 +1683,17 @@ export default function PostDetailScreen() {
                 title: 'Post',
                 headerBackTitle: '',
                 headerLeft: headerBackLeft,
-                headerRight: isOwner
+                headerRight: canReportPost
+                  ? () => (
+                      <TouchableOpacity
+                        onPress={openPostReport}
+                        style={styles.headerDeleteBtn}
+                        accessibilityRole="button"
+                        accessibilityLabel="Report post">
+                        <Text style={styles.headerDeleteText}>Report</Text>
+                      </TouchableOpacity>
+                    )
+                  : isOwner
                   ? () =>
                       deletingPost ? (
                         <ActivityIndicator size="small" color="#0a7ea4" style={styles.headerDeleteBtn} />
@@ -1684,8 +1724,10 @@ export default function PostDetailScreen() {
             isOwner={isOwner}
             deletingPost={deletingPost}
             onDeletePress={handleDeletePostPress}
+            onReportPress={canReportPost ? openPostReport : undefined}
           />
         )}
+        {report.sheet}
         <FlatList
           ref={flatListRef}
           data={comments}
@@ -1695,6 +1737,7 @@ export default function PostDetailScreen() {
               comment={item}
               isOwn={item.user_id === currentUserId}
               onDelete={handleDeleteComment}
+              onReport={currentUserId ? openCommentReport : undefined}
             />
           )}
           ListHeaderComponent={

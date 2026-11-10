@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CacheCaseLogo } from '@/components/brand/cachecase-logo';
 import { AttachmentSheet } from '@/components/conversation/attachment-sheet';
 import { ConversationBlockMenu } from '@/components/conversation/conversation-block-menu';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { ConversationComposer } from '@/components/conversation/conversation-composer';
 import { ConversationHeader } from '@/components/conversation/conversation-header';
 import { DmImageAttachment } from '@/components/conversation/dm-image-attachment';
@@ -185,6 +186,8 @@ export default function ConversationScreen() {
   const [sendUnavailable, setSendUnavailable] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
   const blockBusyRef = useRef(false);
+  // Content reporting (lib/content-reports.ts).
+  const report = useReportFlow(currentUserId);
   // Display-only placeholder for the send currently in flight, so the
   // bubble can show "Sending…" before the INSERT returns. Never written to
   // `messages`/messagesRef — finalizeSentMessage still appends the durable
@@ -926,6 +929,27 @@ export default function ConversationScreen() {
     [otherId],
   );
 
+  // Long-press on the OTHER collector's message in a 1:1 conversation:
+  // report THAT message (its own id — never the conversation's). Still
+  // available after a block, for the history.
+  function openMessageOptions(message: Message) {
+    const username = otherUser?.username && !peerHidden ? otherUser.username : null;
+    Alert.alert('Message', undefined, [
+      {
+        text: 'Report Message',
+        onPress: () =>
+          report.open({
+            type: 'message',
+            id: message.id,
+            label: username ? `Message from @${username}` : 'Message in this conversation',
+            ownerId: message.sender_id,
+            ownerUsername: username,
+          }),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
   function confirmBlockChange(block: boolean) {
     const username = otherUser?.username && !peerHidden ? otherUser.username : null;
     const title = username
@@ -1195,6 +1219,18 @@ export default function ConversationScreen() {
             busy={blockBusy}
             onBlock={() => confirmBlockChange(true)}
             onUnblock={() => confirmBlockChange(false)}
+            onReport={
+              otherUser && !peerHidden
+                ? () =>
+                    report.open({
+                      type: 'profile',
+                      id: otherUser.id,
+                      label: `@${otherUser.username}`,
+                      ownerId: otherUser.id,
+                      ownerUsername: otherUser.username,
+                    })
+                : undefined
+            }
           />
         ) : undefined
       }
@@ -1307,6 +1343,7 @@ export default function ConversationScreen() {
                         width={item.attachment_width}
                         height={item.attachment_height}
                         onOpen={setViewerUri}
+                        onLongPress={!isOwn && !isGroup && item.sender_id ? () => openMessageOptions(item) : undefined}
                       />
                     ) : item.attachment_type === 'item' ? (
                       <DmItemAttachmentCard
@@ -1331,6 +1368,7 @@ export default function ConversationScreen() {
                   avatarUrl={isGroup ? sender?.avatarUrl : otherUser?.avatar_url}
                   avatarName={isGroup ? (sender?.name ?? '') : displayTitle}
                   senderName={isGroup && !isOwn && !continuesRun ? sender?.name : undefined}
+                  onLongPress={!isOwn && !isGroup && item.sender_id ? () => openMessageOptions(item) : undefined}
                 />
               </>
             );
@@ -1465,6 +1503,7 @@ export default function ConversationScreen() {
         onSend={handleSendImage}
       />
 
+      {report.sheet}
       <ItemPhotoViewerModal visible={!!viewerUri} uri={viewerUri ?? undefined} onClose={() => setViewerUri(null)} />
 
       <ShareItemPicker

@@ -1,4 +1,4 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text } from 'react-native';
 
 import { AnchoredMenu, menuStyles, useAnchoredMenu } from '@/components/profile-v2/profile-v2-anchored-menu';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
@@ -10,12 +10,15 @@ type Props = {
   busy: boolean;
   onBlock: () => void;
   onUnblock: () => void;
+  // Content reporting: Report Collector (omitted when their profile isn't
+  // visible to the viewer — their messages stay reportable).
+  onReport?: () => void;
 };
 
 // "More" (⋯) menu in a 1:1 conversation's header (never for groups — see
 // app/conversation/[id].tsx). Holds Block Collector / Unblock Collector
 // (lib/user-blocks.ts); the screen shows the confirmation.
-export function ConversationBlockMenu({ blockedByMe, busy, onBlock, onUnblock }: Props) {
+export function ConversationBlockMenu({ blockedByMe, busy, onBlock, onUnblock, onReport }: Props) {
   const { open, anchor, triggerRef, openMenu, closeMenu } = useAnchoredMenu();
   const label = blockedByMe ? 'Unblock Collector' : 'Block Collector';
 
@@ -39,6 +42,20 @@ export function ConversationBlockMenu({ blockedByMe, busy, onBlock, onUnblock }:
         )}
       </Pressable>
       <AnchoredMenu visible={open} anchor={anchor} onRequestClose={closeMenu}>
+        {onReport ? (
+          <Pressable
+            style={menuStyles.item}
+            onPress={() => {
+              closeMenu();
+              // iOS can't present the report sheet while this menu is still dismissing.
+              setTimeout(onReport, Platform.OS === 'ios' ? 350 : 0);
+            }}
+            hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Report Collector">
+            <Text style={menuStyles.itemLabel}>Report Collector</Text>
+          </Pressable>
+        ) : null}
         <Pressable
           style={menuStyles.item}
           onPress={() => {

@@ -23,6 +23,7 @@ import { CollapsibleSection } from '@/components/item-detail/collapsible-section
 import { GradedToggle, GradingCompanyField } from '@/components/item-detail/graded-toggle';
 import { OptionWithOtherField } from '@/components/item-detail/option-with-other-field';
 import { ItemActionBar } from '@/components/item-detail/item-action-bar';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { ItemCommentsSheet } from '@/components/item-detail/item-comments-sheet';
 import { CollectorTagSheet } from '@/components/tagging/collector-tag-sheet';
 import { ItemDescription } from '@/components/item-detail/item-description';
@@ -614,6 +615,8 @@ export default function ItemDetailScreen() {
   const { session } = useAuth();
   const router = useRouter();
   const currentUserId = session?.user?.id;
+  // Content reporting (lib/content-reports.ts): someone else's item.
+  const report = useReportFlow(currentUserId);
   // Same identity useSignedItemImages itself keys its cache by
   // (hooks/use-signed-item-images.ts's own `session?.user?.id ?? 'anon'`)
   // — reused here only to build the carousel's stable expo-image cacheKeys
@@ -701,6 +704,16 @@ export default function ItemDetailScreen() {
   const [queueAdjustedUris, setQueueAdjustedUris] = useState<string[]>([]);
 
   const isOwner = !!currentUserId && item?.user_id === currentUserId;
+  function openItemReport() {
+    if (!item) return;
+    report.open({
+      type: 'collection_item',
+      id: item.id,
+      label: ownerProfile ? `“${item.title ?? 'Item'}” by @${ownerProfile.username}` : `“${item.title ?? 'Item'}”`,
+      ownerId: item.user_id,
+      ownerUsername: ownerProfile?.username ?? null,
+    });
+  }
   // Collector tagging — Tag action only where the database has it.
   const taggingAvailable = useTaggingAvailable();
   const [tagSheetVisible, setTagSheetVisible] = useState(false);
@@ -1972,10 +1985,20 @@ export default function ItemDetailScreen() {
                 <Text style={styles.headerBtnText}>Edit</Text>
               </TouchableOpacity>
             )
+          ) : !isOwner && currentUserId && item ? (
+            <TouchableOpacity
+              onPress={openItemReport}
+              hitSlop={10}
+              style={styles.headerBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Report item">
+              <IconSymbol name="ellipsis" size={22} color={PV2.textPrimary} />
+            </TouchableOpacity>
           ) : undefined
         }
       />
 
+      {report.sheet}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? undefined : 'height'}>

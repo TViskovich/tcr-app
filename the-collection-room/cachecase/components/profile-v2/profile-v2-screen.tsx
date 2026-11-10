@@ -101,6 +101,7 @@ import { ProfileV2IdentityCard } from './profile-v2-identity-card';
 import { ProfileV2ItemsGrid } from './profile-v2-items-grid';
 import { ProfileV2Posts } from './profile-v2-posts';
 import { ProfileV2VisitorMenu } from './profile-v2-visitor-menu';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { ProfileV2CollectionSearchSheet } from './profile-v2-collection-search-sheet';
 import { ProfileV2ItemSearchSheet } from './profile-v2-item-search-sheet';
 import { ProfileV2ReorderCollections, ProfileV2ReorderItems } from './profile-v2-reorder';
@@ -1177,6 +1178,8 @@ export function ProfileV2Screen({ userId }: Props) {
   // app/user/[username].tsx). null = not yet known.
   const [blockedByMe, setBlockedByMe] = useState<boolean | null>(null);
   const [blockBusy, setBlockBusy] = useState(false);
+  // Content reporting (lib/content-reports.ts): this collector's profile.
+  const report = useReportFlow(currentUserId);
   const blockBusyRef = useRef(false);
 
   useFocusEffect(
@@ -2509,7 +2512,20 @@ export function ProfileV2Screen({ userId }: Props) {
                     busy={blockBusy}
                     onBlock={confirmBlock}
                     onUnblock={confirmUnblock}
+                    onReport={
+                      profile
+                        ? () =>
+                            report.open({
+                              type: 'profile',
+                              id: userId,
+                              label: `@${profile.username}`,
+                              ownerId: userId,
+                              ownerUsername: profile.username,
+                            })
+                        : undefined
+                    }
                   />
+                  {report.sheet}
                   </View>
                 )}
               </View>

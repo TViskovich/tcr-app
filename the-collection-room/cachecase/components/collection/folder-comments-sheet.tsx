@@ -27,6 +27,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useFolderComments, type FolderComment } from '@/hooks/use-folder-comments';
 
@@ -55,10 +56,13 @@ function CommentRow({
   comment,
   isOwn,
   onDelete,
+  onReport,
 }: {
   comment: FolderComment;
   isOwn: boolean;
   onDelete: (id: string) => void;
+  // Someone else's comment: report THIS comment (its own id).
+  onReport?: (comment: FolderComment) => void;
 }) {
   const displayName = comment.display_name || comment.username;
   return (
@@ -79,11 +83,20 @@ function CommentRow({
         </View>
         <Text style={styles.commentText}>{comment.body}</Text>
       </View>
-      {isOwn && (
+      {isOwn ? (
         <TouchableOpacity onPress={() => onDelete(comment.id)} hitSlop={8} style={styles.deleteBtn}>
           <Text style={styles.deleteText}>✕</Text>
         </TouchableOpacity>
-      )}
+      ) : onReport ? (
+        <TouchableOpacity
+          onPress={() => onReport(comment)}
+          hitSlop={8}
+          style={styles.deleteBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Report comment by @${comment.username}`}>
+          <IconSymbol name="ellipsis" size={14} color={PV2.textTertiary} accessible={false} />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -103,6 +116,10 @@ type Props = {
 // animation (parent's `visible` flips to false only once the slide-down
 // finishes) so the dismissal is never an abrupt cut.
 export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, currentUserId }: Props) {
+  // Content reporting (lib/content-reports.ts) — rendered inside this sheet's own modal.
+  const report = useReportFlow(currentUserId);
+  const openCommentReport = (comment: FolderComment) =>
+    report.open({ type: 'folder_comment', id: comment.id, label: `Comment by @${comment.username}`, ownerId: comment.user_id, ownerUsername: comment.username });
   const { height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const sheetHeight = screenHeight * SHEET_HEIGHT_RATIO;
@@ -243,7 +260,7 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
                     // touch stream.
                     keyboardDismissMode="on-drag"
                     renderItem={({ item }) => (
-                      <CommentRow comment={item} isOwn={item.user_id === currentUserId} onDelete={deleteComment} />
+                      <CommentRow comment={item} isOwn={item.user_id === currentUserId} onDelete={deleteComment} onReport={currentUserId ? openCommentReport : undefined} />
                     )}
                     contentContainerStyle={styles.listContent}
                     ListEmptyComponent={
@@ -279,6 +296,7 @@ export function FolderCommentsSheet({ visible, onClose, folderId, folderTitle, c
             </Animated.View>
           </GestureDetector>
         </View>
+        {report.sheet}
       </GestureHandlerRootView>
     </Modal>
   );

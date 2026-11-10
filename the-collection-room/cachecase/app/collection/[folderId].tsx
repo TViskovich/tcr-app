@@ -43,6 +43,7 @@ import { FolderEditModal } from '@/components/collection/folder-edit-modal';
 import { MoveItemModal } from '@/components/item-detail/move-item-modal';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { CollectorTagSheet } from '@/components/tagging/collector-tag-sheet';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { FOLDER_COVER_ASPECT_RATIO, FOLDER_COVER_RADIUS } from '@/constants/folder-cover';
@@ -211,6 +212,8 @@ export default function CollectionFolderScreen() {
 
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
+  // Content reporting (lib/content-reports.ts): someone else's collection.
+  const report = useReportFlow(currentUserId);
   // Same identity the signed-image hooks below already key their own
   // caches by (hooks/use-signed-item-images.ts, hooks/
   // use-signed-folder-covers.ts) — reused here only to build stable
@@ -423,6 +426,16 @@ export default function CollectionFolderScreen() {
   }, [loadFolder]);
 
   const isOwner = !!currentUserId && folder?.user_id === currentUserId;
+  function openFolderReport() {
+    if (!folder) return;
+    report.open({
+      type: 'folder',
+      id: folder.id,
+      label: ownerProfile ? `“${folder.name}” by @${ownerProfile.username}` : `“${folder.name}”`,
+      ownerId: folder.user_id,
+      ownerUsername: ownerProfile?.username ?? null,
+    });
+  }
   // Collector tagging — Tag action only where the database has it.
   const taggingAvailable = useTaggingAvailable();
   const [tagSheetVisible, setTagSheetVisible] = useState(false);
@@ -1616,7 +1629,7 @@ export default function CollectionFolderScreen() {
           )}
 
           <View style={styles.galleryActionsGroup}>
-            <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+            <Pressable onPress={() => setCommentsVisible(true)} hitSlop={10} style={styles.iconBtn} accessibilityRole="button" accessibilityLabel="Collection comments">
               <IconSymbol name="message" size={20} color={PV2.textPrimary} />
             </Pressable>
             <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
@@ -1984,6 +1997,7 @@ export default function CollectionFolderScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
+      {report.sheet}
       <SafeAreaView style={styles.container} edges={['bottom']}>
         {isCardMode ? (
           // Individual-card gallery — layout only for now (matches the
@@ -2004,6 +2018,16 @@ export default function CollectionFolderScreen() {
                 {isOwner && (
                   <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
                     <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
+                  </Pressable>
+                )}
+                {!isOwner && currentUserId && folder && (
+                  <Pressable
+                    onPress={openFolderReport}
+                    hitSlop={10}
+                    style={styles.iconBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel="Report collection">
+                    <IconSymbol name="ellipsis" size={22} color={PV2.textPrimary} />
                   </Pressable>
                 )}
               </View>
@@ -2078,7 +2102,7 @@ export default function CollectionFolderScreen() {
                 above (renderFolderStickyBar) — see that block's own
                 comment for why Bookmark is gone. */}
             <View style={styles.galleryActionsRow}>
-              <Pressable onPress={() => setGalleryCommentsVisible(true)} hitSlop={10} style={styles.iconBtn}>
+              <Pressable onPress={() => setGalleryCommentsVisible(true)} hitSlop={10} style={styles.iconBtn} accessibilityRole="button" accessibilityLabel="Gallery comments">
                 <IconSymbol name="message" size={20} color={PV2.textPrimary} />
               </Pressable>
               <Pressable onPress={toggleFolderLike} disabled={folderLikeInFlight} hitSlop={10} style={styles.likeBtn}>
@@ -2179,6 +2203,16 @@ export default function CollectionFolderScreen() {
                   {isOwner && (
                     <Pressable onPress={() => setEditVisible(true)} hitSlop={10} style={styles.iconBtn}>
                       <IconSymbol name="line.3.horizontal" size={22} color={PV2.textPrimary} />
+                    </Pressable>
+                  )}
+                  {!isOwner && currentUserId && folder && (
+                    <Pressable
+                      onPress={openFolderReport}
+                      hitSlop={10}
+                      style={styles.iconBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel="Report collection">
+                      <IconSymbol name="ellipsis" size={22} color={PV2.textPrimary} />
                     </Pressable>
                   )}
                 </View>

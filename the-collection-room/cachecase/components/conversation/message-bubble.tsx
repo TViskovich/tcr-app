@@ -1,5 +1,5 @@
 import { memo, type ReactNode } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -33,6 +33,9 @@ type Props = {
   // Group conversations: the sender's name above the first incoming message
   // of a run. Omitted in DMs (there's only one other person).
   senderName?: string;
+  // Incoming messages only: long-press (or the screen-reader action) opens
+  // the message options, e.g. Report Message.
+  onLongPress?: () => void;
 };
 
 export const MessageBubble = memo(function MessageBubble({
@@ -47,6 +50,7 @@ export const MessageBubble = memo(function MessageBubble({
   avatarUrl,
   avatarName,
   senderName,
+  onLongPress,
 }: Props) {
   if (isOwn) {
     return (
@@ -80,7 +84,18 @@ export const MessageBubble = memo(function MessageBubble({
       <View style={styles.avatarSlot}>
         {showAvatar ? <ChatAvatar uri={avatarUrl} name={avatarName} size={INCOMING_AVATAR_SIZE} /> : null}
       </View>
-      <View style={styles.columnOther}>
+      <Pressable
+        style={styles.columnOther}
+        onLongPress={onLongPress}
+        delayLongPress={350}
+        disabled={!onLongPress}
+        // Grouped for screen readers only for text-only messages: an
+        // attachment keeps its own focusable control (which carries the same
+        // "Message options" action — see DmImageAttachment).
+        accessible={!!onLongPress && !attachment}
+        accessibilityHint={onLongPress && !attachment ? 'Double-tap and hold for message options' : undefined}
+        accessibilityActions={onLongPress && !attachment ? [{ name: 'longpress', label: 'Message options' }] : undefined}
+        onAccessibilityAction={onLongPress && !attachment ? () => onLongPress() : undefined}>
         {senderName ? (
           <Text style={styles.senderName} numberOfLines={1}>
             {senderName}
@@ -93,7 +108,7 @@ export const MessageBubble = memo(function MessageBubble({
         ) : null}
         {attachment ? <View style={body ? styles.attachmentGap : null}>{attachment}</View> : null}
         <Text style={styles.time}>{time}</Text>
-      </View>
+      </Pressable>
     </View>
   );
 });

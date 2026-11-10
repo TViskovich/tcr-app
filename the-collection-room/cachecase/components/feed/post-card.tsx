@@ -18,6 +18,7 @@ import { FittedRoundedImage } from '@/components/feed/fitted-rounded-image';
 import { FolderShareCollage } from '@/components/feed/folder-share-collage';
 import { PostImageCarousel } from '@/components/feed/post-image-carousel';
 import { RepostHeader, type SourceOwnerAttribution } from '@/components/feed/repost-header';
+import { useReportFlow } from '@/components/moderation/report-sheet';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useGrailRating } from '@/hooks/use-grail-rating';
@@ -618,6 +619,15 @@ export function PostCard({
   const isFolderShare = post.post_type === 'folder_share';
   const isOwner = !!currentUserId && currentUserId === entry.user_id;
   const isQuote = post.post_type === 'quote';
+  // Content reporting (lib/content-reports.ts): the DISPLAYED post (for a
+  // repost card, the original) — never the feed entry wrapping it. Only for
+  // someone else's post, and never inside an embed or read-only preview.
+  const report = useReportFlow(currentUserId);
+  const canReport = !!currentUserId && !embedded && !readOnly && post.user_id !== currentUserId;
+  function openPostReport() {
+    report.open({ type: 'post', id: post.id, label: `Post by @${post.username}`, ownerId: post.user_id, ownerUsername: post.username });
+  }
+  const optionsPress = isOwner && onDelete ? handleDeleteTap : canReport ? openPostReport : undefined;
   // A "Share to Feed" repost of someone else's public card or folder — see
   // FeedPost.sourceOwner's own comment for exactly when this is set. A
   // folder repost only swaps the header (RepostHeader); its body is the
@@ -750,6 +760,7 @@ export function PostCard({
 
   return (
     <View style={[styles.card, embedded && styles.cardEmbedded]}>
+      {canReport ? report.sheet : null}
       {/* Repost attribution — "@reposter reposted", above the ORIGINAL
           post's own header and content below. Opens the reposter's
           profile. */}
@@ -785,7 +796,7 @@ export function PostCard({
           onReposterPress={onUserPress}
           owner={post.sourceOwner!}
           onOwnerPress={onSourceOwnerPress}
-          onDeletePress={isOwner && onDelete ? handleDeleteTap : undefined}
+          onDeletePress={optionsPress}
         />
       ) : (
         <View style={styles.cardHeader} pointerEvents={readOnly ? 'none' : 'auto'}>
@@ -817,13 +828,13 @@ export function PostCard({
             <Text style={styles.cardDate}>{formatAge(post.created_at)}</Text>
           </TouchableOpacity>
 
-          {isOwner && onDelete && (
+          {optionsPress && (
             <TouchableOpacity
-              onPress={handleDeleteTap}
+              onPress={optionsPress}
               hitSlop={10}
               style={styles.moreBtn}
               accessibilityRole="button"
-              accessibilityLabel="Post options">
+              accessibilityLabel={isOwner && onDelete ? 'Post options' : `Report post by @${post.username}`}>
               <IconSymbol name="ellipsis" size={18} color="rgba(255,255,255,0.55)" />
             </TouchableOpacity>
           )}

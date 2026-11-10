@@ -1,4 +1,4 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text } from 'react-native';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -13,6 +13,8 @@ type Props = {
   busy: boolean;
   onBlock: () => void;
   onUnblock: () => void;
+  // Content reporting (lib/content-reports.ts).
+  onReport?: () => void;
 };
 
 // "More" (⋯) menu on ANOTHER collector's profile (never rendered on your
@@ -20,7 +22,7 @@ type Props = {
 // menu (profile-v2-anchored-menu.tsx), like ProfileV2FollowMenu. Holds the
 // collector-blocking action (lib/user-blocks.ts); the confirmation itself is
 // shown by the screen.
-export function ProfileV2VisitorMenu({ username, blockedByMe, busy, onBlock, onUnblock }: Props) {
+export function ProfileV2VisitorMenu({ username, blockedByMe, busy, onBlock, onUnblock, onReport }: Props) {
   const { open, anchor, triggerRef, openMenu, closeMenu } = useAnchoredMenu();
   const label = blockedByMe ? `Unblock @${username}` : `Block @${username}`;
 
@@ -45,6 +47,21 @@ export function ProfileV2VisitorMenu({ username, blockedByMe, busy, onBlock, onU
       </Pressable>
 
       <AnchoredMenu visible={open} anchor={anchor} onRequestClose={closeMenu}>
+        {onReport ? (
+          <Pressable
+            style={menuStyles.item}
+            onPress={() => {
+              closeMenu();
+              // iOS can't present the report sheet while this menu's own
+              // modal is still dismissing.
+              setTimeout(onReport, Platform.OS === 'ios' ? 350 : 0);
+            }}
+            hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Report @${username}`}>
+            <Text style={menuStyles.itemLabel}>{`Report @${username}`}</Text>
+          </Pressable>
+        ) : null}
         <Pressable
           style={menuStyles.item}
           onPress={() => {

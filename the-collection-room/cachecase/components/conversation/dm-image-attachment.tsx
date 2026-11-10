@@ -19,6 +19,8 @@ type Props = {
   height: number | null;
   // Opens the full-screen viewer with the already-signed URL.
   onOpen: (url: string) => void;
+  // Passed through so a photo-only message can still open message options.
+  onLongPress?: () => void;
 };
 
 // Fits the stored pixel size into the bubble bounds, keeping aspect ratio,
@@ -39,7 +41,7 @@ function frameSize(width: number | null, height: number | null) {
 // is a private dm-attachments object resolved to a short-lived signed URL;
 // the expo-image cacheKey is the storage path, so the on-disk cache survives
 // URL rotation.
-export function DmImageAttachment({ storagePath, width, height, onOpen }: Props) {
+export function DmImageAttachment({ storagePath, width, height, onOpen, onLongPress }: Props) {
   const { session } = useAuth();
   const identity = session?.user?.id ?? 'anon';
   const state = useDmImageUrl(storagePath);
@@ -57,10 +59,14 @@ export function DmImageAttachment({ storagePath, width, height, onOpen }: Props)
   return (
     <Pressable
       onPress={state.status === 'ready' ? () => onOpen(state.url) : undefined}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       disabled={state.status !== 'ready'}
       style={({ pressed }) => [styles.frame, size, pressed && styles.pressed]}
       accessibilityRole="imagebutton"
-      accessibilityLabel="Photo. Opens full screen">
+      accessibilityLabel="Photo. Opens full screen"
+      accessibilityActions={onLongPress ? [{ name: 'longpress', label: 'Message options' }] : undefined}
+      onAccessibilityAction={onLongPress ? () => onLongPress() : undefined}>
       {state.status === 'ready' && storagePath ? (
         <Image
           source={{ uri: state.url, cacheKey: dmImageCacheKey(identity, storagePath) }}
