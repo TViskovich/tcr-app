@@ -27,8 +27,8 @@ SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.content_repor
   'carries the account-lifecycle read and write guards');
 SELECT ok(EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.content_reports'::regclass AND tgname = 'content_reports_immutable'),
   'has the immutability trigger');
-SELECT is((SELECT count(*)::int FROM pg_constraint WHERE conrelid = 'public.content_reports'::regclass AND contype = 'f' AND confdeltype = 'n'), 3,
-  'reporter, owner and reviewer ids are set to NULL (not cascaded) when an account is deleted');
+SELECT is((SELECT count(*)::int FROM pg_constraint WHERE conrelid = 'public.content_reports'::regclass AND contype = 'f' AND confdeltype = 'n'), 4,
+  'reporter, owner, reviewer and claimer ids are set to NULL (not cascaded) when an account is deleted');
 SELECT ok(NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.content_reports'::regclass AND contype = 'f'
              AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.content_reports'::regclass AND attname = 'target_id')]),
   'target_id has no foreign key (reports outlive their content)');
@@ -49,8 +49,10 @@ SELECT ok(NOT has_function_privilege('authenticated', 'private.content_reports_g
   'other private helpers are not executable by clients');
 SELECT is((SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
            WHERE n.nspname = 'public' AND p.proname ~ 'report' AND p.proname <> 'submit_report'
+             -- Admin queue functions (20261115120000) are exposed but each checks admin_users itself.
+             AND NOT (p.proname LIKE 'admin\_%' AND p.prosecdef AND p.prosrc LIKE '%private.require_admin()%')
              AND (has_function_privilege('authenticated', p.oid, 'EXECUTE') OR has_function_privilege('anon', p.oid, 'EXECUTE'))), 0,
-  'submit_report is the only report function exposed through the API');
+  'submit_report is the only non-admin report function exposed through the API');
 
 -- ── Fixtures ────────────────────────────────────────────────────────────
 -- A reports; B owns content; C is a bystander; D is pending deletion; E/F cascades.
@@ -191,7 +193,9 @@ SELECT throws_ok($$ UPDATE public.content_reports SET evidence = NULL WHERE targ
 SELECT throws_ok($$ UPDATE public.content_reports SET target_owner_id = '00000000-0000-4000-8000-0000ce000003' WHERE target_type = 'post' $$, '42501', 'content_report_immutable',
   'the owner cannot be reassigned');
 SELECT throws_ok($$ UPDATE public.content_reports SET reason = 'other' WHERE target_type = 'post' $$, '42501', 'content_report_immutable', 'the reason cannot change');
-UPDATE public.content_reports SET status = 'dismissed', reviewed_at = now(), evidence_purge_after = now() - interval '1 second' WHERE target_type = 'post';
+-- (A resolved report carries its outcome — 20261115120000_moderation_admin.sql.)
+UPDATE public.content_reports SET status = 'dismissed', reviewed_at = now(), resolution = 'no_violation', resolution_reason = 'within_guidelines',
+  evidence_purge_after = now() - interval '1 second' WHERE target_type = 'post';
 SELECT lives_ok($$ UPDATE public.content_reports SET evidence = NULL WHERE target_type = 'post' $$, 'evidence can be purged after its retention date');
 SELECT ok((SELECT evidence IS NULL AND evidence_purged_at IS NOT NULL FROM public.content_reports WHERE target_type = 'post'), '…and the purge is recorded');
 
