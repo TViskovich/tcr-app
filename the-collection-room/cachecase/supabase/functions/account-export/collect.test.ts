@@ -171,10 +171,21 @@ function fakeClient(opts: { lifecycle?: Lifecycle; visibility?: 'ok' | 'error'; 
   };
   const client = {
     from: query,
-    rpc: (name: string) => Promise.resolve(
-      name === '_item_visible_to' || name === '_folder_visible_to'
-        ? (opts.visibility === 'error' ? { data: null, error: { code: 'XX000', message: 'boom' } } : { data: true, error: null })
-        : { data: null, error: { code: 'PGRST202', message: 'unknown rpc' } }),
+    rpc: (name: string, args?: { p_user_ids?: string[] }) => {
+      // Phase 2B M3: hidden accounts (pending deletion or suspended) come from
+      // the account_hidden_ids RPC, with the same failure modes as the table.
+      if (name === 'account_hidden_ids') {
+        const ids = args?.p_user_ids ?? [];
+        calls.push({ table: 'account_lifecycle', inSize: ids.length });
+        if (lifecycleError[lifecycle]) return Promise.resolve({ data: null, error: lifecycleError[lifecycle] });
+        if (lifecycle === 'no_data') return Promise.resolve({ data: null, error: null });
+        return Promise.resolve({ data: tables.account_lifecycle.map((r) => r.user_id as string).filter((id) => ids.includes(id)), error: null });
+      }
+      return Promise.resolve(
+        name === '_item_visible_to' || name === '_folder_visible_to'
+          ? (opts.visibility === 'error' ? { data: null, error: { code: 'XX000', message: 'boom' } } : { data: true, error: null })
+          : { data: null, error: { code: 'PGRST202', message: 'unknown rpc' } });
+    },
     auth: { admin: { getUserById: () => Promise.resolve({ data: { user: { id: U, email: 'u@example.test', created_at: '2026-01-01T00:00:00Z' } } }) } },
   };
   return { client: client as never, calls };

@@ -48,8 +48,9 @@ async function fetchByIds(client: SupabaseClient, table: string, column: string,
 
 const json = (value: unknown) => encoder.encode(JSON.stringify(value, null, 2) + '\n');
 
-// Collectors hidden from everyone else: those with an account_lifecycle row
-// (pending deletion or being deleted) — exactly private.account_is_hidden.
+// Collectors hidden from everyone else: pending deletion, being deleted, or
+// (Phase 2B M3) suspended — exactly private.account_is_hidden, via the
+// service-role-only account_hidden_ids RPC.
 // Export-local and strict: ANY failure — an error, a missing or inaccessible
 // table, no data — returns null, and hiddenOrAll then treats EVERY other
 // collector as hidden, so no one is ever named because a check could not run.
@@ -60,12 +61,12 @@ export async function hiddenAccounts(client: SupabaseClient, userIds: string[]):
   const ids = [...new Set(userIds)];
   const hidden = new Set<string>();
   for (let i = 0; i < ids.length; i += ID_CHUNK) {
-    const { data, error } = await client.from('account_lifecycle').select('user_id').in('user_id', ids.slice(i, i + ID_CHUNK));
+    const { data, error } = await client.rpc('account_hidden_ids', { p_user_ids: ids.slice(i, i + ID_CHUNK) });
     if (error || !Array.isArray(data)) {
       console.error('[account-export] visibility lookup failed:', error?.code ?? 'no_data');
       return null;
     }
-    for (const r of data as { user_id: string }[]) hidden.add(r.user_id);
+    for (const id of data as string[]) hidden.add(id);
   }
   return hidden;
 }

@@ -55,7 +55,7 @@ export type DmWriteResult =
   | { kind: 'rejected' }
   // Account lifecycle: the sender is pending deletion ('inactive') or a
   // participant is unavailable ('unavailable') — not committed.
-  | { kind: 'account'; reason: 'inactive' | 'unavailable' | 'closed' }
+  | { kind: 'account'; reason: 'inactive' | 'suspended' | 'unavailable' | 'closed' }
   // Ambiguous write AND reconciliation couldn't prove it either way. The
   // caller must retry with the SAME id (a prior commit then surfaces as a
   // 23505 → reconciled, never a duplicate row).

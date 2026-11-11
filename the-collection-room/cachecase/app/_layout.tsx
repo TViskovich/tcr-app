@@ -68,13 +68,19 @@ function RootLayoutNav() {
   const lifecycleUnknown = !!session && lifecycleStatus === 'unknown';
   const accountHidden = !!session && (lifecycleStatus === 'pending_deletion' || lifecycleStatus === 'deleting');
   const onPendingScreen = (segments as string[])[0] === 'account' && (segments as string[])[1] === 'pending';
+  // Suspension (Phase 2B M3): a suspended collector sees only the Account
+  // Suspended screen — and Delete Account, which it links to. The database
+  // already hides the account and refuses its activity.
+  const accountSuspended = !!session && lifecycleStatus === 'suspended';
+  const onSuspendedScreen = (segments as string[])[0] === 'account' && (segments as string[])[1] === 'suspended';
+  const onDeleteScreen = (segments as string[])[0] === 'account' && (segments as string[])[1] === 'delete';
 
   // Single authoritative unread-DM-message source for the whole
   // authenticated session — mounted here (above both <Stack> and
   // <GlobalFloatingTabBar>) so the Tabs-group badge and the floating bar's
   // own badge, rendered outside the tabs subtree, share one query/poll
   // lifecycle and one count instead of each owning a private instance.
-  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(accountHidden || lifecycleUnknown || held ? undefined : session?.user?.id);
+  const { unreadCount, latestUnreadAt, refresh: refreshMessageBadge } = useUnreadMessages(accountHidden || accountSuspended || lifecycleUnknown || held ? undefined : session?.user?.id);
   const messageBadgeContextValue = useMemo(
     () => ({ unreadCount, latestUnreadAt, refreshMessageBadge }),
     [unreadCount, latestUnreadAt, refreshMessageBadge],
@@ -104,8 +110,17 @@ function RootLayoutNav() {
       }
       return;
     }
-    if (inAuthGroup || onPendingScreen) router.replace('/(tabs)');
-  }, [session, loading, held, onResetScreen, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen, router]);
+    if (accountSuspended) {
+      // Same bounce as above; Delete Account stays reachable.
+      if (!onSuspendedScreen && !onDeleteScreen) {
+        if (router.canDismiss()) router.dismissAll();
+        router.replace('/account/suspended');
+      }
+      return;
+    }
+    if (inAuthGroup || onPendingScreen || onSuspendedScreen) router.replace('/(tabs)');
+  }, [session, loading, held, onResetScreen, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen,
+      accountSuspended, onSuspendedScreen, onDeleteScreen, router]);
 
   // Withhold the route tree until the initial session restore resolves —
   // otherwise (auth) or (tabs) can paint for a frame before the redirect
@@ -156,8 +171,9 @@ function RootLayoutNav() {
             <Stack.Screen name="account/password" options={{ headerShown: false }} />
             <Stack.Screen name="account/blocked" options={{ headerShown: false }} />
             <Stack.Screen name="account/pending" options={{ headerShown: false, gestureEnabled: false }} />
+            <Stack.Screen name="account/suspended" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
-          {session && !held && !inAuthGroup && !accountHidden && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
+          {session && !held && !inAuthGroup && !accountHidden && !accountSuspended && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
             <GlobalFloatingTabBar />
           ) : null}
           {/* Until the account's state is known, nothing of the app shows —

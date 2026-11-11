@@ -24,10 +24,23 @@ import { supabase } from '@/lib/supabase';
 // if deletion was scheduled on another device; that device's sessions are
 // signed out and every write is refused by the database, and the first
 // account_inactive error or return to the app re-checks.
+//
+// Suspension (Phase 2B M3): an admin can suspend an account, temporarily or
+// indefinitely. The server is the source of truth (my_account_suspension —
+// only a broad category and dates, never the internal reason, note or who
+// decided). Pending deletion takes precedence; a suspended collector can
+// still schedule deletion and download their data. Expiry needs no server
+// job, so the app re-checks at the expiry time, every minute while
+// suspended (an admin may lift it), on return to the app, and on any
+// account_suspended / account_inactive error.
 
-export type LifecycleStatus = 'checking' | 'unknown' | 'active' | 'pending_deletion' | 'deleting';
+export type LifecycleStatus = 'checking' | 'unknown' | 'active' | 'pending_deletion' | 'deleting' | 'suspended';
 
-type Snapshot = { status: LifecycleStatus; scheduledFor: string | null; requestedAt: string | null };
+// What the collector may know about their own suspension.
+export type SuspensionCategory = 'community_guidelines' | 'spam_or_scams' | 'impersonation' | 'intellectual_property' | 'ban_evasion';
+export type Suspension = { category: SuspensionCategory; since: string | null; expiresAt: string | null };
+
+type Snapshot = { status: LifecycleStatus; scheduledFor: string | null; requestedAt: string | null; suspension: Suspension | null };
 
 export type ScheduleFailure =
   | 'wrong_password'
@@ -62,9 +75,13 @@ type ContextValue = Snapshot & {
   dismissDeletionNotice: () => void;
 };
 
-const ACTIVE: Snapshot = { status: 'active', scheduledFor: null, requestedAt: null };
-const CHECKING: Snapshot = { status: 'checking', scheduledFor: null, requestedAt: null };
-const UNKNOWN: Snapshot = { status: 'unknown', scheduledFor: null, requestedAt: null };
+const ACTIVE: Snapshot = { status: 'active', scheduledFor: null, requestedAt: null, suspension: null };
+const CHECKING: Snapshot = { status: 'checking', scheduledFor: null, requestedAt: null, suspension: null };
+const UNKNOWN: Snapshot = { status: 'unknown', scheduledFor: null, requestedAt: null, suspension: null };
+const SUSPENDED_RECHECK_MS = 60_000;
+const ACTIVE_RECHECK_MS = 120_000;
+const KNOWN_STATUSES: LifecycleStatus[] = ['active', 'pending_deletion', 'deleting', 'suspended'];
+const CATEGORIES: SuspensionCategory[] = ['community_guidelines', 'spam_or_scams', 'impersonation', 'intellectual_property', 'ban_evasion'];
 const UNKNOWN_RETRY_MS = 5000;
 const DELETION_POLL_MS = 4000;
 const cacheKey = (userId: string) => `cachecase.account-lifecycle.${userId}`;
@@ -118,21 +135,34 @@ async function readStatusCapability(): Promise<StatusCapability | null> {
 
 type RemoteRow = { state: 'pending_deletion' | 'deleting'; scheduled_for: string | null; requested_at: string | null };
 const fromRow = (row: RemoteRow | null): Snapshot =>
-  row ? { status: row.state, scheduledFor: row.scheduled_for, requestedAt: row.requested_at } : ACTIVE;
+  row ? { status: row.state, scheduledFor: row.scheduled_for, requestedAt: row.requested_at, suspension: null } : ACTIVE;
+
+type RemoteSuspension = { suspended?: boolean; category?: string; since?: string | null; expires_at?: string | null };
+const fromSuspension = (s: RemoteSuspension | null): Snapshot =>
+  s?.suspended
+    ? {
+        status: 'suspended', scheduledFor: null, requestedAt: null,
+        suspension: {
+          category: CATEGORIES.includes(s.category as SuspensionCategory) ? (s.category as SuspensionCategory) : 'community_guidelines',
+          since: s.since ?? null,
+          expiresAt: s.expires_at ?? null,
+        },
+      }
+    : ACTIVE;
 
 async function readCache(userId: string): Promise<Snapshot | null> {
   try {
     const raw = await AsyncStorage.getItem(cacheKey(userId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Snapshot;
-    return ['active', 'pending_deletion', 'deleting'].includes(parsed.status) ? parsed : null;
+    return KNOWN_STATUSES.includes(parsed.status) ? { ...parsed, suspension: parsed.suspension ?? null } : null;
   } catch {
     return null;
   }
 }
 async function writeCache(userId: string, snapshot: Snapshot) {
   try {
-    if (['active', 'pending_deletion', 'deleting'].includes(snapshot.status)) {
+    if (KNOWN_STATUSES.includes(snapshot.status)) {
       await AsyncStorage.setItem(cacheKey(userId), JSON.stringify(snapshot));
     }
   } catch {}
@@ -180,7 +210,23 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
       if (userRef.current === forUser) setSnapshot((prev) => (prev.status === 'checking' ? UNKNOWN : prev));
       return;
     }
-    commit(forUser, fromRow(data as RemoteRow | null));
+    if (data) {
+      commit(forUser, fromRow(data as RemoteRow));
+      return;
+    }
+    // Not pending deletion: is the account suspended?
+    const { data: suspension, error: suspensionError } = await supabase.rpc('my_account_suspension');
+    if (suspensionError) {
+      // A database without suspensions: not suspended.
+      if (suspensionError.code === 'PGRST202' || suspensionError.code === '42883') {
+        commit(forUser, ACTIVE);
+        return;
+      }
+      if (__DEV__) console.warn('[AccountLifecycle] suspension check failed:', suspensionError.message);
+      if (userRef.current === forUser) setSnapshot((prev) => (prev.status === 'checking' ? UNKNOWN : prev));
+      return;
+    }
+    commit(forUser, fromSuspension(suspension as RemoteSuspension | null));
   }, [commit]);
 
   // New signed-in user: show their cached state at once, then check.
@@ -211,6 +257,39 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
     };
   }, [userId, refresh]);
 
+  // While active, re-check every couple of minutes so a suspension (or a
+  // deletion scheduled on another device) shows while the app stays open,
+  // even if the collector only reads (reads of a hidden account just come
+  // back empty; writes already trigger a re-check through account errors).
+  const active = snapshot.status === 'active';
+  useEffect(() => {
+    if (!userId || !active) return;
+    const timer = setInterval(() => {
+      if (AppState.currentState === 'active') void refresh();
+    }, ACTIVE_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [userId, active, refresh]);
+
+  // While suspended: re-check every minute (an admin may lift it) and right
+  // after a temporary suspension's expiry (no server job ends it — the
+  // database simply stops applying it at that moment).
+  const suspended = snapshot.status === 'suspended';
+  const suspensionExpiresAt = snapshot.suspension?.expiresAt ?? null;
+  useEffect(() => {
+    if (!userId || !suspended) return;
+    const poll = setInterval(() => void refresh(), SUSPENDED_RECHECK_MS);
+    let expiry: ReturnType<typeof setTimeout> | null = null;
+    if (suspensionExpiresAt) {
+      const ms = new Date(suspensionExpiresAt).getTime() - Date.now();
+      // setTimeout's limit is ~24.8 days; the minute poll covers longer waits.
+      if (ms < 2_000_000_000) expiry = setTimeout(() => void refresh(), Math.max(0, ms) + 2_000);
+    }
+    return () => {
+      clearInterval(poll);
+      if (expiry) clearTimeout(expiry);
+    };
+  }, [userId, suspended, suspensionExpiresAt, refresh]);
+
   // Keep retrying while the state is unknown (e.g. offline at first launch).
   const unknown = snapshot.status === 'unknown';
   useEffect(() => {
@@ -237,6 +316,7 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
         status: 'pending_deletion',
         scheduledFor: (result.data.scheduled_for as string) ?? null,
         requestedAt: (result.data.requested_at as string) ?? null,
+        suspension: null,
       });
       return { ok: true };
     },
@@ -256,6 +336,8 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
       return { ok: false, reason: 'server' };
     }
     commit(forUser, ACTIVE);
+    // Cancelling deletion doesn't end a suspension: re-check at once.
+    void refresh();
     return { ok: true };
   }, [commit, refresh]);
 
@@ -308,7 +390,7 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
           if (check.ok && check.data.state === 'deleting') {
             if (check.data.job) setDeletionJob(check.data.job);
             await rememberStatusCapability(check.data);
-            commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null });
+            commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null, suspension: null });
             return { ok: true };
           }
         }
@@ -316,7 +398,7 @@ export function AccountLifecycleProvider({ children }: { children: ReactNode }) 
       }
       if (result.data.job) setDeletionJob(result.data.job);
       await rememberStatusCapability(result.data);
-      commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null });
+      commit(forUser, { status: 'deleting', scheduledFor: null, requestedAt: null, suspension: null });
       return { ok: true };
     },
     [email, commit],

@@ -105,19 +105,27 @@ export async function resolveCaller(
   return { userId: data.user.id, invalid: false };
 }
 
-// Which of `userIds` are pending deletion or being deleted (rows in
-// account_lifecycle). Needs the service-role client. null = the lookup
-// failed and the caller must fail closed. A database without the lifecycle
-// migration has no hidden accounts, so it reports none.
+// Which of `userIds` are hidden: pending deletion, being deleted, or (Phase 2B
+// M3, 20261122120000) suspended — exactly private.account_is_hidden, via the
+// service-role-only account_hidden_ids RPC. Needs the service-role client.
+// null = the lookup failed and the caller must fail closed. A database without
+// that RPC (before M3) falls back to the lifecycle table, and one without the
+// lifecycle migration has no hidden accounts, so it reports none.
 export async function hiddenAccountIds(client: SupabaseClient, userIds: string[]): Promise<Set<string> | null> {
   if (userIds.length === 0) return new Set();
-  const { data, error } = await client.from('account_lifecycle').select('user_id').in('user_id', userIds);
-  if (error) {
-    if (error.code === 'PGRST205' || error.code === '42P01') return new Set();
+  const { data, error } = await client.rpc('account_hidden_ids', { p_user_ids: userIds });
+  if (!error) return new Set((data ?? []) as string[]);
+  if (error.code !== 'PGRST202' && error.code !== '42883') {
     console.error('[hiddenAccountIds] lookup failed:', error.code);
     return null;
   }
-  return new Set(((data ?? []) as { user_id: string }[]).map((r) => r.user_id));
+  const { data: rows, error: tableError } = await client.from('account_lifecycle').select('user_id').in('user_id', userIds);
+  if (tableError) {
+    if (tableError.code === 'PGRST205' || tableError.code === '42P01') return new Set();
+    console.error('[hiddenAccountIds] lookup failed:', tableError.code);
+    return null;
+  }
+  return new Set(((rows ?? []) as { user_id: string }[]).map((r) => r.user_id));
 }
 
 // Mirrors registered_cards_select_visible's RLS condition exactly. Kept in

@@ -864,8 +864,10 @@ export default function ConversationScreen() {
         case 'account':
           // Account lifecycle: the other collector became unavailable (the
           // conversation is no longer readable either) or this account is
-          // pending deletion — not committed; show the unavailable state.
+          // pending deletion or suspended — not committed; show the
+          // unavailable state (and re-check this account).
           if (result.reason === 'inactive') accountErrorMessage({ message: 'account_inactive' });
+          if (result.reason === 'suspended') accountErrorMessage({ message: 'account_suspended' });
           setNewMessage(body ?? '');
           setPendingSend(null);
           // The other account was permanently deleted: still readable,
