@@ -27,6 +27,11 @@
       "deployed": true,
       "why": "website sign-up, no account"
     },
+    "media-quarantine-scheduled": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "called by pg_net (kick/sweep, OFF by default) or an operator with MEDIA_QUARANTINE_WORKER_SECRET (not a JWT); checks it itself, then the database must open the run; quarantine only"
+    },
     "redeem-waitlist-invite": {
       "verify_jwt": false,
       "deployed": true,

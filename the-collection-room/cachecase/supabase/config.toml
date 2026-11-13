@@ -480,6 +480,13 @@ verify_jwt = true
 [functions.admin-retention-purge]
 verify_jwt = true
 
+# Scheduled media quarantine (Phase 2B M4 step 5A): called by pg_net (kick /
+# media-quarantine-worker sweep, both OFF by default) or an operator with
+# MEDIA_QUARANTINE_WORKER_SECRET, which is not a JWT; the function checks it
+# itself (constant-time) and the database must then open the run.
+[functions.media-quarantine-scheduled]
+verify_jwt = false
+
 [functions.backfill-share-snapshots]
 verify_jwt = true
 

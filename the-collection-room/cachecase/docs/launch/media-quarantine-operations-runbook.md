@@ -2,7 +2,7 @@
 
 For CacheCase admins and the on-call operator. It covers how moderated media leaves public storage, how to watch the queue, what to do with a flagged job, how to restore media, and how to clean up orphaned share snapshots.
 
-**Status (2026-11-10):** built and tested on a local stack only. Nothing is deployed, nothing runs on a schedule, and there is no admin UI yet. Every command below is a manual admin call.
+**Status (2026-11-12):** built and tested on a local stack only. Nothing is deployed and there is no admin UI yet. An automatic scheduler exists (section 8) but is **off everywhere**; until it is approved and switched on, every command below is a manual admin call.
 
 ## 1. How it works
 
@@ -100,13 +100,36 @@ Each candidate is re-checked under a per-path lock immediately before removal. H
 
 - **File size.** Since M2.3e the worker streams: Storage copies the file server-side and checksums are computed chunk by chunk, so memory use does not grow with file size. In local testing every size up to the supported 50 MB was quarantined in a single run (a 50 MB file in about 0.8 s) and restored byte-identical. The runtime's CPU limit (2 s per request) is why a run stops taking work after about 64 MB of hashing; a 50 MB job uses roughly a third of it. Confirm these figures on staging.
 - **CDN and caches.** Removal is verified at the Storage origin only. CDN copies, browser caches (`max-age=3600` on public files) and anything already downloaded may persist. Staging must confirm CDN purge timing before beta.
-- **No scheduler.** Until one is approved, an admin must run the worker. Queued public files stay public until then.
+- **Scheduler off.** The scheduler (section 8) is built but switched off. Until it is approved and switched on, an admin must run the worker, and queued public files stay public until then.
 
-## 8. Proposed production operation (not enabled)
+## 8. Automatic scheduler (built, OFF)
 
-Nothing below exists yet; each item needs separate approval.
+Built in M4 step 5A (`20261126120000_media_quarantine_scheduler.sql`, Edge Function `media-quarantine-scheduled`) and tested only on an isolated local stack. It runs the same worker as `admin-media-quarantine`, with the same checks, leases, retries and checksums. It does **quarantine work only**: it never restores, purges, resolves reports or suspends accounts.
 
-- **Execution.** A scheduled invocation of the quarantine worker using a server-only secret (the same pattern as `account-maintenance`), recording a system actor. Every minute while any child-safety job is open, otherwise every 5 minutes. Batch of 5 jobs, 120-second lease, 25-second budget per run.
+**How it starts work.** Both routes are controlled by one switch, `private.media_quarantine_scheduler_config.enabled`, which is `false` by default:
+
+- **Kick.** When a quarantine job is queued, or a job becomes child safety, the database asks pg_net to call the worker. pg_net only sends requests from committed transactions, so a rolled-back moderation decision sends nothing. Kicks are throttled to one per 10 seconds; child-safety jobs get their own kick, at most one per 5 seconds.
+- **Sweep.** The pg_cron job `media-quarantine-worker` runs every minute and calls the worker only when the switch is on and work is waiting. It is created **inactive**.
+
+**Who can run it.** Only `MEDIA_QUARANTINE_WORKER_SECRET`, at least 32 characters, compared in constant time. It is stored in Vault as `media_quarantine_worker_secret` and in the function's secrets; it is never in the repository. No API key or user token is accepted. Even with the secret, the database must open the run: it refuses while the switch is off, when 2 scheduled runs are already active, or above 20 runs a minute.
+
+**Limits per run.** At most 5 jobs, about 25 seconds, and the existing hashing budget, with a 120-second lease. A run that dies is marked `abandoned` after 3 minutes, and its job is picked up again when its lease expires. Child-safety jobs are always claimed first.
+
+**Records.** Scheduled steps appear in the job history as `actor_kind = scheduler` with a run id and no user id. Admin steps appear as `actor_kind = admin` with the admin's id. Dispatches and runs hold codes, counts and durations only. Admins can read `admin_media_quarantine_scheduler_status()`.
+
+**Activation (needs separate written approval; not done anywhere).**
+1. Confirm the target project and that the approval covers it.
+2. Generate a new secret (at least 32 random characters). Set it as the function secret `MEDIA_QUARANTINE_WORKER_SECRET`, and in Vault as `media_quarantine_worker_secret`, next to `project_url`. Never paste it into tickets or chat.
+3. Deploy `media-quarantine-scheduled` with JWT verification off, as `config.toml` says.
+4. Check a call without the secret returns 401, and a call with it returns `skipped: disabled`.
+5. Switch on: `UPDATE private.media_quarantine_scheduler_config SET enabled = true;` (recorded in `media_quarantine_scheduler_changes`).
+6. Activate the sweep: `SELECT cron.alter_job(job_id := jobid, active := true) FROM cron.job WHERE jobname = 'media-quarantine-worker';`
+7. Watch `admin_media_quarantine_scheduler_status()` and the next completed run.
+
+**Switching off.** Undo steps 6 and 5, in that order. Runs already in flight finish their current job; anything left waits for an admin or for the switch to come back on.
+
+## 9. Production operation still to be approved
+
 - **Retries.** The current 5 attempts with 30 s–1 h back-off, then flag.
 - **Alerts** (from `admin_media_quarantine_overview` and the job table):
 

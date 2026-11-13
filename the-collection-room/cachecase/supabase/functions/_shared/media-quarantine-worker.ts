@@ -178,7 +178,13 @@ export class Worker {
   private hashed = new Map<string, { sha256: string; size: number }>();
   bytesHashed = 0;
 
-  constructor(private client: SupabaseClient, private actor: string, private fault: string | null, private leaseSeconds: number) {}
+  // actor: the verified admin's user id (admin functions), or null with
+  // schedulerRun: the id of an open scheduled run (media-quarantine-scheduled,
+  // 20261126120000) — recorded as actor_kind 'scheduler', never as a user.
+  constructor(private client: SupabaseClient, private actor: string | null, private fault: string | null, private leaseSeconds: number,
+              private schedulerRun: string | null = null) {
+    if ((actor === null) === (schedulerRun === null)) throw new Error('worker needs exactly one actor');
+  }
 
   // Call right after claiming: the lease runs from (no earlier than) now.
   claimed(job: ClaimedJob) {
@@ -215,7 +221,7 @@ export class Worker {
 
   private async advance(job: ClaimedJob, to: string, facts: Record<string, unknown> = {}) {
     const { data, error } = await this.client.rpc('media_quarantine_advance', {
-      p_id: job.id, p_lease: job.lease_token, p_to_state: to, p_facts: { ...facts, actor: this.actor },
+      p_id: job.id, p_lease: job.lease_token, p_to_state: to, p_facts: { ...facts, ...(this.actor ? { actor: this.actor } : { scheduler_run: this.schedulerRun }) },
     });
     if (error) return { ok: false, reason: 'advance_failed' } as Advanced;
     return data as Advanced;
@@ -338,6 +344,9 @@ export class Worker {
 
   // ── Restore ───────────────────────────────────────────────────────────────
   async restore(job: ClaimedJob): Promise<Outcome> {
+    // Restoration is an admin decision; a scheduled worker never restores
+    // (the database refuses it too).
+    if (this.schedulerRun !== null) throw new Error('restore is admin-only');
     for (let step = 0; step < 4; step++) {
       const i = await this.inspect(job);
       if (!i) return 'lease_lost';
