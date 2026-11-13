@@ -1,3 +1,4 @@
+import { type EnforceResult, type Enforcement, type EnforcementAction } from '@/lib/admin-enforcement-view';
 import { supabase } from '@/lib/supabase';
 
 import {
@@ -62,4 +63,30 @@ export const runCaseAction = (
     p_outcome: opts.outcome ?? null,
     p_reason_code: opts.reason ?? null,
     p_note: opts.note?.trim() ? opts.note.trim() : null,
+  });
+
+// M5.2 — enforcement (20261202120000_admin_report_enforcement.sql).
+//   admin_report_enforcement  the report's enforcement state (read-only)
+//   admin_report_enforce      hide | remove | restore | clear_profile_fields |
+//                             restore_profile_fields | suspend | lift_suspension,
+//                             version-checked; the server derives the content,
+//                             profile and account from the report and calls
+//                             the existing enforcement function.
+export const loadEnforcement = (id: string) => call<Enforcement>('admin_report_enforcement', { p_report_id: id });
+
+export const runEnforcement = (
+  id: string,
+  action: EnforcementAction,
+  version: string,
+  reason: string,
+  note: string,
+  options: Record<string, unknown>,
+) =>
+  call<EnforceResult>('admin_report_enforce', {
+    p_report_id: id,
+    p_action: action,
+    p_expected_version: version,
+    p_reason_code: reason,
+    p_note: note.trim() ? note.trim() : null,
+    p_options: options,
   });

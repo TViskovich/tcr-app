@@ -231,6 +231,7 @@ export type ApiFailure =
   | { kind: 'inactive' }
   | { kind: 'not_found' }
   | { kind: 'conflict'; code: string }
+  | { kind: 'refused'; code: string }
   | { kind: 'invalid'; code: string }
   | { kind: 'error' };
 export type ApiResult<T> = { kind: 'ok'; data: T } | ApiFailure;
@@ -241,6 +242,10 @@ export function classifyError(e: { code?: string | null; message?: string | null
   const msg = (e.message ?? '').trim();
   if (/^PGRST30\d$/.test(code) || e.status === 401 || msg === 'not_authenticated' || /jwt expired/i.test(msg)) return { kind: 'session_expired' };
   if (msg === 'account_inactive') return { kind: 'inactive' };
+  // 42501 is also how the existing enforcement functions refuse a decision
+  // the caller may not make (child-safety rules, second administrator) —
+  // a refusal of that action, not a loss of admin access.
+  if (code === '42501' && /^(child_safety_[a-z_]+|second_admin_required)$/.test(msg)) return { kind: 'refused', code: msg };
   if (code === '42501' || msg === 'forbidden') return { kind: 'forbidden' };
   if (code === 'PT404' || msg === 'not_found') return { kind: 'not_found' };
   if (code === 'PT409') return { kind: 'conflict', code: msg };
@@ -271,6 +276,7 @@ export function failureMessage(f: ApiFailure): string {
     case 'inactive': return 'Your account is restricted, so administrator tools are unavailable.';
     case 'not_found': return 'This report no longer exists.';
     case 'conflict': return CONFLICT_TEXT[f.code] ?? 'This change conflicts with the report’s current state. Refresh and review it again.';
+    case 'refused': return 'This decision needs a different administrator or the full child-safety review.';
     case 'invalid': return f.code === 'note_too_long' ? `Notes can be at most ${NOTE_MAX} characters.` : 'That choice isn’t valid for this report.';
     default: return 'Something went wrong. Check your connection and try again.';
   }

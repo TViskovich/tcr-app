@@ -254,7 +254,9 @@ async function main() {
   const client = readFileSync(new URL('../../lib/admin-reports.ts', import.meta.url), 'utf8');
   const screens = ['../../app/admin/reports.tsx', '../../app/admin/report/[id].tsx'].map((p) => readFileSync(new URL(p, import.meta.url), 'utf8')).join('\n');
   const rpcs = [...client.matchAll(/'(admin_[a-z_]+)'/g)].map((m) => m[1]).sort();
-  check('the report client calls only the three review RPCs', JSON.stringify(rpcs) === JSON.stringify(['admin_report_case', 'admin_report_case_action', 'admin_report_queue']), rpcs);
+  // M5.2 adds the version-checked enforcement entry point and its read model.
+  check('the report client calls only the review RPCs (M5.1) and the enforcement wrapper (M5.2)',
+    JSON.stringify(rpcs) === JSON.stringify(['admin_report_case', 'admin_report_case_action', 'admin_report_enforce', 'admin_report_enforcement', 'admin_report_queue']), rpcs);
   check('no enforcement, legal-hold, purge or service-role RPCs (and no logging) in the screens or client in the screens or client',
     !/admin_(hide|remove|restore)_content|admin_(suspend_account|lift_suspension)|admin_(clear|restore|release)_profile_fields|legal_hold'|retention_|SERVICE_ROLE|service_role|console\.(log|info|warn|error)/.test(client + screens));
 }

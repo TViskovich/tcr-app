@@ -7,7 +7,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useIsAdmin } from '@/hooks/use-is-admin';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
-import { loadReportCase, runCaseAction } from '@/lib/admin-reports';
+import { ReportEnforcement } from '@/components/admin/report-enforcement';
+import { enforcementErrorText, outcomeMessage, type EnforceResult, type Enforcement, type EnforcementAction } from '@/lib/admin-enforcement-view';
+import { loadEnforcement, loadReportCase, runCaseAction } from '@/lib/admin-reports';
 import {
   actionLabel,
   adminName,
@@ -29,6 +31,7 @@ import {
   STATUS_TONE,
   TARGET_LABEL,
   type ApiFailure,
+  type ApiResult,
   type CaseAction,
   type MediaSummary,
   type ReportCase,
@@ -64,6 +67,7 @@ export default function ReportScreen() {
   useScrollResponsiveNavbar({ enabled: false });
 
   const [data, setData] = useState<ReportCase | null>(null);
+  const [enf, setEnf] = useState<Enforcement | 'error' | null>(null);
   const [state, setState] = useState<'loading' | 'ok' | 'error' | 'not_found'>('loading');
   const [access, setAccess] = useState<ApiFailure | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -86,24 +90,32 @@ export default function ReportScreen() {
     if (isAdmin === false) leave();
   }, [isAdmin, leave]);
 
-  const apply = useCallback((res: Awaited<ReturnType<typeof loadReportCase>>) => {
+  // The case and its enforcement state are always loaded together, so the
+  // screen never shows a decision next to an out-of-date restriction.
+  const fetchBoth = (reportId: string) => Promise.all([loadReportCase(reportId), loadEnforcement(reportId)] as const);
+  const apply = useCallback(([res, e]: Awaited<ReturnType<typeof fetchBoth>>) => {
     setNow(Date.now());
+    const lost = [res, e].find((x) => x.kind !== 'ok' && losesAccess(x)) as ApiFailure | undefined;
+    if (lost) {
+      setData(null); // drop everything already shown
+      setEnf(null);
+      setAccess(lost);
+      return;
+    }
     if (res.kind === 'ok') {
       setData(res.data);
+      setEnf(e.kind === 'ok' ? e.data : 'error');
       setState('ok');
-    } else if (losesAccess(res)) {
-      setData(null); // drop everything already shown
-      setAccess(res);
     } else setState(res.kind === 'not_found' ? 'not_found' : 'error');
   }, []);
   const load = useCallback(async () => {
-    if (typeof id === 'string') apply(await loadReportCase(id));
+    if (typeof id === 'string') apply(await fetchBoth(id));
   }, [id, apply]);
 
   useEffect(() => {
     if (isAdmin !== true || typeof id !== 'string') return;
     let cancelled = false;
-    loadReportCase(id).then((res) => {
+    fetchBoth(id).then((res) => {
       if (!cancelled) apply(res);
     });
     return () => {
@@ -150,6 +162,24 @@ export default function ReportScreen() {
       await load(); // always show the server's current state afterwards
     },
     [data, load],
+  );
+
+  const onEnforced = useCallback(
+    async (_action: EnforcementAction, res: ApiResult<EnforceResult>) => {
+      if (res.kind !== 'ok' && losesAccess(res)) {
+        setData(null);
+        setEnf(null);
+        setAccess(res);
+        return;
+      }
+      if (res.kind === 'ok') setNotice(outcomeMessage(res.data));
+      else {
+        const code = 'code' in res ? res.code : '';
+        setNotice({ text: enforcementErrorText(code) ?? failureMessage(res), tone: res.kind === 'conflict' || res.kind === 'refused' ? 'warning' : 'critical' });
+      }
+      await load(); // the server's state, not the button that was pressed
+    },
+    [load],
   );
 
   const confirm = useCallback(
@@ -301,6 +331,12 @@ export default function ReportScreen() {
             </Card>
           ) : null}
 
+          {enf === 'error' ? (
+            <Text style={styles.note}>Couldn’t load the enforcement state. Pull to refresh to try again; no enforcement action is offered until it loads.</Text>
+          ) : enf ? (
+            <ReportEnforcement reportId={r.id} data={enf} owner={data.owner.present ? data.owner.username ?? null : null} now={now} onResult={onEnforced} />
+          ) : null}
+
           <Card title="Reported content">
             <Text style={[styles.note, { color: TONE_COLOR[ev.tone] }]}>{ev.text}</Text>
             {c.evidence === 'available' ? (
@@ -399,7 +435,7 @@ function Actions({ data, busy, onClaim, onRelease, onOpenPanel }: {
       </View>
       {blocked ? <Text style={styles.note}>{blocked}</Text> : null}
       <Text style={styles.note}>
-        Every action is re-checked by the server and recorded in the audit history. Enforcement (hiding, removing, suspending) is not available on this screen.
+        Every action is re-checked by the server and recorded in the audit history. Enforcement decisions are in the Enforcement section below.
       </Text>
     </Card>
   );
