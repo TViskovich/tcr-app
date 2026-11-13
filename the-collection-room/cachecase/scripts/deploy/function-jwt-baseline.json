@@ -52,6 +52,11 @@
       "deployed": false,
       "why": "admin only (Phase 2B M2.3d); checks admin_users and the account lifecycle itself"
     },
+    "admin-retention-purge": {
+      "verify_jwt": true,
+      "deployed": false,
+      "why": "admin only (Phase 2B M4 step 4B); every action is authorised by the database under the caller's own session (two-admin approved run, not the preparer)"
+    },
     "backfill-share-snapshots": {
       "verify_jwt": true,
       "deployed": true

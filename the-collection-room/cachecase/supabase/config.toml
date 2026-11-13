@@ -477,6 +477,9 @@ verify_jwt = true
 [functions.admin-snapshot-reconcile]
 verify_jwt = true
 
+[functions.admin-retention-purge]
+verify_jwt = true
+
 [functions.backfill-share-snapshots]
 verify_jwt = true
 

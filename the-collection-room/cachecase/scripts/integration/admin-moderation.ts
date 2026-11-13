@@ -66,8 +66,8 @@ async function sweep() {
   // Fixture reports and their audit rows (superuser only — see header).
   psql(`BEGIN; SET LOCAL session_replication_role = replica;
         DELETE FROM public.moderation_actions WHERE report_id IN (SELECT id FROM public.content_reports WHERE details LIKE '${MARK}%');
+        DELETE FROM public.content_reports WHERE details LIKE '${MARK}%';
         COMMIT;`);
-  await service.from('content_reports').delete().like('details', `${MARK}%`);
   if (ids.length) {
     const { data: parts } = await service.from('conversation_participants').select('conversation_id').in('user_id', ids);
     for (const p of parts ?? []) conversations.add(p.conversation_id);
@@ -84,11 +84,13 @@ const report = (u: U, type: string, id: string, reason = 'spam') =>
   u.db.rpc('submit_report', { p_target_type: type, p_target_id: id, p_reason: reason, p_details: `${MARK} ${run}` });
 const reportId = async (type: string, target: string, reporter: string) =>
   (must(await service.from('content_reports').select('id').eq('target_type', type).eq('target_id', target).eq('reporter_id', reporter).single(), 'report id') as { id: string }).id;
-// Extra reports for concurrency rounds, inserted as the server would (no client path).
+// Extra reports for concurrency rounds, inserted as the server would (no client
+// path; since 20261124120000 not the service role either — a superuser psql).
 async function seedReports(n: number, owner: string): Promise<string[]> {
-  const rows = Array.from({ length: n }, (_, i) => ({ target_type: 'post', target_id: randomUUID(), target_owner_id: owner, reason: 'spam',
-    details: `${MARK} ${run} seed ${i}`, evidence: { v: 1, content: `am seed ${i}` } }));
-  return (must(await service.from('content_reports').insert(rows).select('id'), 'seed') as { id: string }[]).map((r) => r.id);
+  const values = Array.from({ length: n }, (_, i) =>
+    `('post', gen_random_uuid(), '${owner}', 'spam', '${MARK} ${run} seed ${i}', '{"v":1,"content":"am seed ${i}"}')`).join(',');
+  return psql(`INSERT INTO public.content_reports (target_type, target_id, target_owner_id, reason, details, evidence) VALUES ${values} RETURNING id`)
+    .split('\n').filter((l) => /^[0-9a-f-]{36}$/.test(l));
 }
 const auditRows = async (reportIdV: string) =>
   must(await service.from('moderation_actions').select('*').eq('report_id', reportIdV).order('created_at'), 'audit') as any[];

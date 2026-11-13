@@ -22,9 +22,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-const st = JSON.parse(raw.slice(raw.indexOf('{'))) as Record<string, string>;
-if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(st.API_URL)) throw new Error(`Refusing: ${st.API_URL} is not local.`);
+import { localStack } from './local-stack.ts';
+
+const stack = localStack();   // primary by default; CACHECASE_STACK_WORKDIR selects an isolated stack
+const st = stack.st;
 const secret = readFileSync(process.env.MAINTENANCE_SECRET_FILE ?? '', 'utf8').trim();
 const opts = { auth: { persistSession: false, autoRefreshToken: false } };
 const admin = createClient(st.API_URL, st.SERVICE_ROLE_KEY, opts);
@@ -32,7 +33,7 @@ const FIXTURE = 'permanent-deletion-it';
 const WINDOW_SECONDS = 8;
 const work = mkdtempSync(join(tmpdir(), 'cachecase-pd-'));
 const psql = (sql: string) =>
-  execFileSync('docker', ['exec', 'supabase_db_cachecase', 'psql', '-U', 'postgres', '-Atc', sql], { encoding: 'utf8' }).trim();
+  execFileSync('docker', ['exec', stack.db, 'psql', '-U', 'postgres', '-Atc', sql], { encoding: 'utf8' }).trim();
 
 const results: { name: string; ok: boolean }[] = [];
 let section = '';
@@ -200,9 +201,9 @@ async function main() {
   const exportFiles = await listAll('account-exports', A.id);
   check('(A has an export archive before deleting)', exportFiles.length > 0, exportFiles);
   // Storage goes down first, so the run Delete Now triggers fails safely.
-  const storageDown = () => execFileSync('docker', ['stop', 'supabase_storage_cachecase'], { stdio: 'ignore' });
+  const storageDown = () => execFileSync('docker', ['stop', stack.storage], { stdio: 'ignore' });
   const storageUp = async () => {
-    execFileSync('docker', ['start', 'supabase_storage_cachecase'], { stdio: 'ignore' });
+    execFileSync('docker', ['start', stack.storage], { stdio: 'ignore' });
     for (let i = 0; i < 30; i++) {
       try {
         if ((await fetch(`${st.API_URL}/storage/v1/version`)).ok) break;
@@ -429,6 +430,9 @@ async function main() {
 console.log(`Supabase ${st.API_URL} (run ${run}); files in ${work}`);
 const swept = await sweep();
 if (swept) console.log(`Swept ${swept} leftover fixture account(s).`);
+// Section 1 switches the local account-maintenance job off and on to test
+// Delete Now; whatever it was before this run is restored afterwards.
+const maintenanceWas = psql(`select active from cron.job where jobname = 'account-maintenance'`) === 't';
 let fatal: unknown = null;
 try {
   await main();
@@ -437,9 +441,11 @@ try {
   console.error(`\nAborted in "${section}": ${(e as Error).message}`);
 } finally {
   try {
-    execFileSync('docker', ['start', 'supabase_storage_cachecase'], { stdio: 'ignore' });
+    execFileSync('docker', ['start', stack.storage], { stdio: 'ignore' });
   } catch {}
   console.log(`\nCleanup: ${await sweep()} disposable accounts removed.`);
+  psql(`select cron.alter_job(job_id := jobid, active := ${maintenanceWas}) from cron.job where jobname = 'account-maintenance'`);
+  console.log(`account-maintenance schedule restored to ${maintenanceWas ? 'active' : 'inactive'}.`);
 }
 const failedChecks = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failedChecks.length}/${results.length} checks passed${fatal ? ' (aborted early)' : ''}.`);

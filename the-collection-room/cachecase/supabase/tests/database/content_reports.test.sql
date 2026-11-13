@@ -4,7 +4,7 @@
 -- Everything happens inside one transaction that is rolled back.
 
 BEGIN;
-SELECT plan(79);
+SELECT plan(80);
 
 CREATE FUNCTION pg_temp.login(p_user uuid) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -196,7 +196,18 @@ SELECT throws_ok($$ UPDATE public.content_reports SET reason = 'other' WHERE tar
 -- (A resolved report carries its outcome — 20261115120000_moderation_admin.sql.)
 UPDATE public.content_reports SET status = 'dismissed', reviewed_at = now(), resolution = 'no_violation', resolution_reason = 'within_guidelines',
   evidence_purge_after = now() - interval '1 second' WHERE target_type = 'post';
-SELECT lives_ok($$ UPDATE public.content_reports SET evidence = NULL WHERE target_type = 'post' $$, 'evidence can be purged after its retention date');
+-- 20261124120000: past its date, evidence still needs a two-admin purge claim
+-- made in the same transaction (the future executor's role; stood in for here).
+SELECT throws_ok($$ UPDATE public.content_reports SET evidence = NULL WHERE target_type = 'post' $$, '42501', 'evidence_purge_claim_required',
+  'past its retention date, evidence is still not cleared without a purge claim');
+INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
+  ('00000000-0000-4000-8000-0000ce0000a1', 'cr-a1@example.invalid', '{"username":"cr_a1"}'),
+  ('00000000-0000-4000-8000-0000ce0000a2', 'cr-a2@example.invalid', '{"username":"cr_a2"}');
+INSERT INTO public.admin_users (user_id) VALUES ('00000000-0000-4000-8000-0000ce0000a1'), ('00000000-0000-4000-8000-0000ce0000a2');
+INSERT INTO private.retention_purge_claims (subject_kind, subject_id, prepared_by, approved_by, lease_expires_at)
+SELECT 'report_evidence', r.id, '00000000-0000-4000-8000-0000ce0000a1', '00000000-0000-4000-8000-0000ce0000a2', clock_timestamp() + interval '1 minute'
+  FROM public.content_reports r WHERE r.target_type = 'post';
+SELECT lives_ok($$ UPDATE public.content_reports SET evidence = NULL WHERE target_type = 'post' $$, 'with a two-admin claim, evidence can be purged after its retention date');
 SELECT ok((SELECT evidence IS NULL AND evidence_purged_at IS NOT NULL FROM public.content_reports WHERE target_type = 'post'), '…and the purge is recorded');
 
 -- ── 7. Blocking compatibility ───────────────────────────────────────────

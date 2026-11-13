@@ -13,6 +13,11 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+// Reports are append-only for every API role (20261124120000), so fixture
+// reports are removed by a local superuser psql session, scoped to this run.
+const psql = (sql: string) =>
+  execFileSync('docker', ['exec', 'supabase_db_cachecase', 'psql', '-U', 'postgres', '-X', '-v', 'ON_ERROR_STOP=1', '-Atc', sql], { encoding: 'utf8' }).trim();
+const lit = (v: string) => `'${v.replace(/'/g, "''")}'`;
 const st = JSON.parse(raw.slice(raw.indexOf('{'))) as Record<string, string>;
 if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(st.API_URL)) throw new Error(`Refusing: ${st.API_URL} is not local.`);
 const opts = { auth: { persistSession: false, autoRefreshToken: false } };
@@ -57,8 +62,8 @@ async function sweep() {
     if (data.users.length < 200) break;
   }
   if (ids.length) {
-    await admin.from('content_reports').delete().in('reporter_id', ids);
-    await admin.from('content_reports').delete().in('target_owner_id', ids);
+    const idList = ids.map(lit).join(',');
+    psql(`DELETE FROM public.content_reports WHERE reporter_id IN (${idList}) OR target_owner_id IN (${idList})`);
     const { data: parts } = await admin.from('conversation_participants').select('conversation_id').in('user_id', ids);
     const convIds = [...new Set([...(parts ?? []).map((r) => r.conversation_id), ...conversations])];
     for (const c of convIds) {
@@ -80,7 +85,7 @@ async function sweep() {
     }
     await admin.from('conversations').delete().in('id', [...conversations]);
   }
-  if (targets.size) await admin.from('content_reports').delete().in('target_id', [...targets]);
+  if (targets.size) psql(`DELETE FROM public.content_reports WHERE target_id IN (${[...targets].map(lit).join(',')})`);
   for (const id of ids) await admin.auth.admin.deleteUser(id);
   return ids.length;
 }

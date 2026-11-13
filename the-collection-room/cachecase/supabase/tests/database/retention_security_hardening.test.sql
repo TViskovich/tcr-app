@@ -39,9 +39,15 @@ SELECT is((SELECT count(*)::int FROM unnest(ARRAY['anon', 'authenticated', 'serv
 SELECT is((SELECT count(*)::int FROM unnest(ARRAY['anon', 'authenticated', 'service_role']) r
             WHERE has_table_privilege(r, 'private.retention_purge_claims', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')), 0,
   'no API role can read or write purge claims');
-SELECT is((SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname = 'public' AND p.prosrc ILIKE '%retention_purge_claims%'), 0,
-  'no public (API-callable) function creates or touches claims: no executor exists yet');
+-- 20261125120000: exactly the two two-admin executor entry points create
+-- claims, each behind require_admin, pinned, and closed to the service role.
+SELECT is((SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.prosrc ILIKE '%retention_purge_claims%'
+              AND p.prosecdef AND p.proconfig = ARRAY['search_path=""'] AND p.prosrc LIKE '%private.require_admin()%'
+              AND NOT has_function_privilege('service_role', p.oid, 'EXECUTE') AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')),
+  (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.prosrc ILIKE '%retention_purge_claims%'),
+  'only admin-gated, pinned executor RPCs (no service role) touch claims');
 SELECT is((SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'private'
              AND p.proname IN ('orphaned_account_hold_exists', 'report_evidence_purge_blockers', 'quarantine_copy_purge_blockers',
                                'retention_purge_claims_guard', 'content_reports_guard_update', 'storage_held_write_guard')

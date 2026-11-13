@@ -19,6 +19,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { removeQuarantineFixtures } from './quarantine-fixture-cleanup.ts';
+
 const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 const st = JSON.parse(raw.slice(raw.indexOf('{'))) as Record<string, string>;
 if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(st.API_URL)) throw new Error(`Refusing: ${st.API_URL} is not local.`);
@@ -80,7 +82,7 @@ async function sweep() {
   }
   const idList = ids.length ? ids.map(lit).join(',') : "''";
   const qPaths = psql(`SELECT coalesce(string_agg(quarantine_path, ','), '') FROM private.media_quarantine WHERE owner_id::text IN (${idList})`).split(',').filter(Boolean);
-  if (qPaths.length) await service.storage.from('moderation-quarantine').remove(qPaths);
+  if (qPaths.length) removeQuarantineFixtures(qPaths);
   psql(`BEGIN; SET LOCAL session_replication_role = replica;
         CREATE TEMP TABLE fx ON COMMIT DROP AS SELECT id FROM public.content_reports WHERE details LIKE '${MARK}%';
         CREATE TEMP TABLE fq ON COMMIT DROP AS SELECT DISTINCT h.quarantine_id AS id FROM private.media_quarantine_holds h

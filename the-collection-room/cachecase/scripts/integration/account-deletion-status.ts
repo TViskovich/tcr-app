@@ -24,15 +24,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-const st = JSON.parse(raw.slice(raw.indexOf('{'))) as Record<string, string>;
-if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(st.API_URL)) throw new Error(`Refusing: ${st.API_URL} is not local.`);
+import { localStack } from './local-stack.ts';
+
+const stack = localStack();
+const st = stack.st;   // local only (localStack refuses anything else)
 const secret = readFileSync(process.env.MAINTENANCE_SECRET_FILE ?? '', 'utf8').trim();
 const opts = { auth: { persistSession: false, autoRefreshToken: false } };
 const admin = createClient(st.API_URL, st.SERVICE_ROLE_KEY, opts);
 const FIXTURE = 'deletion-status-it';
 const psql = (sql: string) =>
-  execFileSync('docker', ['exec', 'supabase_db_cachecase', 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atc', sql], { encoding: 'utf8' }).trim();
+  execFileSync('docker', ['exec', stack.db, 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atc', sql], { encoding: 'utf8' }).trim();
 
 const results: { name: string; ok: boolean }[] = [];
 let section = '';

@@ -12,8 +12,8 @@
 // nothing else can be touched. Never point this at a hosted project.
 import { execFileSync } from 'node:child_process';
 
-const DB = 'supabase_db_cachecase';
-const STORAGE = 'supabase_storage_cachecase';
+import { localStack } from './local-stack.ts';
+
 const BLOB_ROOT = '/mnt/stub/stub/moderation-quarantine';
 const PATH_SHAPE = /^q\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/original$/;
 
@@ -21,6 +21,7 @@ export function removeQuarantineFixtures(paths: string[]): number {
   const safe = [...new Set(paths)].filter((p) => PATH_SHAPE.test(p));
   if (safe.length !== new Set(paths).size) throw new Error('Refusing: a quarantine path does not have the q/<uuid>/original shape.');
   if (!safe.length) return 0;
+  const { db: DB, storage: STORAGE } = localStack();
   const list = safe.map((p) => `'${p}'`).join(',');
   execFileSync('docker', ['exec', DB, 'psql', '-U', 'postgres', '-X', '-v', 'ON_ERROR_STOP=1', '-Atc',
     `BEGIN; SET LOCAL storage.allow_delete_query = 'true';

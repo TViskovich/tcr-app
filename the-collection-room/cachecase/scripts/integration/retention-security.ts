@@ -19,17 +19,19 @@ import { promisify } from 'node:util';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { localStack } from './local-stack.ts';
 import { removeQuarantineFixtures } from './quarantine-fixture-cleanup.ts';
 
-const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-const st = JSON.parse(raw.slice(raw.indexOf('{'))) as Record<string, string>;
-if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(st.API_URL)) throw new Error(`Refusing: ${st.API_URL} is not local.`);
+// Exercises claimed deletions of its own synthetic fixtures: run it on an
+// isolated stack (CACHECASE_STACK_WORKDIR) unless explicitly told otherwise.
+const stack = localStack();
+const st = stack.st;
 const opts = { auth: { persistSession: false, autoRefreshToken: false } };
 const service = createClient(st.API_URL, st.SERVICE_ROLE_KEY, opts);
 const FIXTURE = 'retention-security-it';
 const MARK = 'rsec-it fixture';
 const run = randomUUID().replace(/-/g, '').slice(0, 6);
-const psqlArgs = (sql: string) => ['exec', 'supabase_db_cachecase', 'psql', '-U', 'postgres', '-X', '-v', 'ON_ERROR_STOP=1', '-Atc', sql];
+const psqlArgs = (sql: string) => ['exec', stack.db, 'psql', '-U', 'postgres', '-X', '-v', 'ON_ERROR_STOP=1', '-Atc', sql];
 const psql = (sql: string) => execFileSync('docker', psqlArgs(sql), { encoding: 'utf8' }).trim();
 const psqlAsync = async (sql: string) => {
   try { return { ok: true, out: (await promisify(execFile)('docker', psqlArgs(sql), { encoding: 'utf8' })).stdout.trim() }; }
