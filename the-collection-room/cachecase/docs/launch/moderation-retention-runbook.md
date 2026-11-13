@@ -204,6 +204,10 @@ Being an administrator is no longer enough to purge.
 - **Checked on every call.** Prepare, approve, execute, confirm, reconcile and every claim check the privilege again at that moment, together with the account being an active administrator (not suspended, not pending deletion, still in `admin_users`). Execution also requires the run's preparer and approver to still hold theirs.
 - **Revocations take effect immediately.** A revocation between approval and execution stops the run (`run_admins_not_authorized`), and revoking also **withdraws** that administrator's live claims, so an in-flight delete is refused by the Storage guard. The grant row is locked while an action relies on it, so a concurrent revocation is never half-applied.
 - **Fails closed.** A run can't be prepared unless another active administrator holds the approver privilege (`insufficient_purge_administrators`).
+- **In-flight claims follow their administrators (step 5D.1, `20261130120000`).** The Storage guard re-authorises both of a claim's administrators immediately before consuming it: active, still in `admin_users`, not suspended, not pending deletion, still privileged. Suspending an administrator (an operator-inserted `account_suspensions` row, since the app refuses to suspend admins), removing them from `admin_users`, or starting their account deletion withdraws every live claim naming them.
+  - These changes serialise with deletions: whichever takes the administrator's grant lock first wins, and the other waits. A delete that committed first stands, and is settled normally.
+  - Settling a delete that already happened never needs the run's administrators: any approver who did not prepare the run can reconcile it.
+  - Continuing a run whose preparer or approver lost standing is refused for everyone. Cancel it and prepare a fresh run with a valid second administrator.
 - **Nobody holds a privilege after the migration.** Purging is impossible until an operator grants them.
 
 **Granting and revoking (operator only).** Run these in the SQL editor or psql as the database operator; no API role can call them:
