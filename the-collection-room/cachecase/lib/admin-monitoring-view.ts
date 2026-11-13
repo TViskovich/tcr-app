@@ -172,7 +172,23 @@ export type PurgeRun = {
   prepared_by_viewer: boolean;
   approved_by_viewer: boolean;
   viewer_may_approve: boolean;
+  ambiguous_items?: number; // 20261129120000: in flight, failed or needing attention
 };
+export type PurgePrivileges = { preparer: boolean; approver: boolean };
+export type AuthorizedAdmins = { preparers: number; approvers: number; runs_possible?: boolean };
+
+// The viewer's purge privileges and whether a run can complete at all
+// (it needs a preparer and a DIFFERENT approver). Display only.
+export function purgeAuthority(viewer: PurgePrivileges | undefined, admins: AuthorizedAdmins | undefined): { label: string; note: string | null; tone: Tone } {
+  const mine = [viewer?.preparer && 'preparer', viewer?.approver && 'approver'].filter(Boolean).join(' + ');
+  const label = mine ? `You hold: ${mine}` : 'You hold no purge privilege';
+  if (!admins) return { label, note: null, tone: 'neutral' };
+  // runs_possible (server): a preparer and a DIFFERENT approver exist.
+  const insufficient = admins.runs_possible === undefined ? admins.preparers < 1 || admins.approvers < 1 : !admins.runs_possible;
+  const note = `${admins.preparers} preparer${admins.preparers === 1 ? '' : 's'} · ${admins.approvers} approver${admins.approvers === 1 ? '' : 's'}`
+    + (insufficient ? ' — not enough authorised administrators; purging is blocked' : '');
+  return { label, note, tone: insufficient ? 'warning' : mine ? 'ok' : 'off' };
+}
 export const PURGE_STATUS_LABEL: Record<PurgeRun['status'], string> = {
   prepared: 'Awaiting approval', approved: 'Approved', expired: 'Expired', cancelled: 'Cancelled',
   completed: 'Completed', needs_attention: 'Needs attention',
@@ -190,5 +206,6 @@ export function purgeApproval(run: PurgeRun, now: number): { minutesLeft: number
   }
   const left = Math.max(0, Math.ceil((Date.parse(run.approval_expires_at) - now) / 60_000));
   if (run.prepared_by_viewer) return { minutesLeft: left, note: 'You prepared this run — a different administrator must approve it.' };
-  return { minutesLeft: left, note: 'A second administrator may approve it; the server re-checks eligibility when an approval is submitted.' };
+  if (!run.viewer_may_approve) return { minutesLeft: left, note: 'Approval needs the approver privilege, which you do not hold.' };
+  return { minutesLeft: left, note: 'You hold the approver privilege; the server re-checks eligibility when an approval is submitted.' };
 }

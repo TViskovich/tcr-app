@@ -373,6 +373,9 @@ SET LOCAL ROLE authenticated;
 SELECT throws_ok($$ SELECT public.admin_reopen_report('00000000-0000-4000-8000-0000ad100003', 'new_information') $$,
   'PT409', 'retention_expired', 'reopen refused once the retention date has passed');
 RESET ROLE;
+-- 20261129120000: the claim's admins must hold their purge privileges (operator-granted).
+SELECT private.grant_admin_privilege('00000000-0000-4000-8000-0000ad000001', 'retention_purge_preparer', '00000000-0000-4000-8000-0000ad000002', 'test fixture');
+SELECT private.grant_admin_privilege('00000000-0000-4000-8000-0000ad000002', 'retention_purge_approver', '00000000-0000-4000-8000-0000ad000001', 'test fixture');
 -- 20261124120000: purging needs a two-admin claim in the same transaction.
 INSERT INTO private.retention_purge_claims (subject_kind, subject_id, prepared_by, approved_by, lease_expires_at)
 VALUES ('report_evidence', '00000000-0000-4000-8000-0000ad100003', '00000000-0000-4000-8000-0000ad000001',

@@ -36,6 +36,7 @@ import {
   issueTitle,
   monitoringSummary,
   purgeApproval,
+  purgeAuthority,
   PURGE_STATUS_LABEL,
   PURGE_STATUS_TONE,
   queueSummary,
@@ -407,6 +408,10 @@ export default function MonitoringScreen() {
                 <Text style={styles.meta}>
                   {p.pending_approval} awaiting approval · {p.needs_attention} need attention
                 </Text>
+                {(() => {
+                  const auth = purgeAuthority(p.viewer_privileges, p.authorized_admins);
+                  return <StatusRow label="Purge privileges" value={auth.label} tone={auth.tone} detail={auth.note ?? undefined} />;
+                })()}
                 {p.items.length === 0 ? <Empty text="No purge runs." /> : null}
                 {p.items.map((run) => (
                   <PurgeRow key={run.id} run={run} now={now} />
@@ -518,6 +523,11 @@ function PurgeRow({ run, now }: { run: PurgeRun; now: number }) {
         {run.closed_at ? ` · closed ${ago(run.closed_at, now)}` : ''}
         {items ? ` · ${items}` : ''}
       </Text>
+      {run.ambiguous_items ? (
+        <Text style={[styles.lineSide, { color: TONE_COLOR.warning }]}>
+          {run.ambiguous_items} item{run.ambiguous_items === 1 ? '' : 's'} not settled (in flight, failed or needing investigation) — see the retention runbook
+        </Text>
+      ) : null}
       {a.note ? <Text style={styles.note}>{a.note}</Text> : null}
       <Text style={styles.refId} selectable>
         {run.id}

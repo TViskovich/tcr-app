@@ -70,6 +70,9 @@ INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
   ('00000000-0000-4000-8000-0000e5000013', 'rs-a3@example.invalid', '{"username":"rs_a3"}');
 INSERT INTO public.admin_users (user_id) VALUES
   ('00000000-0000-4000-8000-0000e5000011'), ('00000000-0000-4000-8000-0000e5000012'), ('00000000-0000-4000-8000-0000e5000013');
+-- 20261129120000: purge privileges are granted by an operator, each by a different admin.
+SELECT private.grant_admin_privilege(g.id, p, ('00000000-0000-4000-8000-0000e50000' || CASE g.x WHEN '11' THEN '12' ELSE '11' END)::uuid, 'test fixture')
+  FROM (SELECT ('00000000-0000-4000-8000-0000e50000' || x)::uuid AS id, x FROM unnest(ARRAY['11', '12', '13']) x) g, unnest(ARRAY['retention_purge_preparer', 'retention_purge_approver']) p;
 SET LOCAL session_replication_role = replica;
 -- Reports: 01–05 resolved & due about C; 06 child safety; 07 open; 08 not due;
 -- 09, 10 owner erased by an account deletion (target_owner_id NULL); 11 about D.

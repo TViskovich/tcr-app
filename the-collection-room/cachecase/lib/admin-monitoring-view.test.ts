@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  age, channelHealth, channelLabel, groupIssues, issueStatus, monitoringSummary, purgeApproval, queueSummary, schedulerSummary,
+  age, channelHealth, channelLabel, groupIssues, issueStatus, monitoringSummary, purgeApproval, purgeAuthority, queueSummary, schedulerSummary,
   type MonitoringOverview, type OpenIssue, type PurgeRun,
 } from './admin-monitoring-view.ts';
 
@@ -88,6 +88,18 @@ test('purge approvals: expiry countdown and self-approval explained, never grant
   };
   assert.deepEqual(purgeApproval(run, NOW), { minutesLeft: 20, note: 'You prepared this run — a different administrator must approve it.' });
   assert.match(purgeApproval({ ...run, prepared_by_viewer: false, viewer_may_approve: true }, NOW).note, /server re-checks/);
+  assert.match(purgeApproval({ ...run, prepared_by_viewer: false, viewer_may_approve: false }, NOW).note, /approver privilege, which you do not hold/);
   assert.equal(purgeApproval({ ...run, approval_expires_at: iso(1) }, NOW).minutesLeft, 0);
   assert.equal(purgeApproval({ ...run, status: 'expired' }, NOW).minutesLeft, null);
+});
+
+test('purge authority: privileges shown, too few authorised admins flagged', () => {
+  assert.deepEqual(purgeAuthority({ preparer: false, approver: false }, { preparers: 1, approvers: 1, runs_possible: true }),
+    { label: 'You hold no purge privilege', note: '1 preparer · 1 approver', tone: 'off' });
+  // one person holding both privileges cannot complete a run alone
+  assert.match(purgeAuthority({ preparer: true, approver: true }, { preparers: 1, approvers: 1, runs_possible: false }).note ?? '', /purging is blocked/);
+  assert.equal(purgeAuthority({ preparer: true, approver: true }, { preparers: 1, approvers: 1 }).label, 'You hold: preparer + approver');
+  const none = purgeAuthority({ preparer: true, approver: false }, { preparers: 1, approvers: 0 });
+  assert.match(none.note ?? '', /purging is blocked/);
+  assert.equal(none.tone, 'warning');
 });

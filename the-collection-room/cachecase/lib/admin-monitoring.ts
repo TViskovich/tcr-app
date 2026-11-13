@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
 
-import type { MonitoringOverview, OpenIssue, PurgeRun, SchedulerStatus, Severity } from '@/lib/admin-monitoring-view';
+import type { AuthorizedAdmins, MonitoringOverview, OpenIssue, PurgePrivileges, PurgeRun, SchedulerStatus, Severity } from '@/lib/admin-monitoring-view';
 
 // Client for the admin monitoring dashboard. Every call is a database RPC
 // made with the signed-in user's own session; each one runs
@@ -71,7 +71,12 @@ export type IssueDetail = {
   events: { at: string; event: string; count: number | null; notice_kind: string | null; error_code: string | null; actor_id: string | null }[];
 };
 export type IssueHistoryItem = IssueDetail['issue'];
-export type PurgeDashboard = Page<PurgeRun> & { pending_approval: number; needs_attention: number };
+export type PurgeDashboard = Page<PurgeRun> & {
+  pending_approval: number;
+  needs_attention: number;
+  viewer_privileges?: PurgePrivileges;   // 20261129120000
+  authorized_admins?: AuthorizedAdmins;  // 20261129120000
+};
 
 export const loadMonitoringOverview = () => call<MonitoringOverview>('admin_moderation_monitoring_overview');
 export const loadQuarantineOverview = () => call<QuarantineOverview>('admin_media_quarantine_overview');

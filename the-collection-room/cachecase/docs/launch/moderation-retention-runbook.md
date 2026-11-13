@@ -100,7 +100,7 @@ Both functions are STABLE, so they can't write. They return ids and metadata onl
 - Purging profile-field originals, moderation notes, reporter comments, child-safety evidence, or retained (`quarantined`) copies.
 - Any change to account-deletion behaviour for held evidence.
 - Any schedule or automatic purge. A schedule needs separate approval.
-- An admin UI. Today every step is an RPC or the `admin-retention-purge` function (section 7).
+- An admin UI for purge actions. Every step is an RPC or the `admin-retention-purge` function (section 7); the dashboard (5C) is read-only.
 
 ## 6. Security hardening (step 4A) and the purge-approval contract
 
@@ -155,11 +155,11 @@ This needs a change to account deletion, which needs separate approval.
 | Step | Who | Call |
 |---|---|---|
 | Dry run | any admin | `admin_retention_purge_preview(category, limit)`: eligible ids, exclusions with reasons, sizes, policy conformance. Read-only. |
-| Prepare | Admin A | `admin_retention_prepare_run(category, ids[])`: 1–50 explicitly chosen ids, all currently eligible, none already in an open run. The set is frozen with a digest and the policy snapshot. A has **30 minutes** to get approval. |
-| Approve | Admin B ≠ A | `admin_retention_approve_run(run_id, set_digest, item_count)`: must name the exact frozen set. B must be an active admin; A must still be active. Opens a **30-minute** execution window. |
-| Execute reports | any admin ≠ A | `admin_retention_execute_reports(run_id, limit)` |
-| Execute copies | any admin ≠ A | `POST /functions/v1/admin-retention-purge {run_id, limit}`, signed in as that admin |
-| Settle after a crash | any admin ≠ A | `admin_retention_reconcile_run(run_id)`. Also runs automatically at the start of each execution. |
+| Prepare | Admin A, holding `retention_purge_preparer` (section 8) | `admin_retention_prepare_run(category, ids[])`: 1–50 explicitly chosen ids, all currently eligible, none already in an open run. The set is frozen with a digest and the policy snapshot. A has **30 minutes** to get approval. |
+| Approve | Admin B ≠ A, holding `retention_purge_approver` | `admin_retention_approve_run(run_id, set_digest, item_count)`: must name the exact frozen set. B must be an active admin; A must still be active and still hold the preparer privilege. Opens a **30-minute** execution window. |
+| Execute reports | an approver ≠ A | `admin_retention_execute_reports(run_id, limit)` |
+| Execute copies | an approver ≠ A | `POST /functions/v1/admin-retention-purge {run_id, limit}`, signed in as that admin |
+| Settle after a crash | an approver ≠ A | `admin_retention_reconcile_run(run_id)`. Also runs automatically at the start of each execution. |
 | Cancel | any admin | `admin_retention_cancel_run(run_id)` |
 | Inspect | any admin | `admin_retention_purge_run(run_id)`, `admin_list_retention_purge_runs(status)` |
 
@@ -187,3 +187,89 @@ This needs a change to account deletion, which needs separate approval.
 - `supabase/tests/database/retention_purge_executor.test.sql` with `cachecase.isolated_stack=on`.
 
 Both refuse to run anywhere else.
+
+## 8. Purge privileges, single-object deletion and erasure evidence (step 5D)
+
+`20261129120000_purge_privileges_and_erasure_evidence.sql`, tested on an isolated local stack only.
+
+### Privileges
+
+Being an administrator is no longer enough to purge.
+
+| Privilege | Allows |
+|---|---|
+| `retention_purge_preparer` | Preparing a run |
+| `retention_purge_approver` | Approving another administrator's run, and executing or settling runs you did not prepare |
+
+- **Checked on every call.** Prepare, approve, execute, confirm, reconcile and every claim check the privilege again at that moment, together with the account being an active administrator (not suspended, not pending deletion, still in `admin_users`). Execution also requires the run's preparer and approver to still hold theirs.
+- **Revocations take effect immediately.** A revocation between approval and execution stops the run (`run_admins_not_authorized`), and revoking also **withdraws** that administrator's live claims, so an in-flight delete is refused by the Storage guard. The grant row is locked while an action relies on it, so a concurrent revocation is never half-applied.
+- **Fails closed.** A run can't be prepared unless another active administrator holds the approver privilege (`insufficient_purge_administrators`).
+- **Nobody holds a privilege after the migration.** Purging is impossible until an operator grants them.
+
+**Granting and revoking (operator only).** Run these in the SQL editor or psql as the database operator; no API role can call them:
+
+```sql
+SELECT private.grant_admin_privilege('<admin user id>', 'retention_purge_approver', '<granting admin user id>', '<reason>');
+SELECT private.revoke_admin_privilege('<admin user id>', 'retention_purge_approver', '<revoking admin user id>', '<reason>');
+```
+
+- The granting administrator must be a **different** active administrator (self-granting is refused); the grantee must be an active administrator.
+- Every grant and revocation records grantee, privilege, granting or revoking administrator, reason, time and database role in `private.admin_privilege_events`. Grants are never edited or deleted, only revoked.
+- Keep at least two people able to act, but grant the minimum. One person may hold both privileges, but can never approve or execute their own run.
+
+### Storage deletion
+
+The `admin-retention-purge` function deletes each copy through Storage's **single-object** route:
+
+```
+DELETE /storage/v1/object/moderation-quarantine/q/<uuid>/original
+```
+
+This replaces the batch `remove()` route, whose S3 backend can drop per-key errors (Step 5 Gate E). The path always comes from the job record and must match `q/<uuid>/original`. The database's claim, legal-hold, child-safety and exact-path checks run inside that delete, unchanged.
+
+Every response is classified explicitly:
+
+| Outcome | Meaning |
+|---|---|
+| `accepted` | 200 or 204 |
+| `not_found` | 404, or a body status of 404 |
+| `refused` | 403, for example when the guard refuses |
+| `http_error` | Another 4xx or 5xx |
+| `timeout` | No response within 15 seconds |
+| `unreachable` | The network request failed |
+| `unexpected` | Any other status |
+
+After an `accepted` delete the function reads the same object again to check it is no longer available. Nothing is completed on the function's word: completion still needs the object's Storage metadata to be gone **and** the guard to have consumed the claim.
+
+### Erasure evidence
+
+`private.retention_purge_erasure_records` is append-only. It holds one row per reported attempt and one final row per purged or flagged item. It never contains paths, hashes or content.
+
+| Classification | Meaning |
+|---|---|
+| `unavailable_via_api` | Metadata removed by an authorised delete, and a fresh API read of the object returned not-found. **The strongest result possible.** |
+| `metadata_removed` | Metadata removed by an authorised delete; the API response was lost or not checked |
+| `database_cleared` | Report evidence: the database value was cleared in the purge transaction |
+| `api_accepted` / `api_failed` | The API's report for an attempt that has not settled yet |
+| `ambiguous_missing_unverified` | The object disappeared without the authorised delete (`needs_attention`) |
+| `ambiguous_reappeared` | An object is back at the path after the authorised delete (`needs_attention`) |
+| `incomplete` | Retries exhausted or otherwise unsettled (`needs_attention`) |
+
+There is **no "physically erased" classification**. Supabase Storage gives a project no way to verify removal from the underlying object store, or to list objects whose metadata is gone (the orphan scanner exists only on the provider's operator API). Provider backups and object versions are outside the project's control. Physical removal can only be confirmed by the provider, or by a different architecture such as crypto-shredding or customer-owned object storage, which is not built.
+
+### Reconciliation
+
+`admin_retention_purge_reconciliation(run_id?)` is read-only and open to any admin. For every item that is in flight, failed or `needs_attention`, it lists the run, state, attempts, last error, latest evidence, claim state (`live`, `lease_over`, `consumed`, `expired`, `withdrawn`), whether Storage metadata is present (no path), and a recommended step:
+
+| Recommended step | What to do |
+|---|---|
+| `wait_for_lease` | A delete may be under way; check again after the 2-minute lease |
+| `reconcile_then_retry` | An approver runs `admin_retention_reconcile_run`, then executes the run again within its window |
+| `investigate_unverified_disappearance` | The object vanished without an authorised delete. Check Storage and operator logs. If you suspect an orphan or out-of-band deletion, open a provider ticket listing the run and item ids (not paths) |
+| `investigate_reappeared_object` | Something wrote the path again after the delete. Freeze the run and investigate before anything else |
+| `investigate_repeated_failure` | Three attempts failed. Check Storage health and the attempt evidence |
+
+`needs_attention` is terminal: no reconciliation clears it, and the item is never counted as purged. The dashboard's purge section shows each run's unsettled-item count, your own privileges, and whether enough authorised administrators exist.
+
+**Testing (isolated stack only):** `scripts/integration/retention-purge-authorization.ts` and `supabase/tests/database/purge_privileges_erasure.test.sql`, alongside the 4B tests, now with operator-granted fixtures.
+

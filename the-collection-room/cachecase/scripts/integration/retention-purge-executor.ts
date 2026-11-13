@@ -143,6 +143,7 @@ async function sweep(): Promise<number> {
         CREATE TEMP TABLE fr ON COMMIT DROP AS SELECT DISTINCT run_id AS id FROM private.retention_purge_items
           WHERE subject_id IN (SELECT id FROM fx UNION ALL SELECT id FROM fq);
         DELETE FROM private.retention_purge_events WHERE run_id IN (SELECT id FROM fr);
+        DELETE FROM private.retention_purge_erasure_records WHERE run_id IN (SELECT id FROM fr);
         DELETE FROM private.retention_purge_tombstones WHERE run_id IN (SELECT id FROM fr);
         DELETE FROM private.retention_purge_items WHERE run_id IN (SELECT id FROM fr);
         DELETE FROM private.retention_purge_runs WHERE id IN (SELECT id FROM fr) OR prepared_by::text IN (${idList});
@@ -153,6 +154,8 @@ async function sweep(): Promise<number> {
         DELETE FROM public.content_reports WHERE id IN (SELECT id FROM fx);
         DELETE FROM private.media_quarantine WHERE id IN (SELECT id FROM fq);
         DELETE FROM public.admin_users WHERE user_id::text IN (${idList});
+        DELETE FROM private.admin_privilege_events WHERE user_id::text IN (${idList}) OR actor_id::text IN (${idList});
+        DELETE FROM private.admin_privileges WHERE user_id::text IN (${idList}) OR granted_by::text IN (${idList});
         COMMIT;`);
   for (const id of ids) await service.auth.admin.deleteUser(id);
   return ids.length;
@@ -162,6 +165,12 @@ async function main() {
   const users = await Promise.all(['a1', 'a2', 'a3', 'a4', 'c', 'd', 'x'].map(createUser));
   const [A1, A2, A3, A4, C, D, X] = users;
   psql(`INSERT INTO public.admin_users (user_id) VALUES ${[A1, A2, A3, A4].map((a) => `(${lit(a.id)})`).join(',')}`);
+  // 20261129120000: purge privileges are granted by an operator, each by a different admin.
+  for (const [who, by] of [[A1, A2], [A2, A1], [A3, A1], [A4, A1]] as const) {
+    for (const priv of ['retention_purge_preparer', 'retention_purge_approver']) {
+      psql(`SELECT private.grant_admin_privilege(${lit(who.id)}, ${lit(priv)}, ${lit(by.id)}, 'integration fixture')`);
+    }
+  }
   const hold = (u: U, kind: string, id: string) => rpc(u, 'admin_place_legal_hold', {
     p_subject_kind: kind, p_subject_id: id, p_basis_code: 'litigation', p_basis_note: `${MARK} hold`, p_expires_at: days(30) });
 

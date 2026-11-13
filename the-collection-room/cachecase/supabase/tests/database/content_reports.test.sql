@@ -204,6 +204,9 @@ INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
   ('00000000-0000-4000-8000-0000ce0000a1', 'cr-a1@example.invalid', '{"username":"cr_a1"}'),
   ('00000000-0000-4000-8000-0000ce0000a2', 'cr-a2@example.invalid', '{"username":"cr_a2"}');
 INSERT INTO public.admin_users (user_id) VALUES ('00000000-0000-4000-8000-0000ce0000a1'), ('00000000-0000-4000-8000-0000ce0000a2');
+-- 20261129120000: the claim's admins must hold their purge privileges (operator-granted).
+SELECT private.grant_admin_privilege('00000000-0000-4000-8000-0000ce0000a1', 'retention_purge_preparer', '00000000-0000-4000-8000-0000ce0000a2', 'test fixture');
+SELECT private.grant_admin_privilege('00000000-0000-4000-8000-0000ce0000a2', 'retention_purge_approver', '00000000-0000-4000-8000-0000ce0000a1', 'test fixture');
 INSERT INTO private.retention_purge_claims (subject_kind, subject_id, prepared_by, approved_by, lease_expires_at)
 SELECT 'report_evidence', r.id, '00000000-0000-4000-8000-0000ce0000a1', '00000000-0000-4000-8000-0000ce0000a2', clock_timestamp() + interval '1 minute'
   FROM public.content_reports r WHERE r.target_type = 'post';

@@ -67,6 +67,9 @@ SELECT is((SELECT string_agg(jobname || ':' || active::text, ',' ORDER BY jobnam
 INSERT INTO auth.users (id, email, raw_user_meta_data)
 SELECT pg_temp.u(n), 'dash-' || n || '@example.invalid', jsonb_build_object('username', 'dash_' || n) FROM unnest(ARRAY[1, 2, 3, 8, 9]) n;
 INSERT INTO public.admin_users (user_id) VALUES (pg_temp.u(1)), (pg_temp.u(2));
+-- 20261129120000: purge privileges are granted by an operator, each by a different admin.
+SELECT private.grant_admin_privilege(g.id, p, pg_temp.u(3 - g.n), 'test fixture')
+  FROM (SELECT pg_temp.u(n) AS id, n FROM unnest(ARRAY[1, 2]) n) g, unnest(ARRAY['retention_purge_preparer', 'retention_purge_approver']) p;
 SELECT pg_temp.mq(1, 'item-images', true, interval '30 minutes');
 SELECT pg_temp.mq(2, 'item-images', true, interval '20 minutes');
 SELECT pg_temp.mq(3, 'item-images', true, interval '10 minutes');

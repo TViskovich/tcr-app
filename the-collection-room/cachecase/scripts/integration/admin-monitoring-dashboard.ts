@@ -86,6 +86,7 @@ async function cleanup(): Promise<number> {
         DELETE FROM private.media_quarantine WHERE owner_id IN (${users});
         DELETE FROM public.content_reports WHERE reporter_id IN (${users}) OR target_id IN (${users});
         DELETE FROM private.retention_purge_runs WHERE prepared_by IN (${users});
+        DELETE FROM private.admin_privilege_events WHERE user_id IN (${users}); DELETE FROM private.admin_privileges WHERE user_id IN (${users});
         DELETE FROM private.moderation_monitoring_events; DELETE FROM private.moderation_monitoring_issues;
         DELETE FROM private.media_quarantine_scheduler_runs;
         COMMIT;`);
@@ -102,6 +103,9 @@ async function main() {
   owner = O.id;
   const ins = await service.from('admin_users').insert([{ user_id: A1.id }, { user_id: A2.id }]);
   if (ins.error) throw new Error('admins');
+  // 20261129120000: purge privileges (operator-granted, by a different admin).
+  psql(`SELECT private.grant_admin_privilege(${lit(A1.id)}, 'retention_purge_preparer', ${lit(A2.id)}, 'integration fixture')`);
+  psql(`SELECT private.grant_admin_privilege(${lit(A2.id)}, 'retention_purge_approver', ${lit(A1.id)}, 'integration fixture')`);
 
   step('1. Access');
   for (const [fn, args] of READS) {

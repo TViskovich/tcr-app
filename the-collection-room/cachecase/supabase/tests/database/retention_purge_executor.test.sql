@@ -76,6 +76,9 @@ INSERT INTO auth.users (id, email, raw_user_meta_data)
 SELECT ('00000000-0000-4000-8000-0000e70000' || x)::uuid, 'rp-' || x || '@example.invalid', jsonb_build_object('username', 'rp_' || x)
   FROM unnest(ARRAY['01', '02', '11', '12', '13', '14', '15']) x;
 INSERT INTO public.admin_users (user_id) SELECT ('00000000-0000-4000-8000-0000e70000' || x)::uuid FROM unnest(ARRAY['11', '12', '13', '14']) x;
+-- 20261129120000: purge privileges are granted by an operator, each by a different admin.
+SELECT private.grant_admin_privilege(g.id, p, ('00000000-0000-4000-8000-0000e70000' || CASE g.x WHEN '11' THEN '12' ELSE '11' END)::uuid, 'test fixture')
+  FROM (SELECT ('00000000-0000-4000-8000-0000e70000' || x)::uuid AS id, x FROM unnest(ARRAY['11', '12', '13']) x) g, unnest(ARRAY['retention_purge_preparer', 'retention_purge_approver']) p;
 SET LOCAL session_replication_role = replica;
 INSERT INTO public.account_lifecycle (user_id, state, mode, scheduled_for)
 VALUES ('00000000-0000-4000-8000-0000e7000014', 'pending_deletion', 'scheduled', now() + interval '10 days');
