@@ -13,7 +13,9 @@
 //   3. sends ONE message per channel: email (Resend) and/or a signed webhook;
 //   4. records the outcome: delivered = acknowledged (2xx) by at least one
 //      channel; otherwise a controlled error code — the database retries
-//      with back-off and the issues stay visible to admins.
+//      with back-off and the issues stay visible to admins. Each failed
+//      channel's code is recorded too, even when the other one delivered
+//      (20261128120000), so admins see a failing channel.
 //
 // Authorization: ONLY MODERATION_MONITOR_SECRET (≥ 32 characters), compared
 // in constant time — no Supabase key, user token, account-maintenance or
@@ -108,11 +110,16 @@ Deno.serve(async (req: Request) => {
     const body = JSON.stringify(payload);
     const delivered: string[] = [];
     const failed: string[] = [];
+    // Each attempted channel's failure, recorded even when the other delivered.
+    const channelErrors: Record<string, string> = {};
     if (email.status === 'configured') {
       const message = composeEmail(payload);
       const result = await sendResendEmail({ apiKey: email.apiKey, to: email.to, from: email.from, ...message });
       if (result.sent) delivered.push('email');
-      else failed.push(result.reason);
+      else {
+        failed.push(result.reason);
+        channelErrors.email = result.reason;
+      }
     }
     if (webhook.status === 'configured' && webhook.url) {
       const ts = Math.floor(Date.now() / 1000);
@@ -131,9 +138,13 @@ Deno.serve(async (req: Request) => {
         });
         await res.body?.cancel();
         if (res.ok) delivered.push('webhook');
-        else failed.push('webhook_rejected');
+        else {
+          failed.push('webhook_rejected');
+          channelErrors.webhook = 'webhook_rejected';
+        }
       } catch {
         failed.push('webhook_unreachable');
+        channelErrors.webhook = 'webhook_unreachable';
       }
     }
     const deliveryError = delivered.length ? null : failed[0]
@@ -144,7 +155,7 @@ Deno.serve(async (req: Request) => {
         : webhook.status === 'missing_secret' ? 'alert_webhook_unsigned'
         : 'alert_channel_not_configured');
     const rec = await client.rpc('moderation_monitoring_record_delivery', {
-      p_claim_id: payload.delivery_id, p_error: deliveryError, p_channels: delivered,
+      p_claim_id: payload.delivery_id, p_error: deliveryError, p_channels: delivered, p_channel_errors: channelErrors,
     });
     if (rec.error) log({ outcome: 'delivery_report_failed', db_code: rec.error.code });
     log({

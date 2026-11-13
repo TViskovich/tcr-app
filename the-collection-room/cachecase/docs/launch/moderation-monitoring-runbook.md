@@ -2,7 +2,7 @@
 
 For CacheCase admins and the on-call operator. It covers what the monitor watches, how issues and alerts behave, how to switch delivery on, and what to do when an alert arrives.
 
-**Status (2026-11-12):** built in Phase 2B M4 step 5B and tested only on an isolated local stack. Nothing is deployed. Alert delivery is **off**, and the `moderation-monitor` job is **inactive** everywhere.
+**Status (2026-11-12):** built in Phase 2B M4 steps 5B (monitoring and alerts) and 5C (admin dashboard), and tested only on an isolated local stack. Nothing is deployed. Alert delivery is **off**, and the `moderation-monitor` job is **inactive** everywhere.
 
 ## 1. What is watched
 
@@ -72,9 +72,26 @@ Reject a request when the signature does not match, when the timestamp is more t
 
 **Switching off:** undo steps 6 and 5. Issues keep being recorded whenever an admin opens the overview.
 
-## 6. When an alert arrives
+## 6. The admin dashboard (app: Dashboard → Admin Tools → Moderation Monitoring)
 
-1. Open the admin page named in the alert, then the overview, to see the open issue, its count and age.
+The dashboard is read-only, apart from acknowledging an issue. Every number on it comes from an admin RPC that re-checks the caller on the server. Collectors and anonymous callers get nothing, and so does the service role.
+
+| Section | What it shows | Source |
+|---|---|---|
+| Status | Alert delivery on/off, the monitor job active/inactive, email and webhook channel status, and the quarantine scheduler state. "Off" and "Kicks only" are shown explicitly; nothing is assumed to be running | `admin_moderation_monitoring_overview`, `admin_media_quarantine_scheduler_status` |
+| Issues | Open issues grouped critical, high, routine, each marked Active or Acknowledged, with count, oldest age, when it opened and when it was last seen. A Resolved tab shows history | overview, `admin_moderation_issue_history` |
+| Issue screen | Description, timeline (first detected, last observed, acknowledged, resolved, last alert), the records currently affected by internal id with their state and error code (paged), the event history, and the Acknowledge button (with a confirmation) | `admin_moderation_issue_detail`, `admin_acknowledge_moderation_issue` |
+| Quarantine queue | Jobs waiting, flagged, awaiting restore and quarantined; the flagged jobs with error codes | `admin_media_quarantine_overview` |
+| Recent scheduled runs | Status (completed, failed, abandoned, refused, or **stale** for a run that died), trigger, jobs, outcomes, duration | `admin_media_quarantine_scheduler_runs` |
+| Alert delivery | 24-hour delivered and failed counts **per channel**, notices being retried, and recent attempts. "Partly delivered" means one channel failed while the other delivered | `admin_moderation_delivery_history` |
+| Manual purge runs | Runs by effective state (awaiting approval, approved, needs attention, expired, completed, cancelled), with exact item counts, the approval-window countdown, and whether you prepared or approved each run | `admin_retention_purge_dashboard` |
+
+- **Ids are internal.** Job, report and purge-run ids on the issue screen are for investigation only. They are never included in alerts, and must not be pasted into tickets or chat alongside report content.
+- **Purge actions aren't here.** There is no approve, execute or cancel control on the dashboard. "You prepared this run" and "may approve" are hints; the purge RPCs re-check both administrators on every action, exactly as before (4B).
+
+## 7. When an alert arrives
+
+1. Open Moderation Monitoring, then the issue, to see its count, age and affected records.
 2. **Acknowledge** it so others know it is being handled. This does not resolve it.
 3. Act according to the code:
    - `child_safety_unquarantined`, `public_removal_overdue`: run the quarantine worker (`admin-media-quarantine`) and check the job status. If jobs keep failing, treat it as `needs_attention`.

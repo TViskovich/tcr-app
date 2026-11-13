@@ -318,6 +318,11 @@ async function main() {
   job({ ageMin: 60, state: 'pending', attention: true, error: 'source_read_failed', attempts: 1 });  // high: needs attention
   const f4 = await call();
   check('one channel accepting is enough (email down, webhook up)', JSON.stringify(f4.body?.delivered) === '["webhook"]' && f4.body?.delivery_error === null, f4.text);
+  const hist = await A.db.rpc('admin_moderation_delivery_history', { p_limit: 5, p_before: null });
+  const latest = hist.data?.items?.[0];
+  check('…and the failing email channel is still recorded and shown to admins (20261128120000)',
+    latest?.partial === true && latest?.channel_errors?.email === 'resend_rejected' && JSON.stringify(latest?.delivered_channels) === '["webhook"]'
+      && (hist.data?.channels_24h?.email?.failed ?? 0) >= 1, latest ?? hist.error);
   mailStatus = 200;
 
   step('7. Child safety repeats hourly; resolution is announced');

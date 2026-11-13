@@ -486,6 +486,16 @@ export default function DashboardScreen() {
               </View>
               <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.adminRow, styles.adminRowSpaced]}
+              onPress={() => router.push('/admin/monitoring')}
+              accessibilityRole="button">
+              <View style={styles.navRowText}>
+                <Text style={styles.navRowTitle}>Moderation Monitoring</Text>
+                <Text style={styles.navRowDetail}>Open issues, quarantine queue, alert delivery and purge approvals.</Text>
+              </View>
+              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+            </TouchableOpacity>
             <AccountDeletionHealth />
           </>
         ) : null}
