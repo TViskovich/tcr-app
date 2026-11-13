@@ -32,6 +32,11 @@
       "deployed": false,
       "why": "called by pg_net (kick/sweep, OFF by default) or an operator with MEDIA_QUARANTINE_WORKER_SECRET (not a JWT); checks it itself, then the database must open the run; quarantine only"
     },
+    "moderation-monitor": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "called by pg_net (moderation-monitor job, INACTIVE) or an operator with MODERATION_MONITOR_SECRET (not a JWT); checks it itself; delivery off by default"
+    },
     "redeem-waitlist-invite": {
       "verify_jwt": false,
       "deployed": true,

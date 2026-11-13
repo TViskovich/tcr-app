@@ -1,5 +1,6 @@
 // Minimal Resend sender for server-side email: waitlist access (grant-
-// waitlist-access) and account deletion monitoring alerts (account-monitor).
+// waitlist-access), account deletion monitoring alerts (account-monitor) and
+// moderation alerts (moderation-monitor, with its own dedicated key).
 // join-waitlist still has its own inline sender and is untouched.
 //
 // Never throws, never logs: returns a result the caller reports and logs
@@ -38,9 +39,13 @@ export async function sendResendEmail(message: {
   text: string;
   html: string;
   from?: string;
+  // A caller with its own dedicated key (moderation-monitor) passes it here;
+  // everyone else uses RESEND_API_KEY. Never sent anywhere but the header.
+  apiKey?: string;
 }): Promise<EmailResult> {
-  const apiKey = Deno.env.get('RESEND_API_KEY');
-  const from = message.from || Deno.env.get('WAITLIST_FROM_EMAIL');
+  const { apiKey: dedicatedKey, ...content } = message;
+  const apiKey = dedicatedKey ?? Deno.env.get('RESEND_API_KEY');
+  const from = content.from || Deno.env.get('WAITLIST_FROM_EMAIL');
   if (!apiKey || !from) return { sent: false, reason: 'email_not_configured' };
 
   let res: Response;
@@ -51,7 +56,7 @@ export async function sendResendEmail(message: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ ...message, from }),
+      body: JSON.stringify({ ...content, from }),
     });
   } catch {
     return { sent: false, reason: 'resend_unreachable' };

@@ -487,6 +487,13 @@ verify_jwt = true
 [functions.media-quarantine-scheduled]
 verify_jwt = false
 
+# Moderation monitoring alerts (Phase 2B M4 step 5B): called by pg_net (the
+# moderation-monitor job, INACTIVE) or an operator with
+# MODERATION_MONITOR_SECRET, which is not a JWT; the function checks it itself
+# (constant-time). Delivery is also off in the database by default.
+[functions.moderation-monitor]
+verify_jwt = false
+
 [functions.backfill-share-snapshots]
 verify_jwt = true
 
