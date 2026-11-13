@@ -488,6 +488,16 @@ export default function DashboardScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.adminRow, styles.adminRowSpaced]}
+              onPress={() => router.push('/admin/reports')}
+              accessibilityRole="button">
+              <View style={styles.navRowText}>
+                <Text style={styles.navRowTitle}>Reports</Text>
+                <Text style={styles.navRowDetail}>Review, claim and resolve reported content.</Text>
+              </View>
+              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.adminRow, styles.adminRowSpaced]}
               onPress={() => router.push('/admin/monitoring')}
               accessibilityRole="button">
               <View style={styles.navRowText}>
