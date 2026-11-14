@@ -119,6 +119,7 @@ import { ProfileV2TabRow, type ProfileV2Section } from './profile-v2-tab-row';
 import { ProfileV2TagEditor, TAG_EDITOR_MAX_ITEMS, TAG_EDITOR_MAX_ITEM_LENGTH } from './profile-v2-tag-editor';
 import { ProfileV2Tagged } from './profile-v2-tagged';
 import { PV2 } from './profile-v2-theme';
+import { BETA_FEATURES } from '@/lib/beta-features';
 
 // The floating tab bar's gap above the bottom safe-area inset (BAR_BOTTOM_GAP
 // in components/navigation/global-floating-tab-bar.tsx) — Edit Mode's
@@ -3115,7 +3116,7 @@ export function ProfileV2Screen({ userId }: Props) {
                     tabs mid-warmup doesn't stall it. See FolderCoverWarmup. */}
                 {isSectionMounted('collections') && <FolderCoverWarmup folders={folders} />}
 
-                {section === 'transfer' && isOwnProfile && (
+                {section === 'transfer' && isOwnProfile && BETA_FEATURES.transfers && (
                   <TransactionsList currentUserId={currentUserId} onViewAll={handleOpenTransfers} />
                 )}
 

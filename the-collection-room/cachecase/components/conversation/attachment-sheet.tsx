@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -22,7 +23,8 @@ type IconName = Parameters<typeof IconSymbol>[0]['name'];
 
 type Props = {
   onClose: () => void;
-  // Row handlers. A missing handler renders that row as "Coming soon".
+  // Row handlers. A row whose handler is missing is not shown at all — the
+  // sheet never offers an action that does nothing (Release Readiness R2).
   onShareItem?: () => void;
   onCamera?: () => void;
   onPhotos?: () => void;
@@ -54,7 +56,10 @@ export function AttachmentSheet({ onClose, onShareItem, onCamera, onPhotos }: Pr
 
   const dragStyle = useAnimatedStyle(() => ({ transform: [{ translateY: dragY.value }] }));
 
-  const shareItemEnabled = !!onShareItem;
+  const rows: { key: string; icon: IconName; title: string; subtitle: string; primary?: boolean; onPress: () => void }[] = [];
+  if (onShareItem) rows.push({ key: 'item', icon: 'shippingbox', title: 'Share Item', subtitle: 'Send a card or collectible', primary: true, onPress: onShareItem });
+  if (onCamera) rows.push({ key: 'camera', icon: 'camera', title: 'Camera', subtitle: 'Take a photo', onPress: onCamera });
+  if (onPhotos) rows.push({ key: 'photos', icon: 'photo', title: 'Photos', subtitle: 'Choose from your library', onPress: onPhotos });
 
   return (
     <Animated.View
@@ -66,30 +71,12 @@ export function AttachmentSheet({ onClose, onShareItem, onCamera, onPhotos }: Pr
           <View style={styles.sheet} accessibilityViewIsModal>
             <View style={styles.handle} />
 
-            <Row
-              icon="shippingbox"
-              title="Share Item"
-              subtitle={shareItemEnabled ? 'Send a card or collectible' : 'Coming soon'}
-              primary
-              disabled={!shareItemEnabled}
-              onPress={onShareItem}
-            />
-            <View style={styles.divider} />
-            <Row
-              icon="camera"
-              title="Camera"
-              subtitle={onCamera ? 'Take a photo' : 'Coming soon'}
-              disabled={!onCamera}
-              onPress={onCamera}
-            />
-            <View style={styles.divider} />
-            <Row
-              icon="photo"
-              title="Photos"
-              subtitle={onPhotos ? 'Choose from your library' : 'Coming soon'}
-              disabled={!onPhotos}
-              onPress={onPhotos}
-            />
+            {rows.map((r, i) => (
+              <Fragment key={r.key}>
+                {i > 0 ? <View style={styles.divider} /> : null}
+                <Row icon={r.icon} title={r.title} subtitle={r.subtitle} primary={r.primary} onPress={r.onPress} />
+              </Fragment>
+            ))}
 
             <Pressable
               onPress={onClose}

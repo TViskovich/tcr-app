@@ -292,14 +292,15 @@ async function scenario(p) {
   await tapLabel(p.A, 'Top 9 / Grails guide');
   await eventually('tapping expands the Grails guide', p.A, () => bodyHas(p.A, 'Tap an empty slot and choose Single Item or Collection'));
   check('expanded state is announced', await p.A.eval(`[...document.querySelectorAll('[aria-label="Top 9 / Grails guide"]')].some(e => e.getAttribute('aria-expanded') === 'true')`));
-  check('planned features listed separately as "Planned"', (await bodyHas(p.A, 'Coming later')) && (await bodyHas(p.A, 'Account freeze')) && (await bodyHas(p.A, 'Planned')));
+  // Release Readiness R2: planned features are no longer advertised.
+  check('no "Coming later" / "Planned" placeholders', !(await bodyHas(p.A, 'Coming later')) && !(await bodyHas(p.A, 'Planned')) && !(await bodyHas(p.A, 'Account freeze')));
 
   step('8. Support & Contact: the official email, no invented pages');
   // Capture what Linking.openURL opens on web (window.open) instead of
   // handing a mailto: link to the OS.
   const captureOpens = `window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; }; true`;
   const opened = async () => JSON.parse(await p.A.eval('JSON.stringify(window.__opened ?? [])'));
-  check('Help Center: still not available yet (no page exists)', await hasLabel(p.A, 'Help Center, not available yet'));
+  check('Help Center is not listed (no page exists; no dead row)', !(await bodyHas(p.A, 'Help Center')) && !(await bodyHas(p.A, 'Not available yet')));
   check('Contact Support is enabled', await hasLabel(p.A, 'Contact Support'));
   check('Report a Problem is enabled', await hasLabel(p.A, 'Report a Problem'));
   check('the support address is shown', await bodyHas(p.A, 'info@cachecase.com'));
@@ -320,7 +321,7 @@ async function scenario(p) {
   check('Delete Account is a working entry (opens the 14-day flow)', await p.A.eval(`[...document.querySelectorAll('[aria-label="Delete Account"]')].some(e => e.getAttribute('role') === 'button')`));
   check('Download My Data is a working entry', await p.A.eval(`[...document.querySelectorAll('[aria-label="Download My Data"]')].some(e => e.getAttribute('role') === 'button')`));
   for (const l of ['Freeze Account', 'Private Profile']) {
-    check(`${l}: not available yet (no control)`, (await hasLabel(p.A, `${l}, not available yet`)) && !(await p.A.eval(`[...document.querySelectorAll('[role="button"],[role="switch"],button')].some(e => e.textContent.trim() === ${JSON.stringify(l)})`)));
+    check(`${l}: not shown (R2: no nonfunctional controls)`, !(await bodyHas(p.A, l)));
   }
   check('non-admin sees no Admin Tools', !(await bodyHas(p.A, 'Waitlist Management')));
   check('…and no account deletion monitoring', !(await bodyHas(p.A, 'Account Deletions')));

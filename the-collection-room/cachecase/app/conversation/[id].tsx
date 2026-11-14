@@ -62,6 +62,7 @@ import { navigateToProfile } from '@/lib/profile-navigation';
 import { supabase } from '@/lib/supabase';
 import { BLOCK_COPY, blockCollector, getBlockStatus, subscribeBlockChanges, unblockCollector } from '@/lib/user-blocks';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
+import { BETA_FEATURES } from '@/lib/beta-features';
 
 // Extra clearance so the composer sits above the globally-rendered floating
 // tab bar (components/navigation/global-floating-tab-bar.tsx, rendered as a
@@ -1209,7 +1210,11 @@ export default function ConversationScreen() {
         accessLost
           ? undefined
           : isGroup
-            ? () => router.push({ pathname: '/group-info/[id]', params: { id: convId } })
+            ? // Group Info only while group messaging is in the release
+              // scope (lib/beta-features.ts); the thread itself stays usable.
+              BETA_FEATURES.groupMessaging
+              ? () => router.push({ pathname: '/group-info/[id]', params: { id: convId } })
+              : undefined
             : otherUser && !peerHidden
               ? () => navigateToProfile(router, currentUserId, otherUser.id, otherUser.username)
               : undefined

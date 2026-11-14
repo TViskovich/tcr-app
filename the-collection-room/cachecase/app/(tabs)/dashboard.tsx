@@ -46,8 +46,8 @@ const GRAIL_SLOT_COUNT = 9;
 type IconName = ComponentProps<typeof IconSymbol>['name'];
 
 // ── Knowledge base content ─────────────────────────────────────────────────
-// Guides describe only what the app does today. Planned features are listed
-// separately (COMING_LATER) so the two are never mixed.
+// Guides describe only what the app does today. Planned features are not
+// advertised in the app (Release Readiness R2).
 type Guide = { key: string; title: string; icon: IconName; steps: string[]; note?: string };
 
 // Shown only where the database has collector tagging (useTaggingAvailable).
@@ -95,12 +95,6 @@ const GUIDES: Guide[] = [
       'Tap the name at the top of a conversation to open that collector’s profile.',
     ],
   },
-];
-
-const COMING_LATER = [
-  'Profile views, Top 9 / Grails impressions and link clicks in Analytics',
-  'Account freeze',
-  'Private profile',
 ];
 
 // ── Screen ─────────────────────────────────────────────────────────────────
@@ -192,7 +186,9 @@ export default function DashboardScreen() {
           : null,
     },
   ];
-  const supportConfigured = supportRows.some((r) => r.onPress);
+  // Only destinations that work are listed — no "not available yet" rows.
+  const liveSupportRows = supportRows.filter((r) => r.onPress);
+  const supportConfigured = liveSupportRows.length > 0;
 
   const { categories, views, engagement, showcase, loading: analyticsLoading } = analytics;
   const guides = taggingAvailable ? [...GUIDES, TAGGING_GUIDE] : GUIDES;
@@ -356,20 +352,11 @@ export default function DashboardScreen() {
             );
           })}
         </View>
-        <Card title="Coming later">
-          {COMING_LATER.map((c) => (
-            <View key={c} style={styles.laterRow}>
-              <Badge text="Planned" />
-              <Text style={styles.laterText}>{c}</Text>
-            </View>
-          ))}
-          <Text style={styles.footnote}>These aren’t available in the app yet.</Text>
-        </Card>
-
         {/* ── Support & Contact ── */}
         <SectionHeader icon="paperplane.fill" title="Support & Contact" />
+        {supportConfigured && (
         <View style={styles.card}>
-          {supportRows.map((r, i) => (
+          {liveSupportRows.map((r, i) => (
             <Pressable
               key={r.key}
               onPress={r.onPress ?? undefined}
@@ -387,6 +374,7 @@ export default function DashboardScreen() {
             </Pressable>
           ))}
         </View>
+        )}
         {!supportConfigured && (
           <Text style={styles.sectionNote}>Support contact details are being finalized and will appear here.</Text>
         )}
@@ -453,16 +441,6 @@ export default function DashboardScreen() {
             </View>
             <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
           </Pressable>
-          {['Freeze Account', 'Private Profile'].map((label) => (
-            <View
-              key={label}
-              style={[styles.navRow, styles.listRowBorder]}
-              accessible
-              accessibilityLabel={`${label}, not available yet`}>
-              <Text style={[styles.navRowTitle, styles.disabledText, styles.flex]}>{label}</Text>
-              <Badge text="Coming later" />
-            </View>
-          ))}
         </View>
         <TouchableOpacity
           style={styles.signOut}
@@ -663,14 +641,6 @@ function Bullet({ children }: { children: ReactNode }) {
     <View style={styles.bullet}>
       <View style={styles.bulletDot} />
       <Text style={styles.bulletText}>{children}</Text>
-    </View>
-  );
-}
-
-function Badge({ text }: { text: string }) {
-  return (
-    <View style={styles.badge}>
-      <Text style={styles.badgeText}>{text}</Text>
     </View>
   );
 }
@@ -897,29 +867,6 @@ const styles = StyleSheet.create({
     color: PV2.textSecondary,
     fontSize: 14,
     lineHeight: 20,
-  },
-  laterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 6,
-  },
-  laterText: {
-    flex: 1,
-    color: PV2.textSecondary,
-    fontSize: 14,
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: PV2.border,
-  },
-  badgeText: {
-    color: PV2.textTertiary,
-    fontSize: 11,
-    fontWeight: '600',
   },
   navRow: {
     flexDirection: 'row',

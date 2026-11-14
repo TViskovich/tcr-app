@@ -21,6 +21,7 @@ import { useAuth } from '@/lib/auth';
 import { useBadgeRefresh } from '@/lib/badge-context';
 import { navigateToProfile } from '@/lib/profile-navigation';
 import { checkTaggingAvailable } from '@/lib/content-tags';
+import { BETA_FEATURES, hiddenNotificationTypes } from '@/lib/beta-features';
 import { supabase } from '@/lib/supabase';
 
 type NotificationType =
@@ -105,10 +106,15 @@ async function fetchNotifications(userId: string): Promise<NotificationItem[]> {
   // database (lib/content-tags.ts) — asking for them before would fail the
   // whole list; without it there are no tag notifications to show anyway.
   const tagColumns = (await checkTaggingAvailable()) ? ', item_id, folder_id' : '';
-  const { data: rows, error } = await supabase
+  // Types of features outside this release's scope (ownership transfers)
+  // are not listed — lib/beta-features.ts; the rows themselves are kept.
+  const hidden = hiddenNotificationTypes();
+  let query = supabase
     .from('notifications')
     .select(`id, type, read, created_at, post_id, conversation_id, actor_id, rating_score, transfer_id, registered_card_id${tagColumns}`)
-    .eq('user_id', userId)
+    .eq('user_id', userId);
+  if (hidden.length) query = query.not('type', 'in', `(${hidden.join(',')})`);
+  const { data: rows, error } = await query
     .order('created_at', { ascending: false })
     .limit(100);
 
@@ -457,11 +463,15 @@ export default function NotificationsScreen() {
       case 'ownership_transfer_requested':
       case 'ownership_transfer_declined':
       case 'ownership_transfer_cancelled':
+        // Not listed while transfers are outside the release scope; never
+        // navigate to a route the navigator no longer has.
+        if (!BETA_FEATURES.transfers) break;
         if (currentUserId) {
           router.push({ pathname: '/transactions/[userId]', params: { userId: currentUserId } });
         }
         break;
       case 'ownership_transfer_accepted':
+        if (!BETA_FEATURES.transfers) break;
         if (notif.registeredCardId) {
           router.push({ pathname: '/registry/[id]', params: { id: notif.registeredCardId } });
         } else if (currentUserId) {

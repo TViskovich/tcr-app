@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { hiddenNotificationTypes } from '@/lib/beta-features';
 import { supabase } from '@/lib/supabase';
 
 export function useUnreadCount(userId: string | undefined) {
@@ -8,11 +9,16 @@ export function useUnreadCount(userId: string | undefined) {
   const refresh = useCallback(async () => {
     if (!userId) { setUnreadCount(0); return; }
     try {
-      const { count, error } = await supabase
+      // Matches the notifications list: types of features outside this
+      // release's scope (lib/beta-features.ts) don't count.
+      const hidden = hiddenNotificationTypes();
+      let query = supabase
         .from('notifications')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', userId)
         .eq('read', false);
+      if (hidden.length) query = query.not('type', 'in', `(${hidden.join(',')})`);
+      const { count, error } = await query;
 
       if (error) {
         // A failed count query must never turn a real unread badge into

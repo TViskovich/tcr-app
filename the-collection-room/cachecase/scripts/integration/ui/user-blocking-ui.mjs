@@ -276,17 +276,14 @@ async function scenario(p) {
   await open(p.B, '/account/blocked');
   await eventually('B\'s own list is empty (never shows who blocked them)', p.B, () => bodyHas(p.B, 'You haven’t blocked anyone.'));
 
-  step('6. Neutral Registry transfer error (A → B while blocked)');
+  step('6. Registry transfers are outside the release scope (R2)');
+  // The Registry (and with it transfers) is excluded from the first
+  // submission (lib/beta-features.ts): its route is not in the navigator.
+  // The block-aware transfer refusal itself is still covered at the API
+  // level by scripts/integration/user-blocking-transfers.ts.
   await open(p.A, `/registry/${card.id}`);
-  await tapLabel(p.A, 'Transfer this card to another user');
-  await p.A.type('label', 'Search transfer recipients', B.username);
-  await tapLabel(p.A, `Select @${B.username}`);
-  await choose(p.A);
-  await tapLabel(p.A, 'Send transfer request');
-  await eventually('the request is refused with neutral wording', p.A, async () => {
-    const a = await lastAlert(p.A);
-    return a?.title === 'Unable to send transfer' && a.message === 'We couldn’t find a collector with that username.';
-  });
+  await eventually('a direct link to the Registry does not open it', p.A, async () => (await path(p.A)) !== `/registry/${card.id}`
+    && !(await hasLabel(p.A, 'Transfer this card to another user')));
   check('no transfer was created', (await admin.from('ownership_transfers').select('id').eq('registered_card_id', card.id)).data?.length === 0);
 
   step('7. Unblock from Blocked Collectors');

@@ -23,6 +23,16 @@ import { createClient } from '@supabase/supabase-js';
 
 import { renderPlaceholderCard, PLACEHOLDER_HEIGHT, PLACEHOLDER_WIDTH } from '../../loadtest/synthetic-jpeg.ts';
 import { launchChrome } from './cdp.mjs';
+import { BETA_FEATURES } from '../../../lib/beta-features.ts';
+
+// Release Readiness R2: group messaging is outside the first submission's
+// scope, so its creation controls and Group Info are not in the build. This
+// suite drives those controls; it runs again once the flag is switched on.
+// The group backend stays covered by scripts/integration/group-messaging.ts.
+if (!BETA_FEATURES.groupMessaging) {
+  console.log('SKIPPED: group messaging is outside the release scope (lib/beta-features.ts groupMessaging = false).');
+  process.exit(0);
+}
 
 const FIXTURE_TAG = 'group-messaging-it';
 const APP = process.env.UI_APP_URL ?? 'http://127.0.0.1:8091';

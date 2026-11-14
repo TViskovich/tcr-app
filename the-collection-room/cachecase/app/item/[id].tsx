@@ -49,6 +49,7 @@ import { useItemImages } from '@/hooks/use-item-images';
 import { useItemLikes } from '@/hooks/use-item-likes';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
+import { BETA_FEATURES } from '@/lib/beta-features';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
@@ -2454,7 +2455,7 @@ export default function ItemDetailScreen() {
 
               {isOwner && (
                 <View style={styles.ownerActions}>
-                  {item.transferred_registered_card_id && (
+                  {BETA_FEATURES.registry && item.transferred_registered_card_id && (
                     <>
                       <TouchableOpacity
                         style={styles.transferredOutActionButton}
@@ -2490,7 +2491,7 @@ export default function ItemDetailScreen() {
             /* ── View Mode — the new permanent layout ── */
             <>
               <ItemActionBar
-                onPressCacheCaseId={handleCacheCaseIdPress}
+                onPressCacheCaseId={BETA_FEATURES.registry ? handleCacheCaseIdPress : undefined}
                 onPressComment={() => setItemCommentsVisible(true)}
                 liked={itemLiked}
                 likeCount={itemLikeCount}
@@ -2559,7 +2560,9 @@ export default function ItemDetailScreen() {
                       stays visible for every type (registeredCard is simply
                       always null for a non-sports-card item, so it already
                       shows "Not Registered" harmlessly with no RPC call). */}
-                  {item.item_type === 'sports_card' &&
+                  {/* Release scope: hidden while the Registry is excluded
+                      (lib/beta-features.ts); registration logic unchanged. */}
+                  {BETA_FEATURES.registry && item.item_type === 'sports_card' &&
                     (registryLoading ? (
                       <View style={styles.registryLoadingWrap}>
                         <ActivityIndicator size="small" color={PV2.textTertiary} />

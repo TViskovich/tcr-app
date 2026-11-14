@@ -85,6 +85,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectibleItemType, ComicConditionType, OtherItemCategory } from '@/types';
+import { BETA_FEATURES } from '@/lib/beta-features';
 
 // Collectible Type — Phase 1 (see supabase/migrations/
 // 20260916120000_add_collection_item_type.sql). Sports Card, Pokémon (Phase
@@ -104,6 +105,11 @@ const COLLECTIBLE_TYPES: { value: CollectibleItemType; label: string }[] = [
   { value: 'trading_card', label: 'Trading Card' },
   { value: 'other', label: 'Other' },
 ];
+
+// New items can only be created as types whose form saves. Figurine stays
+// listed above (existing Figurine items keep their label) but is not offered
+// while its form is a placeholder (lib/beta-features.ts).
+const SELECTABLE_TYPES = COLLECTIBLE_TYPES.filter((t) => t.value !== 'figurine' || BETA_FEATURES.figurineItems);
 
 type FormState = {
   title: string;
@@ -1047,7 +1053,7 @@ export default function AddItemScreen() {
             </View>
 
             <AnchoredMenu visible={typeMenuOpen} anchor={typeMenuAnchor} onRequestClose={closeTypeMenu}>
-              {COLLECTIBLE_TYPES.map((option) => {
+              {SELECTABLE_TYPES.map((option) => {
                 const selected = option.value === itemType;
                 return (
                   <Pressable

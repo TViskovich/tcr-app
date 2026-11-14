@@ -10,6 +10,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { AccountStatusUnknown } from '@/components/account/account-status-unknown';
 import { DeletionNoticeScreen } from '@/components/account/deletion-notice-screen';
 import { AccountLifecycleProvider, useAccountLifecycle } from '@/lib/account-lifecycle';
+import { BETA_FEATURES } from '@/lib/beta-features';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { GlobalFloatingTabBar } from '@/components/navigation/global-floating-tab-bar';
@@ -143,7 +144,22 @@ function RootLayoutNav() {
                 app/registry/[id].tsx, still owns its own header/title via its
                 own inline Stack.Screen options; this only attaches the
                 presentation transition. */}
-            <Stack.Screen name="registry/[id]" options={{ presentation: 'modal' }} />
+            {/* Release scope (lib/beta-features.ts): routes of a feature
+                switched off are removed from the navigator, so neither
+                in-app navigation nor a typed/opened URL can reach them
+                (Expo Router falls back to the anchor). Their screens and
+                backend are untouched; flip the flag to bring them back. */}
+            <Stack.Protected guard={BETA_FEATURES.registry}>
+              <Stack.Screen name="registry/[id]" options={{ presentation: 'modal' }} />
+              <Stack.Screen name="registry-history/[id]" />
+              <Stack.Screen name="claim-card/[id]" />
+            </Stack.Protected>
+            <Stack.Protected guard={BETA_FEATURES.transfers}>
+              <Stack.Screen name="transactions/[userId]" />
+            </Stack.Protected>
+            <Stack.Protected guard={BETA_FEATURES.groupMessaging}>
+              <Stack.Screen name="group-info/[id]" />
+            </Stack.Protected>
             {/* Reply composer (Feed comment redesign) — same modal
                 presentation treatment as registry/[id] above, but unlike
                 that one headerShown is set statically here rather than via

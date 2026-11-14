@@ -18,6 +18,7 @@ import {
   groupMessagingAvailable,
 } from '@/lib/group-chat';
 import { supabase } from '@/lib/supabase';
+import { BETA_FEATURES } from '@/lib/beta-features';
 
 type Props = {
   visible: boolean;
@@ -88,9 +89,11 @@ function SheetBody({
   // New Group shows only once the database is known to support groups. The
   // inbox behind this sheet usually settled that already; an empty inbox
   // never queries a group column, so check here when it's still unknown.
+  // Also only while group messaging is in the release scope
+  // (lib/beta-features.ts) — otherwise never offered, and never checked.
   const [groupsAvailable, setGroupsAvailable] = useState(groupMessagingAvailable);
   useEffect(() => {
-    if (groupsAvailable) return;
+    if (groupsAvailable || !BETA_FEATURES.groupMessaging) return;
     let cancelled = false;
     void checkGroupMessaging().then((available) => {
       if (!cancelled && available) setGroupsAvailable(true);
@@ -292,7 +295,7 @@ function SheetBody({
       {step === 'direct' ? (
         // Only once the database is known to support groups (see
         // groupsAvailable above and lib/group-chat.ts).
-        groupsAvailable ? (
+        groupsAvailable && BETA_FEATURES.groupMessaging ? (
         <Pressable
           onPress={() => goTo('pickGroup')}
           disabled={opening}

@@ -14,7 +14,9 @@ type Props = {
   // opened a local placeholder bottom sheet (components/item-detail/
   // cachecase-id-sheet.tsx, removed) with no real data; this button now
   // leads to the one real registry screen instead of a second, fake one.
-  onPressCacheCaseId: () => void;
+  // Optional: omitted while the Registry is outside the release scope
+  // (lib/beta-features.ts), and then the button is not rendered at all.
+  onPressCacheCaseId?: () => void;
   // Comment/Like/Share — the item-detail social row, one-for-one matching
   // app/collection/[folderId].tsx's own galleryActionsGroup (order, icons,
   // active-state color). Comment opens ItemCommentsSheet (item_comments,
@@ -52,16 +54,21 @@ export function ItemActionBar({
 }: Props) {
   return (
     <View style={styles.row}>
-      <TouchableOpacity
-        style={styles.iconBtn}
-        onPress={onPressCacheCaseId}
-        activeOpacity={0.7}
-        accessibilityRole="button"
-        accessibilityLabel="CacheCase ID">
-        {/* Brand mark, not a tintable glyph — no color prop, kept exactly
-            as designed (metallic silver, own transparency). */}
-        <Image source={IcLogo} contentFit="contain" style={styles.icLogo} />
-      </TouchableOpacity>
+      {onPressCacheCaseId ? (
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={onPressCacheCaseId}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="CacheCase ID">
+          {/* Brand mark, not a tintable glyph — no color prop, kept exactly
+              as designed (metallic silver, own transparency). */}
+          <Image source={IcLogo} contentFit="contain" style={styles.icLogo} />
+        </TouchableOpacity>
+      ) : (
+        // Keeps the social row right-aligned exactly as before.
+        <View />
+      )}
 
       {/* Comment / Like / Share — same order/icons/active-state color as
           the collection detail screen's own social row. */}
