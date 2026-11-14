@@ -82,6 +82,26 @@ After fixing the cause, `admin_media_quarantine_retry(job_id)` returns the job t
 2. Check the job is `restore_pending` (`admin_media_quarantine_status`).
 3. Run `admin-media-restore` with the job id. Refusal reasons: `not_released` (a hold is still active or a field was released), `already_restored`, `owner_deleted`, `owner_unavailable`, `needs_attention`, `child_safety_confirmation_required`, `second_admin_required`.
 4. **Child safety:** the restriction must be cleared by a second admin under the M2.1 rules, and the file restored by an admin who did not impose any restriction on it, with `"confirm_child_safety": true`. The legal-hold copy is kept regardless.
+5. **From the report screen (M5.3).** The report's **Media restoration** card lists the jobs held by that report's own restrictions, with their state:
+   - quarantined, queued, awaiting restoration, being restored, restored, failed, or needs attention;
+   - whether the signed-in admin may restore each one right now.
+
+   **Restore media** calls `admin-media-restore` with the report's id (`report_id`). Any job not held by that report's restrictions is refused as `not_in_report`. Only the worker's `restored` outcome is reported as done.
+
+### Report media inspection (M5.3)
+
+The report screen can show the images recorded in that report's evidence: DM photo, folder cover, item images, post image, avatar.
+- **One at a time:** an image loads only when an admin taps View, through `admin-report-media`.
+- **Nothing from the app:** no path, bucket or URL is ever taken from the app.
+- **The database decides:** `report_media_authorize` re-checks the admin's standing, resolves the image from that report's evidence, and returns it only while the original is still at its recorded location. A quarantined original is never served; quarantine copies stay service-only.
+- **Child safety:** these reports need an explicit confirmation, and the image is shown blurred until revealed.
+- **Short-lived:** the signed URL lasts 60 seconds and is never cached.
+- **Logged:** every request, allowed or refused, is appended to `private.report_media_access` (admin, report, position, child safety, outcome). Review it in the SQL editor:
+
+```sql
+select created_at, admin_id, report_id, ref, kind, child_safety, allowed, reason
+from private.report_media_access order by created_at desc limit 100;
+```
 
 ## 6. Orphaned share snapshots
 

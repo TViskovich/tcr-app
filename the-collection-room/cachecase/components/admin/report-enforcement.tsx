@@ -5,6 +5,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { runEnforcement } from '@/lib/admin-reports';
 import {
   ACTION_LABEL,
+  actionState,
   awaitingSecondAdmin,
   blockedEnforcementText,
   childSafetyReversal,
@@ -110,7 +111,7 @@ export function ReportEnforcement({ reportId, data, owner, now, onResult }: {
       ) : null}
 
       <View style={styles.buttons}>
-        {actions.filter((a) => data.actions[a].available).map((a) => (
+        {actions.filter((a) => actionState(data, a).available).map((a) => (
           <TouchableOpacity
             key={a}
             style={[styles.button, action === a && styles.buttonActive, busy && styles.dim]}
@@ -122,9 +123,9 @@ export function ReportEnforcement({ reportId, data, owner, now, onResult }: {
           </TouchableOpacity>
         ))}
       </View>
-      {actions.filter((a) => !data.actions[a].available).map((a) => (
+      {actions.filter((a) => !actionState(data, a).available).map((a) => (
         <Text key={a} style={styles.note}>
-          {ACTION_LABEL[a]}: {blockedEnforcementText(data.actions[a].blocked)}
+          {ACTION_LABEL[a]}: {blockedEnforcementText(actionState(data, a).blocked)}
         </Text>
       ))}
 
@@ -137,7 +138,7 @@ export function ReportEnforcement({ reportId, data, owner, now, onResult }: {
             ))}
           </Group>
           {fields.length ? (
-            <Group title={action === 'clear_profile_fields' ? 'Fields to clear' : 'Fields to restore'}>
+            <Group title={action === 'clear_profile_fields' ? 'Fields to clear' : action === 'release_profile_fields' ? 'Fields to release (owner may edit)' : 'Fields to restore'}>
               {fields.map((f) => (
                 <Chip
                   key={f}

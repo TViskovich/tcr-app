@@ -8,8 +8,10 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { useIsAdmin } from '@/hooks/use-is-admin';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { ReportEnforcement } from '@/components/admin/report-enforcement';
+import { ReportMedia } from '@/components/admin/report-media';
+import { type Evidence } from '@/lib/admin-media-view';
 import { enforcementErrorText, outcomeMessage, type EnforceResult, type Enforcement, type EnforcementAction } from '@/lib/admin-enforcement-view';
-import { loadEnforcement, loadReportCase, runCaseAction } from '@/lib/admin-reports';
+import { loadEnforcement, loadEvidence, loadReportCase, runCaseAction } from '@/lib/admin-reports';
 import {
   actionLabel,
   adminName,
@@ -68,6 +70,7 @@ export default function ReportScreen() {
 
   const [data, setData] = useState<ReportCase | null>(null);
   const [enf, setEnf] = useState<Enforcement | 'error' | null>(null);
+  const [evidence, setEvidence] = useState<Evidence | 'error' | null>(null);
   const [state, setState] = useState<'loading' | 'ok' | 'error' | 'not_found'>('loading');
   const [access, setAccess] = useState<ApiFailure | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -92,19 +95,22 @@ export default function ReportScreen() {
 
   // The case and its enforcement state are always loaded together, so the
   // screen never shows a decision next to an out-of-date restriction.
-  const fetchBoth = (reportId: string) => Promise.all([loadReportCase(reportId), loadEnforcement(reportId)] as const);
-  const apply = useCallback(([res, e]: Awaited<ReturnType<typeof fetchBoth>>) => {
+  const fetchBoth = (reportId: string) =>
+    Promise.all([loadReportCase(reportId), loadEnforcement(reportId), loadEvidence(reportId)] as const);
+  const apply = useCallback(([res, e, ev]: Awaited<ReturnType<typeof fetchBoth>>) => {
     setNow(Date.now());
-    const lost = [res, e].find((x) => x.kind !== 'ok' && losesAccess(x)) as ApiFailure | undefined;
+    const lost = [res, e, ev].find((x) => x.kind !== 'ok' && losesAccess(x)) as ApiFailure | undefined;
     if (lost) {
       setData(null); // drop everything already shown
       setEnf(null);
+      setEvidence(null);
       setAccess(lost);
       return;
     }
     if (res.kind === 'ok') {
       setData(res.data);
       setEnf(e.kind === 'ok' ? e.data : 'error');
+      setEvidence(ev.kind === 'ok' ? ev.data : 'error');
       setState('ok');
     } else setState(res.kind === 'not_found' ? 'not_found' : 'error');
   }, []);
@@ -335,6 +341,26 @@ export default function ReportScreen() {
             <Text style={styles.note}>Couldn’t load the enforcement state. Pull to refresh to try again; no enforcement action is offered until it loads.</Text>
           ) : enf ? (
             <ReportEnforcement reportId={r.id} data={enf} owner={data.owner.present ? data.owner.username ?? null : null} now={now} onResult={onEnforced} />
+          ) : null}
+
+          {evidence === 'error' ? (
+            <Text style={styles.note}>Couldn’t load the report’s media and legal holds. Pull to refresh to try again.</Text>
+          ) : evidence ? (
+            <ReportMedia
+              reportId={r.id}
+              targetType={r.target_type}
+              evidence={evidence}
+              enforcement={enf && enf !== 'error' ? enf : null}
+              now={now}
+              onNotice={setNotice}
+              onAccessLost={(f) => {
+                setData(null);
+                setEnf(null);
+                setEvidence(null);
+                setAccess(f);
+              }}
+              onChanged={load}
+            />
           ) : null}
 
           <Card title="Reported content">

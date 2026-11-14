@@ -148,6 +148,15 @@ async function tapText(page, text) {
   await sleep(300);
   await page.tap('text', text);
 }
+// Scrolls a labelled element into view first (sections below may push it
+// off-screen).
+async function tapLabel(page, label) {
+  const sel = `[...document.querySelectorAll('[aria-label]')].filter(e => e.getAttribute('aria-label') === ${JSON.stringify(label)}).pop()`;
+  await page.waitFor(`!!(${sel})`, 20000, label);
+  await page.eval(`${sel}?.scrollIntoView({ block: 'center' })`);
+  await sleep(300);
+  await page.tap('label', label);
+}
 const alerts = (page) => page.eval('JSON.stringify(window.__alerts ?? [])').then((s) => JSON.parse(s));
 const choose = (page, ...choices) => {
   trace(page.label, 'choose', ...choices);
@@ -217,13 +226,13 @@ async function scenario(p) {
 
   step('4. Report detail and restricted preview');
   const harLabel = (await rowLabels(p.A)).find((l) => l.startsWith('Harassment · Post'));
-  await p.A.tap('label', harLabel);
+  await tapLabel(p.A, harLabel);
   await eventually('detail opens', p.A, async () => (await path(p.A)).startsWith('/admin/report/'));
   const reportPath = await path(p.A);
   await eventually('reason, type, status and claim are shown', p.A, async () =>
     (await bodyHas(p.A, 'Content type')) && (await bodyHas(p.A, 'Not claimed')) && (await bodyHas(p.A, 'Account exists (identity withheld)')));
   check('reported content is hidden until requested', !(await bodyHas(p.A, SECRET)));
-  await p.A.tap('label', 'Show reported content');
+  await tapLabel(p.A, 'Show reported content');
   await eventually('content shown on request', p.A, () => bodyHas(p.A, SECRET));
   check('media is described, never loaded (URL absent from the page)', !(await htmlHas(p.A, SECRET_URL)) && (await bodyHas(p.A, 'not displayed here')));
   check('reporter is never identified', !(await bodyHas(p.A, R.username)));
@@ -277,7 +286,7 @@ async function scenario(p) {
   await p.A.tap('label', (await rowLabels(p.A)).find((l) => l.startsWith('Child safety.')));
   await eventually('child-safety detail shows its flag', p.A, () => bodyHas(p.A, 'Child-safety content is hidden. Tap to review the text.'));
   await choose(p.A, 'Cancel');
-  await p.A.tap('label', 'Show reported content');
+  await tapLabel(p.A, 'Show reported content');
   await eventually('revealing asks for an extra confirmation; Cancel keeps it hidden', p.A, async () =>
     (await lastAlert(p.A))?.title === 'Show child-safety content' && (await bodyHas(p.A, 'Child-safety content is hidden.')));
   check('child-safety evidence is described as preserved', await bodyHas(p.A, 'preserved and excluded from routine purging'));

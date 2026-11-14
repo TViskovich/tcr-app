@@ -31,6 +31,11 @@ A hold stops a single subject from being purged. Subject kinds:
 
 **A hold does not stop account deletion** (see section 5).
 
+**On the admin report screen (M5.3).** The **Legal holds** card lists the active holds on the report, its quarantine copies, its cleared profile fields and the reported account. It shows the type, basis code, placement date, end date and whether release was requested, and never the basis note.
+- **What holds block:** purging only. Hiding, removal, restoration of content or media, suspension and dismissal are not blocked, and none of them changes a hold.
+- **Evidence is kept:** restoring media keeps the private quarantine copy.
+- **No hold controls in the app:** holds can't be placed or released from the report screen. Use the functions below, under the review process in section 4.
+
 | Action | Who | Rules |
 |---|---|---|
 | `admin_place_legal_hold(kind, id, basis_code, basis_note, expires_at, child_safety)` | any admin | Ordinary holds need an end date between 1 day and 1 year from now. Allowed bases: `law_enforcement_request`, `litigation`, `regulatory_inquiry`, `internal_investigation`, `child_safety_preservation`, `other_legal_obligation`. A note is required. Only one open hold is allowed per subject and basis. |

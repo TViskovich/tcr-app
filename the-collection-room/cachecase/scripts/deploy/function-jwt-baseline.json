@@ -57,6 +57,11 @@
       "deployed": false,
       "why": "admin only (Phase 2B M2.3c); checks admin_users and the account lifecycle itself"
     },
+    "admin-report-media": {
+      "verify_jwt": true,
+      "deployed": false,
+      "why": "admin only (Phase 2B M5.3); signs one report-evidence image after report_media_authorize re-checks admin standing, scope and child-safety confirmation"
+    },
     "admin-snapshot-reconcile": {
       "verify_jwt": true,
       "deployed": false,

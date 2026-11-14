@@ -305,8 +305,8 @@ async function main() {
   const client = readFileSync(new URL('../../lib/admin-reports.ts', import.meta.url), 'utf8');
   const ui = ['../../components/admin/report-enforcement.tsx', '../../app/admin/report/[id].tsx'].map((p) => readFileSync(new URL(p, import.meta.url), 'utf8')).join('\n');
   const rpcs = [...client.matchAll(/'(admin_[a-z_]+)'/g)].map((x) => x[1]).sort();
-  check('client RPCs: the M5.1 three plus admin_report_enforcement / admin_report_enforce',
-    JSON.stringify(rpcs) === JSON.stringify(['admin_report_case', 'admin_report_case_action', 'admin_report_enforce', 'admin_report_enforcement', 'admin_report_queue']), rpcs);
+  check('client RPCs: the M5.1 three, admin_report_enforcement / admin_report_enforce (M5.2), admin_report_evidence (M5.3)',
+    JSON.stringify(rpcs) === JSON.stringify(['admin_report_case', 'admin_report_case_action', 'admin_report_enforce', 'admin_report_enforcement', 'admin_report_evidence', 'admin_report_queue']), rpcs);
   check('no direct enforcement RPCs, deletion, purge or service role in the app code',
     !/admin_(hide|remove|restore)_content|admin_suspend_account|admin_lift_suspension|admin_[a-z]+_profile_fields|retention_|delete_account|SERVICE_ROLE|service_role|console\.(log|warn|error)/.test(client + ui));
 }

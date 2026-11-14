@@ -11,8 +11,8 @@
 import { ago, codeLabel, TARGET_LABEL, type Tone } from './admin-reports-view.ts';
 
 export type EnforcementAction =
-  | 'hide' | 'remove' | 'restore' | 'clear_profile_fields' | 'restore_profile_fields' | 'suspend' | 'lift_suspension';
-export const ACTION_ORDER: EnforcementAction[] = ['hide', 'remove', 'restore', 'clear_profile_fields', 'restore_profile_fields', 'suspend', 'lift_suspension'];
+  | 'hide' | 'remove' | 'restore' | 'clear_profile_fields' | 'restore_profile_fields' | 'release_profile_fields' | 'suspend' | 'lift_suspension';
+export const ACTION_ORDER: EnforcementAction[] = ['hide', 'remove', 'restore', 'clear_profile_fields', 'restore_profile_fields', 'release_profile_fields', 'suspend', 'lift_suspension'];
 
 export type MediaSummary = {
   total: number; by_state: Record<string, number>; in_progress: number; awaiting_restore?: number; needs_attention: number; legal_hold: number;
@@ -42,8 +42,12 @@ export type Enforcement = {
       expires_at: string | null; lifted_at: string | null; lift_reason: string | null; created_by_me: boolean; from_this_report: boolean;
     } | null;
   };
-  actions: Record<EnforcementAction, { available: boolean; blocked: string | null }>;
+  // release_profile_fields has no entry of its own: it is gated exactly like
+  // restore_profile_fields (same backend checks) — see actionState().
+  actions: Record<Exclude<EnforcementAction, 'release_profile_fields'>, { available: boolean; blocked: string | null }>;
 };
+export const actionState = (e: Enforcement, a: EnforcementAction) =>
+  e.actions[a === 'release_profile_fields' ? 'restore_profile_fields' : a];
 export type EnforceResult = {
   action: EnforcementAction; changed: boolean; report_status: string; version: string; related_resolved: number;
   cleared?: string[] | null; already_locked?: string[] | null; ended?: string[] | null; not_restricted?: string[] | null;
@@ -59,6 +63,7 @@ export const REASONS: Record<EnforcementAction, string[]> = {
   clear_profile_fields: REMOVE_REASONS,
   restore: ['resolved_in_error', 'new_information', 'appeal_granted', 'child_safety_review_cleared'],
   restore_profile_fields: ['resolved_in_error', 'new_information', 'appeal_granted', 'child_safety_review_cleared'],
+  release_profile_fields: ['owner_may_edit', 'policy_review', 'child_safety_review_cleared'],
   suspend: [...REMOVE_REASONS.filter((r) => r !== 'other_violation'), 'repeat_violations', 'ban_evasion', 'urgent_risk', 'other_violation'],
   lift_suspension: ['resolved_in_error', 'new_information', 'appeal_granted', 'child_safety_review_cleared'],
 };
@@ -72,14 +77,15 @@ const MEDIA_FIELDS = ['avatar_url', 'hero_image_url', 'showcase_badge_url'];
 
 export const ACTION_LABEL: Record<EnforcementAction, string> = {
   hide: 'Hide content', remove: 'Remove content', restore: 'Restore content', clear_profile_fields: 'Clear profile fields',
-  restore_profile_fields: 'Restore profile fields', suspend: 'Suspend account', lift_suspension: 'Lift suspension',
+  restore_profile_fields: 'Restore profile fields', release_profile_fields: 'Release profile fields',
+  suspend: 'Suspend account', lift_suspension: 'Lift suspension',
 };
 const REASON_EXTRA: Record<string, string> = {
   pending_review: 'Pending review', urgent_risk: 'Urgent risk', other_violation: 'Other violation', repeat_violations: 'Repeat violations',
   ban_evasion: 'Ban evasion', appeal_granted: 'Appeal granted', child_safety_review_cleared: 'Child-safety review cleared',
   spam: 'Spam', harassment: 'Harassment', hate: 'Hate', sexual: 'Sexual content', violence: 'Violence', self_harm: 'Self-harm',
   child_safety: 'Child safety', scam_fraud: 'Scam or fraud', impersonation: 'Impersonation', intellectual_property: 'Intellectual property',
-  keep_reviewing: 'Keep reviewing', reopen: 'Reopen the reports', overturn: 'Overturn (dismiss the reports)',
+  owner_may_edit: 'Owner may edit', policy_review: 'Policy review', keep_reviewing: 'Keep reviewing', reopen: 'Reopen the reports', overturn: 'Overturn (dismiss the reports)',
 };
 export const reasonLabel = (code: string | null | undefined) => (code ? REASON_EXTRA[code] ?? codeLabel(code) : '—');
 
@@ -90,10 +96,10 @@ export function relevantActions(e: Enforcement): EnforcementAction[] {
   const profile = e.target.type === 'profile';
   return ACTION_ORDER.filter((a) => {
     if (a === 'hide' || a === 'remove' || a === 'restore') return !profile;
-    if (a === 'clear_profile_fields' || a === 'restore_profile_fields') return profile;
+    if (a === 'clear_profile_fields' || a === 'restore_profile_fields' || a === 'release_profile_fields') return profile;
     return e.account.present; // suspend / lift
   }).filter((a) => {
-    const s = e.actions[a];
+    const s = actionState(e, a);
     if (s.available) return true;
     // Hide noise that can't apply in the current state.
     return !['unsupported_target', 'use_profile_restore', 'owner_unavailable', 'not_restricted', 'not_suspended', 'already_suspended'].includes(s.blocked ?? '');
@@ -121,17 +127,17 @@ const BLOCKED_TEXT: Record<string, string> = {
 export const blockedEnforcementText = (code: string | null | undefined) => (code ? BLOCKED_TEXT[code] ?? codeLabel(code) : null);
 export const awaitingSecondAdmin = (e: Enforcement) =>
   ['restore', 'restore_profile_fields', 'lift_suspension'].some((a) =>
-    ['child_safety_second_admin_required', 'second_admin_required'].includes(e.actions[a as EnforcementAction].blocked ?? ''));
+    ['child_safety_second_admin_required', 'second_admin_required'].includes(actionState(e, a as EnforcementAction).blocked ?? ''));
 
 // ── Child-safety requirements of a reversal (enforced by the server) ───────
 export function childSafetyReversal(action: EnforcementAction, e: Enforcement): boolean {
-  if (action === 'restore' || action === 'restore_profile_fields') return !!e.restriction?.child_safety;
+  if (action === 'restore' || action === 'restore_profile_fields' || action === 'release_profile_fields') return !!e.restriction?.child_safety;
   if (action === 'lift_suspension') return !!e.account.suspension?.child_safety;
   return false;
 }
 export function reasonsFor(action: EnforcementAction, e: Enforcement): string[] {
   const cs = childSafetyReversal(action, e);
-  if (['restore', 'restore_profile_fields', 'lift_suspension'].includes(action)) {
+  if (['restore', 'restore_profile_fields', 'release_profile_fields', 'lift_suspension'].includes(action)) {
     return cs ? [CHILD_SAFETY_CLEARED] : REASONS[action].filter((r) => r !== CHILD_SAFETY_CLEARED);
   }
   return REASONS[action];
@@ -153,7 +159,7 @@ export function dispositionsFor(action: EnforcementAction, e: Enforcement, field
 }
 export function fieldsFor(action: EnforcementAction, e: Enforcement): string[] {
   if (action === 'clear_profile_fields') return e.profile?.clearable_fields ?? [];
-  if (action === 'restore_profile_fields') return (e.profile?.restricted_fields ?? []).map((f) => f.field);
+  if (action === 'restore_profile_fields' || action === 'release_profile_fields') return (e.profile?.restricted_fields ?? []).map((f) => f.field);
   return [];
 }
 
@@ -178,7 +184,7 @@ export const emptyParams = (action: EnforcementAction): EnforceParams => ({
 // What is still missing before the confirmation can be shown (UI only).
 export function missingInput(action: EnforcementAction, e: Enforcement, p: EnforceParams): string | null {
   if (!p.reason || !reasonsFor(action, e).includes(p.reason)) return 'Choose a reason.';
-  if ((action === 'clear_profile_fields' || action === 'restore_profile_fields') && p.fields.length === 0) return 'Choose at least one field.';
+  if ((action === 'clear_profile_fields' || action === 'restore_profile_fields' || action === 'release_profile_fields') && p.fields.length === 0) return 'Choose at least one field.';
   const disp = dispositionsFor(action, e, p.fields);
   if (disp.length > 0 && (!p.disposition || !disp.includes(p.disposition))) return 'Choose what happens to the reports.';
   if (action === 'suspend' && !p.expiry) return 'Choose a duration.';
@@ -194,9 +200,9 @@ export function missingInput(action: EnforcementAction, e: Enforcement, p: Enfor
 export function enforceOptions(action: EnforcementAction, p: EnforceParams, now: number): Record<string, unknown> {
   const o: Record<string, unknown> = {};
   if (action === 'remove' || action === 'clear_profile_fields') o.include_related = p.includeRelated;
-  if (action === 'clear_profile_fields' || action === 'restore_profile_fields') o.fields = p.fields;
+  if (action === 'clear_profile_fields' || action === 'restore_profile_fields' || action === 'release_profile_fields') o.fields = p.fields;
   if ((action === 'restore' || action === 'restore_profile_fields') && p.disposition) o.disposition = p.disposition;
-  if (action === 'restore' || action === 'restore_profile_fields' || action === 'lift_suspension') o.confirm_child_safety = p.confirmChildSafety;
+  if (action === 'restore' || action === 'restore_profile_fields' || action === 'release_profile_fields' || action === 'lift_suspension') o.confirm_child_safety = p.confirmChildSafety;
   if (action === 'suspend' && p.expiry) {
     const at = expiryFor(p.expiry, now);
     if (at) o.expires_at = at;
@@ -239,6 +245,11 @@ export function confirmEnforcement(action: EnforcementAction, e: Enforcement, p:
       lines.push(`Restores ${p.fields.map((f) => FIELD_LABEL[f] ?? f).join(', ')} on ${who}'s profile to their original values.`);
       if (p.disposition) lines.push(`This lifts the last field restriction; linked reports: ${reasonLabel(p.disposition)}.`);
       reversible = 'Fails safely if the collector has since set a new value.';
+      break;
+    case 'release_profile_fields':
+      lines.push(`Lets ${who} edit ${p.fields.map((f) => FIELD_LABEL[f] ?? f).join(', ')} again. The cleared values are NOT restored; other restricted fields stay locked.`);
+      lines.push('The decision on the report is unchanged.');
+      reversible = 'A released field can only be restricted again through a new report.';
       break;
     case 'suspend': {
       const exp = EXPIRY_PRESETS.find((x) => x.key === p.expiry);
@@ -311,6 +322,7 @@ export function outcomeMessage(r: EnforceResult): { text: string; tone: Tone } {
     restore: 'Restriction lifted.',
     clear_profile_fields: `Cleared: ${(r.cleared ?? []).map((f) => FIELD_LABEL[f] ?? f).join(', ') || 'none'}${r.already_locked?.length ? ` (already locked: ${r.already_locked.map((f) => FIELD_LABEL[f] ?? f).join(', ')})` : ''}.`,
     restore_profile_fields: `Restored: ${(r.ended ?? []).map((f) => FIELD_LABEL[f] ?? f).join(', ')}${r.profile_restriction === 'lifted' ? '; profile restriction lifted' : ''}.`,
+    release_profile_fields: `Released: ${(r.ended ?? []).map((f) => FIELD_LABEL[f] ?? f).join(', ')} — the collector may edit ${(r.ended ?? []).length === 1 ? 'it' : 'them'} again${r.profile_restriction === 'lifted' ? '; profile restriction lifted' : ''}.`,
     suspend: 'Account suspended.',
     lift_suspension: 'Suspension lifted.',
   };

@@ -1,5 +1,6 @@
 import { type EnforceResult, type Enforcement, type EnforcementAction } from '@/lib/admin-enforcement-view';
-import { supabase } from '@/lib/supabase';
+import { type Evidence, type RestoreOutcome, type ViewerResult } from '@/lib/admin-media-view';
+import { supabase, supabaseAnonKey, supabaseFunctionsRegion, supabaseUrl } from '@/lib/supabase';
 
 import {
   classifyError,
@@ -90,3 +91,50 @@ export const runEnforcement = (
     p_note: note.trim() ? note.trim() : null,
     p_options: options,
   });
+
+// M5.3 — report evidence (20261203120000_admin_report_media.sql) and the two
+// admin Edge Functions. Functions are called with the admin's own session;
+// each re-authorizes in the database. Nothing here is logged or cached.
+export const loadEvidence = (id: string) => call<Evidence>('admin_report_evidence', { p_report_id: id });
+
+type FnResult = { kind: 'ok'; status: number; body: any } | { kind: 'session_expired' } | { kind: 'forbidden' } | { kind: 'error' };
+async function callFunction(name: string, body: unknown): Promise<FnResult> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) return { kind: 'session_expired' };
+  const headers: Record<string, string> = { apikey: supabaseAnonKey, 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+  if (supabaseFunctionsRegion) headers['x-region'] = supabaseFunctionsRegion;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/${name}`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+    if (res.status === 401) return { kind: 'session_expired' };
+    if (res.status === 403) return { kind: 'forbidden' };
+    const json = await res.json().catch(() => null);
+    return res.ok && json ? { kind: 'ok', status: res.status, body: json } : { kind: 'error' };
+  } catch {
+    return { kind: 'error' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One evidence image of one report, by its position (never a path or URL).
+export async function viewReportMedia(reportId: string, ref: number, confirmChildSafety: boolean): Promise<ViewerResult> {
+  const r = await callFunction('admin-report-media', { report_id: reportId, ref, confirm_child_safety: confirmChildSafety });
+  if (r.kind !== 'ok') return r;
+  if (r.body.status === 'ok' && typeof r.body.signed_path === 'string') {
+    return { kind: 'ok', signed_path: r.body.signed_path, expires_in: r.body.expires_in, child_safety: r.body.child_safety === true };
+  }
+  if (r.body.status === 'refused') return { kind: 'refused', reason: String(r.body.reason ?? '') };
+  return { kind: 'error' };
+}
+
+// Restore quarantined media of THIS report's decision (existing
+// admin-media-restore, scoped by report_id).
+export async function restoreReportMedia(reportId: string, jobIds: string[], confirmChildSafety: boolean):
+  Promise<{ kind: 'ok'; results: RestoreOutcome[] } | { kind: 'session_expired' } | { kind: 'forbidden' } | { kind: 'error' }> {
+  const r = await callFunction('admin-media-restore', { job_ids: jobIds, confirm_child_safety: confirmChildSafety, report_id: reportId });
+  if (r.kind !== 'ok') return r;
+  return Array.isArray(r.body.results) ? { kind: 'ok', results: r.body.results as RestoreOutcome[] } : { kind: 'error' };
+}
