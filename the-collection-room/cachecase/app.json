@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/brand/cachecase-app-icon-v4-darkbrown.png",
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "app.cachecase",
       "buildNumber": "1",
       "infoPlist": {
