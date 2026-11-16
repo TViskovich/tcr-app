@@ -210,11 +210,25 @@ try {
   check('re-referencing D after its claim expired is REFUSED', !!reuse.error && /content_unavailable/.test(reuse.error.message), reuse.error);
   const reuseUrl = await a.db.from('collection_items').update({ image_url: `${st.API_URL}/storage/v1/object/public/item-images/${d}` }).eq('id', item.id).select('id');
   check('…also by public URL', !!reuseUrl.error && /content_unavailable/.test(reuseUrl.error.message), reuseUrl.error);
+  // …or through a post (post-commit review: a child-safety restriction of a
+  // post would hold any item-images URL it names, after D's claim).
+  const dUrl = `${st.API_URL}/storage/v1/object/public/item-images/${d}`;
+  const postReuse = await a.db.from('posts').insert({ user_id: a.id, post_type: 'text', caption: `IIC ${run} d`, image_url: dUrl }).select('id');
+  check('…also in a post (posts.image_url)', !!postReuse.error && /content_unavailable/.test(postReuse.error.message), postReuse.error);
+  const parent = must(await a.db.from('posts').insert({ user_id: a.id, post_type: 'text', caption: `IIC ${run} parent` }).select('id').single(), 'parent post') as { id: string };
+  const imgReuse = await a.db.from('post_images').insert({ post_id: parent.id, image_url: dUrl, source_type: 'library', sort_order: 0 });
+  check('…and in a post photo (post_images.image_url)', !!imgReuse.error && /content_unavailable/.test(imgReuse.error.message), imgReuse.error);
+  const snapUrl = `${st.API_URL}/storage/v1/object/public/share-snapshots/${a.id}/card_share/${run}/1.jpg`;
+  const normal = await a.db.from('posts').insert({ user_id: a.id, post_type: 'text', caption: `IIC ${run} normal`, image_url: snapUrl }).select('id');
+  check('a normal post with a share-snapshots image is unaffected', !normal.error, normal.error);
   // Worker A's stalled Storage call finally lands.
   must(await service.storage.from('item-images').remove([d]), 'late remove');
   check('the late removal deleted D…', !exists(d));
   check('…and NO live row references D (nothing live was lost)',
-    psql(`SELECT (SELECT count(*) FROM public.collection_item_images WHERE storage_path = ${lit(d)} OR image_url LIKE ${lit('%' + d)}) + (SELECT count(*) FROM public.collection_items WHERE image_url LIKE ${lit('%' + d)})`) === '0');
+    psql(`SELECT (SELECT count(*) FROM public.collection_item_images WHERE storage_path = ${lit(d)} OR image_url LIKE ${lit('%' + d)}) + (SELECT count(*) FROM public.collection_items WHERE image_url LIKE ${lit('%' + d)})
+               + (SELECT count(*) FROM public.posts WHERE image_url LIKE ${lit('%' + d)} OR folder_cover_snapshot_url LIKE ${lit('%' + d)}) + (SELECT count(*) FROM public.post_images WHERE image_url LIKE ${lit('%' + d)})`) === '0');
+  check('…and no moderation hold names D (no evidence could be lost)',
+    psql(`SELECT count(*) FROM private.media_quarantine WHERE source_bucket = 'item-images' AND source_path = ${lit(d)}`) === '0');
   // Worker B re-claims the abandoned claim and completes it; A's late completion is a no-op.
   const rB = await worker();
   check('worker B re-claims the expired claim and records it deleted', rB.body.outcomes?.deleted === 1 && ledger(d).startsWith('deleted|'), rB.body);

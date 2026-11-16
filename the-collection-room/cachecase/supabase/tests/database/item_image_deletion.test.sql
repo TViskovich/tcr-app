@@ -5,7 +5,7 @@
 -- Run against a LOCAL database only:  supabase test db
 
 BEGIN;
-SELECT plan(95);
+SELECT plan(147);
 
 CREATE FUNCTION pg_temp.login(p_user uuid) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -477,6 +477,146 @@ SELECT ok((SELECT j::text NOT LIKE '%.jpg%' AND j::text NOT LIKE '%/storage/v1/%
 SELECT ok(NOT has_table_privilege('authenticated', 'private.item_image_cleanup_runs', 'SELECT')
       AND NOT has_table_privilege('authenticated', 'private.item_image_cleanup_config', 'UPDATE')
       AND NOT has_table_privilege('service_role', 'private.item_image_cleanup_config', 'UPDATE'), 'no API role can read runs or flip the switch');
+
+-- ── 16. Post and share-snapshot URL columns are guarded too ─────────────────
+-- (post-commit safety review: a child-safety restriction of a post holds any
+-- item-images URL these columns name, so they must never name a condemned
+-- object.) Every column, by INSERT and by UPDATE.
+CREATE TEMP TABLE pcols (c text PRIMARY KEY);
+INSERT INTO pcols VALUES ('posts.image_url'), ('posts.folder_cover_snapshot_url'), ('post_images.image_url'),
+  ('card_share_items.snapshot_image_url'), ('folder_share_items.snapshot_image_url'), ('rate_my_grail_cards.snapshot_image_url');
+CREATE FUNCTION pg_temp.snap(p_tail text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT 'http://127.0.0.1:54321/storage/v1/object/public/share-snapshots/00000000-0000-4000-8000-0000ce000001/' || p_tail $$;
+-- A parent post for the child tables (a share-snapshots image: a normal post).
+INSERT INTO public.posts (id, user_id, post_type, caption, image_url)
+VALUES ('00000000-0000-4000-8000-0000cea00001', '00000000-0000-4000-8000-0000ce000001', 'text', 'pp', pg_temp.snap('card_share/x/1.jpg'));
+-- Writes one reference into column p_col: a new row (INSERT) or the fixture
+-- row tagged p_tag (UPDATE). Returns 'ok' or 'SQLSTATE message'.
+CREATE FUNCTION pg_temp.ref(p_col text, p_url text, p_tag text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  v_tab text := split_part(p_col, '.', 1);
+  v_col text := split_part(p_col, '.', 2);
+  v_id uuid := gen_random_uuid();
+BEGIN
+  IF p_tag IS NOT NULL THEN
+    EXECUTE format('UPDATE public.%I SET %I = $1 WHERE %s', v_tab, v_col,
+                   CASE WHEN v_tab = 'posts' THEN 'caption = $2' ELSE 'post_id = (SELECT id FROM public.posts WHERE caption = $2)' END)
+      USING p_url, p_tag || ':' || p_col;
+  ELSIF v_tab = 'posts' THEN
+    EXECUTE format('INSERT INTO public.posts (id, user_id, post_type, caption, %I) VALUES ($1, %L, %L, %L, $2)',
+                   v_col, '00000000-0000-4000-8000-0000ce000001', 'text', 'new') USING v_id, p_url;
+  ELSE
+    -- one parent post per child row (post_images sort_order / uniqueness)
+    INSERT INTO public.posts (id, user_id, post_type, caption) VALUES (v_id, '00000000-0000-4000-8000-0000ce000001', 'text', 'new-parent');
+    IF v_tab = 'post_images' THEN
+      INSERT INTO public.post_images (post_id, image_url, source_type, sort_order) VALUES (v_id, p_url, 'library', 0);
+    ELSE
+      EXECUTE format('INSERT INTO public.%I (post_id, %I) VALUES ($1, $2)', v_tab, v_col) USING v_id, p_url;
+    END IF;
+  END IF;
+  RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+  RETURN SQLSTATE || ' ' || SQLERRM;
+END;
+$$;
+-- Fixture rows per column: 'snap' (a share-snapshots URL) and 'legacy' (an
+-- item-images URL written long before anything was recorded — an existing,
+-- legitimate reference).
+CREATE FUNCTION pg_temp.fixture(p_col text, p_tag text, p_url text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_tab text := split_part(p_col, '.', 1);
+  v_col text := split_part(p_col, '.', 2);
+  v_id uuid := gen_random_uuid();
+BEGIN
+  INSERT INTO public.posts (id, user_id, post_type, caption) VALUES (v_id, '00000000-0000-4000-8000-0000ce000001', 'text', p_tag || ':' || p_col);
+  IF v_tab = 'posts' THEN
+    EXECUTE format('UPDATE public.posts SET %I = $1 WHERE id = $2', v_col) USING p_url, v_id;
+  ELSIF v_tab = 'post_images' THEN
+    INSERT INTO public.post_images (post_id, image_url, source_type, sort_order) VALUES (v_id, p_url, 'library', 0);
+  ELSE
+    EXECUTE format('INSERT INTO public.%I (post_id, %I) VALUES ($1, $2)', v_tab, v_col) USING v_id, p_url;
+  END IF;
+END;
+$$;
+CREATE FUNCTION pg_temp.val(p_col text, p_tag text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE v text;
+BEGIN
+  EXECUTE format('SELECT %I FROM public.%I WHERE %s', split_part(p_col, '.', 2), split_part(p_col, '.', 1),
+                 CASE WHEN split_part(p_col, '.', 1) = 'posts' THEN 'caption = $1'
+                      ELSE 'post_id = (SELECT id FROM public.posts WHERE caption = $1)' END)
+    INTO v USING p_tag || ':' || p_col;
+  RETURN v;
+END;
+$$;
+SELECT pg_temp.fixture(c, 'snap', pg_temp.snap('fx/' || c || '.jpg')) FROM pcols;
+SELECT pg_temp.fixture(c, 'legacy', pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/legacy.jpg'))) FROM pcols;
+
+SELECT pg_temp.condemn('00000000-0000-4000-8000-0000cee00001/pl.jpg', 'claimed', 1, interval '10 minutes');  -- live claim (reserved)
+SELECT pg_temp.condemn('00000000-0000-4000-8000-0000cee00001/pd.jpg', 'deleted', 1, NULL);                  -- previously claimed
+
+SELECT is(pg_temp.ref(c, pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pl.jpg'))), '42501 content_unavailable',
+          c || ': a NEW row naming a file reserved by a live claim is refused') FROM pcols ORDER BY c;
+SELECT is(pg_temp.ref(c, pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pl.jpg')), 'snap'), '42501 content_unavailable',
+          c || ': UPDATING a row to name it is refused') FROM pcols ORDER BY c;
+SELECT is(pg_temp.ref(c, pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pd.jpg'))), '42501 content_unavailable',
+          c || ': a previously claimed (deleted) file stays unreferenceable') FROM pcols ORDER BY c;
+SELECT is((SELECT state FROM pg_temp.led(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pl.jpg'))), 'claimed',
+          'the refused post references never released the claim');
+SELECT is(pg_temp.val(c, 'snap'), pg_temp.snap('fx/' || c || '.jpg'), c || ': the refused UPDATE left the row unchanged') FROM pcols ORDER BY c;
+
+-- Never claimed: a legitimate new reference cancels the pending deletion.
+SELECT private.enqueue_item_image_deletion(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-' || c || '.jpg'),
+                                           '00000000-0000-4000-8000-0000ce000001', 'image_removed', interval '15 minutes') FROM pcols;
+SELECT is(pg_temp.ref(c, pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-' || c || '.jpg'))) ||
+          ' / ' || (SELECT state || ':' || last_reason FROM pg_temp.led(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-' || c || '.jpg'))),
+          'ok / cancelled:rereferenced', c || ': naming a never-claimed file is accepted and CANCELS its deletion (file kept)') FROM pcols ORDER BY c;
+
+-- Normal share-snapshots links: untouched, by INSERT and UPDATE.
+SELECT is(pg_temp.ref(c, pg_temp.snap('new/' || c || '.jpg')) || ' / ' || pg_temp.ref(c, pg_temp.snap('upd/' || c || '.jpg'), 'snap'),
+          'ok / ok', c || ': share-snapshots links are inserted and updated as before') FROM pcols ORDER BY c;
+SELECT is((SELECT count(*)::int FROM private.item_image_deletions WHERE path LIKE '%/share-snapshots/%' OR path LIKE '%new/%' OR path LIKE '%upd/%'), 0,
+          '…and never touch the ledger');
+
+-- Existing references keep working and are never removed or changed — even
+-- once the object they name is condemned (only reachable by data written
+-- before this guard; the claim then keeps it as referenced_after_claim).
+SELECT pg_temp.condemn('00000000-0000-4000-8000-0000cee00001/legacy.jpg', 'claimed', 1, interval '10 minutes');
+SELECT is(pg_temp.ref(c, pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/legacy.jpg')), 'legacy') || ' / ' ||
+          pg_temp.val(c, 'legacy'), 'ok / ' || pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/legacy.jpg')),
+          c || ': rewriting an existing reference unchanged still works, and the value stays') FROM pcols ORDER BY c;
+SELECT is((SELECT count(*)::int FROM public.posts WHERE caption = 'legacy:posts.image_url'
+             AND image_url = pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/legacy.jpg'))), 1,
+          'editing another column of a post that carries one is unaffected');
+UPDATE public.posts SET content = 'edited' WHERE caption LIKE 'legacy:%';
+SELECT is((SELECT count(*)::int FROM public.posts WHERE caption LIKE 'legacy:%' AND content = 'edited'), 6, '…(caption/content edits pass)');
+-- Clearing a column is never blocked.
+SELECT is(pg_temp.ref('posts.image_url', NULL, 'legacy'), 'ok', 'clearing an image URL is never blocked');
+
+-- Moderation-hold interaction. A child-safety restriction of a post queues a
+-- hold on every item-images URL it names. Because of the guard, that can only
+-- be an object no worker has claimed — so the hold always precedes any claim,
+-- and the claim then defers instead of deleting.
+INSERT INTO public.content_reports (id, reporter_id, target_type, target_id, target_owner_id, reason, evidence)
+SELECT '00000000-0000-4000-8000-0000cea10001', '00000000-0000-4000-8000-0000ce000002', 'post', p.id, p.user_id, 'child_safety', '{"v":1}'
+  FROM public.posts p WHERE p.image_url = pg_temp.u(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-posts.image_url.jpg'));
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.login('00000000-0000-4000-8000-0000ce000003');
+SELECT ok((public.admin_remove_content('00000000-0000-4000-8000-0000cea10001', 'child_safety', NULL, NULL, false) ->> 'moderation_id') IS NOT NULL,
+          'an admin removes the post for child safety');
+RESET ROLE;
+SELECT ok(private.storage_path_held('item-images', pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-posts.image_url.jpg')),
+          'the item-images file the post names is now held (evidence)');
+SELECT private.enqueue_item_image_deletion(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-posts.image_url.jpg'),
+                                           '00000000-0000-4000-8000-0000ce000001', 'image_removed', interval '0');
+SET LOCAL ROLE service_role;
+SELECT is((SELECT count(*)::int FROM public.item_image_deletion_claim(50, 600)
+            WHERE path = pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-posts.image_url.jpg')), 0, '…so its deletion is never claimed');
+RESET ROLE;
+SELECT is((SELECT state || ':' || last_reason FROM pg_temp.led(pg_temp.p('00000000-0000-4000-8000-0000cee00001/pn-posts.image_url.jpg'))),
+          'deferred:held', '…it is deferred as held');
+SELECT ok(NOT EXISTS (SELECT 1 FROM private.media_quarantine q WHERE q.source_bucket = 'item-images'
+                       AND q.source_path IN (pg_temp.p('00000000-0000-4000-8000-0000cee00001/pl.jpg'), pg_temp.p('00000000-0000-4000-8000-0000cee00001/pd.jpg'))),
+          'no hold was ever queued on a reserved or deleted file (no post could name one)');
 
 SELECT * FROM finish();
 ROLLBACK;

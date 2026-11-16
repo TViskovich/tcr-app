@@ -265,6 +265,27 @@ CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF cover_storag
   FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('path:cover_storage_path', 'url:cover_image_url');
 CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF image_url ON public.collection_items
   FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:image_url');
+-- Post and share-snapshot URL columns (post-commit safety review). A child-
+-- safety restriction of a post queues a quarantine hold on any item-images
+-- URL these columns name (private.queue_media_for_restriction); guarding them
+-- means no hold — and no report evidence or moderation record, which already
+-- derive only from guarded columns — can ever name an object a worker may be
+-- removing. Normal posts carry share-snapshots URLs, which never parse as an
+-- item-images object and pass untouched. Same columns and events as the
+-- existing media_hold_guard; condemnation depends only on the object path,
+-- so an owner or post_id change (which leaves the URL unchanged) needs no
+-- re-check. Registry (registered_cards) is out of the beta scope and
+-- unchanged.
+CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF image_url, folder_cover_snapshot_url ON public.posts
+  FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:image_url', 'url:folder_cover_snapshot_url');
+CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF image_url ON public.post_images
+  FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:image_url');
+CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF snapshot_image_url ON public.card_share_items
+  FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:snapshot_image_url');
+CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF snapshot_image_url ON public.folder_share_items
+  FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:snapshot_image_url');
+CREATE TRIGGER item_image_deletion_guard BEFORE INSERT OR UPDATE OF snapshot_image_url ON public.rate_my_grail_cards
+  FOR EACH ROW EXECUTE FUNCTION private.item_image_deletion_reference_guard('url:snapshot_image_url');
 
 -- F6: when an account deletion job is created, its own Storage manifest
 -- becomes the single cleanup path for that account — drop the account's
