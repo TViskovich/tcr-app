@@ -21,6 +21,7 @@ import { prefetchFolderHeaderCover, useSignedFolderCovers } from '@/hooks/use-si
 import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
+import { resetSignedImageNegatives } from '@/lib/persisted-signed-url-cache';
 
 export default function SavedScreen() {
   const { session } = useAuth();
@@ -45,6 +46,7 @@ export default function SavedScreen() {
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
   async function onRefresh() {
+    resetSignedImageNegatives(); // P2.3 (F3): re-check "unavailable" images now
     setRefreshing(true);
     await refresh();
     setRefreshing(false);

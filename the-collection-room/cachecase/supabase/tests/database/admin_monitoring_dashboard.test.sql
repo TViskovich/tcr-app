@@ -60,7 +60,7 @@ SELECT is((SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid = p.
                                 'admin_moderation_delivery_history', 'admin_retention_purge_dashboard', 'admin_moderation_monitoring_overview',
                                 'admin_acknowledge_moderation_issue')), 0, 'no new service-role endpoint reachable through the dashboard');
 SELECT is((SELECT string_agg(jobname || ':' || active::text, ',' ORDER BY jobname) FROM cron.job),
-  'account-deletion-monitor:false,account-maintenance:false,media-quarantine-worker:false,moderation-monitor:false', 'every scheduled job stays inactive');
+  'account-deletion-monitor:false,account-maintenance:false,item-image-cleanup:false,media-quarantine-worker:false,moderation-monitor:false', 'every scheduled job stays inactive');
 
 -- ── Fixtures ────────────────────────────────────────────────────────────
 -- 1, 2 admins; 3 collector; 9 owner; 8 reporter.

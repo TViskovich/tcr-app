@@ -55,6 +55,7 @@ import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
+import { invalidateFolderCoversForItemChange } from '@/hooks/use-signed-folder-covers';
 import { useAuth } from '@/lib/auth';
 import { createComicBookItem } from '@/lib/comic-book-items';
 import {
@@ -971,6 +972,9 @@ export default function AddItemScreen() {
       // waiting out the freshness window. See lib/own-profile-cache.ts's
       // own invalidateOwnProfileCache comment.
       invalidateOwnProfileCache(userId);
+      // P2.3 Issue 4: the new item is now its folder's newest — a
+      // 'first_card' cover resolves to it, so re-sign that cover now.
+      invalidateFolderCoversForItemChange([folderId], userId);
 
       // No back history when this screen was deep-linked, reloaded directly,
       // or opened during development — fall back to the folder we just added

@@ -135,8 +135,9 @@ type BulkModeProps = BaseProps & {
   // guaranteed equal on success (the RPC rejects the whole call otherwise).
   // The caller (app/collection/[folderId].tsx) owns exiting Select mode,
   // clearing selection, refreshing the folder, and showing the "Moved N
-  // items" confirmation.
-  onMoved: (movedCount: number, folderName: string) => void;
+  // items" confirmation. destinationFolderId (P2.3, review F4): lets the
+  // caller refresh both folders' covers.
+  onMoved: (movedCount: number, folderName: string, destinationFolderId: string) => void;
 };
 
 type Props = SingleModeProps | BulkModeProps;
@@ -207,7 +208,7 @@ export function MoveItemModal(props: Props) {
       if (props.mode === 'single') {
         props.onMoved(folder.id, folder.name);
       } else {
-        props.onMoved(typeof movedCount === 'number' ? movedCount : itemIds.length, folder.name);
+        props.onMoved(typeof movedCount === 'number' ? movedCount : itemIds.length, folder.name, folder.id);
       }
     } catch (e) {
       // Picker stays open in both modes, selection state resets here — the

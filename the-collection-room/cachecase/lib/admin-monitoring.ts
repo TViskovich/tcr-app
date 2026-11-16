@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
 
-import type { AuthorizedAdmins, MonitoringOverview, OpenIssue, PurgePrivileges, PurgeRun, SchedulerStatus, Severity } from '@/lib/admin-monitoring-view';
+import type { AuthorizedAdmins, ImageCleanupStatus, MonitoringOverview, OpenIssue, PurgePrivileges, PurgeRun, SchedulerStatus, Severity } from '@/lib/admin-monitoring-view';
 
 // Client for the admin monitoring dashboard. Every call is a database RPC
 // made with the signed-in user's own session; each one runs
@@ -15,6 +15,7 @@ import type { AuthorizedAdmins, MonitoringOverview, OpenIssue, PurgePrivileges, 
 //   admin_media_quarantine_scheduler_status 20261126120000
 //   admin_moderation_issue_detail / _history, admin_media_quarantine_scheduler_runs,
 //   admin_moderation_delivery_history, admin_retention_purge_dashboard   20261128120000
+//   admin_item_image_cleanup_status        20261204120000 (read-only)
 
 export type Result<T> = { kind: 'ok'; data: T } | { kind: 'forbidden' } | { kind: 'not_found' } | { kind: 'error' };
 
@@ -80,6 +81,7 @@ export type PurgeDashboard = Page<PurgeRun> & {
 
 export const loadMonitoringOverview = () => call<MonitoringOverview>('admin_moderation_monitoring_overview');
 export const loadQuarantineOverview = () => call<QuarantineOverview>('admin_media_quarantine_overview');
+export const loadImageCleanupStatus = () => call<ImageCleanupStatus>('admin_item_image_cleanup_status');
 export const loadSchedulerStatus = () => call<SchedulerStatusFull>('admin_media_quarantine_scheduler_status');
 export const loadSchedulerRuns = (before: string | null = null, limit = 10) =>
   call<Page<SchedulerRun>>('admin_media_quarantine_scheduler_runs', { p_limit: limit, p_before: before });

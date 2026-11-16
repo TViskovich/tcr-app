@@ -2,9 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isAuthRetryableFetchError, type AuthError, type Session } from '@supabase/supabase-js';
+import { Image } from 'expo-image';
 
 import { signOutOtherSessions, updatePassword, type PasswordUpdateFailure } from './account-credentials';
 import {
+  clearSignedImageMemory,
   DM_ATTACHMENTS_CACHE_DOMAIN,
   FOLDER_COVERS_CACHE_DOMAIN,
   ITEM_IMAGES_CACHE_DOMAIN,
@@ -129,6 +131,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       purgePersistedSignedUrlCache(ITEM_IMAGES_CACHE_DOMAIN, previousIdentity).catch(() => {});
       purgePersistedSignedUrlCache(FOLDER_COVERS_CACHE_DOMAIN, previousIdentity).catch(() => {});
       purgePersistedSignedUrlCache(DM_ATTACHMENTS_CACHE_DOMAIN, previousIdentity).catch(() => {});
+      // P2.3: the signing hooks' IN-MEMORY caches too (they used to survive
+      // an account switch — identity-keyed, so never readable by the next
+      // account, but kept for no reason), and expo-image's own byte caches,
+      // so a departed account's private images are not left on the device.
+      // Public images simply re-download. (SDK 57: Image.clearMemoryCache /
+      // clearDiskCache, iOS/Android; resolve false on web.)
+      clearSignedImageMemory(previousIdentity);
+      if (previousIdentity !== 'anon') {
+        Image.clearMemoryCache().catch(() => {});
+        Image.clearDiskCache().catch(() => {});
+      }
       // Own-profile cache (lib/own-profile-cache.ts, Profile V2 startup
       // caching) is keyed by real user id only — 'anon' never has one.
       if (previousIdentity !== 'anon') purgeOwnProfileCache(previousIdentity).catch(() => {});

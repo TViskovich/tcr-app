@@ -59,6 +59,7 @@ import {
 import { useFolderLikes } from '@/hooks/use-folder-likes';
 import { useCollectionItemSearch } from '@/hooks/use-item-search';
 import {
+  invalidateFolderCoversForItemChange,
   invalidateSignedFolderCover,
   FOLDER_HEADER_COVER_TIER,
   peekCachedSignedFolderCover,
@@ -79,6 +80,7 @@ import { shareElsewhere } from '@/lib/share/share-target';
 import { supabase } from '@/lib/supabase';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import type { CollectionItem, Folder, FolderCoverCrop } from '@/types';
+import { foldersAffectedBy } from '@/lib/folder-cover-invalidation';
 
 // Wraps expo-image's Image so the hero's overlay layer can drive its
 // opacity from a Reanimated shared value on the UI thread.
@@ -560,7 +562,17 @@ export default function CollectionFolderScreen() {
   // destination folder's own count/preview (Collections tab, its own
   // folder-detail screen) isn't touched from here; both already refresh via
   // their own useFocusEffect on next visit, same as Phase 1.
-  function handleBulkMoved(movedCount: number, folderName: string) {
+  function handleBulkMoved(movedCount: number, folderName: string, destinationFolderId: string) {
+    // P2.3 (review F4): the moved items may have been this folder's cover
+    // ('first_card' / 'item') and may now be the destination's — refresh both.
+    invalidateFolderCoversForItemChange(
+      foldersAffectedBy({
+        kind: 'bulkMoved',
+        fromFolderIds: [folder?.id, ...items.filter((i) => selectedIds.has(i.id)).map((i) => i.folder_id)],
+        toFolderId: destinationFolderId,
+      }),
+      currentUserId,
+    );
     setMovedAway({ ids: new Set(selectedIds), from: items });
     setShowBulkMoveModal(false);
     cancelSelectMode();
@@ -1166,6 +1178,9 @@ export default function CollectionFolderScreen() {
         });
         if (updated && previousUploadPath && previousUploadPath !== uploaded.storagePath) {
           await deleteFolderCover(previousUploadPath, currentUserId);
+        } else if (!updated) {
+          // P2.3: the new upload never became this folder's cover — release it.
+          await deleteFolderCover(uploaded.storagePath, currentUserId);
         }
       }
     } catch (e) {

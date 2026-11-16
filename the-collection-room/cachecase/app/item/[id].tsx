@@ -46,6 +46,7 @@ import { BackButton } from '@/components/ui/back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useItemGrailMembership } from '@/hooks/use-item-grail-membership';
 import { useItemImages } from '@/hooks/use-item-images';
+import { invalidateFolderCoversForItemChange } from '@/hooks/use-signed-folder-covers';
 import { useItemLikes } from '@/hooks/use-item-likes';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useRegisteredCardForItem } from '@/hooks/use-registered-card';
@@ -101,6 +102,7 @@ import type {
   PokemonCardDetails,
   TradingCardDetails,
 } from '@/types';
+import { shouldMaterializeLegacyImage } from '@/lib/legacy-item-image';
 
 type EditForm = {
   title: string;
@@ -792,6 +794,25 @@ export default function ItemDetailScreen() {
     registerItem,
     retrySnapshotImage,
   } = useRegisteredCardForItem(id);
+  // P2.3 Issue 4: a photo change can change which image this item's folder
+  // cover resolves to ('first_card' / 'item' covers) — re-sign it now.
+  const itemFolderId = item?.folder_id ?? null;
+  const onGalleryChanged = useCallback(() => {
+    invalidateFolderCoversForItemChange([itemFolderId], currentUserId);
+    // P2.3 (review F2): the server re-derives collection_items.image_url on
+    // every photo change (cleared when the last photo is removed) — keep the
+    // screen's copy authoritative instead of stale.
+    void supabase
+      .from('collection_items')
+      .select('image_url')
+      .eq('id', id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error || !data) return;
+        setItem((prev) => (prev && prev.id === id ? { ...prev, image_url: data.image_url as string | null } : prev));
+      });
+  }, [itemFolderId, currentUserId, id]);
+
   const {
     images: galleryImages,
     loading: galleryLoading,
@@ -804,7 +825,7 @@ export default function ItemDetailScreen() {
     // Route id, not item?.id: the gallery rows (and so the detail-tier
     // signing that follows them) load in parallel with fetchItem rather than
     // after it. RLS filters collection_item_images exactly as before.
-  } = useItemImages(id);
+  } = useItemImages(id, onGalleryChanged);
 
   // The item this screen visit already reported a view for (see fetchItem)
   // — so a re-run of the load effect (e.g. the session resolving after the
@@ -910,13 +931,29 @@ export default function ItemDetailScreen() {
         setOtherForm(otherEntry.adapter.fromItem(item, otherDetails, otherPrivate));
       }
     }
-    if (!galleryLoading && galleryImages.length === 0 && item?.image_url && currentUserId) {
+    if (!galleryLoading && galleryImages.length === 0 && item && currentUserId) {
+      // P2.3 (review F2): decided from AUTHORITATIVE server state only — the
+      // screen's `item.image_url` can still name a photo the owner just
+      // removed (the server cleared it), and re-creating a row from it would
+      // cancel that photo's deletion or point at a deleted file. A failed
+      // read re-creates nothing.
       try {
-        await materializeLegacyItemImage(item.id, currentUserId, item.image_url);
-        await refreshGalleryImages();
+        const [itemRes, galleryRes] = await Promise.all([
+          supabase.from('collection_items').select('image_url').eq('id', item.id).maybeSingle(),
+          supabase.from('collection_item_images').select('id', { count: 'exact', head: true }).eq('item_id', item.id),
+        ]);
+        const serverImageUrl = itemRes.error ? undefined : ((itemRes.data?.image_url as string | null | undefined) ?? null);
+        if (serverImageUrl !== undefined && serverImageUrl !== item.image_url) {
+          setItem((prev) => (prev && prev.id === item.id ? { ...prev, image_url: serverImageUrl } : prev));
+        }
+        if (shouldMaterializeLegacyImage({ serverGalleryCount: galleryRes.error ? null : galleryRes.count, serverImageUrl })) {
+          await materializeLegacyItemImage(item.id, currentUserId, serverImageUrl as string);
+          await refreshGalleryImages();
+        }
       } catch {
         // Best-effort — edit mode still opens; the gallery manager simply
-        // starts empty and the next successful add becomes primary.
+        // starts empty and the next successful add becomes primary. (The
+        // database also refuses a photo whose deletion has started.)
       }
     }
     setEditMode(true);
@@ -1436,6 +1473,8 @@ export default function ItemDetailScreen() {
   // exactly as correct as replacing the whole row would be, with no extra
   // round-trip.
   function handleItemMoved(destinationFolderId: string, folderName: string) {
+    // P2.3 Issue 4: both folders' covers may now resolve differently.
+    invalidateFolderCoversForItemChange([item?.folder_id, destinationFolderId], currentUserId);
     setItem((prev) => (prev ? { ...prev, folder_id: destinationFolderId } : prev));
     setShowMoveModal(false);
     Alert.alert('Moved', `Moved to ${folderName}`);
@@ -1488,6 +1527,7 @@ export default function ItemDetailScreen() {
 
       if (data === null) {
         await cleanupOrphanedItemImages(capturedPaths);
+        invalidateFolderCoversForItemChange([item?.folder_id], currentUserId);
         // Confirmed deleted (despite the ambiguous original response) —
         // mark the own-profile cache stale. See lib/own-profile-cache.ts's
         // own invalidateOwnProfileCache comment.
@@ -1615,6 +1655,8 @@ export default function ItemDetailScreen() {
               }
 
               await cleanupOrphanedItemImages(capturedPaths);
+              // P2.3 Issue 4: the deleted item may have been its folder's cover.
+              invalidateFolderCoversForItemChange([item?.folder_id], currentUserId);
               // Mark the own-profile cache stale — see
               // lib/own-profile-cache.ts's own invalidateOwnProfileCache
               // comment.

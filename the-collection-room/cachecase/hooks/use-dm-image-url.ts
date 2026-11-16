@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
+import { useForegroundGeneration } from '@/lib/app-foreground';
 import { useAuth } from '@/lib/auth';
 import { DM_ATTACHMENTS_BUCKET } from '@/lib/dm-images';
 import {
   DM_ATTACHMENTS_CACHE_DOMAIN,
   mergePersistedSignedUrlEntries,
   readPersistedSignedUrlMap,
+  registerSignedImageMemoryCache,
 } from '@/lib/persisted-signed-url-cache';
+import {
+  classifyPersisted,
+  expiryForAnswer,
+  keyBelongsTo,
+  nextNegativeCount,
+  shouldInvalidate,
+  TRANSIENT_FAILURE_TTL_MS,
+} from '@/lib/signed-image-cache-policy';
 import { supabase } from '@/lib/supabase';
 
 // Signed-URL resolver for private DM photos. Authorization is Storage RLS
@@ -22,8 +32,10 @@ const SIGNED_URL_TTL_S = 3600;
 // Re-sign once an entry is this close to expiry.
 const REFRESH_SKEW_MS = 5 * 60_000;
 // A request-level failure (network) is retried after this, not held for the
-// full TTL. A per-object error (missing/forbidden) is a real answer.
-const FAILURE_TTL_MS = 10_000;
+// full TTL. A per-object error (missing/forbidden) is a real answer — but
+// (P2.3) a short-lived, memory-only one: NEGATIVE_TTL_MS, never persisted and
+// never the 1-hour signed-URL TTL it used to get.
+const FAILURE_TTL_MS = TRANSIENT_FAILURE_TTL_MS;
 const BATCH_WINDOW_MS = 25;
 
 export type DmImageUrlState =
@@ -31,7 +43,7 @@ export type DmImageUrlState =
   | { status: 'ready'; url: string }
   | { status: 'unavailable' };
 
-type Entry = { url: string | null; expiresAt: number };
+type Entry = { url: string | null; expiresAt: number; negatives?: number };
 
 const memory = new Map<string, Entry>(); // `${identity}:${path}`
 const inFlight = new Map<string, Promise<void>>();
@@ -52,6 +64,26 @@ function setEntry(key: string, entry: Entry) {
   });
 }
 
+function deleteEntry(key: string) {
+  if (!memory.delete(key)) return;
+  queueMicrotask(() => {
+    const subs = listeners.get(key);
+    if (subs) for (const notify of [...subs]) notify();
+  });
+}
+
+// Account change / known permission change (lib/persisted-signed-url-cache.ts).
+registerSignedImageMemoryCache({
+  clearIdentity(identity) {
+    for (const k of [...memory.keys()]) if (keyBelongsTo(k, identity)) deleteEntry(k);
+    hydrated.delete(identity);
+  },
+  invalidate(identity, scope) {
+    for (const [k, e] of [...memory.entries()]) if (keyBelongsTo(k, identity) && shouldInvalidate(e, scope)) deleteEntry(k);
+    if (scope === 'all') hydrated.delete(identity);
+  },
+});
+
 let pending: { identity: string; paths: Set<string>; waiters: (() => void)[] } | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -59,17 +91,24 @@ export function dmImageCacheKey(identity: string, path: string) {
   return `${identity}:dm-image:${path}`;
 }
 
+// A signed URL is renewed REFRESH_SKEW_MS early; a negative/failed answer
+// simply lapses at its own (short) expiry — no skew, or it would never count
+// as usable and be re-requested in a loop.
 function usable(entry: Entry | undefined) {
-  return !!entry && entry.expiresAt - REFRESH_SKEW_MS > Date.now();
+  if (!entry) return false;
+  return entry.url ? entry.expiresAt - REFRESH_SKEW_MS > Date.now() : entry.expiresAt > Date.now();
 }
 
 async function hydrate(identity: string) {
   if (hydrated.has(identity)) return;
   hydrated.add(identity);
   const persisted = await readPersistedSignedUrlMap(DM_ATTACHMENTS_CACHE_DOMAIN, identity);
+  const now = Date.now();
   for (const [path, entry] of Object.entries(persisted)) {
     const key = `${identity}:${path}`;
-    if (!memory.has(key)) setEntry(key, entry);
+    // Only still-valid signed URLs; an expired one or an old persisted
+    // negative is never revived (it is simply re-signed).
+    if (!memory.has(key) && classifyPersisted(entry, now) === 'usable') setEntry(key, entry);
   }
 }
 
@@ -87,12 +126,16 @@ async function flush(batch: { identity: string; paths: Set<string>; waiters: (()
       const byPath = new Map(data.map((d) => [d.path, d]));
       for (const p of paths) {
         const r = byPath.get(p);
-        const entry: Entry =
-          r && !r.error && r.signedUrl
-            ? { url: r.signedUrl, expiresAt: now + SIGNED_URL_TTL_S * 1000 }
-            : { url: null, expiresAt: now + SIGNED_URL_TTL_S * 1000 };
+        const url = r && !r.error && r.signedUrl ? r.signedUrl : null;
+        // Review F3: repeated "unavailable" answers back off (20 → … → 300 s).
+        const negatives = url ? undefined : nextNegativeCount(memory.get(`${batch.identity}:${p}`));
+        const entry: Entry = {
+          url,
+          expiresAt: expiryForAnswer(url, now, SIGNED_URL_TTL_S * 1000, negatives),
+          ...(negatives ? { negatives } : {}),
+        };
         setEntry(`${batch.identity}:${p}`, entry);
-        toPersist[p] = entry;
+        if (url) toPersist[p] = entry;
       }
       mergePersistedSignedUrlEntries(DM_ATTACHMENTS_CACHE_DOMAIN, batch.identity, toPersist).catch(() => {});
     }
@@ -137,7 +180,11 @@ function request(identity: string, path: string): Promise<void> {
 
 function stateFor(entry: Entry | undefined): DmImageUrlState {
   if (!entry) return { status: 'loading' };
-  return entry.url ? { status: 'ready', url: entry.url } : { status: 'unavailable' };
+  if (entry.url) {
+    // An expired authorization is never displayed (P2.3); it is re-signed.
+    return entry.expiresAt > Date.now() ? { status: 'ready', url: entry.url } : { status: 'loading' };
+  }
+  return { status: 'unavailable' };
 }
 
 export function useDmImageUrl(path: string | null): DmImageUrlState {
@@ -167,19 +214,35 @@ export function useDmImageUrl(path: string | null): DmImageUrlState {
     [key],
   );
   const entry = useSyncExternalStore(subscribe, () => (key ? memory.get(key) : undefined));
+  const foregroundGeneration = useForegroundGeneration();
 
+  // Re-runs on mount, on return to the foreground, and whenever the entry
+  // changes — so a short-lived negative or failed answer (or an entry dropped
+  // by an invalidation) is re-signed when it lapses instead of staying blank
+  // until the screen remounts.
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     (async () => {
       await hydrate(identity);
       if (cancelled) return;
-      if (!usable(memory.get(`${identity}:${path}`))) await request(identity, path);
+      const current = memory.get(`${identity}:${path}`);
+      if (!usable(current)) {
+        await request(identity, path);
+        return;
+      }
+      if (current && !current.url) {
+        timer = setTimeout(() => {
+          if (!cancelled) void request(identity, path);
+        }, Math.max(current.expiresAt - Date.now(), 1_000));
+      }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [identity, path]);
+  }, [identity, path, entry, foregroundGeneration]);
 
   if (!key) return { status: 'unavailable' };
   return stateFor(entry);

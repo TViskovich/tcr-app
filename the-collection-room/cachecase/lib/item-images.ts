@@ -135,36 +135,41 @@ export type AddItemImagesResult = {
   failed: number;
 };
 
-// Best-effort Storage cleanup for item-images objects uploaded by
-// addItemImages but proven to have no corresponding collection_item_images
-// row — either because the batch INSERT was definitively rejected, or
-// because post-ambiguity reconciliation (see addItemImages below) confirmed
-// a given path's row never committed. Never throws — a cleanup failure here
-// must never replace or mask the original insert failure the caller is
-// already being told about. Same never-throws, __DEV__-only-logging
-// convention as removeItemImage's own Storage cleanup above; kept as its
-// own small helper (not merged into that one) to keep this slice scoped to
-// addItemImages only.
-export async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
-  if (!paths.length) return;
-  try {
-    const { error } = await supabase.storage.from('item-images').remove(paths);
-    if (error && __DEV__) {
-      console.warn(
-        `[addItemImages] failed to clean up ${paths.length} orphaned storage object(s):`,
-        paths,
-        error.message,
-      );
-    }
-  } catch (e) {
-    if (__DEV__) {
-      console.warn(
-        `[addItemImages] unexpected error cleaning up ${paths.length} orphaned storage object(s):`,
-        paths,
-        e,
-      );
+// P2.3 Issue 1: the item-images bucket has NO Storage SELECT policy (on
+// purpose — reads go through the signed-delivery Edge Functions), so a
+// client-side storage.remove() on it silently matches 0 objects. Deletion is
+// therefore SERVER-side:
+//   * removing a photo / deleting an item or folder / replacing a cover is
+//     recorded by database triggers in the same transaction
+//     (20261204120000_item_image_deletion_ledger.sql) — nothing to do here;
+//   * an upload that never got a row (a rejected or ambiguous insert, a cover
+//     whose folder update failed) is handed to request_item_upload_cleanup,
+//     which accepts only the caller's own existing objects and deletes them
+//     after a 24 h grace unless something references them by then.
+// Never throws: cleanup must never mask the result the caller is reporting.
+// Against a backend without the RPC yet, this is a harmless no-op (exactly
+// what the old client remove() effectively was).
+const UPLOAD_CLEANUP_CHUNK = 10;
+
+export async function requestItemImageCleanup(paths: string[], context = 'item-images'): Promise<void> {
+  const unique = [...new Set(paths.filter((p) => typeof p === 'string' && p.length > 0))];
+  for (let i = 0; i < unique.length; i += UPLOAD_CLEANUP_CHUNK) {
+    const chunk = unique.slice(i, i + UPLOAD_CLEANUP_CHUNK);
+    try {
+      const { error } = await supabase.rpc('request_item_upload_cleanup', { p_paths: chunk });
+      if (error && __DEV__) console.warn(`[${context}] cleanup request failed for ${chunk.length} object(s):`, error.message);
+    } catch (e) {
+      if (__DEV__) console.warn(`[${context}] cleanup request threw for ${chunk.length} object(s):`, e);
     }
   }
+}
+
+// Uploads proven to have no collection_item_images row (see addItemImages),
+// or the photos of an item whose delete outcome was ambiguous and then
+// confirmed (app/item/[id].tsx) — server-side cleanup, see above.
+export async function cleanupOrphanedItemImages(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  await requestItemImageCleanup(paths, 'addItemImages');
 }
 
 // Best-effort parent-sync for the first-ever gallery image added to an
@@ -387,40 +392,16 @@ export async function addItemImages(
   return { added: insertedRows, failed: failed + extraFailed };
 }
 
-// Deletes the gallery row (via the remove_item_image RPC, which also
-// promotes a new primary and syncs collection_items.image_url atomically —
-// see the migration), then deletes the underlying Storage object so
-// nothing is left orphaned. Storage cleanup runs after the DB row is
-// already gone; if it fails, the row is still correctly gone and the
-// object is merely an orphaned file rather than a dangling reference.
+// Deletes the gallery row via the remove_item_image RPC (which also promotes
+// a new primary and syncs collection_items.image_url atomically). The Storage
+// object is deleted SERVER-side: the row delete records it in the deletion
+// ledger in the same transaction (P2.3 Issue 1) — the client-side remove()
+// this used to do could never succeed (no SELECT policy on item-images).
 export async function removeItemImage(imageId: string): Promise<void> {
-  const { data: storagePath, error } = await supabase.rpc('remove_item_image', {
+  const { error } = await supabase.rpc('remove_item_image', {
     p_image_id: imageId,
   });
   if (error) throw new Error(error.message);
-  if (storagePath) {
-    // Best-effort only — the RPC above already committed the authoritative
-    // DB deletion, so a failure removing the underlying object (resolved
-    // {error} or a thrown exception) must never surface to the caller as a
-    // failed removeItemImage(); it's an orphaned Storage object, not a
-    // failed delete. Same never-throws convention as lib/storage.ts's
-    // deleteProfileImage.
-    try {
-      const { error: storageError } = await supabase.storage
-        .from('item-images')
-        .remove([storagePath as string]);
-      if (storageError && __DEV__) {
-        console.warn(
-          `[removeItemImage] failed to remove storage object ${storagePath}:`,
-          storageError.message,
-        );
-      }
-    } catch (e) {
-      if (__DEV__) {
-        console.warn(`[removeItemImage] unexpected error removing storage object ${storagePath}:`, e);
-      }
-    }
-  }
 }
 
 export async function setPrimaryItemImage(itemId: string, imageId: string): Promise<void> {

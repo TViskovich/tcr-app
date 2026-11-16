@@ -1,6 +1,7 @@
 import { ACCOUNT_INACTIVE_MESSAGE, ACCOUNT_UNAVAILABLE_MESSAGE } from '@/lib/account-errors';
 import { clearInboxSnapshot } from '@/lib/dm-inbox';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
+import { invalidateSignedImages } from '@/lib/persisted-signed-url-cache';
 import { removeRecentProfile } from '@/lib/recent-profiles';
 import { supabase } from '@/lib/supabase';
 import { forgetVisitedProfile } from '@/lib/visited-profile-cache';
@@ -81,6 +82,13 @@ export function subscribeBlockChanges(listener: (change: BlockChange) => void): 
 // what an unblock restores). Supabase stays authoritative: every screen
 // still revalidates on focus; this only stops stale snapshots being shown.
 function afterBlockChange(viewerId: string, userId: string, blocked: boolean) {
+  // P2.3: a known permission change on THIS device. A block may revoke
+  // images this account had signed (drop every signed entry, memory and
+  // persisted); an unblock may restore ones it was refused (drop only the
+  // short-lived "unavailable" answers). Mounted screens re-sign either way.
+  // The other collector's device gets no signal — it converges through the
+  // short negative TTL and the signed-URL TTL (lib/signed-image-cache-policy.ts).
+  invalidateSignedImages(viewerId, blocked ? 'all' : 'negatives');
   forgetVisitedProfile(viewerId, userId);
   invalidateOwnProfileCache(viewerId); // follow counts change when a block removes follows
   clearInboxSnapshot();

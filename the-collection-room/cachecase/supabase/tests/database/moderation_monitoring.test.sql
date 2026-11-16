@@ -71,7 +71,7 @@ SELECT is((SELECT delivery_enabled::text || ':' || urgent_report_minutes FROM pr
 SELECT is((SELECT schedule || '|' || active::text || '|' || command FROM cron.job WHERE jobname = 'moderation-monitor'),
   '*/5 * * * *|false|SELECT private.run_moderation_monitor()', 'monitor job: every 5 minutes, created INACTIVE');
 SELECT is((SELECT string_agg(jobname || ':' || active::text, ',' ORDER BY jobname) FROM cron.job),
-  'account-deletion-monitor:false,account-maintenance:false,media-quarantine-worker:false,moderation-monitor:false',
+  'account-deletion-monitor:false,account-maintenance:false,item-image-cleanup:false,media-quarantine-worker:false,moderation-monitor:false',
   'every scheduled job is inactive; existing ones unchanged');
 SELECT is((SELECT count(*)::int FROM unnest(ARRAY['public.moderation_monitoring_claim()', 'public.moderation_monitoring_record_delivery(uuid,text,text[])',
              'public.moderation_monitoring_report_channels(text,text)']::regprocedure[]) f JOIN pg_proc p ON p.oid = f

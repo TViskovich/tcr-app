@@ -24,7 +24,9 @@ export default function ProfileScreen() {
     );
   }
 
-  return <ProfileV2Screen userId={userId} />;
+  // key: P2.3 (B8a) — ProfileV2Screen seeds its state (cache seed, posts)
+  // once per mount; a different account must always get a fresh mount.
+  return <ProfileV2Screen key={userId} userId={userId} />;
 }
 
 const styles = StyleSheet.create({

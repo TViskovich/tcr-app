@@ -9,6 +9,7 @@ import { useIsAdmin } from '@/hooks/use-is-admin';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import {
   loadDeliveryHistory,
+  loadImageCleanupStatus,
   loadIssueHistory,
   loadMonitoringOverview,
   loadPurgeDashboard,
@@ -27,6 +28,9 @@ import {
 import {
   age,
   ago,
+  imageCleanupEntryState,
+  imageCleanupErrorLabel,
+  imageCleanupSummary,
   CATEGORY_LABEL,
   channelHealth,
   channelLabel,
@@ -45,6 +49,7 @@ import {
   SEVERITY_LABEL,
   severityTone,
   STATUS_LABEL,
+  type ImageCleanupStatus,
   type MonitoringOverview,
   type OpenIssue,
   type PurgeRun,
@@ -85,6 +90,7 @@ export default function MonitoringScreen() {
   const [runs, setRuns] = useState<Section<{ items: SchedulerRun[]; next: string | null }>>(loading);
   const [deliveries, setDeliveries] = useState<Section<DeliveryHistory>>(loading);
   const [purge, setPurge] = useState<Section<PurgeDashboard>>(loading);
+  const [imageCleanup, setImageCleanup] = useState<Section<ImageCleanupStatus>>(loading);
   const [purgeFilter, setPurgeFilter] = useState<PurgeRun['status'] | null>(null);
   const [issueTab, setIssueTab] = useState<'open' | 'resolved'>('open');
   const [resolved, setResolved] = useState<Section<{ items: IssueHistoryItem[]; next: string | null }>>(loading);
@@ -124,11 +130,12 @@ export default function MonitoringScreen() {
         loadMonitoringOverview(), loadQuarantineOverview(), loadSchedulerStatus(), loadSchedulerRuns(), loadDeliveryHistory(),
         loadPurgeDashboard(purgeFilter),
         issueTab === 'resolved' ? loadIssueHistory('resolved') : Promise.resolve(null),
+        loadImageCleanupStatus(),
       ] as const),
     [purgeFilter, issueTab],
   );
   const applyAll = useCallback(
-    ([o, q, s, r, d, p, h]: Awaited<ReturnType<typeof fetchAll>>) => {
+    ([o, q, s, r, d, p, h, ic]: Awaited<ReturnType<typeof fetchAll>>) => {
       setNow(Date.now());
       apply(o, setOverview);
       apply(q, setQuarantine);
@@ -137,6 +144,7 @@ export default function MonitoringScreen() {
       apply(d, setDeliveries);
       apply(p, setPurge);
       if (h) apply(h.kind === 'ok' ? { kind: 'ok' as const, data: { items: h.data.items, next: h.data.next_before } } : h, setResolved);
+      apply(ic, setImageCleanup);
     },
     [apply],
   );
@@ -329,6 +337,45 @@ export default function MonitoringScreen() {
                   {q.needs_attention.length > 5 ? (
                     <More label={showAllFlagged ? 'Show fewer' : `Show all ${q.needs_attention.length}`} onPress={() => setShowAllFlagged((v) => !v)} />
                   ) : null}
+                </Card>
+              );
+            }}
+          </SectionBody>
+
+          {/* ── Item-image cleanup (P2.3) — read-only ─────────────────── */}
+          <SectionTitle title="Image cleanup" />
+          <SectionBody section={imageCleanup} what="image cleanup">
+            {(ic) => {
+              const sum = imageCleanupSummary(ic, now);
+              const categories = Object.entries(ic.error_categories);
+              return (
+                <Card>
+                  <StatusRow label="Deletion worker" value={sum.label} tone={sum.tone} detail={sum.detail} />
+                  <View style={styles.stats}>
+                    <Stat label="Failed" value={ic.failed} tone={ic.failed ? 'critical' : 'ok'} />
+                    <Stat label="Retrying" value={ic.retrying} tone={ic.retrying ? 'warning' : 'ok'} />
+                    <Stat label="Due" value={ic.due} tone="neutral" />
+                    <Stat label="Deleted" value={ic.by_state.deleted ?? 0} tone="off" />
+                  </View>
+                  {categories.length ? (
+                    <Text style={styles.meta}>
+                      Errors: {categories.map(([code, n]) => `${imageCleanupErrorLabel(code)} ${n}`).join(' · ')}
+                    </Text>
+                  ) : null}
+                  {ic.needs_attention.length ? <Text style={styles.groupLabel}>Entries needing attention</Text> : null}
+                  {ic.needs_attention.map((e) => (
+                    <View key={e.id} style={styles.line}>
+                      <Text style={styles.lineMain} numberOfLines={1}>
+                        {e.source.replace(/_/g, ' ')} · {imageCleanupEntryState(e)} · {imageCleanupErrorLabel(e.last_error_code)}
+                      </Text>
+                      <Text style={styles.lineSide}>
+                        {e.owner_username ? `@${e.owner_username}` : 'deleted account'} · {ago(e.updated_at, now)}
+                      </Text>
+                      <Text style={styles.refId} selectable>
+                        entry {e.id}{e.item_id ? ` · item ${e.item_id}` : ''}
+                      </Text>
+                    </View>
+                  ))}
                 </Card>
               );
             }}

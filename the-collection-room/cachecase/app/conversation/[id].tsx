@@ -63,6 +63,7 @@ import { supabase } from '@/lib/supabase';
 import { BLOCK_COPY, blockCollector, getBlockStatus, subscribeBlockChanges, unblockCollector } from '@/lib/user-blocks';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 import { BETA_FEATURES } from '@/lib/beta-features';
+import { resetSignedImageNegatives } from '@/lib/persisted-signed-url-cache';
 
 // Extra clearance so the composer sits above the globally-rendered floating
 // tab bar (components/navigation/global-floating-tab-bar.tsx, rendered as a
@@ -686,6 +687,7 @@ export default function ConversationScreen() {
   }, [convId, meta, messages]);
 
   const onRefresh = useCallback(async () => {
+    resetSignedImageNegatives(); // P2.3 (F3): re-check "unavailable" images now
     refreshControllerRef.current?.abort();
     const controller = new AbortController();
     refreshControllerRef.current = controller;

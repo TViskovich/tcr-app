@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import {
+  classifyPersisted,
+  persistablePatch,
+  type InvalidationScope,
+} from '@/lib/signed-image-cache-policy';
+
 // Small, shared AsyncStorage plumbing for hooks/use-signed-item-images.ts
 // and hooks/use-signed-folder-covers.ts's own persisted signed-URL cache
 // (Phase 1 of the private-image caching upgrade). Deliberately just the
@@ -17,12 +23,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // together.
 
 export type PersistedSignedUrlEntry = {
-  // null means a real, server-considered "unavailable" answer (not found,
-  // or not authorized) — a genuine decision worth remembering across an app
-  // kill, same as a resolved URL. A transient request-level failure is
-  // NEVER represented here at all; callers must not persist those (see
-  // FAILURE_TTL_MS in either hook) — an entry only exists in this store
-  // once it has a real expiresAt.
+  // P2.3: only real signed URLs are ever persisted. A server "unavailable"
+  // answer is short-lived and memory-only (lib/signed-image-cache-policy.ts —
+  // persisting it is what kept unblocked images blank, B7c); null stays in
+  // the type only so entries written by older builds still parse, and they
+  // are ignored on read.
   url: string | null;
   // Epoch ms — the same clock/shape as each hook's own in-memory
   // CacheEntry.expiresAt, so a value read back from here can be dropped
@@ -54,6 +59,7 @@ export function setActiveSignedUrlIdentity(identity: string): void {
   // session (see readPersistedSignedUrlMap).
   void readPersistedSignedUrlMap(ITEM_IMAGES_CACHE_DOMAIN, identity);
   void readPersistedSignedUrlMap(FOLDER_COVERS_CACHE_DOMAIN, identity);
+  void sweepLegacySignedUrlCaches();
 }
 
 // True until the first identity is observed, then only for that identity.
@@ -78,7 +84,24 @@ export const FOLDER_COVERS_CACHE_DOMAIN = 'folder-covers';
 // storage path, never mixed with item-image ids.
 export const DM_ATTACHMENTS_CACHE_DOMAIN = 'dm-attachments';
 
-const STORAGE_KEY_PREFIX = 'cachecase:signed-url-cache:v1';
+// v2 (P2.3): v1 blobs may hold persisted "unavailable" answers from older
+// builds, so they are dropped once (sweepLegacySignedUrlCaches) rather than
+// read. An older build reinstalled over this one simply ignores v2 keys.
+const STORAGE_KEY_PREFIX = 'cachecase:signed-url-cache:v2';
+const LEGACY_KEY_PREFIXES = ['cachecase:signed-url-cache:v1:'];
+
+let legacySwept = false;
+export async function sweepLegacySignedUrlCaches(): Promise<void> {
+  if (legacySwept) return;
+  legacySwept = true;
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const legacy = keys.filter((k) => LEGACY_KEY_PREFIXES.some((p) => k.startsWith(p)));
+    if (legacy.length) await AsyncStorage.multiRemove(legacy);
+  } catch {
+    // best-effort — legacy keys are never read either way
+  }
+}
 
 function storageKey(domain: string, identity: string): string {
   return `${STORAGE_KEY_PREFIX}:${domain}:${identity}`;
@@ -113,7 +136,8 @@ async function loadMap(key: string): Promise<PersistedMap> {
     if (!parsed || typeof parsed !== 'object') return {};
     const out: PersistedMap = {};
     for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
-      if (isValidEntry(entry)) out[id] = entry;
+      // A persisted negative (older build) is ignored, never revived.
+      if (isValidEntry(entry) && classifyPersisted(entry, 0) !== 'ignore') out[id] = entry;
     }
     return out;
   } catch {
@@ -165,6 +189,8 @@ export async function mergePersistedSignedUrlEntries(
   identity: string,
   patch: PersistedMap,
 ): Promise<void> {
+  // Never persist a negative answer, whatever the caller passes.
+  patch = persistablePatch(patch);
   if (!Object.keys(patch).length) return;
   // Never re-persist a departed identity's entries after its purge.
   if (!isActiveSignedUrlIdentity(identity)) return;
@@ -220,5 +246,70 @@ export async function purgePersistedSignedUrlCache(domain: string, identity: str
     // entries linger until they expire naturally (still identity-scoped,
     // never readable by a different identity's key) rather than blocking
     // sign-out.
+  }
+}
+
+// ── In-memory cache registry (P2.3) ─────────────────────────────────────────
+// The signing hooks keep module-level in-memory caches. lib/auth.tsx and
+// lib/user-blocks.ts must be able to clear or invalidate them without
+// importing the hooks (circular dependency — see ITEM_IMAGES_CACHE_DOMAIN's
+// comment), so each hook module registers itself here.
+export type SignedImageMemoryCache = {
+  // Drop everything held for this identity (account change / sign-out).
+  clearIdentity(identity: string): void;
+  // Drop the entries a permission change may have made wrong, for this
+  // identity, and make mounted screens re-sign.
+  invalidate(identity: string, scope: InvalidationScope): void;
+};
+
+const memoryCaches = new Set<SignedImageMemoryCache>();
+
+export function registerSignedImageMemoryCache(c: SignedImageMemoryCache): () => void {
+  memoryCaches.add(c);
+  return () => {
+    memoryCaches.delete(c);
+  };
+}
+
+export function clearSignedImageMemory(identity: string): void {
+  for (const c of memoryCaches) {
+    try {
+      c.clearIdentity(identity);
+    } catch {
+      // never let one cache block the others
+    }
+  }
+}
+
+const PERSISTED_DOMAINS = () => [ITEM_IMAGES_CACHE_DOMAIN, FOLDER_COVERS_CACHE_DOMAIN, DM_ATTACHMENTS_CACHE_DOMAIN];
+
+// A known permission change for `identity` (a block or unblock made on this
+// device). 'all' also drops that identity's persisted URLs, so nothing
+// signed before the change is revived after a restart.
+export function invalidateSignedImages(identity: string, scope: InvalidationScope): void {
+  for (const c of memoryCaches) {
+    try {
+      c.invalidate(identity, scope);
+    } catch {
+      // never let one cache block the others
+    }
+  }
+  if (scope === 'all') {
+    for (const domain of PERSISTED_DOMAINS()) purgePersistedSignedUrlCache(domain, identity).catch(() => {});
+  }
+}
+
+// An explicit refresh by the user (pull-to-refresh on a screen showing private
+// images): drop the active identity's short-lived "unavailable" answers so they
+// are re-checked now and their backoff restarts (review F3). Signed URLs are
+// kept — nothing persisted is touched.
+export function resetSignedImageNegatives(): void {
+  if (activeSignedUrlIdentity === undefined) return;
+  for (const c of memoryCaches) {
+    try {
+      c.invalidate(activeSignedUrlIdentity, 'negatives');
+    } catch {
+      // never let one cache block the others
+    }
   }
 }

@@ -32,6 +32,11 @@
       "deployed": false,
       "why": "called by pg_net (kick/sweep, OFF by default) or an operator with MEDIA_QUARANTINE_WORKER_SECRET (not a JWT); checks it itself, then the database must open the run; quarantine only"
     },
+    "item-image-cleanup": {
+      "verify_jwt": false,
+      "deployed": false,
+      "why": "P2.3: called by pg_net (item-image-cleanup sweep, created INACTIVE) or an operator with ITEM_IMAGE_CLEANUP_WORKER_SECRET (not a JWT); checks it itself, then the database must open the run; deletes only ledger entries the database claims (item-images only)"
+    },
     "moderation-monitor": {
       "verify_jwt": false,
       "deployed": false,

@@ -1,4 +1,5 @@
 import { attachPrimaryImageIds } from '@/lib/item-images';
+import { notifyOwnPostsChanged } from '@/lib/own-profile-refresh';
 import { supabase } from '@/lib/supabase';
 
 // "Share Folder" feed post (post_type 'folder_share') — see
@@ -136,5 +137,6 @@ export async function createFolderSharePost(
     const reason = typeof data?.reason === 'string' ? data.reason : (error ? 'request_failed' : 'unknown');
     return { ok: false, message: reason };
   }
+  notifyOwnPostsChanged();
   return { ok: true, postId: data.post_id };
 }

@@ -1,6 +1,8 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PostCard, type FeedPost } from '@/components/feed/post-card';
+import { showPostsRefreshError } from '@/lib/own-profile-refresh';
+
 import { PV2 } from './profile-v2-theme';
 
 type Props = {
@@ -74,6 +76,18 @@ export function ProfileV2Posts({
 
   return (
     <View style={styles.list}>
+      {/* P2.3 (B8a, D4): a failed refresh while an older list is shown used
+          to be silent — the list just never updated. */}
+      {showPostsRefreshError({ error: error ?? null, postCount: posts.length }) && (
+        <View style={styles.refreshBanner} accessibilityRole="alert">
+          <Text style={styles.refreshBannerText}>Couldn&apos;t refresh posts.</Text>
+          {onRetry && (
+            <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.refreshBannerAction}>Retry</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
       {posts.map((post) => {
         // A repost shows its ORIGINAL post (author, content, source links);
         // engagement and delete stay on the repost entry itself.
@@ -111,6 +125,24 @@ const styles = StyleSheet.create({
   list: {
     paddingHorizontal: 16,
     gap: 12,
+  },
+  refreshBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PV2.panel,
+  },
+  refreshBannerText: {
+    color: PV2.textSecondary,
+    fontSize: 13,
+  },
+  refreshBannerAction: {
+    color: PV2.link,
+    fontSize: 13,
+    fontWeight: '600',
   },
   empty: {
     alignItems: 'center',

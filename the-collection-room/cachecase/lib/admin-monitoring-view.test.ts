@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  age, channelHealth, channelLabel, groupIssues, issueStatus, monitoringSummary, purgeApproval, purgeAuthority, queueSummary, schedulerSummary,
-  type MonitoringOverview, type OpenIssue, type PurgeRun,
+  age, channelHealth, channelLabel, groupIssues, imageCleanupEntryState, imageCleanupErrorLabel, imageCleanupSummary, issueStatus, monitoringSummary,
+  purgeApproval, purgeAuthority, queueSummary, schedulerSummary,
+  type ImageCleanupStatus, type MonitoringOverview, type OpenIssue, type PurgeRun,
 } from './admin-monitoring-view.ts';
 
 const NOW = Date.parse('2026-11-12T12:00:00Z');
@@ -102,4 +103,27 @@ test('purge authority: privileges shown, too few authorised admins flagged', () 
   const none = purgeAuthority({ preparer: true, approver: false }, { preparers: 1, approvers: 0 });
   assert.match(none.note ?? '', /purging is blocked/);
   assert.equal(none.tone, 'warning');
+});
+
+const cleanup = (o: Partial<ImageCleanupStatus> = {}): ImageCleanupStatus => ({
+  enabled: true, sweep_active: true, by_state: {}, due: 0, failed: 0, retrying: 0, referenced_after_claim: 0,
+  error_categories: {}, needs_attention: [], last_completed_at: iso(3), last_failed_at: null, ...o,
+});
+
+test('image cleanup (F7): failed and referenced-after-claim are critical; retrying is a warning; off is off', () => {
+  assert.equal(imageCleanupSummary(cleanup(), NOW).tone, 'ok');
+  assert.equal(imageCleanupSummary(cleanup({ retrying: 2 }), NOW).tone, 'warning');
+  assert.deepEqual(imageCleanupSummary(cleanup({ failed: 1, retrying: 2 }), NOW).label, '1 failed');
+  assert.equal(imageCleanupSummary(cleanup({ failed: 1 }), NOW).tone, 'critical');
+  assert.equal(imageCleanupSummary(cleanup({ referenced_after_claim: 1, failed: 3 }), NOW).label, 'Needs attention');
+  assert.equal(imageCleanupSummary(cleanup({ enabled: false, sweep_active: false, due: 4 }), NOW).tone, 'off');
+});
+
+test('image cleanup (F7): entry states and error categories read plainly', () => {
+  assert.equal(imageCleanupEntryState({ state: 'failed', attempts: 5, last_reason: null }), 'failed after 5 attempts');
+  assert.equal(imageCleanupEntryState({ state: 'pending', attempts: 2, last_reason: null }), 'retry 2 of 5');
+  assert.equal(imageCleanupEntryState({ state: 'kept', attempts: 1, last_reason: 'referenced_after_claim' }), 'referenced after deletion began');
+  assert.equal(imageCleanupErrorLabel('storage_error'), 'Storage error');
+  assert.equal(imageCleanupErrorLabel('lease_deadline'), 'Run took too long');
+  assert.equal(imageCleanupErrorLabel(null), 'no error code');
 });

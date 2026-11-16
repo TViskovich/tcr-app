@@ -1,3 +1,4 @@
+import { notifyOwnPostsChanged } from './own-profile-refresh';
 import { supabase } from './supabase';
 
 export type DeletePostResult = { status: 'ok' } | { status: 'failed'; reason: string };
@@ -23,6 +24,7 @@ export async function deletePost(postId: string): Promise<DeletePostResult> {
     if (__DEV__) console.warn('[deletePost] failed:', reason, error ?? data);
     return { status: 'failed', reason };
   }
+  notifyOwnPostsChanged();
   return { status: 'ok' };
 }
 
@@ -39,8 +41,10 @@ export async function repostPost(userId: string, originalPostId: string): Promis
   const { error } = await supabase
     .from('posts')
     .insert({ user_id: userId, post_type: 'repost', repost_of_post_id: originalPostId });
-  if (!error) return { status: 'ok' };
-  if (error.code === '23505') return { status: 'ok' };
+  if (!error || error.code === '23505') {
+    notifyOwnPostsChanged();
+    return { status: 'ok' };
+  }
   if (__DEV__) console.warn('[repostPost] failed:', error.code, error.message);
   if (error.code === '23503') return { status: 'failed', reason: 'not_found' };
   return { status: 'failed', reason: 'request_failed' };
@@ -56,7 +60,10 @@ export async function undoRepost(userId: string, originalPostId: string): Promis
     .delete()
     .eq('user_id', userId)
     .eq('repost_of_post_id', originalPostId);
-  if (!error) return { status: 'ok' };
+  if (!error) {
+    notifyOwnPostsChanged();
+    return { status: 'ok' };
+  }
   if (__DEV__) console.warn('[undoRepost] failed:', error.code, error.message);
   return { status: 'failed', reason: 'request_failed' };
 }
@@ -79,7 +86,10 @@ export async function createQuotePost(userId: string, quotedPostId: string, comm
   const { error } = await supabase
     .from('posts')
     .insert({ user_id: userId, post_type: 'quote', quote_of_post_id: quotedPostId, content });
-  if (!error) return { status: 'ok' };
+  if (!error) {
+    notifyOwnPostsChanged();
+    return { status: 'ok' };
+  }
   if (__DEV__) console.warn('[createQuotePost] failed:', error.code, error.message);
   if (error.code === '23503') return { status: 'failed', reason: 'not_found' };
   if (error.code === '23514') return { status: 'failed', reason: 'invalid' };

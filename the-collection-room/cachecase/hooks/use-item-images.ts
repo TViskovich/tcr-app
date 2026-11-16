@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   addItemImages,
@@ -17,7 +17,21 @@ import type { CollectionItemImage } from '@/types';
 // locally (remove, reorder) and roll back on failure; all of them refresh
 // from the server afterward so sort_order/is_primary renumbering done by
 // the RPC helpers (see lib/item-images.ts) is always reflected exactly.
-export function useItemImages(itemId: string | undefined) {
+// onChanged (optional, P2.3 Issue 4): called after every SUCCESSFUL server
+// mutation of this item's photos — the caller uses it to refresh caches that
+// derive from the item's primary photo (its folder's first-card / item cover).
+export function useItemImages(itemId: string | undefined, onChanged?: () => void) {
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+  const notifyChanged = useCallback(() => {
+    try {
+      onChangedRef.current?.();
+    } catch {
+      // a cache refresh must never turn a successful mutation into a failure
+    }
+  }, []);
   const [images, setImages] = useState<CollectionItemImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
@@ -46,13 +60,14 @@ export function useItemImages(itemId: string | undefined) {
       setMutating(true);
       try {
         const result = await addItemImages(itemId, userId, uris);
+        if (result.added.length) notifyChanged();
         await refresh();
         return result;
       } finally {
         setMutating(false);
       }
     },
-    [itemId, refresh],
+    [itemId, refresh, notifyChanged],
   );
 
   const removeImage = useCallback(
@@ -62,6 +77,7 @@ export function useItemImages(itemId: string | undefined) {
       setMutating(true);
       try {
         await removeItemImage(imageId);
+        notifyChanged();
         await refresh();
       } catch (e) {
         setImages(prev);
@@ -70,7 +86,7 @@ export function useItemImages(itemId: string | undefined) {
         setMutating(false);
       }
     },
-    [images, refresh],
+    [images, refresh, notifyChanged],
   );
 
   const setPrimary = useCallback(
@@ -79,12 +95,13 @@ export function useItemImages(itemId: string | undefined) {
       setMutating(true);
       try {
         await setPrimaryItemImage(itemId, imageId);
+        notifyChanged();
         await refresh();
       } finally {
         setMutating(false);
       }
     },
-    [itemId, refresh],
+    [itemId, refresh, notifyChanged],
   );
 
   const reorder = useCallback(
@@ -103,6 +120,7 @@ export function useItemImages(itemId: string | undefined) {
       setMutating(true);
       try {
         await reorderItemImages(itemId, orderedIds);
+        notifyChanged();
         await refresh();
       } catch (e) {
         setImages(prev);
@@ -111,7 +129,7 @@ export function useItemImages(itemId: string | undefined) {
         setMutating(false);
       }
     },
-    [images, itemId, refresh],
+    [images, itemId, refresh, notifyChanged],
   );
 
   return { images, loading, mutating, refresh, addImages, removeImage, setPrimary, reorder };

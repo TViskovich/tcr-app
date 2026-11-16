@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 import { useAuth } from '@/lib/auth';
@@ -9,7 +9,18 @@ import {
   ITEM_IMAGES_CACHE_DOMAIN,
   mergePersistedSignedUrlEntries,
   readPersistedSignedUrlMap,
+  registerSignedImageMemoryCache,
 } from '@/lib/persisted-signed-url-cache';
+import {
+  canDisplayStale,
+  canDisplayStaleNow,
+  classifyPersisted,
+  expiryForAnswer,
+  nextNegativeCount,
+  keyBelongsTo,
+  shouldInvalidate,
+  TRANSIENT_FAILURE_TTL_MS,
+} from '@/lib/signed-image-cache-policy';
 import { supabase, supabaseAnonKey, supabaseFunctionsRegion, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-collection-item-image-signed-url Edge
@@ -79,7 +90,7 @@ const RETRYABLE_STATUSES = new Set([408, 429]);
 // isTransientFailure are NEVER written to the persisted AsyncStorage layer
 // (see the runPass loop below) — only a real answer (success or a
 // considered 'unavailable') is worth remembering across an app kill.
-const FAILURE_TTL_MS = 10_000;
+const FAILURE_TTL_MS = TRANSIENT_FAILURE_TTL_MS;
 
 // Delay before the single bounded follow-up pass (see the fetch effect
 // below) — shorter than FAILURE_TTL_MS on purpose: this only needs to give
@@ -126,6 +137,11 @@ type CacheEntry = {
   servedTier?: ImageTier;
   lastUrl?: string;
   lastServedTier?: ImageTier;
+  // When lastUrl's own authorization expired (P2.3): the last good image is
+  // shown only within STALE_DISPLAY_GRACE_MS of this, never indefinitely.
+  lastUrlExpiresAt?: number;
+  // Consecutive "unavailable" answers for this key (backoff, review F3).
+  negatives?: number;
 };
 
 // Module-level, in-memory first-level cache, shared across every hook
@@ -151,7 +167,26 @@ const cache = new Map<string, CacheEntry>();
 // expired URL can't fetch anything from the network (the token is dead), but
 // handed to expo-image with the image's stable cacheKey it lets bytes that
 // are already on disk render immediately while a fresh URL is signed.
-const expiredDisplayUrls = new Map<string, string>();
+// P2.3: kept with the URL's own expiry; displayed only within
+// STALE_DISPLAY_GRACE_MS of it (lib/signed-image-cache-policy.ts).
+const expiredDisplayUrls = new Map<string, { url: string; expiresAt: number }>();
+
+// Bumped when a permission change or account change invalidates entries, so
+// every mounted hook instance re-runs its fetch effect (deleting cache
+// entries alone does not re-run an effect whose deps are unchanged).
+let version = 0;
+const versionListeners = new Set<() => void>();
+function bumpVersion() {
+  version++;
+  for (const listener of versionListeners) listener();
+}
+function subscribeVersion(listener: () => void) {
+  versionListeners.add(listener);
+  return () => {
+    versionListeners.delete(listener);
+  };
+}
+const getVersion = () => version;
 
 // Separate from `cache` above on purpose (Phase 1 in-flight dedupe) — this
 // tracks signing work currently IN PROGRESS, not completed results. Keyed
@@ -172,7 +207,8 @@ const inFlight = new Map<string, Promise<void>>();
 // shorter FAILURE_TTL_MS.
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
-  if (entry.isTransientFailure) return entry.expiresAt > Date.now();
+  // P2.3: a negative answer (url null) lapses at its own short expiry, no skew.
+  if (entry.isTransientFailure || entry.url === null) return entry.expiresAt > Date.now();
   // A tier-fallback entry is never "fresh": every effect pass (and the
   // single bounded follow-up pass) re-requests the real transform. It is
   // still SERVED meanwhile — isUsable ignores this flag.
@@ -197,11 +233,30 @@ function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
 // image on screen while it's being renewed. A server 'unavailable' answer
 // (url null, not transient) carries none, so a revoked image is never
 // re-served.
-function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier'> {
-  if (entry?.url) return { lastUrl: entry.url, ...(entry.servedTier ? { lastServedTier: entry.servedTier } : {}) };
-  if (entry?.lastUrl) return { lastUrl: entry.lastUrl, ...(entry.lastServedTier ? { lastServedTier: entry.lastServedTier } : {}) };
+function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier' | 'lastUrlExpiresAt'> {
+  const now = Date.now();
+  if (entry?.url && canDisplayStale(entry.expiresAt, now)) {
+    return { lastUrl: entry.url, lastUrlExpiresAt: entry.expiresAt, ...(entry.servedTier ? { lastServedTier: entry.servedTier } : {}) };
+  }
+  if (entry?.lastUrl && canDisplayStale(entry.lastUrlExpiresAt, now)) {
+    return { lastUrl: entry.lastUrl, lastUrlExpiresAt: entry.lastUrlExpiresAt, ...(entry.lastServedTier ? { lastServedTier: entry.lastServedTier } : {}) };
+  }
   return {};
 }
+
+// Account change / known permission change (lib/persisted-signed-url-cache.ts).
+registerSignedImageMemoryCache({
+  clearIdentity(identity) {
+    for (const k of [...cache.keys()]) if (keyBelongsTo(k, identity)) cache.delete(k);
+    for (const k of [...expiredDisplayUrls.keys()]) if (keyBelongsTo(k, identity)) expiredDisplayUrls.delete(k);
+    bumpVersion();
+  },
+  invalidate(identity, scope) {
+    for (const [k, e] of [...cache.entries()]) if (keyBelongsTo(k, identity) && shouldInvalidate(e, scope)) cache.delete(k);
+    if (scope === 'all') for (const k of [...expiredDisplayUrls.keys()]) if (keyBelongsTo(k, identity)) expiredDisplayUrls.delete(k);
+    bumpVersion();
+  },
+});
 
 // Lifecycle renewal (the long-mounted-screen fix): when a hook instance's
 // next entry falls due for a refresh — REFRESH_SKEW_MS before a signed URL
@@ -219,7 +274,7 @@ function nextRenewDelay(cacheKeys: string[]): number | null {
   for (const key of cacheKeys) {
     if (inFlight.has(key)) continue;
     const entry = cache.get(key);
-    const at = !entry ? 0 : entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
+    const at = !entry ? 0 : entry.isTransientFailure || entry.url === null ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
     if (due === null || at < due) due = at;
   }
   return due === null ? null : Math.max(due - Date.now(), MIN_RENEW_DELAY_MS);
@@ -235,7 +290,7 @@ function isRenewalOverdue(cacheKeys: string[]): boolean {
     if (inFlight.has(key)) return false;
     const entry = cache.get(key);
     if (!entry) return false;
-    return (entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
+    return (entry.isTransientFailure || entry.url === null ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
   });
 }
 
@@ -480,13 +535,19 @@ async function signItemImageIds(
             // `tier`). Display-only: memory cache only, tagged with
             // what was actually served, and NOT persisted.
             const isFallback = tier !== 'original' && r.status === 'ok' && r.tier !== tier;
+            // P2.3: an "unavailable" answer lives NEGATIVE_TTL_MS (20 s),
+            // memory only — never the signed-URL TTL, never persisted.
+            const url = r.status === 'ok' ? r.signed_url : null;
+            // F3: repeated negatives back off (20 → 40 → 80 → 160 → 300 s).
+            const negatives = url ? undefined : nextNegativeCount(cache.get(`${identity}:${cacheIdOf(r.id)}`));
             const entry: CacheEntry = {
-              url: r.status === 'ok' ? r.signed_url : null,
-              expiresAt: now + TTL_MS,
+              url,
+              expiresAt: expiryForAnswer(url, now, TTL_MS, negatives),
+              ...(negatives ? { negatives } : {}),
               ...(isFallback ? { servedTier: r.tier ?? ('original' as const) } : {}),
             };
             cache.set(`${identity}:${cacheIdOf(r.id)}`, entry);
-            if (!isFallback) toPersist[cacheIdOf(r.id)] = entry;
+            if (!isFallback && url) toPersist[cacheIdOf(r.id)] = entry;
           }
           // Fire-and-forget — never blocks rendering; a write failure
           // here only costs a future cold-launch network round trip,
@@ -583,8 +644,8 @@ export async function prefetchSignedItemImages(
       const persisted = await readPersistedSignedUrlMap(CACHE_DOMAIN, identity);
       for (const id of gaps) {
         const entry = persisted[`${id}${suffix}`];
-        if (entry && entry.expiresAt > Date.now() && !cache.has(keyOf(id))) {
-          cache.set(keyOf(id), { url: entry.url, expiresAt: entry.expiresAt });
+        if (classifyPersisted(entry, Date.now()) === 'usable' && !cache.has(keyOf(id))) {
+          cache.set(keyOf(id), { url: entry!.url, expiresAt: entry!.expiresAt });
         }
       }
       missing = missing.filter(needed);
@@ -667,6 +728,7 @@ export function useSignedItemImages(
   // backgrounded, so this is what catches URLs that expired meanwhile).
   const [renewTick, setRenewTick] = useState(0);
   const foregroundGeneration = useForegroundGeneration();
+  const cacheVersion = useSyncExternalStore(subscribeVersion, getVersion, getVersion);
 
   useEffect(() => {
     if (!ids.length) return;
@@ -704,13 +766,14 @@ export function useSignedItemImages(
         let hydratedAny = false;
         for (const id of needsHydration) {
           const entry = persisted[cacheIdOf(id)];
-          if (entry && entry.expiresAt > Date.now()) {
-            cache.set(`${identity}:${cacheIdOf(id)}`, { url: entry.url, expiresAt: entry.expiresAt });
+          const kind = classifyPersisted(entry, Date.now());
+          if (kind === 'usable') {
+            cache.set(`${identity}:${cacheIdOf(id)}`, { url: entry!.url, expiresAt: entry!.expiresAt });
             hydratedAny = true;
-          } else if (entry?.url && !expiredDisplayUrls.has(`${identity}:${cacheIdOf(id)}`)) {
+          } else if (kind === 'expired' && !expiredDisplayUrls.has(`${identity}:${cacheIdOf(id)}`)) {
             // Expired: not trusted as a signed URL (still re-signed below),
-            // only kept as a display handle for opted-in callers.
-            expiredDisplayUrls.set(`${identity}:${cacheIdOf(id)}`, entry.url);
+            // only kept as a short-lived display handle for opted-in callers.
+            expiredDisplayUrls.set(`${identity}:${cacheIdOf(id)}`, { url: entry!.url as string, expiresAt: entry!.expiresAt });
             hydratedAny = true;
           }
         }
@@ -755,7 +818,7 @@ export function useSignedItemImages(
     // foregroundGeneration only re-run it — every pass re-signs only what
     // isn't fresh, so a re-run with nothing due makes no request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, identity, tier, renewTick, foregroundGeneration]);
+  }, [key, identity, tier, renewTick, foregroundGeneration, cacheVersion]);
 
   // After every render: renew now if something is already overdue (see
   // isRenewalOverdue). Deferred a tick so it never sets state during the
@@ -795,9 +858,14 @@ export function useSignedItemImages(
       if (options.displayExpiredWhileRefreshing) {
         // A tier-fallback entry's URL is a different tier's bytes — never
         // reused here, so it can't be displayed under this tier's cacheKey.
+        // P2.3: an expired authorization is shown only briefly (grace),
+        // never indefinitely (e.g. while offline).
+        // (Clock read inside canDisplayStaleNow, never in the render body.)
         const expired: CacheEntry | undefined = cache.get(cacheKey);
+        const persistedExpired = expiredDisplayUrls.get(cacheKey);
         const expiredUrl =
-          (expired?.url && !expired.servedTier ? expired.url : null) ?? expiredDisplayUrls.get(cacheKey);
+          (expired?.url && !expired.servedTier && canDisplayStaleNow(expired.expiresAt) ? expired.url : null) ??
+          (persistedExpired && canDisplayStaleNow(persistedExpired.expiresAt) ? persistedExpired.url : null);
         if (expiredUrl) urls.set(id, expiredUrl);
       }
       statuses.set(id, 'loading');

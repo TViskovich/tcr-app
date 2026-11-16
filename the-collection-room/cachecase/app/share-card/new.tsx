@@ -43,6 +43,7 @@ import { rememberMediaSize, useMediaSize } from '@/lib/feed-media-dimensions';
 import { COMPACT_IMAGE_TIER, DETAIL_IMAGE_TIER, type ImageTier } from '@/lib/image-tiers';
 import { attachPrimaryImageIds } from '@/lib/item-images';
 import { invalidateOwnProfileCache, peekOwnProfileCacheSync } from '@/lib/own-profile-cache';
+import { notifyOwnPostsChanged } from '@/lib/own-profile-refresh';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import { copyShareSnapshotImage, createSnapshotPost } from '@/lib/share-snapshots';
 import { supabase } from '@/lib/supabase';
@@ -882,6 +883,7 @@ export default function ShareCardScreen() {
           caption: caption.trim() || null,
         });
         if (insertError) throw insertError;
+        notifyOwnPostsChanged();
       } else {
         // All-or-nothing (Phase 3E) — every selected card's image is
         // copied into share-snapshots and the post + card_share_items

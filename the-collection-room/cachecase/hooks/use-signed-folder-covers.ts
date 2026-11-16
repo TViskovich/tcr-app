@@ -3,14 +3,25 @@ import { useEffect, useState } from 'react';
 import { useForegroundGeneration } from '@/lib/app-foreground';
 import { useAuth } from '@/lib/auth';
 import { DETAIL_IMAGE_TIER, imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
+import { uniqueFolderIds } from '@/lib/folder-cover-invalidation';
 import { folderCoverCacheKey } from '@/lib/private-image-cache-key';
 import {
   FOLDER_COVERS_CACHE_DOMAIN,
   isActiveSignedUrlIdentity,
   mergePersistedSignedUrlEntries,
   readPersistedSignedUrlMap,
+  registerSignedImageMemoryCache,
   removePersistedSignedUrlEntry,
 } from '@/lib/persisted-signed-url-cache';
+import {
+  canDisplayStale,
+  classifyPersisted,
+  expiryForAnswer,
+  nextNegativeCount,
+  keyBelongsTo,
+  shouldInvalidate,
+  TRANSIENT_FAILURE_TTL_MS,
+} from '@/lib/signed-image-cache-policy';
 import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 
 // Client-side companion to the get-folder-cover-signed-url Edge Function
@@ -65,7 +76,7 @@ const REFRESH_SKEW_MS = 15_000;
 // some unrelated screen happened to warm the shared cache instead.
 const RETRY_DELAYS_MS = [750, 2000];
 const RETRYABLE_STATUSES = new Set([408, 429]);
-const FAILURE_TTL_MS = 10_000;
+const FAILURE_TTL_MS = TRANSIENT_FAILURE_TTL_MS;
 const FOLLOWUP_RETRY_DELAY_MS = 4_000;
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -115,6 +126,10 @@ type CacheEntry = {
   lastUrl?: string;
   lastServedTier?: ImageTier;
   lastToken?: string;
+  // When lastUrl's own authorization expired (P2.3) — see the item hook.
+  lastUrlExpiresAt?: number;
+  // Consecutive "unavailable" answers for this key (backoff, review F3).
+  negatives?: number;
 };
 
 const ALL_TIERS: readonly ImageTier[] = ['original', 'preview', 'detail'];
@@ -148,7 +163,8 @@ const inFlight = new Map<string, Promise<void>>();
 // matching isFresh comment for the full rationale).
 function isFresh(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
-  if (entry.isTransientFailure) return entry.expiresAt > Date.now();
+  // P2.3: a negative answer (url null) lapses at its own short expiry, no skew.
+  if (entry.isTransientFailure || entry.url === null) return entry.expiresAt > Date.now();
   return entry.expiresAt - REFRESH_SKEW_MS > Date.now();
 }
 
@@ -167,12 +183,23 @@ function isUsable(entry: CacheEntry | undefined): entry is CacheEntry {
 // use-signed-item-images.ts's lastGoodOf. A server 'unavailable' carries
 // none; invalidateSignedFolderCover deletes the entry outright, so a
 // just-changed cover is never shadowed by the previous one.
-function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier' | 'lastToken'> {
-  const url = entry?.url ?? entry?.lastUrl;
-  if (!entry || !url) return {};
-  const servedTier = entry.url ? entry.servedTier : entry.lastServedTier;
-  const token = entry.url ? entry.token : entry.lastToken;
-  return { lastUrl: url, ...(servedTier ? { lastServedTier: servedTier } : {}), ...(token ? { lastToken: token } : {}) };
+function lastGoodOf(entry: CacheEntry | undefined): Pick<CacheEntry, 'lastUrl' | 'lastServedTier' | 'lastToken' | 'lastUrlExpiresAt'> {
+  if (!entry) return {};
+  const now = Date.now();
+  // P2.3: an expired authorization is shown only within the grace period.
+  const fromSelf = !!entry.url && canDisplayStale(entry.expiresAt, now);
+  const fromLast = !fromSelf && !!entry.lastUrl && canDisplayStale(entry.lastUrlExpiresAt, now);
+  if (!fromSelf && !fromLast) return {};
+  const url = fromSelf ? entry.url! : entry.lastUrl!;
+  const expiresAt = fromSelf ? entry.expiresAt : entry.lastUrlExpiresAt;
+  const servedTier = fromSelf ? entry.servedTier : entry.lastServedTier;
+  const token = fromSelf ? entry.token : entry.lastToken;
+  return {
+    lastUrl: url,
+    lastUrlExpiresAt: expiresAt,
+    ...(servedTier ? { lastServedTier: servedTier } : {}),
+    ...(token ? { lastToken: token } : {}),
+  };
 }
 
 // Lifecycle renewal for a long-mounted screen — see use-signed-item-images.ts's
@@ -184,7 +211,7 @@ function nextRenewDelay(cacheKeys: string[]): number | null {
   for (const key of cacheKeys) {
     if (inFlight.has(key)) continue;
     const entry = cache.get(key);
-    const at = !entry ? 0 : entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
+    const at = !entry ? 0 : entry.isTransientFailure || entry.url === null ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS;
     if (due === null || at < due) due = at;
   }
   return due === null ? null : Math.max(due - Date.now(), MIN_RENEW_DELAY_MS);
@@ -197,7 +224,7 @@ function isRenewalOverdue(cacheKeys: string[]): boolean {
     if (inFlight.has(key)) return false;
     const entry = cache.get(key);
     if (!entry) return false;
-    return (entry.isTransientFailure ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
+    return (entry.isTransientFailure || entry.url === null ? entry.expiresAt : entry.expiresAt - REFRESH_SKEW_MS) <= now;
   });
 }
 
@@ -235,6 +262,22 @@ export function peekCachedSignedFolderCover(
 // shown, since the function itself was never the problem.
 let version = 0;
 const versionListeners = new Set<() => void>();
+function bumpVersion() {
+  version++;
+  for (const listener of versionListeners) listener();
+}
+
+// Account change / known permission change (lib/persisted-signed-url-cache.ts).
+registerSignedImageMemoryCache({
+  clearIdentity(identity) {
+    for (const k of [...cache.keys()]) if (keyBelongsTo(k, identity)) cache.delete(k);
+    bumpVersion();
+  },
+  invalidate(identity, scope) {
+    for (const [k, e] of [...cache.entries()]) if (keyBelongsTo(k, identity) && shouldInvalidate(e, scope)) cache.delete(k);
+    bumpVersion();
+  },
+});
 
 // Drops one folder's cached entry (memory AND persisted) for one specific
 // caller identity and notifies every mounted useSignedFolderCovers instance
@@ -261,8 +304,20 @@ export function invalidateSignedFolderCover(folderId: string, identity: string) 
     cache.delete(`${identity}:${cacheId}`);
     removePersistedSignedUrlEntry(CACHE_DOMAIN, identity, cacheId).catch(() => {});
   }
-  version++;
-  for (const listener of versionListeners) listener();
+  bumpVersion();
+}
+
+// P2.3 Issue 4: an item change (photo added/removed/reordered/made primary,
+// item created, deleted or moved) can change which image a 'first_card' or
+// 'item' cover resolves to, with no change to the folders row at all. Drops
+// those folders' cached covers for the acting owner so they re-sign now
+// instead of showing the previous image for up to the signed-URL TTL. A
+// manually uploaded cover is never changed by this — it just re-signs to the
+// same image (same stable cacheKey, bytes from disk). Other viewers' devices
+// converge within one TTL.
+export function invalidateFolderCoversForItemChange(folderIds: (string | null | undefined)[], identity: string | null | undefined) {
+  if (!identity) return;
+  for (const folderId of uniqueFolderIds(folderIds)) invalidateSignedFolderCover(folderId, identity);
 }
 
 type EdgeResult =
@@ -420,14 +475,19 @@ async function signCoverIds(
           const toPersist: Record<string, { url: string | null; expiresAt: number; token?: string }> = {};
           for (const r of outcome.results) {
             const isFallback = tier !== 'original' && r.status === 'ok' && r.tier !== tier;
+            // P2.3: "unavailable" lives NEGATIVE_TTL_MS, memory only.
+            const url = r.status === 'ok' ? r.signed_url : null;
+            // F3: repeated negatives back off (20 → 40 → 80 → 160 → 300 s).
+            const negatives = url ? undefined : nextNegativeCount(cache.get(`${identity}:${cacheIdOf(r.id)}`));
             const entry: CacheEntry = {
-              url: r.status === 'ok' ? r.signed_url : null,
-              expiresAt: now + TTL_MS,
+              url,
+              expiresAt: expiryForAnswer(url, now, TTL_MS, negatives),
+              ...(negatives ? { negatives } : {}),
               ...(isFallback && r.status === 'ok' ? { servedTier: r.tier ?? ('original' as const) } : {}),
               ...(r.status === 'ok' && r.image_token ? { token: r.image_token } : {}),
             };
             cache.set(`${identity}:${cacheIdOf(r.id)}`, entry);
-            if (!isFallback) toPersist[cacheIdOf(r.id)] = entry;
+            if (!isFallback && url) toPersist[cacheIdOf(r.id)] = entry;
           }
           mergePersistedSignedUrlEntries(CACHE_DOMAIN, identity, toPersist).catch(() => {});
         } else if (!isCancelled()) {
@@ -513,7 +573,7 @@ export async function prefetchSignedFolderCover(folderId: string, tier: ImageTie
     // (e.g. after a cold start) needs no request at all.
     if (!cache.has(key)) {
       const persisted = (await readPersistedSignedUrlMap(CACHE_DOMAIN, identity))[cacheId];
-      if (persisted && persisted.expiresAt > Date.now() && !cache.has(key)) {
+      if (persisted && classifyPersisted(persisted, Date.now()) === 'usable' && !cache.has(key)) {
         cache.set(key, {
           url: persisted.url,
           expiresAt: persisted.expiresAt,
@@ -643,7 +703,7 @@ export function useSignedFolderCovers(
         let hydratedAny = false;
         for (const id of needsHydration) {
           const entry = persisted[cacheIdOf(id)];
-          if (entry && entry.expiresAt > Date.now()) {
+          if (entry && classifyPersisted(entry, Date.now()) === 'usable') {
             cache.set(`${identity}:${cacheIdOf(id)}`, {
               url: entry.url,
               expiresAt: entry.expiresAt,

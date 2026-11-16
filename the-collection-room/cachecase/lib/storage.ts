@@ -1,5 +1,6 @@
 import { File } from 'expo-file-system';
 
+import { requestItemImageCleanup } from './item-images';
 import { supabase } from './supabase';
 
 const MIME: Record<string, string> = {
@@ -248,41 +249,25 @@ export async function uploadFolderCover(uri: string, userId: string): Promise<Up
   return { publicUrl: data.publicUrl, storagePath: path };
 }
 
-// Best-effort Storage cleanup for a folder cover object that a caller has
-// already determined is no longer referenced by any folder row — a
-// replaced upload's old object, an old object left behind after switching
-// cover_source away from 'upload', or an uploaded cover whose owning
-// folder was just deleted. Never throws, matching lib/storage.ts's own
-// deleteProfileImage convention exactly. Callers are responsible for only
-// ever invoking this AFTER the folders row write it depends on has already
-// committed successfully (see components/collection/folder-edit-modal.tsx),
-// so its only two possible outcomes are "the old object is now gone" or
-// "the old object is merely orphaned" — never a reason to treat that write
-// as failed.
+// Releases an uploaded folder cover object a caller has determined is no
+// longer referenced by any folder row (a replaced upload, a cover switched
+// away from 'upload', a deleted folder) or that never got referenced (an
+// upload whose folder update failed). Never throws.
 //
-// storagePath is always the exact, already-known value from
-// folders.cover_storage_path (Phase 3D) or a just-completed
-// uploadFolderCover() result — never guessed, never a prefix, never
-// derived from cover_image_url. The shape check below (userId/covers/...)
-// is defense in depth against a malformed/mismatched value, mirroring
-// deleteProfileImage's own ownership check; it never widens what this can
-// delete beyond that one exact path.
+// P2.3 Issue 1: a client-side storage.remove() on item-images can never
+// succeed (no Storage SELECT policy, on purpose), so this no longer tries.
+// A cover that WAS referenced is recorded by the folders trigger in the same
+// transaction as the folder update/delete; this call additionally hands the
+// path to request_item_upload_cleanup, which covers the never-referenced
+// case (24 h grace; a later reference cancels it) and is a no-op for an
+// already-recorded one. Shape check kept as defense in depth: only
+// `${userId}/covers/<file>` is ever passed on.
 export async function deleteFolderCover(
   storagePath: string | null | undefined,
   userId: string,
 ): Promise<void> {
   if (!storagePath) return;
   const segments = storagePath.split('/');
-  if (segments[0] !== userId || segments[1] !== 'covers' || !segments[2]) return;
-
-  try {
-    const { error } = await supabase.storage.from('item-images').remove([storagePath]);
-    if (error && __DEV__) {
-      console.warn('[deleteFolderCover] failed to remove object:', error.message);
-    }
-  } catch (e) {
-    if (__DEV__) {
-      console.warn('[deleteFolderCover] unexpected error removing object:', e);
-    }
-  }
+  if (segments.length !== 3 || segments[0] !== userId || segments[1] !== 'covers' || !segments[2]) return;
+  await requestItemImageCleanup([storagePath], 'deleteFolderCover');
 }

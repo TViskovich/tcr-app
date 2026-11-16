@@ -1,3 +1,4 @@
+import { notifyOwnPostsChanged } from './own-profile-refresh';
 import { supabase } from './supabase';
 
 export type SnapshotType = 'post' | 'card_share' | 'rate_my_grails';
@@ -92,6 +93,7 @@ export async function createSnapshotPost(
     if (__DEV__) console.warn('[createSnapshotPost] failed:', reason, error ?? data);
     return { status: 'failed', reason };
   }
+  notifyOwnPostsChanged();
   return { status: 'ok', postId: data.post_id };
 }
 
@@ -145,6 +147,7 @@ export async function createTextPost(
     if (__DEV__) console.warn('[createTextPost] failed:', error);
     return { status: 'failed', reason: error?.message ?? 'unknown' };
   }
+  notifyOwnPostsChanged();
   return { status: 'ok', postId: data };
 }
 

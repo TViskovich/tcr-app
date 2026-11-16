@@ -35,6 +35,7 @@ import {
   useSignedItemImages,
 } from '@/hooks/use-signed-item-images';
 import type { CollectibleItemType } from '@/types';
+import { resetSignedImageNegatives } from '@/lib/persisted-signed-url-cache';
 
 // Recent-uploads wall for the Following tab — a separate data model/layout
 // from the post-based main feed (queryFeed/queryFollowingFeed in
@@ -1012,7 +1013,16 @@ export function FollowingItemsFeed({
       onScroll={handleScroll}
       onLayout={handleScrollViewLayout}
       scrollEventThrottle={scrollEventThrottle}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load('refresh')} tintColor={PV2.link} />}>
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            resetSignedImageNegatives(); // P2.3 (F3): re-check "unavailable" images now
+            load('refresh');
+          }}
+          tintColor={PV2.link}
+        />
+      }>
       <View style={styles.introBlock}>
         <Text
           style={styles.introTitle}

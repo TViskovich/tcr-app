@@ -7,6 +7,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -75,6 +76,17 @@ import {
   peekOwnProfileCacheSync,
   writeOwnProfileCache,
 } from '@/lib/own-profile-cache';
+import {
+  canPersistOwnProfile,
+  currentOwnPostsGeneration,
+  focusRefreshPlan,
+  markOwnPostsSeen,
+  ownPostsDirty,
+  pullToRefreshEnabled,
+  subscribeOwnPostsChanged,
+  type PostsStatus,
+} from '@/lib/own-profile-refresh';
+import { resetSignedImageNegatives } from '@/lib/persisted-signed-url-cache';
 import {
   deleteProfileImage,
   uploadAvatar,
@@ -688,6 +700,11 @@ export function ProfileV2Screen({ userId }: Props) {
   // on a genuine query failure (it used to silently swallow it), which
   // must never be presented identically to "this user has no posts."
   const [profilePostsError, setProfilePostsError] = useState<string | null>(null);
+  // P2.3 (B8a): where the posts list stands. Only 'ok' (a successful fetch,
+  // or a fresh cache seed) lets the own-profile cache be persisted — see
+  // canPersistOwnProfile (lib/own-profile-refresh.ts).
+  const [postsStatus, setPostsStatus] = useState<PostsStatus>(() => (ownProfileSeedFresh ? 'ok' : 'idle'));
+  const isFocusedRef = useRef(false);
   // An in-flight fetchUserPosts request left running past the point this
   // screen loses focus (tab switch) or userId/currentUserId changes can
   // have its underlying XHR connection torn down by the native networking
@@ -699,15 +716,22 @@ export function ProfileV2Screen({ userId }: Props) {
     postsControllerRef.current?.abort();
     const controller = new AbortController();
     postsControllerRef.current = controller;
+    // Captured at the START: a post created after this fetch began is not
+    // in its result, so it must stay pending (lib/own-profile-refresh.ts).
+    const generation = currentOwnPostsGeneration();
 
     setProfilePostsError(null);
+    setPostsStatus('loading');
     try {
       const nextPosts = await fetchUserPosts(userId, controller.signal, currentUserId);
       if (postsControllerRef.current !== controller || controller.signal.aborted) return;
       setProfilePosts(nextPosts);
+      setPostsStatus('ok');
+      if (currentUserId === userId) markOwnPostsSeen(generation);
     } catch (e) {
       if (controller.signal.aborted || postsControllerRef.current !== controller) return;
       console.error('[refreshPosts] failed:', e);
+      setPostsStatus('error');
       setProfilePostsError(e instanceof Error ? e.message : 'Failed to load posts.');
       // Preserve any posts already loaded rather than clearing them.
     } finally {
@@ -735,9 +759,20 @@ export function ProfileV2Screen({ userId }: Props) {
   // of an earlier, now-stale timestamp. Own profile only; never runs for a
   // visitor's profile.
   useEffect(() => {
-    if (!isOwnProfile || !profile) return;
-    if (loading || grailSlotsLoading || foldersLoading || allItemsLoading) return;
-    if (!hasRealSettleOccurredRef.current) return;
+    // P2.3 (B8a, D1): never while the posts fetch is pending, aborted or
+    // failed — that used to stamp the OLD posts list as fresh.
+    if (
+      !profile ||
+      !canPersistOwnProfile({
+        isOwnProfile,
+        hasProfile: !!profile,
+        anyLoading: loading || grailSlotsLoading || foldersLoading || allItemsLoading,
+        realSettle: hasRealSettleOccurredRef.current,
+        postsStatus,
+      })
+    ) {
+      return;
+    }
     writeOwnProfileCache(userId, {
       profile,
       stats,
@@ -763,6 +798,7 @@ export function ProfileV2Screen({ userId }: Props) {
     allItems,
     allItemsLoading,
     profilePosts,
+    postsStatus,
   ]);
 
   // Find User's "Recent" list (lib/recent-profiles.ts): someone else's
@@ -1105,15 +1141,27 @@ export function ProfileV2Screen({ userId }: Props) {
       // reset lastSettledAtRef, see handleEditProfileSave's finishSuccess —
       // runs the normal full refresh. Always unconditional for a visitor's
       // profile (isOwnProfileCacheStillFresh is hard-false there).
-      if (!isOwnProfileCacheStillFresh()) {
+      // P2.3 (B8a): a pending own-post change refreshes the posts even when
+      // the cache is fresh (focusRefreshPlan, lib/own-profile-refresh.ts).
+      isFocusedRef.current = true;
+      const plan = focusRefreshPlan({
+        isOwnProfile,
+        cacheFresh: isOwnProfileCacheStillFresh(),
+        postsDirty: isOwnProfile && ownPostsDirty(),
+      });
+      if (plan === 'full') {
         hasRealSettleOccurredRef.current = true;
         refresh();
         refreshGrailSlots();
         refreshFolders();
         refreshAllItems();
         refreshPosts();
+      } else if (plan === 'posts') {
+        hasRealSettleOccurredRef.current = true;
+        refreshPosts();
       }
       return () => {
+        isFocusedRef.current = false;
         // Only cancels the fetchUserPosts batch owned by postsControllerRef
         // — refresh/refreshGrailSlots/refreshFolders/refreshAllItems own
         // their own cancellation internally (see their respective hooks)
@@ -1123,6 +1171,33 @@ export function ProfileV2Screen({ userId }: Props) {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [refresh, refreshGrailSlots, refreshFolders, refreshAllItems, refreshPosts]),
   );
+
+  // P2.3 (B8a, D6): a post created/deleted/reposted while this own profile is
+  // ON SCREEN refreshes the list right away. While it is not focused the
+  // change stays pending (ownPostsDirty) and the next focus refreshes — no
+  // request is started for an unfocused screen (see postsControllerRef).
+  useEffect(() => {
+    if (!isOwnProfile) return;
+    return subscribeOwnPostsChanged(() => {
+      if (!isFocusedRef.current) return;
+      hasRealSettleOccurredRef.current = true;
+      refreshPosts();
+    });
+  }, [isOwnProfile, refreshPosts]);
+
+  // P2.3 (B8a, D5): pull-to-refresh — a full reload that bypasses the
+  // freshness gate, for any profile (own or visited).
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const onPullRefresh = useCallback(async () => {
+    setPullRefreshing(true);
+    resetSignedImageNegatives();
+    hasRealSettleOccurredRef.current = true;
+    try {
+      await Promise.allSettled([refresh(), refreshGrailSlots(), refreshFolders(), refreshAllItems(), refreshPosts()]);
+    } finally {
+      setPullRefreshing(false);
+    }
+  }, [refresh, refreshGrailSlots, refreshFolders, refreshAllItems, refreshPosts]);
 
   useFocusEffect(
     useCallback(() => {
@@ -2465,6 +2540,11 @@ export function ProfileV2Screen({ userId }: Props) {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? undefined : 'height'}>
         <ScrollView
           ref={scrollRef}
+          refreshControl={
+            pullToRefreshEnabled({ editMode, reordering: !!reorder }) ? (
+              <RefreshControl refreshing={pullRefreshing} onRefresh={onPullRefresh} tintColor={PV2.actionPrimary} />
+            ) : undefined
+          }
           contentContainerStyle={[styles.scroll, { paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}

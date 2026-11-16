@@ -58,6 +58,11 @@ function storageKey(userId: string): string {
 // for.
 const memoryMirror = new Map<string, StoredCache>();
 
+// P2.3 (B8a, D3): users invalidated while nothing was in memory yet. Their
+// persisted copy (possibly still inside the freshness window) must not be
+// read back as fresh; cleared by the next real write.
+const forcedStale = new Set<string>();
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -96,13 +101,13 @@ export type ReadOwnProfileCacheResult = { payload: OwnProfileCachePayload; cache
 export function peekOwnProfileCacheSync(userId: string): ReadOwnProfileCacheResult {
   const mirrored = memoryMirror.get(userId);
   if (!mirrored) return null;
-  return { payload: mirrored.payload, cachedAt: mirrored.cachedAt, fresh: isFresh(mirrored.cachedAt) };
+  return { payload: mirrored.payload, cachedAt: mirrored.cachedAt, fresh: isFresh(mirrored.cachedAt) && !forcedStale.has(userId) };
 }
 
 export async function readOwnProfileCache(userId: string): Promise<ReadOwnProfileCacheResult> {
   const mirrored = memoryMirror.get(userId);
   if (mirrored) {
-    return { payload: mirrored.payload, cachedAt: mirrored.cachedAt, fresh: isFresh(mirrored.cachedAt) };
+    return { payload: mirrored.payload, cachedAt: mirrored.cachedAt, fresh: isFresh(mirrored.cachedAt) && !forcedStale.has(userId) };
   }
   try {
     const raw = await AsyncStorage.getItem(storageKey(userId));
@@ -110,7 +115,7 @@ export async function readOwnProfileCache(userId: string): Promise<ReadOwnProfil
     const parsed = JSON.parse(raw);
     if (!isValidStoredCache(parsed)) return null;
     memoryMirror.set(userId, parsed);
-    return { payload: parsed.payload, cachedAt: parsed.cachedAt, fresh: isFresh(parsed.cachedAt) };
+    return { payload: parsed.payload, cachedAt: parsed.cachedAt, fresh: isFresh(parsed.cachedAt) && !forcedStale.has(userId) };
   } catch {
     return null;
   }
@@ -127,6 +132,7 @@ function isFresh(cachedAt: number): boolean {
 export async function writeOwnProfileCache(userId: string, payload: OwnProfileCachePayload): Promise<void> {
   const stored: StoredCache = { v: 1, cachedAt: Date.now(), payload };
   memoryMirror.set(userId, stored);
+  forcedStale.delete(userId);
   try {
     await AsyncStorage.setItem(storageKey(userId), JSON.stringify(stored));
   } catch {
@@ -140,6 +146,7 @@ export async function writeOwnProfileCache(userId: string, payload: OwnProfileCa
 // storage growth, same posture as purgePersistedSignedUrlCache).
 export async function purgeOwnProfileCache(userId: string): Promise<void> {
   memoryMirror.delete(userId);
+  forcedStale.delete(userId);
   try {
     await AsyncStorage.removeItem(storageKey(userId));
   } catch {
@@ -170,10 +177,23 @@ export async function purgeOwnProfileCache(userId: string): Promise<void> {
 // unconditionally, so the very next read forces a real refresh.
 export function invalidateOwnProfileCache(userId: string): void {
   const existing = memoryMirror.get(userId);
-  // Nothing cached yet for this user — there's nothing to mark stale, and a
-  // later real write (once something does load) establishes the entry
-  // fresh, correctly, on its own.
-  if (!existing) return;
+  if (!existing) {
+    // P2.3 (B8a, D3): this used to be a no-op, leaving a persisted copy that
+    // was still inside its freshness window to be read back as fresh. Mark
+    // the user stale for this session AND stamp the persisted copy stale.
+    forcedStale.add(userId);
+    AsyncStorage.getItem(storageKey(userId))
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!isValidStoredCache(parsed) || parsed.cachedAt === 0) return;
+        return AsyncStorage.setItem(storageKey(userId), JSON.stringify({ ...parsed, cachedAt: 0 }));
+      })
+      .catch(() => {
+        // Non-fatal — forcedStale already covers this session.
+      });
+    return;
+  }
   const stale: StoredCache = { ...existing, cachedAt: 0 };
   memoryMirror.set(userId, stale);
   // Best-effort mirror onto the persisted copy too — otherwise a cold

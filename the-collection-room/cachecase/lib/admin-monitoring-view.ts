@@ -209,3 +209,67 @@ export function purgeApproval(run: PurgeRun, now: number): { minutesLeft: number
   if (!run.viewer_may_approve) return { minutesLeft: left, note: 'Approval needs the approver privilege, which you do not hold.' };
   return { minutesLeft: left, note: 'You hold the approver privilege; the server re-checks eligibility when an approval is submitted.' };
 }
+
+// ── Item-image cleanup (P2.3, review F7) ────────────────────────────────────
+// admin_item_image_cleanup_status (20261204120000). Read-only: counts, error
+// categories and entries identified by ledger id, owner username and item id —
+// never a storage path, URL or file content.
+export type ImageCleanupEntry = {
+  id: number;
+  source: string;
+  state: string;
+  attempts: number;
+  last_error_code: string | null;
+  last_reason: string | null;
+  updated_at: string;
+  owner_username: string | null;
+  item_id: string | null;
+};
+export type ImageCleanupStatus = {
+  enabled: boolean;
+  sweep_active: boolean;
+  by_state: Record<string, number>;
+  due: number;
+  failed: number;
+  retrying: number;
+  referenced_after_claim: number;
+  error_categories: Record<string, number>;
+  needs_attention: ImageCleanupEntry[];
+  last_completed_at: string | null;
+  last_failed_at: string | null;
+};
+
+export const IMAGE_CLEANUP_ERROR_LABEL: Record<string, string> = {
+  storage_error: 'Storage error',
+  lease_deadline: 'Run took too long',
+  held: 'Held for moderation',
+  held_check_failed: 'Hold check failed',
+  invalid_path: 'Invalid path',
+  still_present: 'File still present',
+};
+export const imageCleanupErrorLabel = (code: string | null | undefined) =>
+  code ? (IMAGE_CLEANUP_ERROR_LABEL[code] ?? code.replace(/_/g, ' ')) : 'no error code';
+
+// Headline for the dashboard row. Anything referenced after a claim is
+// critical (a reference reached a file already scheduled for deletion);
+// failed entries are critical; retries are a warning.
+export function imageCleanupSummary(s: ImageCleanupStatus, now: number): { label: string; detail: string; tone: Tone } {
+  const last = `last run ${ago(s.last_completed_at, now)}`;
+  if (s.referenced_after_claim > 0) {
+    return { label: 'Needs attention', detail: `${s.referenced_after_claim} referenced after deletion began · ${last}`, tone: 'critical' };
+  }
+  if (s.failed > 0) return { label: `${s.failed} failed`, detail: `${s.retrying} retrying · ${last}`, tone: 'critical' };
+  if (!s.enabled || !s.sweep_active) {
+    return { label: 'Off', detail: `${s.due} due · ${s.enabled ? 'switch on' : 'switch off'} · ${s.sweep_active ? 'sweep active' : 'sweep inactive'}`, tone: 'off' };
+  }
+  if (s.retrying > 0) return { label: 'Retrying', detail: `${s.retrying} retrying · ${last}`, tone: 'warning' };
+  return { label: 'Healthy', detail: `${s.due} due · ${last}`, tone: 'ok' };
+}
+
+// Plain-language state of one entry ("retry 2 of 5", "failed after 5").
+export function imageCleanupEntryState(e: Pick<ImageCleanupEntry, 'state' | 'attempts' | 'last_reason'>): string {
+  if (e.last_reason === 'referenced_after_claim') return 'referenced after deletion began';
+  if (e.state === 'failed') return `failed after ${e.attempts} attempts`;
+  if (e.state === 'pending' && e.attempts > 0) return `retry ${e.attempts} of 5`;
+  return e.state;
+}
