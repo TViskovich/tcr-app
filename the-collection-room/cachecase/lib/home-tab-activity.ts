@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { FEED_POST_TYPES } from '@/components/feed/post-card';
 import { supabase } from '@/lib/supabase';
+import { stackWindowStartIso } from '@/lib/stack-feed-window';
 
 // Data for the "new activity" dots on Home's top tabs (Stack / Arrivals /
 // Messages) — see hooks/use-home-tab-activity.ts for when they show/clear.
@@ -13,11 +14,10 @@ import { supabase } from '@/lib/supabase';
 export type HomeTabKey = 'stack' | 'arrivals' | 'messages';
 export type HomeTabSeen = Partial<Record<HomeTabKey, string>>;
 
-// Same window and post types as Home's Stack feed (queryFeed in
-// app/(tabs)/index.tsx), so "newer than what you've seen" means a post that
-// would actually appear in Stack.
-const STACK_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-
+// Same window (lib/stack-feed-window.ts, shared with queryFeed in
+// app/(tabs)/index.tsx) and post types as Home's Stack feed, so "newer than
+// what you've seen" means a post that would actually appear in Stack.
+//
 // Newest Stack post by someone OTHER than the viewer (your own new post or
 // repost shouldn't light the dot). One row, one column, through RLS.
 export async function fetchNewestStackPostAt(userId: string): Promise<string | null> {
@@ -25,7 +25,7 @@ export async function fetchNewestStackPostAt(userId: string): Promise<string | n
     .from('posts')
     .select('created_at')
     .in('post_type', [...FEED_POST_TYPES])
-    .gte('created_at', new Date(Date.now() - STACK_WINDOW_MS).toISOString())
+    .gte('created_at', stackWindowStartIso())
     .neq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(1);

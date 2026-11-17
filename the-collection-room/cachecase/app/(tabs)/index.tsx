@@ -53,21 +53,11 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useHomeTabActivity } from '@/hooks/use-home-tab-activity';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import type { HomeTabKey } from '@/lib/home-tab-activity';
+import { sortPostsByCreatedAtDesc, STACK_PAGE_SIZE, stackPageRange, stackWindowStartIso } from '@/lib/stack-feed-window';
 
-// Canonical feed chronology — every dataset this screen renders (initial
-// load, refresh, pagination merges) must end up sorted strictly by the post
-// record's own created_at, newest first, regardless of post type. Missing/
-// malformed timestamps sort to the bottom (0), never the top. Returns a new
-// array — never mutates the one passed in.
-function sortPostsByCreatedAtDesc(list: FeedPost[]): FeedPost[] {
-  return [...list].sort((a, b) => {
-    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return bTime - aTime;
-  });
-}
-
-const PAGE_SIZE = 20;
+// Window, page size and chronology are shared with the Stack activity dot
+// (lib/home-tab-activity.ts) — see lib/stack-feed-window.ts.
+const PAGE_SIZE = STACK_PAGE_SIZE;
 
 // Posts → profiles FK goes through auth.users (not directly), so PostgREST embedded join
 // silently returns null. We do explicit batch queries and merge in JS instead.
@@ -77,16 +67,16 @@ const PAGE_SIZE = 20;
 // why an uncancelled request left running past a tab switch can crash with
 // whatwg-fetch's status-0 RangeError).
 async function queryFeed(currentUserId: string | undefined, page: number, signal: AbortSignal): Promise<FeedPost[]> {
-  const sevenDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const from = page * PAGE_SIZE;
+  const windowStart = stackWindowStartIso();
+  const { from, to } = stackPageRange(page);
 
   const { data: postRows, error: postsError } = await supabase
     .from('posts')
     .select(FEED_POST_SELECT)
     .in('post_type', [...FEED_POST_TYPES])
-    .gte('created_at', sevenDaysAgo)
+    .gte('created_at', windowStart)
     .order('created_at', { ascending: false })
-    .range(from, from + PAGE_SIZE - 1)
+    .range(from, to)
     .abortSignal(signal);
 
   if (postsError) {
