@@ -9,6 +9,7 @@ import { SupportEmailLine } from '@/components/account/support-email-line';
 import { PV2 } from '@/components/profile-v2/profile-v2-theme';
 import { BackButton } from '@/components/ui/back-button';
 import { type ScheduleFailure, useAccountLifecycle } from '@/lib/account-lifecycle';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Dashboard → Account & Security → Delete Account (Dashboard Milestone 2,
 // Checkpoints 2 and 4). Two choices: delete after a 14-day recovery window
@@ -34,6 +35,10 @@ const ERRORS: Record<ScheduleFailure, string> = {
 export default function DeleteAccountScreen() {
   const { scheduleDeletion } = useAccountLifecycle();
   const [step, setStep] = useState<'explain' | 'confirm'>('explain');
+  // The floating tab bar overlays the bottom of this screen (except when it's
+  // reached from Account Suspended, where no bar is shown): the content must
+  // end above it so Delete Permanently Now and every button stay reachable.
+  const bottomPadding = useBottomContentPadding();
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
@@ -65,7 +70,7 @@ export default function DeleteAccountScreen() {
         <View style={styles.headerSpacer} />
       </View>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]} keyboardShouldPersistTaps="handled">
           {step === 'explain' ? (
             <>
               <Text style={styles.title}>Delete your account after {RECOVERY_DAYS} days</Text>
@@ -204,7 +209,6 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     gap: 12,
-    paddingBottom: 48,
   },
   title: {
     color: PV2.textPrimary,

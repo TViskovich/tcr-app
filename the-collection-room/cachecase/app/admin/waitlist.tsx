@@ -25,6 +25,7 @@ import {
   type WaitlistSignup,
   type WaitlistStatus,
 } from '@/lib/waitlist-admin';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Admin-only. The client gate here (useIsAdmin) only decides what renders —
 // the list and every grant go through Edge Functions that re-check
@@ -55,6 +56,9 @@ function formatDate(iso: string | null): string {
 
 export default function WaitlistAdminScreen() {
   const router = useRouter();
+  // The floating tab bar overlays this screen's bottom; SafeAreaView already
+  // pads the bottom inset, so only the bar and the gap are added here.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const isAdmin = useIsAdmin();
   useScrollResponsiveNavbar({ enabled: false });
 
@@ -300,7 +304,7 @@ export default function WaitlistAdminScreen() {
             data={visible}
             keyExtractor={(s) => s.id}
             renderItem={renderItem}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: bottomPadding }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}
@@ -479,7 +483,6 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
     gap: 8,
   },
   staleText: {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,6 +39,7 @@ import {
   type ReportCase,
   type Tone,
 } from '@/lib/admin-reports-view';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Admin-only: one report (Phase 2B M5.1). Data comes from admin_report_case,
 // which re-checks the admin server-side and returns admin_get_report with
@@ -64,6 +65,9 @@ type Panel = null | 'dismiss' | 'reopen';
 
 export default function ReportScreen() {
   const router = useRouter();
+  // The floating tab bar overlays this screen's bottom; SafeAreaView already
+  // pads the bottom inset, so only the bar and the gap are added here.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const { id } = useLocalSearchParams<{ id: string }>();
   const isAdmin = useIsAdmin();
   useScrollResponsiveNavbar({ enabled: false });
@@ -271,8 +275,14 @@ export default function ReportScreen() {
       />
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]}
           keyboardShouldPersistTaps="handled"
+          // The decision panels' internal-note field sits just above their
+          // Cancel/Submit buttons near the end of this list: let iOS inset
+          // the list by the keyboard and keep the focused field visible
+          // (same pattern as app/(auth)/sign-up.tsx).
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}>
           <View style={styles.badges}>
             {c.child_safety ? <Badge label="Child safety" tone="critical" /> : r.priority === 'urgent' ? <Badge label="Urgent" tone="warning" /> : null}
@@ -551,7 +561,7 @@ function Chip({ label, active, onPress }: { label: string; active: boolean; onPr
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PV2.bg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24, backgroundColor: PV2.bg },
-  content: { padding: 16, paddingBottom: 40, gap: 12 },
+  content: { padding: 16, gap: 12 },
   headerAction: { color: PV2.link, fontSize: 15, fontWeight: '600' },
   badges: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   badge: { paddingVertical: 2, paddingHorizontal: 8, borderRadius: 999, borderWidth: 1 },

@@ -56,6 +56,7 @@ import {
   type Severity,
   type Tone,
 } from '@/lib/admin-monitoring-view';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Admin-only operations dashboard: moderation issues, quarantine queue and
 // scheduler, alert delivery, and manual purge runs (read-only).
@@ -81,6 +82,9 @@ const PURGE_FILTERS: (PurgeRun['status'] | null)[] = [null, 'prepared', 'approve
 
 export default function MonitoringScreen() {
   const router = useRouter();
+  // The floating tab bar overlays this screen's bottom; SafeAreaView already
+  // pads the bottom inset, so only the bar and the gap are added here.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const isAdmin = useIsAdmin();
   useScrollResponsiveNavbar({ enabled: false });
 
@@ -244,7 +248,7 @@ export default function MonitoringScreen() {
       />
       <SafeAreaView style={styles.container} edges={['bottom']}>
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}>
           <Text style={styles.subtitle}>Updated {new Date(now).toLocaleTimeString()} · pull to refresh</Text>
 
@@ -645,7 +649,7 @@ function Empty({ text }: { text: string }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PV2.bg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: PV2.bg },
-  content: { padding: 16, paddingBottom: 40, gap: 8 },
+  content: { padding: 16, gap: 8 },
   headerAction: { color: PV2.link, fontSize: 15, fontWeight: '600' },
   dim: { opacity: 0.5 },
   subtitle: { fontSize: 12, color: PV2.textTertiary },

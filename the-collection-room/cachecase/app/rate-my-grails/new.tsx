@@ -24,10 +24,14 @@ import { DETAIL_IMAGE_TIER } from '@/lib/image-tiers';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { navigateToOwnProfile } from '@/lib/profile-navigation';
 import { createSnapshotPost } from '@/lib/share-snapshots';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 const MAX_CHARS = 280;
 
 export default function NewRateMyGrailsScreen() {
+  // The floating tab bar overlays the bottom of this screen: the content must
+  // end above it.
+  const bottomPadding = useBottomContentPadding();
   const router = useRouter();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
@@ -137,7 +141,7 @@ export default function NewRateMyGrailsScreen() {
           style={styles.container}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView
-            contentContainerStyle={styles.scroll}
+            contentContainerStyle={[styles.scroll, { paddingBottom: bottomPadding }]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
             <Text style={styles.sectionLabel}>This is what will be shared</Text>

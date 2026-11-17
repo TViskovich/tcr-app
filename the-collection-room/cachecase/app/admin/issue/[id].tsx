@@ -9,6 +9,7 @@ import { useIsAdmin } from '@/hooks/use-is-admin';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { acknowledgeIssue, loadIssueDetail, type IssueDetail } from '@/lib/admin-monitoring';
 import { age, ago, issueTitle, SEVERITY_LABEL, severityTone, STATUS_LABEL, type Tone } from '@/lib/admin-monitoring-view';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Admin-only: one monitoring issue — its lifecycle, recent history and the
 // internal references (job, report, purge run/item ids, state and error
@@ -35,6 +36,9 @@ const EVENT_LABEL: Record<string, string> = {
 
 export default function IssueScreen() {
   const router = useRouter();
+  // The floating tab bar overlays this screen's bottom; SafeAreaView already
+  // pads the bottom inset, so only the bar and the gap are added here.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const { id } = useLocalSearchParams<{ id: string }>();
   const isAdmin = useIsAdmin();
   useScrollResponsiveNavbar({ enabled: false });
@@ -146,7 +150,7 @@ export default function IssueScreen() {
     <>
       <Stack.Screen options={{ title: issueTitle(i.code), headerBackTitle: '' }} />
       <SafeAreaView style={styles.container} edges={['bottom']}>
-        <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}>
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}>
           <View style={styles.row}>
             <Badge label={SEVERITY_LABEL[i.severity]} tone={severityTone(i.severity)} />
             <Badge label={STATUS_LABEL[i.status]} tone={statusTone} />
@@ -263,7 +267,7 @@ function Badge({ label, tone }: { label: string; tone: Tone }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PV2.bg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: PV2.bg },
-  content: { padding: 16, paddingBottom: 40, gap: 12 },
+  content: { padding: 16, gap: 12 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'space-between' },
   code: { marginLeft: 'auto', fontSize: 11, color: PV2.textTertiary, fontFamily: 'Courier' },
   description: { fontSize: 15, color: PV2.textPrimary },

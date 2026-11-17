@@ -23,6 +23,7 @@ import { navigateToProfile } from '@/lib/profile-navigation';
 import { checkTaggingAvailable } from '@/lib/content-tags';
 import { BETA_FEATURES, hiddenNotificationTypes } from '@/lib/beta-features';
 import { supabase } from '@/lib/supabase';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 type NotificationType =
   | 'follow'
@@ -211,6 +212,9 @@ function NotificationRow({
 
 export default function NotificationsScreen() {
   const { session } = useAuth();
+  // The tab bar floats over the list's bottom: the last notification must
+  // scroll fully above it.
+  const bottomPadding = useBottomContentPadding();
   const currentUserId = session?.user?.id;
   const router = useRouter();
   const { refresh: refreshBadge } = useBadgeRefresh();
@@ -556,6 +560,7 @@ export default function NotificationsScreen() {
             renderItem={({ item }) => (
               <NotificationRow item={item} onPress={() => handlePress(item)} />
             )}
+            contentContainerStyle={{ paddingBottom: bottomPadding }}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />
             }

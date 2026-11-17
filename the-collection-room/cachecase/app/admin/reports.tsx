@@ -35,6 +35,7 @@ import {
   type QueueItem,
   type Tone,
 } from '@/lib/admin-reports-view';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 // Admin-only report queue (Phase 2B M5.1). useIsAdmin only decides what
 // renders; every row comes from admin_report_queue, which re-checks the
@@ -53,6 +54,9 @@ const COUNT_KEY: Partial<Record<QueueFilters['view'], keyof QueueCounts>> = { op
 
 export default function ReportsScreen() {
   const router = useRouter();
+  // The floating tab bar overlays this screen's bottom; SafeAreaView already
+  // pads the bottom inset, so only the bar and the gap are added here.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const isAdmin = useIsAdmin();
   useScrollResponsiveNavbar({ enabled: false });
 
@@ -272,7 +276,7 @@ export default function ReportsScreen() {
           }
           onEndReached={() => list.kind === 'ok' && !list.moreError && onMore()}
           onEndReachedThreshold={0.3}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: bottomPadding }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PV2.link} />}
         />
       </SafeAreaView>
@@ -341,7 +345,7 @@ function Pill({ label, tone }: { label: string; tone: Tone }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PV2.bg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24, backgroundColor: PV2.bg },
-  content: { padding: 16, paddingBottom: 40, gap: 8 },
+  content: { padding: 16, gap: 8 },
   header: { gap: 8, marginBottom: 4 },
   headerAction: { color: PV2.link, fontSize: 15, fontWeight: '600' },
   dim: { opacity: 0.5 },

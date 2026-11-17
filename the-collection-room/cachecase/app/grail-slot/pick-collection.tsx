@@ -26,6 +26,7 @@ import { useAuth } from '@/lib/auth';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
 import { supabase } from '@/lib/supabase';
 import type { Folder } from '@/types';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 const NUM_COLUMNS = 3;
 const GRID_GAP = 10;
@@ -126,6 +127,9 @@ function useOwnFoldersForPicker(userId: string | undefined) {
 // distinction to make.
 export default function PickGrailCollectionScreen() {
   const router = useRouter();
+  // The floating tab bar overlays the grid's bottom row; SafeAreaView already
+  // pads the bottom inset.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const rawParams = useLocalSearchParams<RawGrailChooserParams>();
   // Deliberately depends on rawParams' individual fields, not the whole
   // object — useLocalSearchParams() returns a new object reference every
@@ -324,7 +328,7 @@ export default function PickGrailCollectionScreen() {
             <Text style={styles.emptyBody}>Create a folder in your collection first.</Text>
           </View>
         ) : (
-          <ScrollView contentContainerStyle={styles.grid}>
+          <ScrollView contentContainerStyle={[styles.grid, { paddingBottom: bottomPadding }]}>
             <GrailsPublicNote kind="collection" style={styles.publicNote} />
             {folders.map((folder) => {
               const disabled = assignedElsewhere.has(folder.id);
@@ -415,7 +419,6 @@ const styles = StyleSheet.create({
   grid: {
     paddingHorizontal: HORIZONTAL_PADDING,
     paddingTop: 4,
-    paddingBottom: 32,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: GRID_GAP,

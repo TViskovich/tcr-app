@@ -8,7 +8,9 @@ import type { SharedValue } from 'react-native-reanimated';
 // row/button, without each one hardcoding its own guess at the bar's size.
 // Final content padding = TAB_BAR_HEIGHT + insets.bottom + a screen-chosen
 // gap (24 is the app's convention — see the tab screens' own styles).
-export const TAB_BAR_HEIGHT = 68;
+// Defined in lib/bottom-overlay-layout.ts (pure, unit tested) and re-exported
+// here so existing imports keep working.
+export { TAB_BAR_HEIGHT } from './bottom-overlay-layout';
 
 type TabVisibilityCtx = {
   translateY: SharedValue<number>;

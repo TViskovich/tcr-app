@@ -10,8 +10,12 @@ import { useGrails } from '@/hooks/use-grails';
 import { useSavedGrails } from '@/hooks/use-saved';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useAuth } from '@/lib/auth';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 export default function GrailsShowcaseScreen() {
+  // The floating tab bar overlays the bottom of this screen: the content must
+  // end above it.
+  const bottomPadding = useBottomContentPadding();
   const { userId, username, displayName } = useLocalSearchParams<{
     userId: string;
     username?: string;
@@ -71,7 +75,7 @@ export default function GrailsShowcaseScreen() {
           // children (ScrollView, GrailsGrid cards) receive all touches normally.
           <Animated.View style={{ flex: 1, opacity: fadeAnim }} pointerEvents="box-none">
             <ScrollView
-              contentContainerStyle={styles.scroll}
+              contentContainerStyle={[styles.scroll, { paddingBottom: bottomPadding }]}
               showsVerticalScrollIndicator={false}
               onScroll={navbarOnScroll}
               scrollEventThrottle={scrollEventThrottle}>
@@ -100,7 +104,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0806',
   },
   scroll: {
-    paddingVertical: 24,
+    paddingTop: 24,
   },
   center: {
     flex: 1,

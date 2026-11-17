@@ -22,8 +22,12 @@ import { prefetchItemDetailImages, useSignedItemImages } from '@/hooks/use-signe
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { useAuth } from '@/lib/auth';
 import { resetSignedImageNegatives } from '@/lib/persisted-signed-url-cache';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 export default function SavedScreen() {
+  // The floating tab bar overlays the bottom of this screen: the content must
+  // end above it.
+  const bottomPadding = useBottomContentPadding();
   const { session } = useAuth();
   const currentUserId = session?.user?.id;
   const router = useRouter();
@@ -73,7 +77,7 @@ export default function SavedScreen() {
       ) : (
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={{ paddingBottom: bottomPadding }}
           onScroll={navbarOnScroll}
           scrollEventThrottle={scrollEventThrottle}
           refreshControl={
@@ -261,9 +265,6 @@ const styles = StyleSheet.create({
   scroll: {
     flex: 1,
     backgroundColor: PV2.bg,
-  },
-  content: {
-    paddingBottom: 40,
   },
   section: {
     marginTop: 28,

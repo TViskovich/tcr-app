@@ -15,6 +15,7 @@ import { AuthProvider, useAuth } from '@/lib/auth';
 import { useUnreadMessages } from '@/hooks/use-unread-messages';
 import { GlobalFloatingTabBar } from '@/components/navigation/global-floating-tab-bar';
 import { MessageBadgeContext } from '@/lib/message-badge-context';
+import { FloatingBarAllowedProvider } from '@/lib/floating-tab-bar-layout';
 import { TabVisibilityProvider } from '@/lib/tab-visibility-context';
 
 export const unstable_settings = {
@@ -123,6 +124,13 @@ function RootLayoutNav() {
   }, [session, loading, held, onResetScreen, inAuthGroup, lifecycleChecking, lifecycleUnknown, accountHidden, onPendingScreen,
       accountSuspended, onSuspendedScreen, onDeleteScreen, router]);
 
+  // The floating tab bars are part of the app only while the app itself is
+  // shown. Also tells scrollable screens whether to reserve room for the bar
+  // (lib/floating-tab-bar-layout.tsx) — e.g. Delete Account, reachable from
+  // the Account Suspended screen, where no bar is shown.
+  const floatingBarAllowed =
+    !!session && !held && !inAuthGroup && !accountHidden && !accountSuspended && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen;
+
   // Withhold the route tree until the initial session restore resolves —
   // otherwise (auth) or (tabs) can paint for a frame before the redirect
   // above runs. Plain view, not null: matches the native splash screen's
@@ -135,6 +143,7 @@ function RootLayoutNav() {
   return (
     <ThemeProvider value={CACHECASE_NAV_THEME}>
       <TabVisibilityProvider>
+        <FloatingBarAllowedProvider allowed={floatingBarAllowed}>
         <MessageBadgeContext.Provider value={messageBadgeContextValue}>
           <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
             <Stack.Screen name="(auth)" options={{ headerShown: false }} />
@@ -189,9 +198,7 @@ function RootLayoutNav() {
             <Stack.Screen name="account/pending" options={{ headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="account/suspended" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
-          {session && !held && !inAuthGroup && !accountHidden && !accountSuspended && !lifecycleChecking && !lifecycleUnknown && !onPendingScreen ? (
-            <GlobalFloatingTabBar />
-          ) : null}
+          {floatingBarAllowed ? <GlobalFloatingTabBar /> : null}
           {/* Until the account's state is known, nothing of the app shows —
               a pending collector never sees it flash. */}
           {lifecycleChecking && !held ? <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000' }]} /> : null}
@@ -199,6 +206,7 @@ function RootLayoutNav() {
           {/* After a permanent deletion from this device, once signed out. */}
           {!session && deletionNotice ? <DeletionNoticeScreen notice={deletionNotice} /> : null}
         </MessageBadgeContext.Provider>
+        </FloatingBarAllowedProvider>
       </TabVisibilityProvider>
       {/* "light" (not "auto") — always white/light status-bar content,
           matching CacheCase's always-dark screens regardless of the

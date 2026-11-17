@@ -29,6 +29,7 @@ import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { parseGrailChooserParams, type RawGrailChooserParams } from '@/lib/grail-chooser-target';
 import { useAuth } from '@/lib/auth';
 import { invalidateOwnProfileCache } from '@/lib/own-profile-cache';
+import { useBottomContentPadding } from '@/lib/floating-tab-bar-layout';
 
 const NUM_COLUMNS = 3;
 const GRID_GAP = 10;
@@ -43,6 +44,9 @@ const SEARCH_LOAD_MORE_DISTANCE = 600;
 // parseGrailChooserParams before anything else runs.
 export default function PickGrailItemScreen() {
   const router = useRouter();
+  // The floating tab bar overlays the grid's bottom row; SafeAreaView already
+  // pads the bottom inset.
+  const bottomPadding = useBottomContentPadding({ insetAppliedByContainer: true });
   const rawParams = useLocalSearchParams<RawGrailChooserParams>();
   // Deliberately depends on rawParams' individual fields, not the whole
   // object — useLocalSearchParams() returns a new object reference every
@@ -276,7 +280,7 @@ export default function PickGrailItemScreen() {
             />
             <GrailsPublicNote kind="item" style={styles.publicNote} />
             <ScrollView
-              contentContainerStyle={styles.grid}
+              contentContainerStyle={[styles.grid, { paddingBottom: bottomPadding }]}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
               onScroll={handleGridScroll}
@@ -386,7 +390,6 @@ const styles = StyleSheet.create({
   grid: {
     paddingHorizontal: HORIZONTAL_PADDING,
     paddingTop: 4,
-    paddingBottom: 32,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: GRID_GAP,
