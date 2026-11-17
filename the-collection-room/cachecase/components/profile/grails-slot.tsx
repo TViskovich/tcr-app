@@ -10,10 +10,14 @@ type Props = {
   // useSignedItemImages — item-images beta privacy hardening, Phase 3C.
   // Keyed by collection_item_images.id (item.item.primary_image_id).
   signedImageUrls: Map<string, string>;
+  // Stable account-scoped cacheKey for an image id (the profile grid's own
+  // key — see GrailsGrid). Optional only for safety: without it expo-image
+  // keys on the rotating signed URL, as before.
+  imageCacheKey?: (imageId: string) => string;
   onPress?: () => void;
 };
 
-export function GrailsSlot({ item, signedImageUrls, onPress }: Props) {
+export function GrailsSlot({ item, signedImageUrls, imageCacheKey, onPress }: Props) {
   return (
     // Layer 1: outer glow/shadow ring.
     // width:'100%' — fills the fixed-size grailCell the grid now wraps
@@ -36,10 +40,14 @@ export function GrailsSlot({ item, signedImageUrls, onPress }: Props) {
         <View style={styles.innerCard}>
           {item.item.primary_image_id && signedImageUrls.get(item.item.primary_image_id) ? (
             <Image
-              source={{ uri: signedImageUrls.get(item.item.primary_image_id) }}
+              source={{
+                uri: signedImageUrls.get(item.item.primary_image_id),
+                cacheKey: imageCacheKey?.(item.item.primary_image_id),
+              }}
               style={styles.image}
               contentFit="cover"
               transition={200}
+              cachePolicy="memory-disk"
             />
           ) : (
             <View style={styles.noImage}>

@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { type ColorValue, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { PrivateImageWarmup } from '@/components/images/private-image-warmup';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
 import { useAuth } from '@/lib/auth';
+import { grailImagePlan, secondaryWarmupReady } from '@/lib/grail-image-priority';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
 import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { CollectionItem, Folder, GrailSlot } from '@/types';
@@ -101,18 +103,39 @@ export function GrailImagesWarmup({ slots, isOwnProfile }: { slots: GrailSlot[];
   // build the stable cacheKeys (lib/private-image-cache-key.ts).
   const { session } = useAuth();
   const identity = session?.user?.id ?? 'anon';
-  const slotImageIds = grailSlotImageIds(slots);
+  // The ONE signing batch (all slot ids, unchanged) — ordering below never
+  // adds a request.
   const { urls: signedImageUrls, servedTiers } = useGrailSlotImages(slots, isOwnProfile);
+  // cacheKeys whose warm-up bytes have finished loading (or failed). Keys
+  // carry the identity and tier, so an account switch starts a fresh set.
+  const [settledKeys, setSettledKeys] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Plain per-render list (a handful of entries) — PrivateImageWarmup keys
+  const hasUrl = (imageId: string) => signedImageUrls.has(imageId);
+  const keyOf = (imageId: string) => itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers);
+  const entriesFor = (ids: string[]) =>
+    ids.flatMap((imageId) => {
+      const uri = signedImageUrls.get(imageId);
+      return uri ? [{ id: imageId, uri, cacheKey: keyOf(imageId) }] : [];
+    });
+
+  // First frame first (lib/grail-image-priority.ts): the image each slot
+  // shows first, at high priority; a collection slot's other rotation
+  // previews only once those have finished, at low priority — so the first
+  // frame never queues behind images needed seconds later. Same total set.
+  const plan = grailImagePlan(slots, hasUrl);
+  const settledIds = new Set(plan.firstFrame.filter((id) => settledKeys.has(keyOf(id))));
+  const secondaryReady = secondaryWarmupReady(plan.firstFrame, hasUrl, settledIds);
+  const markSettled = (cacheKey: string) =>
+    setSettledKeys((prev) => (prev.has(cacheKey) ? prev : new Set(prev).add(cacheKey)));
+
+  // Plain per-render lists (a handful of entries) — PrivateImageWarmup keys
   // its hidden images by cacheKey, so a new array identity remounts nothing.
-  const warmupEntries = slotImageIds.flatMap((imageId) => {
-    const uri = imageId ? signedImageUrls.get(imageId) : undefined;
-    if (!imageId || !uri) return [];
-    return [{ id: imageId, uri, cacheKey: itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers) }];
-  });
-
-  return <PrivateImageWarmup entries={warmupEntries} />;
+  return (
+    <>
+      <PrivateImageWarmup entries={entriesFor(plan.firstFrame)} priority="high" onSettled={markSettled} />
+      {secondaryReady ? <PrivateImageWarmup entries={entriesFor(plan.secondary)} priority="low" /> : null}
+    </>
+  );
 }
 
 type Props = {

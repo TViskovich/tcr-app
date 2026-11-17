@@ -6,7 +6,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { PremiumCardHeader, PremiumEmptyCard, VAULT_COLORS } from '@/components/ui/premium-empty-card';
 import { GrailsSlot } from '@/components/profile/grails-slot';
 import { useSignedItemImages } from '@/hooks/use-signed-item-images';
+import { useAuth } from '@/lib/auth';
 import { COMPACT_IMAGE_TIER } from '@/lib/image-tiers';
+import { itemImageCacheKey } from '@/lib/private-image-cache-key';
 import type { ShowcaseItem } from '@/types';
 
 type Props = {
@@ -130,7 +132,16 @@ export function GrailsGrid({
   // One batched call for the whole vault — never one signing request per
   // card (item-images beta privacy hardening, Phase 3C). Declared before
   // the zero-state early return below to satisfy Rules of Hooks.
-  const { urls: signedImageUrls } = useSignedItemImages(grails.map((g) => g.item.primary_image_id), COMPACT_IMAGE_TIER);
+  const { urls: signedImageUrls, servedTiers } = useSignedItemImages(grails.map((g) => g.item.primary_image_id), COMPACT_IMAGE_TIER);
+  // The SAME stable, account-scoped expo-image cacheKey the profile Grails
+  // grid uses for these images (same identity, image id and served size —
+  // lib/private-image-cache-key.ts), so opening this page reuses the bytes
+  // the profile already downloaded, and a re-sign (new URL every 5 minutes)
+  // never re-downloads them. Images still render only while signing
+  // returns a URL, so a revoked image is never shown from that cache.
+  const { session } = useAuth();
+  const identity = session?.user?.id ?? 'anon';
+  const imageCacheKey = (imageId: string) => itemImageCacheKey(identity, imageId, COMPACT_IMAGE_TIER, servedTiers);
 
   // Press animation — declared before early return to satisfy Rules of Hooks.
   const [pressScale] = useState(() => new Animated.Value(1));
@@ -237,6 +248,7 @@ export function GrailsGrid({
                   <GrailsSlot
                     item={item}
                     signedImageUrls={signedImageUrls}
+                    imageCacheKey={imageCacheKey}
                     // When the whole cabinet is tappable, individual slots are passive.
                     onPress={onCabinetPress ? undefined : () => onItemPress?.(item)}
                   />

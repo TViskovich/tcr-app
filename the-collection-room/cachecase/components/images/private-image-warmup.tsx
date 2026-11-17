@@ -29,13 +29,20 @@ export type WarmupEntry = {
 
 type Props = {
   entries: WarmupEntry[];
+  // expo-image load priority for these entries (best effort; default
+  // 'normal' — unchanged for existing callers). Lets a caller warm the
+  // images a screen shows first ahead of ones it needs only later.
+  priority?: 'low' | 'normal' | 'high';
+  // Called once per entry when its bytes finish loading or fail (by
+  // cacheKey), so a caller can sequence a later, lower-priority batch.
+  onSettled?: (cacheKey: string) => void;
 };
 
 // Renders nothing itself if there's nothing left to warm after filtering —
 // callers are expected to pass an already-bounded list (a preview-row cap,
 // a fixed grid size, etc.); this component only dedupes/validates, it never
 // imposes or removes a size limit of its own.
-export function PrivateImageWarmup({ entries }: Props) {
+export function PrivateImageWarmup({ entries, priority = 'normal', onSettled }: Props) {
   const seen = new Set<string>();
   const deduped: { id: string; uri: string; cacheKey: string }[] = [];
   for (const entry of entries) {
@@ -59,6 +66,9 @@ export function PrivateImageWarmup({ entries }: Props) {
           source={{ uri: entry.uri, cacheKey: entry.cacheKey }}
           style={styles.pixel}
           cachePolicy="memory-disk"
+          priority={priority}
+          onLoad={onSettled ? () => onSettled(entry.cacheKey) : undefined}
+          onError={onSettled ? () => onSettled(entry.cacheKey) : undefined}
         />
       ))}
     </View>

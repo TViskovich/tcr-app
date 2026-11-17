@@ -494,6 +494,8 @@ export function GrailSlotPreview({
               contentFit="cover"
               transition={150}
               cachePolicy="memory-disk"
+              // First-frame image (lib/grail-image-priority.ts).
+              priority="high"
             />
           ) : (
             <View style={styles.slotEmptyFill} />
@@ -513,6 +515,8 @@ export function GrailSlotPreview({
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 cachePolicy="memory-disk"
+                // The slot's currently shown image — first frame on mount.
+                priority="high"
                 onLoad={() => revealCommittedActive(activeUri)}
                 onError={() => handleActiveError(activeUri)}
               />

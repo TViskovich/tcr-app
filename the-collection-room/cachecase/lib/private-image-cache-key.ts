@@ -23,7 +23,8 @@
 // public URLs with no rotation problem to solve, so nothing there should
 // ever call into this file.
 
-import { imageTierCacheSuffix, type ImageTier } from '@/lib/image-tiers';
+// Relative with extension (like lib/admin-media-view.ts) so this pure module is importable from node unit tests.
+import { imageTierCacheSuffix, type ImageTier } from './image-tiers.ts';
 
 // Item images (collection_item_images) — the id itself is immutable per
 // upload: lib/item-images.ts's addItemImages only ever INSERTs a new row
