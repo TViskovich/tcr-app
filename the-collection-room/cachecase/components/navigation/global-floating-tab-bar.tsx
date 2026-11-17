@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CacheCaseGridIcon } from '@/components/navigation/cachecase-grid-icon';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { GLOBAL_TAB_HREF } from '@/lib/global-tab-navigation';
 import { useMessageBadgeCount } from '@/lib/message-badge-context';
 import { TAB_BAR_HEIGHT, useTabVisibility } from '@/lib/tab-visibility-context';
 
@@ -138,15 +139,19 @@ export function GlobalFloatingTabBar() {
     if (process.env.EXPO_OS === 'ios') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    if (tab.name === FEATURED_TAB) {
-      // Always land on the owner's own profile — same reset-to-root
-      // mechanism the Collection tab used before this button's
-      // destination changed, so a screen reached outside the tabs group
-      // (folder, item, etc.) always replaces cleanly onto it.
-      router.replace('/(tabs)/profile');
-      return;
-    }
-    router.navigate(tab.route as any);
+    // Return to the ONE (tabs) route already mounted under this stack screen
+    // and switch it to the chosen tab (lib/global-tab-navigation.ts).
+    // router.navigate pushed — and router.replace swapped in — a brand-new
+    // tabs navigator, so each tap mounted a whole tab screen (and its data)
+    // from scratch while every earlier navigator stayed mounted underneath:
+    // slow taps, getting slower over a session. dismissTo remounts nothing,
+    // and a repeated tap is a no-op. The CacheCase button still always lands
+    // on the owner's own profile. Same guard as navigateToOwnProfile
+    // (lib/profile-navigation.ts): with nothing to dismiss (no screen pushed
+    // above the tabs) it's a plain tab switch.
+    const href = GLOBAL_TAB_HREF[tab.name];
+    if (router.canDismiss()) router.dismissTo(href);
+    else router.navigate(href);
   };
 
   // Looked up by name rather than closed over `tab`, since this is invoked
