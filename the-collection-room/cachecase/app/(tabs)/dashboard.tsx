@@ -24,13 +24,14 @@ import { useProfile } from '@/hooks/use-profile';
 import { useScrollResponsiveNavbar } from '@/hooks/use-scroll-responsive-navbar';
 import { useTaggingAvailable } from '@/hooks/use-tagging-available';
 import { useAuth } from '@/lib/auth';
+import { CACHECASE_FEATURES_URL } from '@/lib/cachecase-website';
 import { supabase } from '@/lib/supabase';
 import { SUPPORT_CONTACT, supportMailto } from '@/lib/support-contact';
 import { TAB_BAR_HEIGHT } from '@/lib/tab-visibility-context';
 
 // The collector's Dashboard (right-hand bottom-nav tab): Analytics,
-// How-To & Knowledge Base, Support & Contact, Account & Security, plus the
-// admin-only Waitlist entry.
+// How-To & Knowledge Base (How CacheCase Works → the website Features page),
+// Support & Contact, Account & Security, plus the admin-only Waitlist entry.
 //
 // Beta scope: Transfers and the CC#ID Registry are not launching in the
 // beta, so nothing here shows, counts, links to or explains them. Their
@@ -45,57 +46,23 @@ const GRAIL_SLOT_COUNT = 9;
 
 type IconName = ComponentProps<typeof IconSymbol>['name'];
 
-// ── Knowledge base content ─────────────────────────────────────────────────
-// Guides describe only what the app does today. Planned features are not
-// advertised in the app (Release Readiness R2).
-type Guide = { key: string; title: string; icon: IconName; steps: string[]; note?: string };
-
-// Shown only where the database has collector tagging (useTaggingAvailable).
-const TAGGING_GUIDE: Guide = {
-  key: 'tagging',
-  title: 'Tagging collectors',
-  icon: 'tag',
-  steps: [
-    'On your own item or collection, tap Tag and choose the collectors to tag (up to 20).',
-    'Items and collections you’re tagged in appear on the Tagged tab of your profile.',
-    'You can remove yourself from anything you’ve been tagged in.',
-  ],
-};
-
-const GUIDES: Guide[] = [
-  {
-    key: 'collections',
-    title: 'Collections',
-    icon: 'folder.fill',
-    steps: [
-      'Create a collection from the Collections tab on your profile, then add items to it.',
-      'Each collection and each item is Public or Private. Private ones are visible only to you, and an item inside a private collection is private too.',
-      'Long-press a collection on your profile to reorder your collections.',
-      'Inside a collection, search finds items by name and details such as player, set and grade.',
-    ],
-  },
-  {
-    key: 'grails',
-    title: 'Top 9 / Grails',
-    icon: 'crown.fill',
-    steps: [
-      'Your Grails are the nine showcase slots at the top of your profile.',
-      'Tap an empty slot and choose Single Item or Collection to add a Grail.',
-      'Long-press a Grail to rearrange them by dragging. While rearranging, tap a Grail to Replace or Remove it. Removing a Grail never deletes the item or collection.',
-      'Anything in your Grails is shown on your profile to other collectors.',
-    ],
-  },
-  {
-    key: 'messages',
-    title: 'Messages',
-    icon: 'message.fill',
-    steps: [
-      'Start a conversation from Messages with the compose button, then choose a collector.',
-      'To send an item, open it, tap Share and choose Direct Message. Only public items can be shared in DMs.',
-      'Tap the name at the top of a conversation to open that collector’s profile.',
-    ],
-  },
-];
+// ── Dashboard palette ──────────────────────────────────────────────────────
+// Premium dark charcoal with warm bronze/gold accents — Dashboard only (the
+// app-wide PV2 theme is unchanged). Built from colors CacheCase already
+// uses: the premium empty-state card's gold (#D4A520 / rgba(214,160,42,…))
+// and vault charcoals (components/ui/premium-empty-card.tsx), with PV2's
+// white/gray text. Gold on the card fill is ~8:1, well above WCAG AA.
+const DASH = {
+  bg: '#0a0908', // premium card's near-black vault base
+  card: '#1A1510', // VAULT_COLORS[0]: warm dark charcoal
+  cardBorder: 'rgba(214,160,42,0.22)', // subtle bronze edge
+  gold: '#D4A520', // counts, icons, selected states
+  goldSoft: 'rgba(214,160,42,0.14)', // icon tiles, bar tracks
+  divider: 'rgba(214,160,42,0.12)',
+  textPrimary: PV2.textPrimary,
+  textSecondary: PV2.textSecondary,
+  textTertiary: PV2.textTertiary,
+} as const;
 
 // ── Screen ─────────────────────────────────────────────────────────────────
 export default function DashboardScreen() {
@@ -115,7 +82,6 @@ export default function DashboardScreen() {
   const analytics = useDashboardAnalytics(userId);
   const { refresh: refreshAnalytics } = analytics;
   const [refreshing, setRefreshing] = useState(false);
-  const [openGuide, setOpenGuide] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -191,14 +157,13 @@ export default function DashboardScreen() {
   const supportConfigured = liveSupportRows.length > 0;
 
   const { categories, views, engagement, showcase, loading: analyticsLoading } = analytics;
-  const guides = taggingAvailable ? [...GUIDES, TAGGING_GUIDE] : GUIDES;
   const categoryMax = Math.max(1, ...(categories ?? []).map((c) => c.count));
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + insets.bottom + 24 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={PV2.textSecondary} />}>
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={DASH.gold} />}>
         <View style={styles.header}>
           <Text style={styles.title} accessibilityRole="header">
             Dashboard
@@ -274,7 +239,7 @@ export default function DashboardScreen() {
                     {t.title}
                   </Text>
                   <Text style={styles.listRowValue}>{formatCount(t.views)}</Text>
-                  <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+                  <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
                 </Pressable>
               ))}
               <Text style={styles.footnote}>
@@ -323,34 +288,21 @@ export default function DashboardScreen() {
         {/* ── How-To & Knowledge Base ── */}
         <SectionHeader icon="list.bullet" title="How-To & Knowledge Base" />
         <View style={styles.card}>
-          {guides.map((g, i) => {
-            const open = openGuide === g.key;
-            return (
-              <View key={g.key} style={i > 0 && styles.listRowBorder}>
-                <Pressable
-                  onPress={() => setOpenGuide(open ? null : g.key)}
-                  style={({ pressed }) => [styles.guideHeader, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                  aria-expanded={open}
-                  accessibilityLabel={`${g.title} guide`}>
-                  <IconSymbol name={g.icon} size={16} color={PV2.actionPrimary} />
-                  <Text style={styles.guideTitle}>{g.title}</Text>
-                  <IconSymbol name={open ? 'chevron.up' : 'chevron.down'} size={13} color={PV2.textTertiary} />
-                </Pressable>
-                {open && (
-                  <View style={styles.guideBody}>
-                    {g.steps.map((s, n) => (
-                      <View key={n} style={styles.step}>
-                        <Text style={styles.stepNumber}>{n + 1}</Text>
-                        <Text style={styles.stepText}>{s}</Text>
-                      </View>
-                    ))}
-                    {g.note ? <Text style={styles.footnote}>{g.note}</Text> : null}
-                  </View>
-                )}
-              </View>
-            );
-          })}
+          <Pressable
+            onPress={() => openUrl(CACHECASE_FEATURES_URL)}
+            style={({ pressed }) => [styles.navRow, pressed && styles.pressed]}
+            accessibilityRole="link"
+            accessibilityLabel="How CacheCase Works, explore features and guides"
+            accessibilityHint="Opens cachecase.com in the in-app browser">
+            <View style={styles.iconTile}>
+              <IconSymbol name="list.bullet" size={18} color={DASH.gold} />
+            </View>
+            <View style={styles.navRowText}>
+              <Text style={styles.navRowTitle}>How CacheCase Works</Text>
+              <Text style={styles.navRowDetail}>Explore features and guides</Text>
+            </View>
+            <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
+          </Pressable>
         </View>
         {/* ── Support & Contact ── */}
         <SectionHeader icon="paperplane.fill" title="Support & Contact" />
@@ -365,12 +317,14 @@ export default function DashboardScreen() {
               accessibilityRole={r.onPress ? 'button' : 'text'}
               accessibilityState={{ disabled: !r.onPress }}
               accessibilityLabel={`${r.title}${r.onPress ? '' : ', not available yet'}`}>
-              <IconSymbol name={r.icon} size={16} color={r.onPress ? PV2.actionPrimary : PV2.textTertiary} />
+              <View style={styles.iconTile}>
+                <IconSymbol name={r.icon} size={16} color={r.onPress ? DASH.gold : DASH.textTertiary} />
+              </View>
               <View style={styles.navRowText}>
                 <Text style={[styles.navRowTitle, !r.onPress && styles.disabledText]}>{r.title}</Text>
                 <Text style={styles.navRowDetail}>{r.detail}</Text>
               </View>
-              {r.onPress ? <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} /> : null}
+              {r.onPress ? <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} /> : null}
             </Pressable>
           ))}
         </View>
@@ -405,7 +359,7 @@ export default function DashboardScreen() {
               <Text style={styles.navRowTitle}>Change Password</Text>
               <Text style={styles.navRowDetail}>Confirm your current password to choose a new one</Text>
             </View>
-            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+            <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
           </Pressable>
           <Pressable
             onPress={() => router.push('/account/blocked')}
@@ -416,7 +370,7 @@ export default function DashboardScreen() {
               <Text style={styles.navRowTitle}>Blocked Collectors</Text>
               <Text style={styles.navRowDetail}>See who you’ve blocked and unblock them</Text>
             </View>
-            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+            <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
           </Pressable>
           <Pressable
             onPress={() => router.push('/account/delete')}
@@ -428,7 +382,7 @@ export default function DashboardScreen() {
               <Text style={[styles.navRowTitle, styles.deleteText]}>Delete Account</Text>
               <Text style={styles.navRowDetail}>Hidden right away, deleted after 14 days unless you cancel</Text>
             </View>
-            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+            <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
           </Pressable>
           <Pressable
             onPress={() => router.push('/account/export')}
@@ -439,7 +393,7 @@ export default function DashboardScreen() {
               <Text style={styles.navRowTitle}>Download My Data</Text>
               <Text style={styles.navRowDetail}>A ZIP of your collections, items, photos and more</Text>
             </View>
-            <IconSymbol name="chevron.right" size={13} color={PV2.textTertiary} />
+            <IconSymbol name="chevron.right" size={13} color={DASH.textTertiary} />
           </Pressable>
         </View>
         <TouchableOpacity
@@ -462,7 +416,7 @@ export default function DashboardScreen() {
                 <Text style={styles.navRowTitle}>Waitlist Management</Text>
                 <Text style={styles.navRowDetail}>Review signups, grant access, and manage invite status.</Text>
               </View>
-              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              <IconSymbol name="chevron.right" size={14} color={DASH.textTertiary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.adminRow, styles.adminRowSpaced]}
@@ -472,7 +426,7 @@ export default function DashboardScreen() {
                 <Text style={styles.navRowTitle}>Reports</Text>
                 <Text style={styles.navRowDetail}>Review, claim and resolve reported content.</Text>
               </View>
-              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              <IconSymbol name="chevron.right" size={14} color={DASH.textTertiary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.adminRow, styles.adminRowSpaced]}
@@ -482,7 +436,7 @@ export default function DashboardScreen() {
                 <Text style={styles.navRowTitle}>Moderation Monitoring</Text>
                 <Text style={styles.navRowDetail}>Open issues, quarantine queue, alert delivery and purge approvals.</Text>
               </View>
-              <IconSymbol name="chevron.right" size={14} color={PV2.textTertiary} />
+              <IconSymbol name="chevron.right" size={14} color={DASH.textTertiary} />
             </TouchableOpacity>
             <AccountDeletionHealth />
           </>
@@ -594,7 +548,7 @@ function AccountDeletionHealth() {
 function SectionHeader({ icon, title }: { icon: IconName; title: string }) {
   return (
     <View style={styles.sectionHeader}>
-      <IconSymbol name={icon} size={15} color={PV2.textSecondary} />
+      <IconSymbol name={icon} size={15} color={DASH.gold} />
       <Text style={styles.sectionTitle} accessibilityRole="header">
         {title}
       </Text>
@@ -648,7 +602,7 @@ function Bullet({ children }: { children: ReactNode }) {
 function Loading() {
   return (
     <View style={styles.stateRow}>
-      <ActivityIndicator color={PV2.textSecondary} />
+      <ActivityIndicator color={DASH.gold} />
     </View>
   );
 }
@@ -667,7 +621,7 @@ function LoadFailed({ onRetry }: { onRetry: () => void }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: PV2.bg,
+    backgroundColor: DASH.bg,
   },
   flex: {
     flex: 1,
@@ -678,13 +632,13 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   title: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 28,
     fontWeight: '700',
   },
   subtitle: {
     marginTop: 4,
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 15,
   },
   sectionHeader: {
@@ -696,14 +650,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   sectionTitle: {
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
   sectionNote: {
-    color: PV2.textTertiary,
+    color: DASH.textTertiary,
     fontSize: 12,
     marginHorizontal: 20,
     marginTop: -2,
@@ -713,9 +667,9 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 12,
     borderRadius: 14,
-    backgroundColor: PV2.collectorPanelBg,
+    backgroundColor: DASH.card,
     borderWidth: 1,
-    borderColor: PV2.collectorPanelBorder,
+    borderColor: DASH.cardBorder,
     overflow: 'hidden',
   },
   cardPadded: {
@@ -723,7 +677,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   cardTitle: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 16,
     fontWeight: '700',
     marginBottom: 12,
@@ -741,12 +695,12 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   statValue: {
-    color: PV2.textPrimary,
+    color: DASH.gold,
     fontSize: 22,
     fontWeight: '800',
   },
   statLabel: {
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 12,
   },
   barRow: {
@@ -758,24 +712,24 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   barLabel: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 14,
   },
   barValue: {
-    color: PV2.textSecondary,
+    color: DASH.gold,
     fontSize: 14,
     fontWeight: '600',
   },
   barTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: PV2.emptyCardBg,
+    backgroundColor: DASH.goldSoft,
     overflow: 'hidden',
   },
   barFill: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: PV2.actionPrimary,
+    backgroundColor: DASH.gold,
   },
   viewsHeadline: {
     flexDirection: 'row',
@@ -784,12 +738,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   bigNumber: {
-    color: PV2.textPrimary,
+    color: DASH.gold,
     fontSize: 30,
     fontWeight: '800',
   },
   subheading: {
-    color: PV2.textTertiary,
+    color: DASH.textTertiary,
     fontSize: 12,
     fontWeight: '600',
     letterSpacing: 0.4,
@@ -805,68 +759,38 @@ const styles = StyleSheet.create({
   },
   listRowBorder: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: PV2.dividerColor,
+    borderTopColor: DASH.divider,
   },
   listRowTitle: {
     flex: 1,
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 15,
   },
   listRowValue: {
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 15,
     fontWeight: '600',
   },
   muted: {
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 14,
     lineHeight: 20,
   },
   footnote: {
-    color: PV2.textTertiary,
+    color: DASH.textTertiary,
     fontSize: 12,
     lineHeight: 17,
     marginTop: 10,
   },
-  guideHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 15,
-  },
-  guideTitle: {
-    flex: 1,
-    color: PV2.textPrimary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  guideBody: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    gap: 10,
-  },
-  step: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  stepNumber: {
-    width: 20,
-    height: 20,
+  iconTile: {
+    width: 34,
+    height: 34,
     borderRadius: 10,
-    overflow: 'hidden',
-    textAlign: 'center',
-    lineHeight: 20,
-    fontSize: 12,
-    fontWeight: '700',
-    color: PV2.actionPrimary,
-    backgroundColor: PV2.actionPrimarySoft,
-  },
-  stepText: {
-    flex: 1,
-    color: PV2.textSecondary,
-    fontSize: 14,
-    lineHeight: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: DASH.goldSoft,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: DASH.cardBorder,
   },
   navRow: {
     flexDirection: 'row',
@@ -880,22 +804,22 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   navRowTitle: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 16,
     fontWeight: '500',
   },
   navRowDetail: {
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 13,
   },
   disabledText: {
-    color: PV2.textTertiary,
+    color: DASH.textTertiary,
   },
   deleteText: {
     color: PV2.statusNegative,
   },
   email: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 16,
   },
   bullet: {
@@ -908,11 +832,11 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 3,
     marginTop: 8,
-    backgroundColor: PV2.textTertiary,
+    backgroundColor: DASH.textTertiary,
   },
   bulletText: {
     flex: 1,
-    color: PV2.textSecondary,
+    color: DASH.textSecondary,
     fontSize: 14,
     lineHeight: 20,
   },
@@ -922,9 +846,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
-    backgroundColor: PV2.panel,
+    backgroundColor: DASH.card,
     borderWidth: 1,
-    borderColor: PV2.panelBorder,
+    borderColor: DASH.cardBorder,
   },
   signOutText: {
     color: PV2.statusNegative,
@@ -942,9 +866,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: PV2.panel,
+    backgroundColor: DASH.card,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: PV2.panelBorder,
+    borderColor: DASH.cardBorder,
   },
   stateRow: {
     alignItems: 'center',
@@ -952,15 +876,15 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   retryButton: {
-    backgroundColor: PV2.panel,
+    backgroundColor: DASH.card,
     borderWidth: 1,
-    borderColor: PV2.panelBorder,
+    borderColor: DASH.cardBorder,
     borderRadius: 8,
     paddingVertical: 9,
     paddingHorizontal: 18,
   },
   retryButtonText: {
-    color: PV2.textPrimary,
+    color: DASH.textPrimary,
     fontSize: 13,
     fontWeight: '600',
   },
